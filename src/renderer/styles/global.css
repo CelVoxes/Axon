@@ -1,0 +1,116 @@
+/* Global styles for BioRAG Cursor interface */
+
+* {
+	margin: 0;
+	padding: 0;
+	box-sizing: border-box;
+}
+
+body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",
+		sans-serif;
+	font-size: 13px;
+	line-height: 1.4;
+	background-color: #1e1e1e;
+	color: #d4d4d4;
+	overflow: hidden;
+}
+
+#root {
+	width: 100vw;
+	height: 100vh;
+	display: flex;
+	flex-direction: column;
+}
+
+/* Scrollbar styles */
+::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+
+::-webkit-scrollbar-track {
+	background: #2d2d30;
+}
+
+::-webkit-scrollbar-thumb {
+	background: #424242;
+	border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background: #555;
+}
+
+/* Button styles */
+button {
+	background: #0e639c;
+	border: none;
+	color: white;
+	padding: 6px 12px;
+	border-radius: 2px;
+	cursor: pointer;
+	font-size: 13px;
+}
+
+button:hover {
+	background: #1177bb;
+}
+
+button:disabled {
+	background: #3c3c3c;
+	color: #858585;
+	cursor: not-allowed;
+}
+
+/* Input styles */
+input,
+textarea {
+	background: #3c3c3c;
+	border: 1px solid #6c6c6c;
+	color: #d4d4d4;
+	padding: 6px 8px;
+	border-radius: 2px;
+	font-size: 13px;
+}
+
+input:focus,
+textarea:focus {
+	outline: none;
+	border-color: #0e639c;
+}
+
+/* Code styles */
+.code {
+	font-family: "Consolas", "Monaco", "Courier New", monospace;
+	background: #252526;
+	padding: 4px 6px;
+	border-radius: 2px;
+	font-size: 12px;
+}
+
+/* Tooltip styles */
+.tooltip {
+	position: relative;
+	display: inline-block;
+}
+
+.tooltip .tooltip-text {
+	visibility: hidden;
+	background-color: #2d2d30;
+	color: #d4d4d4;
+	text-align: center;
+	border-radius: 4px;
+	padding: 5px 8px;
+	position: absolute;
+	z-index: 1000;
+	bottom: 125%;
+	left: 50%;
+	margin-left: -60px;
+	font-size: 11px;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.tooltip:hover .tooltip-text {
+	visibility: visible;
+}

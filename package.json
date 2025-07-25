@@ -1,0 +1,59 @@
+{
+  "name": "node-biorag",
+  "version": "1.0.0",
+  "description": "Node - AI-powered biological data analysis platform",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "concurrently \"npm run build:watch\" \"wait-on dist/main/main.js && electron .\"",
+    "build": "tsc && webpack --mode production",
+    "build:watch": "concurrently \"tsc --watch\" \"webpack --mode development --watch\"",
+    "package": "electron-builder",
+    "prepack": "npm run build"
+  },
+  "author": "Node Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@types/uuid": "^9.0.0",
+    "concurrently": "^8.2.0",
+    "css-loader": "^6.8.0",
+    "electron": "^25.0.0",
+    "electron-builder": "^24.0.0",
+    "html-webpack-plugin": "^5.5.0",
+    "style-loader": "^3.3.0",
+    "ts-loader": "^9.4.0",
+    "typescript": "^5.0.0",
+    "wait-on": "^7.0.0",
+    "webpack": "^5.88.0",
+    "webpack-cli": "^5.1.0"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.5.0",
+    "@types/ws": "^8.5.0",
+    "axios": "^1.5.0",
+    "electron-store": "^8.1.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-icons": "^4.10.0",
+    "socket.io-client": "^4.7.0",
+    "styled-components": "^6.0.0",
+    "uuid": "^9.0.0",
+    "ws": "^8.13.0",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0"
+  },
+  "build": {
+    "appId": "com.node.biorag",
+    "productName": "Node",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "node_modules/**/*"
+    ]
+  }
+} 
