@@ -1,51 +1,80 @@
-# BioRAG - Biological Retrieval-Augmented Generation System
+# Node - AI-Powered Biological Analysis Platform
 
-A comprehensive RAG system designed specifically for biological data retrieval and analysis from GEO (Gene Expression Omnibus) and other biological databases.
+A comprehensive AI-driven system for biological data analysis that combines retrieval-augmented generation (RAG) with intelligent code generation for bioinformatics research.
 
-## 🧬 New! Autonomous Biological Analysis Agent
+## 🧬 AI-Powered Biological Analysis Agent
 
-BioRAG now includes an **intelligent Electron desktop application** that acts as a "Cursor for bioinformatics" - providing autonomous biological data analysis through natural language interaction.
+Node provides an **intelligent Electron desktop application** that acts as "Cursor for Bioinformatics" - delivering autonomous biological data analysis through natural language interaction powered by Large Language Models.
 
-### ✨ What Makes This Special
+### ✨ What Makes This Revolutionary
 
-- **RAG-Powered Dataset Discovery**: Uses retrieval-augmented generation to find real GEO datasets
-- **Autonomous Code Generation**: Generates and executes Python analysis code automatically
-- **Jupyter Integration**: Seamlessly integrates with Jupyter Lab for interactive analysis
-- **Natural Language Interface**: Simply describe what you want to analyze
+- **🤖 LLM-Driven Analysis Planning**: AI analyzes your research question and creates custom analysis workflows
+- **💻 Dynamic Code Generation**: Generates Python code specifically tailored to your biological question (no templates!)
+- **🔬 Intelligent Dataset Discovery**: Uses RAG to find and acquire real biological datasets from GEO, PubMed, UniProt
+- **📊 Jupyter Integration**: Seamlessly integrates with Jupyter Lab for interactive analysis
+- **🗣️ Natural Language Interface**: Simply describe your research question in plain English
 
-### 🚀 Example Workflow
+### 🚀 How It Works
 
-1. **Ask a biological question**:
+1. **Ask any biological research question**:
 
    ```
-   "Can you compare different AML subtypes and give me the top 10 DEGs?"
+   "Compare AML vs ALL gene expression patterns"
+   "Find transcriptional subtypes of B-cell leukemia"
+   "Identify biomarkers for breast cancer subtypes"
    ```
 
-2. **The agent automatically**:
-   - Creates a TODO pipeline for the analysis
-   - Searches GEO database using RAG for relevant datasets
-   - Downloads real biological data
-   - Starts Jupyter Lab automatically
-   - Generates analysis code (quality control, differential expression, visualization)
-   - Executes code in Jupyter and shows results
-   - Provides biological interpretation of findings
+2. **AI automatically**:
+   - **Understands** your specific biological context using LLM analysis
+   - **Plans** appropriate analysis steps tailored to your question
+   - **Searches** biological databases for relevant datasets
+   - **Generates** production-ready Python code for each analysis step
+   - **Executes** code sequentially in Jupyter Lab
+   - **Creates** visualizations, statistical analyses, and biological interpretations
+
+### 💡 Key Innovations
+
+#### 🧠 LLM-Based Analysis Planning
+
+- **No Hardcoded Workflows**: Every analysis plan is generated fresh by AI
+- **Question-Specific**: Understands the difference between differential expression, clustering, subtyping, biomarker discovery, etc.
+- **Biologically Informed**: AI has deep knowledge of bioinformatics methods and best practices
+
+#### 💻 Dynamic Code Generation
+
+- **Custom Python Code**: Generates specific code for your exact research question
+- **Real Bioinformatics**: Uses proper libraries (pandas, scikit-learn, matplotlib, seaborn, GEOparse)
+- **Production Ready**: Includes error handling, proper imports, and biological interpretation
+
+#### 🔬 Intelligent Data Integration
+
+- **Smart Dataset Search**: Extracts meaningful search terms from complex queries
+- **Real Data Sources**: Connects to GEO, PubMed, UniProt APIs
+- **Rate Limiting**: Respects API limits and handles errors gracefully
 
 ### 💻 Desktop Application Features
 
-- **Chat Interface**: AI assistant specialized for biological queries
-- **File Explorer**: Manage analysis files and notebooks
-- **Jupyter Viewer**: Embedded Jupyter Lab interface
-- **TODO Tracking**: Automatic pipeline management
-- **Real-time Logs**: Monitor analysis progress
+- **🤖 AI Chat Interface**: Specialized biological research assistant
+- **📁 File Management**: Organize analysis files and datasets
+- **📓 Jupyter Integration**: Embedded Jupyter Lab with proper CSP handling
+- **📊 Real-time Analysis**: Watch your analysis execute step-by-step
+- **🧬 Biological Context**: AI understands cancer types, gene expression, pathways, etc.
 
-## Features
+## Architecture
 
-- **Multi-database Support**: Retrieve data from GEO, PubMed, UniProt, and other biological databases
-- **Intelligent Embeddings**: Specialized embeddings for biological text and data
-- **Vector Storage**: Efficient storage and retrieval using ChromaDB
-- **RAG Pipeline**: Advanced retrieval-augmented generation for biological queries
-- **API Interface**: FastAPI-based REST API for easy integration
-- **Data Processing**: Specialized preprocessing for biological documents and metadata
+### Backend (Python)
+
+- **🔍 Node Server**: Intelligent retrieval-augmented generation for biological queries
+- **🗄️ Vector Database**: ChromaDB for efficient biological document storage
+- **🌐 API Integration**: Connects to GEO, PubMed, UniProt, and other databases
+- **⚡ FastAPI**: High-performance REST API
+
+### Frontend (TypeScript/Electron)
+
+- **🎨 Modern UI**: Clean, professional interface built with React
+- **🔧 Autonomous Agent**: LLM-powered analysis orchestration
+- **📓 Jupyter Viewer**: Embedded notebook interface with webview
+- **💬 Chat System**: Natural language interaction with the AI
 
 ## Quick Start
 
@@ -153,20 +182,21 @@ If you encounter Jupyter authentication errors:
 
 The application now includes improved Jupyter authentication handling and should work seamlessly with most Python environments.
 
-## Architecture
-
-- `biorag/data_sources/`: Database clients for GEO, PubMed, etc.
-- `biorag/embeddings/`: Embedding services and models
-- `biorag/storage/`: Vector database management
-- `biorag/retrieval/`: Retrieval engine and search
-- `biorag/generation/`: RAG pipeline and response generation
-- `biorag/api/`: FastAPI endpoints and schemas
-- `biorag/utils/`: Utilities and helpers
-- `src/`: Electron desktop application
-  - `main/`: Main process (Node.js backend)
-  - `renderer/`: Renderer process (React frontend)
-  - `services/`: Autonomous agent and BioRAG client
-
 ## License
 
-MIT License
+**Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)**
+
+This work is licensed under a [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License](http://creativecommons.org/licenses/by-nc-sa/4.0/).
+
+You are free to:
+
+- **Share** — copy and redistribute the material in any medium or format
+- **Adapt** — remix, transform, and build upon the material
+
+Under the following terms:
+
+- **Attribution** — You must give appropriate credit, provide a link to the license, and indicate if changes were made
+- **NonCommercial** — You may not use the material for commercial purposes
+- **ShareAlike** — If you remix, transform, or build upon the material, you must distribute your contributions under the same license
+
+For commercial licensing inquiries, please contact the project maintainer.
