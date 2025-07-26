@@ -173,6 +173,69 @@ const StopButton = styled.button`
 	}
 `;
 
+// --- Chat History Drawer ---
+const ChatHistoryDrawer = styled.div<{ open: boolean }>`
+	position: absolute;
+	top: 0;
+	right: 0;
+	width: 320px;
+	height: 100%;
+	background: #18181a;
+	border-left: 1px solid #232326;
+	box-shadow: -2px 0 8px rgba(0, 0, 0, 0.12);
+	z-index: 20;
+	display: flex;
+	flex-direction: column;
+	transform: translateX(${(props) => (props.open ? "0" : "100%")});
+	transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+`;
+
+const ChatHistoryHeader = styled.div`
+	padding: 16px 20px 8px 20px;
+	font-size: 15px;
+	font-weight: 600;
+	color: #fff;
+	border-bottom: 1px solid #232326;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+`;
+
+const ChatHistoryList = styled.div`
+	flex: 1;
+	overflow-y: auto;
+	padding: 8px 0 0 0;
+`;
+
+const ChatHistoryItem = styled.div`
+	padding: 12px 20px;
+	color: #ccc;
+	font-size: 14px;
+	cursor: pointer;
+	border-bottom: 1px solid #222;
+	transition: background 0.15s;
+	&:hover {
+		background: #232326;
+		color: #fff;
+	}
+`;
+
+const NewChatButton = styled.button`
+	margin-right: 12px;
+	background: #232326;
+	color: #fff;
+	border: none;
+	border-radius: 6px;
+	padding: 7px 16px;
+	font-size: 13px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: background 0.15s;
+	&:hover {
+		background: #333;
+	}
+`;
+
 interface ChatPanelProps {
 	collapsed: boolean;
 	onToggle: () => void;
@@ -186,6 +249,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 	const [inputValue, setInputValue] = useState("");
 	const [isLoading, setIsLoading] = useState(false);
 	const [currentAgent, setCurrentAgent] = useState<any>(null);
+	const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
+	const [chatSessions, setChatSessions] = useState<any[]>([]);
+	const [loadingChats, setLoadingChats] = useState(false);
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const textAreaRef = useRef<HTMLTextAreaElement>(null);
 	const bioragClient = new BioRAGClient();
@@ -216,6 +282,27 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
 		adjustTextAreaHeight();
 	}, [inputValue]);
+
+	// Load chat sessions from /chats folder
+	useEffect(() => {
+		const loadChats = async () => {
+			if (!state.currentWorkspace) return;
+			setLoadingChats(true);
+			try {
+				const chatsDir = `${state.currentWorkspace}/chats`;
+				await window.electronAPI.createDirectory(chatsDir);
+				const files = await window.electronAPI.listDirectory(chatsDir);
+				const chatFiles = files.filter((f: any) => f.name.endsWith(".json"));
+				// Sort by filename (ISO date in name)
+				chatFiles.sort((a: any, b: any) => b.name.localeCompare(a.name));
+				setChatSessions(chatFiles);
+			} catch (e) {
+				setChatSessions([]);
+			}
+			setLoadingChats(false);
+		};
+		loadChats();
+	}, [state.currentWorkspace, chatHistoryOpen]);
 
 	const handleSendMessage = async () => {
 		if (!inputValue.trim() || isLoading || !state.currentWorkspace) return;
@@ -803,7 +890,7 @@ os.makedirs('results', exist_ok=True)
 os.makedirs('figures', exist_ok=True)
 
 # Execute the analysis step
-try:
+try {
 ${step.code
 	.split("\n")
 	.map((line: string) => "    " + line)
@@ -901,6 +988,35 @@ except Exception as e:
 		}
 	};
 
+	// Chat session persistence helpers
+	const saveChatSession = async (messages: any[], workspace: string) => {
+		if (!workspace) return;
+		const chatsDir = `${workspace}/chats`;
+		await window.electronAPI.createDirectory(chatsDir);
+		const sessionId = new Date().toISOString().replace(/[:.]/g, "-");
+		const filePath = `${chatsDir}/chat_${sessionId}.json`;
+		await window.electronAPI.writeFile(
+			filePath,
+			JSON.stringify(messages, null, 2)
+		);
+	};
+
+	const loadChatSession = async (filePath: string) => {
+		const content = await window.electronAPI.readFile(filePath);
+		return JSON.parse(content);
+	};
+
+	const handleLoadChat = async (filePath: string) => {
+		const messages = await loadChatSession(filePath);
+		dispatch({ type: "SET_CHAT_MESSAGES", payload: messages });
+		setChatHistoryOpen(false);
+	};
+
+	const handleNewChat = () => {
+		dispatch({ type: "SET_CHAT_MESSAGES", payload: [] });
+		setChatHistoryOpen(false);
+	};
+
 	if (collapsed) {
 		return <div style={{ display: "none" }} />;
 	}
@@ -913,9 +1029,18 @@ except Exception as e:
 						<FiMessageSquare size={16} />
 						BioRAG Chat
 					</ChatTitle>
-					<CollapseButton onClick={onToggle}>
-						<FiX size={16} />
-					</CollapseButton>
+					<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+						<NewChatButton onClick={handleNewChat}>New Chat</NewChatButton>
+						<CollapseButton
+							onClick={() => setChatHistoryOpen((v) => !v)}
+							title="Show past chats"
+						>
+							<span style={{ fontSize: 15, color: "#aaa" }}>Past Chats</span>
+						</CollapseButton>
+						<CollapseButton onClick={onToggle} title="Close chat">
+							<FiX size={16} />
+						</CollapseButton>
+					</div>
 				</ChatHeader>
 
 				<MessagesContainer>
@@ -975,6 +1100,41 @@ except Exception as e:
 				onConfirm={handleDatasetSelection}
 				isLoading={state.isAnalyzing}
 			/>
+
+			<ChatHistoryDrawer open={chatHistoryOpen}>
+				<ChatHistoryHeader>
+					Past Chats
+					<CollapseButton
+						onClick={() => setChatHistoryOpen(false)}
+						title="Close"
+					>
+						<FiX size={16} />
+					</CollapseButton>
+				</ChatHistoryHeader>
+				<ChatHistoryList>
+					{loadingChats ? (
+						<div style={{ color: "#888", padding: "16px 20px" }}>
+							Loading...
+						</div>
+					) : chatSessions.length === 0 ? (
+						<div style={{ color: "#888", padding: "16px 20px" }}>
+							No past chats
+						</div>
+					) : (
+						chatSessions.map((item) => (
+							<ChatHistoryItem
+								key={item.path}
+								onClick={() => handleLoadChat(item.path)}
+							>
+								{item.name
+									.replace("chat_", "")
+									.replace(".json", "")
+									.replace(/T/, " ")}
+							</ChatHistoryItem>
+						))
+					)}
+				</ChatHistoryList>
+			</ChatHistoryDrawer>
 		</>
 	);
 };

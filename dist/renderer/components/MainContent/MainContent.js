@@ -331,6 +331,6 @@ const MainContent = (props) => {
     return ((0, jsx_runtime_1.jsxs)(MainContainer, { ...props, children: [(() => {
                 const tabs = renderTabBar();
                 return tabs && tabs.length > 0 ? (0, jsx_runtime_1.jsx)(TabBar, { children: tabs }) : null;
-            })(), state.currentWorkspace && ((0, jsx_runtime_1.jsxs)(ControlBar, { children: [(0, jsx_runtime_1.jsxs)(StatusIndicator, { status: jupyterStatus, children: [jupyterStatus === "running" && "Jupyter Running", jupyterStatus === "starting" && "Starting Jupyter...", jupyterStatus === "stopped" && "Jupyter Stopped"] }), jupyterStatus === "running" && ((0, jsx_runtime_1.jsxs)(ControlButton, { onClick: stopJupyter, children: [(0, jsx_runtime_1.jsx)(fi_1.FiSquare, { size: 14 }), "Stop Jupyter"] }))] })), (0, jsx_runtime_1.jsx)(ContentArea, { children: renderContent() })] }));
+            })(), state.currentWorkspace && jupyterStatus === "running" && ((0, jsx_runtime_1.jsxs)(ControlBar, { children: [(0, jsx_runtime_1.jsx)(StatusIndicator, { status: jupyterStatus, children: "Jupyter Running" }), (0, jsx_runtime_1.jsxs)(ControlButton, { onClick: stopJupyter, children: [(0, jsx_runtime_1.jsx)(fi_1.FiSquare, { size: 14 }), "Stop Jupyter"] })] })), state.currentWorkspace && jupyterStatus === "starting" && ((0, jsx_runtime_1.jsx)(ControlBar, { children: (0, jsx_runtime_1.jsx)(StatusIndicator, { status: jupyterStatus, children: "Starting Jupyter..." }) })), (0, jsx_runtime_1.jsx)(ContentArea, { children: renderContent() })] }));
 };
 exports.MainContent = MainContent;

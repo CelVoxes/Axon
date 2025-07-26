@@ -203,6 +203,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
 	return (
 		<SidebarContainer collapsed={false} {...props}>
+			{/* Explorer Section */}
 			<SidebarHeader>Explorer</SidebarHeader>
 
 			{state.currentWorkspace && (

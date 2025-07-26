@@ -47,7 +47,8 @@ type AppAction =
 			payload: { id: string; updates: Partial<Message> };
 	  }
 	| { type: "SET_CURRENT_MESSAGE"; payload: string }
-	| { type: "SET_STREAMING"; payload: boolean };
+	| { type: "SET_STREAMING"; payload: boolean }
+	| { type: "SET_CHAT_MESSAGES"; payload: Message[] };
 
 const initialState: AppState = {
 	currentWorkspace: null,
@@ -128,6 +129,9 @@ function appReducer(state: AppState, action: AppAction): AppState {
 
 		case "SET_STREAMING":
 			return { ...state, isStreaming: action.payload };
+
+		case "SET_CHAT_MESSAGES":
+			return { ...state, messages: action.payload };
 
 		default:
 			return state;

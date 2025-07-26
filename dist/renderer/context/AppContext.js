@@ -67,6 +67,8 @@ function appReducer(state, action) {
             return { ...state, currentMessage: action.payload };
         case "SET_STREAMING":
             return { ...state, isStreaming: action.payload };
+        case "SET_CHAT_MESSAGES":
+            return { ...state, messages: action.payload };
         default:
             return state;
     }

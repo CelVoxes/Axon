@@ -201,11 +201,72 @@ const StopButton = styled_components_1.default.button `
 		transform: translateY(0);
 	}
 `;
+// --- Chat History Drawer ---
+const ChatHistoryDrawer = styled_components_1.default.div `
+	position: absolute;
+	top: 0;
+	right: 0;
+	width: 320px;
+	height: 100%;
+	background: #18181a;
+	border-left: 1px solid #232326;
+	box-shadow: -2px 0 8px rgba(0, 0, 0, 0.12);
+	z-index: 20;
+	display: flex;
+	flex-direction: column;
+	transform: translateX(${(props) => (props.open ? "0" : "100%")});
+	transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+`;
+const ChatHistoryHeader = styled_components_1.default.div `
+	padding: 16px 20px 8px 20px;
+	font-size: 15px;
+	font-weight: 600;
+	color: #fff;
+	border-bottom: 1px solid #232326;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+`;
+const ChatHistoryList = styled_components_1.default.div `
+	flex: 1;
+	overflow-y: auto;
+	padding: 8px 0 0 0;
+`;
+const ChatHistoryItem = styled_components_1.default.div `
+	padding: 12px 20px;
+	color: #ccc;
+	font-size: 14px;
+	cursor: pointer;
+	border-bottom: 1px solid #222;
+	transition: background 0.15s;
+	&:hover {
+		background: #232326;
+		color: #fff;
+	}
+`;
+const NewChatButton = styled_components_1.default.button `
+	margin-right: 12px;
+	background: #232326;
+	color: #fff;
+	border: none;
+	border-radius: 6px;
+	padding: 7px 16px;
+	font-size: 13px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: background 0.15s;
+	&:hover {
+		background: #333;
+	}
+`;
 const ChatPanel = ({ collapsed, onToggle, }) => {
     const { state, dispatch } = (0, AppContext_1.useAppContext)();
     const [inputValue, setInputValue] = (0, react_1.useState)("");
     const [isLoading, setIsLoading] = (0, react_1.useState)(false);
     const [currentAgent, setCurrentAgent] = (0, react_1.useState)(null);
+    const [chatHistoryOpen, setChatHistoryOpen] = (0, react_1.useState)(false);
+    const [chatSessions, setChatSessions] = (0, react_1.useState)([]);
+    const [loadingChats, setLoadingChats] = (0, react_1.useState)(false);
     const messagesEndRef = (0, react_1.useRef)(null);
     const textAreaRef = (0, react_1.useRef)(null);
     const bioragClient = new BioRAGClient_1.BioRAGClient();
@@ -229,6 +290,28 @@ const ChatPanel = ({ collapsed, onToggle, }) => {
         };
         adjustTextAreaHeight();
     }, [inputValue]);
+    // Load chat sessions from /chats folder
+    (0, react_1.useEffect)(() => {
+        const loadChats = async () => {
+            if (!state.currentWorkspace)
+                return;
+            setLoadingChats(true);
+            try {
+                const chatsDir = `${state.currentWorkspace}/chats`;
+                await window.electronAPI.createDirectory(chatsDir);
+                const files = await window.electronAPI.listDirectory(chatsDir);
+                const chatFiles = files.filter((f) => f.name.endsWith(".json"));
+                // Sort by filename (ISO date in name)
+                chatFiles.sort((a, b) => b.name.localeCompare(a.name));
+                setChatSessions(chatFiles);
+            }
+            catch (e) {
+                setChatSessions([]);
+            }
+            setLoadingChats(false);
+        };
+        loadChats();
+    }, [state.currentWorkspace, chatHistoryOpen]);
     const handleSendMessage = async () => {
         if (!inputValue.trim() || isLoading || !state.currentWorkspace)
             return;
@@ -699,7 +782,7 @@ os.makedirs('results', exist_ok=True)
 os.makedirs('figures', exist_ok=True)
 
 # Execute the analysis step
-try:
+try {
 ${step.code
                     .split("\n")
                     .map((line) => "    " + line)
@@ -786,10 +869,33 @@ except Exception as e:
             handleSendMessage();
         }
     };
+    // Chat session persistence helpers
+    const saveChatSession = async (messages, workspace) => {
+        if (!workspace)
+            return;
+        const chatsDir = `${workspace}/chats`;
+        await window.electronAPI.createDirectory(chatsDir);
+        const sessionId = new Date().toISOString().replace(/[:.]/g, "-");
+        const filePath = `${chatsDir}/chat_${sessionId}.json`;
+        await window.electronAPI.writeFile(filePath, JSON.stringify(messages, null, 2));
+    };
+    const loadChatSession = async (filePath) => {
+        const content = await window.electronAPI.readFile(filePath);
+        return JSON.parse(content);
+    };
+    const handleLoadChat = async (filePath) => {
+        const messages = await loadChatSession(filePath);
+        dispatch({ type: "SET_CHAT_MESSAGES", payload: messages });
+        setChatHistoryOpen(false);
+    };
+    const handleNewChat = () => {
+        dispatch({ type: "SET_CHAT_MESSAGES", payload: [] });
+        setChatHistoryOpen(false);
+    };
     if (collapsed) {
         return (0, jsx_runtime_1.jsx)("div", { style: { display: "none" } });
     }
-    return ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsxs)(ChatContainer, { collapsed: collapsed, children: [(0, jsx_runtime_1.jsxs)(ChatHeader, { children: [(0, jsx_runtime_1.jsxs)(ChatTitle, { children: [(0, jsx_runtime_1.jsx)(fi_1.FiMessageSquare, { size: 16 }), "BioRAG Chat"] }), (0, jsx_runtime_1.jsx)(CollapseButton, { onClick: onToggle, children: (0, jsx_runtime_1.jsx)(fi_1.FiX, { size: 16 }) })] }), (0, jsx_runtime_1.jsxs)(MessagesContainer, { children: [state.messages.map((message) => ((0, jsx_runtime_1.jsx)(ChatMessage_1.ChatMessage, { message: {
+    return ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsxs)(ChatContainer, { collapsed: collapsed, children: [(0, jsx_runtime_1.jsxs)(ChatHeader, { children: [(0, jsx_runtime_1.jsxs)(ChatTitle, { children: [(0, jsx_runtime_1.jsx)(fi_1.FiMessageSquare, { size: 16 }), "BioRAG Chat"] }), (0, jsx_runtime_1.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [(0, jsx_runtime_1.jsx)(NewChatButton, { onClick: handleNewChat, children: "New Chat" }), (0, jsx_runtime_1.jsx)(CollapseButton, { onClick: () => setChatHistoryOpen((v) => !v), title: "Show past chats", children: (0, jsx_runtime_1.jsx)("span", { style: { fontSize: 15, color: "#aaa" }, children: "Past Chats" }) }), (0, jsx_runtime_1.jsx)(CollapseButton, { onClick: onToggle, title: "Close chat", children: (0, jsx_runtime_1.jsx)(fi_1.FiX, { size: 16 }) })] })] }), (0, jsx_runtime_1.jsxs)(MessagesContainer, { children: [state.messages.map((message) => ((0, jsx_runtime_1.jsx)(ChatMessage_1.ChatMessage, { message: {
                                     id: message.id,
                                     content: message.content,
                                     isUser: message.isUser,
@@ -798,6 +904,9 @@ except Exception as e:
                                 } }, message.id))), (0, jsx_runtime_1.jsx)("div", { ref: messagesEndRef })] }), (0, jsx_runtime_1.jsx)(InputContainer, { children: (0, jsx_runtime_1.jsxs)(InputWrapper, { children: [(0, jsx_runtime_1.jsx)(TextAreaWrapper, { children: (0, jsx_runtime_1.jsx)(TextArea, { ref: textAreaRef, value: inputValue, onChange: (e) => setInputValue(e.target.value), onKeyPress: handleKeyPress, placeholder: "Ask about biological data, request analysis, or search for information...", disabled: isLoading }) }), state.isAnalyzing ? ((0, jsx_runtime_1.jsx)(StopButton, { onClick: handleStopAnalysis, children: (0, jsx_runtime_1.jsx)(fi_1.FiStopCircle, { size: 16 }) })) : ((0, jsx_runtime_1.jsx)(SendButton, { disabled: !inputValue.trim() || isLoading || !state.currentWorkspace, onClick: handleSendMessage, children: (0, jsx_runtime_1.jsx)(fi_1.FiSend, { size: 16 }) }))] }) })] }), (0, jsx_runtime_1.jsx)(DatasetSelectionModal_1.DatasetSelectionModal, { isOpen: showDatasetModal, datasets: availableDatasets, onClose: () => {
                     setShowDatasetModal(false);
                     dispatch({ type: "SET_ANALYZING", payload: false });
-                }, onConfirm: handleDatasetSelection, isLoading: state.isAnalyzing })] }));
+                }, onConfirm: handleDatasetSelection, isLoading: state.isAnalyzing }), (0, jsx_runtime_1.jsxs)(ChatHistoryDrawer, { open: chatHistoryOpen, children: [(0, jsx_runtime_1.jsxs)(ChatHistoryHeader, { children: ["Past Chats", (0, jsx_runtime_1.jsx)(CollapseButton, { onClick: () => setChatHistoryOpen(false), title: "Close", children: (0, jsx_runtime_1.jsx)(fi_1.FiX, { size: 16 }) })] }), (0, jsx_runtime_1.jsx)(ChatHistoryList, { children: loadingChats ? ((0, jsx_runtime_1.jsx)("div", { style: { color: "#888", padding: "16px 20px" }, children: "Loading..." })) : chatSessions.length === 0 ? ((0, jsx_runtime_1.jsx)("div", { style: { color: "#888", padding: "16px 20px" }, children: "No past chats" })) : (chatSessions.map((item) => ((0, jsx_runtime_1.jsx)(ChatHistoryItem, { onClick: () => handleLoadChat(item.path), children: item.name
+                                .replace("chat_", "")
+                                .replace(".json", "")
+                                .replace(/T/, " ") }, item.path)))) })] })] }));
 };
 exports.ChatPanel = ChatPanel;

@@ -423,20 +423,23 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 				return tabs && tabs.length > 0 ? <TabBar>{tabs}</TabBar> : null;
 			})()}
 
-			{state.currentWorkspace && (
+			{state.currentWorkspace && jupyterStatus === "running" && (
 				<ControlBar>
 					<StatusIndicator status={jupyterStatus}>
-						{jupyterStatus === "running" && "Jupyter Running"}
-						{jupyterStatus === "starting" && "Starting Jupyter..."}
-						{jupyterStatus === "stopped" && "Jupyter Stopped"}
+						Jupyter Running
 					</StatusIndicator>
+					<ControlButton onClick={stopJupyter}>
+						<FiSquare size={14} />
+						Stop Jupyter
+					</ControlButton>
+				</ControlBar>
+			)}
 
-					{jupyterStatus === "running" && (
-						<ControlButton onClick={stopJupyter}>
-							<FiSquare size={14} />
-							Stop Jupyter
-						</ControlButton>
-					)}
+			{state.currentWorkspace && jupyterStatus === "starting" && (
+				<ControlBar>
+					<StatusIndicator status={jupyterStatus}>
+						Starting Jupyter...
+					</StatusIndicator>
 				</ControlBar>
 			)}
 
