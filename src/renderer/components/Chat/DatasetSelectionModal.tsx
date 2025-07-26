@@ -294,9 +294,9 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 							No datasets found for your query. Try refining your search terms.
 						</div>
 					) : (
-						datasets.map((dataset) => (
+						datasets.map((dataset, index) => (
 							<DatasetCard
-								key={dataset.id}
+								key={`${dataset.id}-${index}`}
 								selected={selectedDatasets.has(dataset.id)}
 								onClick={() => toggleDataset(dataset.id)}
 							>

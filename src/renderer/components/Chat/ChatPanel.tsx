@@ -842,6 +842,41 @@ ${analysisResult.datasets
 
 	const executeAnalysisSteps = async (analysisResult: any) => {
 		try {
+			// Save analysis result to workspace for notebook to load
+			const analysisFile = `${analysisResult.workingDirectory}/analysis_result.json`;
+			await window.electronAPI.writeFile(
+				analysisFile,
+				JSON.stringify(analysisResult, null, 2)
+			);
+			console.log("Saved analysis result to:", analysisFile);
+
+			// Open the notebook tab to show the analysis cells
+			dispatch({ type: "SET_SHOW_NOTEBOOK", payload: true });
+
+			dispatch({
+				type: "ADD_MESSAGE",
+				payload: {
+					content: `📊 **Analysis Generated Successfully!**
+
+I've created ${analysisResult.steps.length} analysis steps and opened them in the **Interactive Notebook** tab.
+
+**What's next:**
+1. Switch to the "Interactive Notebook" tab to see your analysis cells
+2. Each cell contains a step of your analysis
+3. Run the cells individually or use "Run All Steps" to execute everything
+4. View results and modify code as needed
+
+**Analysis Overview:**
+- **Research Question:** ${analysisResult.understanding.userQuestion}
+- **Datasets Found:** ${analysisResult.datasets.length}
+- **Analysis Steps:** ${analysisResult.steps.length}
+
+The notebook will automatically load and execute your analysis steps!`,
+					isUser: false,
+					status: "completed",
+				},
+			});
+
 			// Start Jupyter in working directory
 			const jupyterResult = await window.electronAPI.startJupyter(
 				analysisResult.workingDirectory

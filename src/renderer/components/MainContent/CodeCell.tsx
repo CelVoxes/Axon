@@ -124,7 +124,7 @@ const SuccessOutput = styled(OutputContent)`
 
 interface CodeCellProps {
 	initialCode?: string;
-	language?: "python" | "r";
+	language?: "python" | "r" | "markdown";
 	workspacePath?: string;
 	onExecute?: (code: string, output: string) => void;
 }
@@ -143,7 +143,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
 	const executeCode = async () => {
-		if (!code.trim()) return;
+		if (!code.trim() || language === "markdown") return;
 
 		setIsExecuting(true);
 		setOutput("");
@@ -201,45 +201,71 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		<CellContainer>
 			<CellHeader>
 				<CellType>{language.toUpperCase()}</CellType>
-				<CellActions>
-					<ActionButton onClick={copyCode} variant="secondary">
-						{copied ? <FiCheck size={12} /> : <FiCopy size={12} />}
-						{copied ? "Copied" : "Copy"}
-					</ActionButton>
-					<ActionButton
-						onClick={executeCode}
-						variant="primary"
-						disabled={isExecuting || !code.trim()}
-					>
-						<FiPlay size={12} />
-						{isExecuting ? "Running..." : "Run"}
-					</ActionButton>
-				</CellActions>
+				{language !== "markdown" && (
+					<CellActions>
+						<ActionButton onClick={copyCode} variant="secondary">
+							{copied ? <FiCheck size={12} /> : <FiCopy size={12} />}
+							{copied ? "Copied" : "Copy"}
+						</ActionButton>
+						<ActionButton
+							onClick={executeCode}
+							variant="primary"
+							disabled={isExecuting || !code.trim()}
+						>
+							<FiPlay size={12} />
+							{isExecuting ? "Running..." : "Run"}
+						</ActionButton>
+					</CellActions>
+				)}
 			</CellHeader>
 
-			<CodeInput
-				ref={textareaRef}
-				value={code}
-				onChange={(e) => setCode(e.target.value)}
-				placeholder={`Enter your ${language} code here...`}
-				spellCheck={false}
-			/>
+			{language === "markdown" ? (
+				<div
+					style={{
+						padding: "16px",
+						color: "#ffffff",
+						fontSize: "14px",
+						lineHeight: "1.6",
+						whiteSpace: "pre-wrap",
+					}}
+				>
+					{code}
+				</div>
+			) : (
+				<>
+					<CodeInput
+						ref={textareaRef}
+						value={code}
+						onChange={(e) => setCode(e.target.value)}
+						placeholder={`Enter your ${language} code here...`}
+					/>
 
-			{output && (
-				<OutputContainer>
-					<OutputHeader>
-						<OutputTitle>{hasError ? "Error Output" : "Output"}</OutputTitle>
-						<ActionButton onClick={clearOutput} variant="danger">
-							<FiX size={12} />
-							Clear
-						</ActionButton>
-					</OutputHeader>
-					{hasError ? (
-						<ErrorOutput>{output}</ErrorOutput>
-					) : (
-						<SuccessOutput>{output}</SuccessOutput>
+					{output && (
+						<OutputContainer>
+							<OutputHeader>
+								<span style={{ color: hasError ? "#ff6b6b" : "#4ecdc4" }}>
+									{hasError ? "Error" : "Output"}
+								</span>
+								<ActionButton onClick={clearOutput} variant="secondary">
+									<FiX size={12} />
+									Clear
+								</ActionButton>
+							</OutputHeader>
+							<pre
+								style={{
+									margin: 0,
+									whiteSpace: "pre-wrap",
+									wordBreak: "break-word",
+									color: hasError ? "#ff6b6b" : "#ffffff",
+									fontSize: "13px",
+									lineHeight: "1.4",
+								}}
+							>
+								{output}
+							</pre>
+						</OutputContainer>
 					)}
-				</OutputContainer>
+				</>
 			)}
 		</CellContainer>
 	);
