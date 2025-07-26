@@ -14,6 +14,7 @@ const initialState = {
     messages: [],
     currentMessage: "",
     isStreaming: false,
+    showNotebook: false,
 };
 function appReducer(state, action) {
     switch (action.type) {
@@ -69,6 +70,8 @@ function appReducer(state, action) {
             return { ...state, isStreaming: action.payload };
         case "SET_CHAT_MESSAGES":
             return { ...state, messages: action.payload };
+        case "SET_SHOW_NOTEBOOK":
+            return { ...state, showNotebook: action.payload };
         default:
             return state;
     }

@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import styled from "styled-components";
-import { FiPlay, FiSquare, FiRefreshCw, FiFolder } from "react-icons/fi";
+import { FiFolder } from "react-icons/fi";
 import { useAppContext } from "../../context/AppContext";
 import { FileEditor } from "./FileEditor";
-import { JupyterViewer } from "./JupyterViewer";
+import { Notebook } from "./Notebook";
 
 const MainContainer = styled.div`
 	flex: 1;
@@ -46,11 +46,6 @@ const Tab = styled.div<{ isActive: boolean }>`
 	}
 `;
 
-const JupyterTab = styled(Tab)`
-	background-color: ${(props) => (props.isActive ? "#1e1e1e" : "#3e4751")};
-	border-left: 3px solid #f37626;
-`;
-
 const ControlBar = styled.div`
 	height: 40px;
 	background-color: #252526;
@@ -61,27 +56,21 @@ const ControlBar = styled.div`
 	gap: 8px;
 `;
 
-const ControlButton = styled.button`
-	background: #3c3c3c;
-	border: 1px solid #6c6c6c;
-	color: #d4d4d4;
-	padding: 6px 12px;
-	border-radius: 2px;
-	cursor: pointer;
+const StatusIndicator = styled.div<{
+	status: "running" | "stopped" | "starting";
+}>`
 	font-size: 12px;
-	display: flex;
-	align-items: center;
-	gap: 6px;
+	color: #858585;
 
-	&:hover:not(:disabled) {
-		background: #464647;
-	}
-
-	&:disabled {
-		background: #3c3c3c;
-		color: #858585;
-		cursor: not-allowed;
-	}
+	${(props) => {
+		if (props.status === "running") {
+			return `color: #00ff00;`;
+		} else if (props.status === "starting") {
+			return `color: #ffff00;`;
+		} else {
+			return `color: #ff0000;`;
+		}
+	}}
 `;
 
 const ContentArea = styled.div`
@@ -214,30 +203,58 @@ const RecentProjects = styled.div`
 	}
 `;
 
-const StatusIndicator = styled.div<{
-	status: "running" | "stopped" | "starting";
-}>`
-	font-size: 12px;
-	color: #858585;
-
-	${(props) => {
-		if (props.status === "running") {
-			return `color: #00ff00;`;
-		} else if (props.status === "starting") {
-			return `color: #ffff00;`;
-		} else {
-			return `color: #ff0000;`;
-		}
-	}}
-`;
-
 export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 	props
 ) => {
 	const { state, dispatch } = useAppContext();
-	const [jupyterStatus, setJupyterStatus] = useState<
-		"running" | "stopped" | "starting"
-	>("stopped");
+	const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>([]);
+	const recentWorkspacesRef = useRef<string[]>([]);
+
+	// Keep ref in sync with state
+	useEffect(() => {
+		recentWorkspacesRef.current = recentWorkspaces;
+	}, [recentWorkspaces]);
+
+	// Load recent workspaces from storage
+	useEffect(() => {
+		const loadRecentWorkspaces = async () => {
+			try {
+				const recent = await window.electronAPI.storeGet("recentWorkspaces");
+				if (recent && Array.isArray(recent)) {
+					// Filter out null/undefined values and ensure all are strings
+					const validWorkspaces = recent.filter(
+						(w): w is string => typeof w === "string" && w.length > 0
+					);
+					setRecentWorkspaces(validWorkspaces);
+				}
+			} catch (error) {
+				console.error("Error loading recent workspaces:", error);
+			}
+		};
+		loadRecentWorkspaces();
+	}, []);
+
+	// Update recent workspaces when a new workspace is opened
+	useEffect(() => {
+		if (state.currentWorkspace && typeof state.currentWorkspace === "string") {
+			const updateRecentWorkspaces = async () => {
+				try {
+					const current = recentWorkspacesRef.current.filter(
+						(w) => w !== state.currentWorkspace
+					);
+					const updated: string[] = [state.currentWorkspace!, ...current].slice(
+						0,
+						5
+					); // Keep last 5
+					setRecentWorkspaces(updated);
+					await window.electronAPI.storeSet("recentWorkspaces", updated);
+				} catch (error) {
+					console.error("Error updating recent workspaces:", error);
+				}
+			};
+			updateRecentWorkspaces();
+		}
+	}, [state.currentWorkspace]); // Removed recentWorkspaces from dependencies
 
 	const openWorkspace = async () => {
 		try {
@@ -255,51 +272,41 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 		}
 	};
 
-	useEffect(() => {
-		// Listen for Jupyter events
-		window.electronAPI.onJupyterReady((data) => {
-			setJupyterStatus("running");
-			dispatch({ type: "SET_JUPYTER_URL", payload: data.url });
-		});
-
-		window.electronAPI.onJupyterError((error) => {
-			console.error("Jupyter error:", error);
-			setJupyterStatus("stopped");
-		});
-
-		return () => {
-			window.electronAPI.removeAllListeners("jupyter-ready");
-			window.electronAPI.removeAllListeners("jupyter-error");
-		};
-	}, []);
-
-	const startJupyter = async () => {
-		if (jupyterStatus !== "stopped") return;
-
-		setJupyterStatus("starting");
-
+	const openRecentWorkspace = async (workspacePath: string) => {
 		try {
-			const workingDir = state.currentWorkspace || process.cwd();
-			const result = await window.electronAPI.startJupyter(workingDir);
-
-			if (!result.success) {
-				setJupyterStatus("stopped");
-				console.error("Failed to start Jupyter:", result.error);
+			// Check if the workspace still exists
+			const exists = await window.electronAPI
+				.listDirectory(workspacePath)
+				.catch(() => false);
+			if (exists) {
+				dispatch({ type: "SET_WORKSPACE", payload: workspacePath });
+			} else {
+				// Remove from recent if it doesn't exist
+				const updated = recentWorkspacesRef.current.filter(
+					(w) => w !== workspacePath
+				);
+				setRecentWorkspaces(updated);
+				await window.electronAPI.storeSet("recentWorkspaces", updated);
+				console.warn(`Workspace ${workspacePath} no longer exists`);
 			}
 		} catch (error) {
-			setJupyterStatus("stopped");
-			console.error("Error starting Jupyter:", error);
+			console.error("Error opening recent workspace:", error);
 		}
 	};
 
-	const stopJupyter = async () => {
-		try {
-			await window.electronAPI.stopJupyter();
-			setJupyterStatus("stopped");
-			dispatch({ type: "SET_JUPYTER_URL", payload: null });
-		} catch (error) {
-			console.error("Error stopping Jupyter:", error);
+	const getWorkspaceDisplayName = (path: string) => {
+		const parts = path.split("/");
+		return parts[parts.length - 1] || path;
+	};
+
+	const getWorkspaceDisplayPath = (path: string) => {
+		// Simple approach: just show the last two parts of the path
+		const parts = path.split("/").filter((part) => part.length > 0);
+		if (parts.length <= 2) {
+			return path;
 		}
+		// Show last two directories
+		return `.../${parts.slice(-2).join("/")}`;
 	};
 
 	const handleTabClose = (e: React.MouseEvent, filePath: string) => {
@@ -308,7 +315,7 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 	};
 
 	const renderTabBar = () => {
-		if (state.openFiles.length === 0 && !state.jupyterUrl) return null;
+		if (state.openFiles.length === 0 && !state.currentWorkspace) return null;
 
 		const tabs = [];
 
@@ -333,16 +340,19 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 			);
 		});
 
-		// Jupyter tab
-		if (state.jupyterUrl) {
+		// Notebook tab (only show when workspace is open)
+		if (state.currentWorkspace) {
 			tabs.push(
-				<JupyterTab
-					key="jupyter"
-					isActive={!state.activeFile}
-					onClick={() => dispatch({ type: "SET_ACTIVE_FILE", payload: null })}
+				<Tab
+					key="notebook"
+					isActive={state.showNotebook}
+					onClick={() => {
+						dispatch({ type: "SET_ACTIVE_FILE", payload: null });
+						dispatch({ type: "SET_SHOW_NOTEBOOK", payload: true });
+					}}
 				>
-					Jupyter Lab
-				</JupyterTab>
+					Interactive Notebook
+				</Tab>
 			);
 		}
 
@@ -350,14 +360,14 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 	};
 
 	const renderContent = () => {
+		// Show notebook if it's active
+		if (state.showNotebook) {
+			return <Notebook workspacePath={state.currentWorkspace || undefined} />;
+		}
+
 		// Show file editor if a file is selected and open
 		if (state.activeFile && state.openFiles.includes(state.activeFile)) {
 			return <FileEditor filePath={state.activeFile} />;
-		}
-
-		// Show Jupyter if URL is available and no file is selected
-		if (state.jupyterUrl && !state.activeFile) {
-			return <JupyterViewer url={state.jupyterUrl} />;
 		}
 
 		// Show welcome screen when no workspace is open or no files are active
@@ -394,19 +404,30 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 
 				<RecentProjects>
 					<div className="section-title">Recent projects</div>
-					<div
-						className="project-item"
-						onClick={() => {
-							dispatch({
-								type: "SET_WORKSPACE",
-								payload: "/Users/onur-lumc/Desktop/BioRAG",
-							});
-							// The useEffect in Sidebar will handle file tree loading
-						}}
-					>
-						<div className="project-name">BioRAG</div>
-						<div className="project-path">~/Desktop</div>
-					</div>
+					{recentWorkspaces.length > 0 ? (
+						recentWorkspaces.map((workspacePath, index) => (
+							<div
+								key={workspacePath}
+								className="project-item"
+								onClick={() => openRecentWorkspace(workspacePath)}
+							>
+								<div className="project-name">
+									{getWorkspaceDisplayName(workspacePath)}
+								</div>
+								<div className="project-path">
+									{getWorkspaceDisplayPath(workspacePath)}
+								</div>
+							</div>
+						))
+					) : (
+						<div
+							className="project-item"
+							style={{ opacity: 0.6, cursor: "default" }}
+						>
+							<div className="project-name">No recent projects</div>
+							<div className="project-path">Open a project to see it here</div>
+						</div>
+					)}
 				</RecentProjects>
 			</EmptyState>
 		);
@@ -419,23 +440,9 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 				return tabs && tabs.length > 0 ? <TabBar>{tabs}</TabBar> : null;
 			})()}
 
-			{state.currentWorkspace && jupyterStatus === "running" && (
+			{state.currentWorkspace && (
 				<ControlBar>
-					<StatusIndicator status={jupyterStatus}>
-						Jupyter Running
-					</StatusIndicator>
-					<ControlButton onClick={stopJupyter}>
-						<FiSquare size={14} />
-						Stop Jupyter
-					</ControlButton>
-				</ControlBar>
-			)}
-
-			{state.currentWorkspace && jupyterStatus === "starting" && (
-				<ControlBar>
-					<StatusIndicator status={jupyterStatus}>
-						Starting Jupyter...
-					</StatusIndicator>
+					<StatusIndicator status="running">Workspace Open</StatusIndicator>
 				</ControlBar>
 			)}
 

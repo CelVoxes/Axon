@@ -124,7 +124,7 @@ class BioRAGCursorApp {
                 responseHeaders: {
                     ...details.responseHeaders,
                     "Content-Security-Policy": [
-                        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' http://localhost:* https://localhost:*; frame-src 'self' http://127.0.0.1:* https://127.0.0.1:*; frame-ancestors 'self';",
+                        "default-src 'self' http://127.0.0.1:* http://localhost:*; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline' http://127.0.0.1:* http://localhost:*; img-src 'self' data: https: http://127.0.0.1:* http://localhost:*; connect-src 'self' http://127.0.0.1:* http://localhost:* https://localhost:*; frame-src 'self' http://127.0.0.1:* http://localhost:*; worker-src 'self' blob:;",
                     ],
                 },
             });

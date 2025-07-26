@@ -8,7 +8,7 @@ export interface ElectronAPI {
 
 	startJupyter: (
 		workingDir: string
-	) => Promise<{ success: boolean; error?: string }>;
+	) => Promise<{ success: boolean; url?: string; error?: string }>;
 	stopJupyter: () => Promise<{ success: boolean }>;
 	checkJupyterStatus: () => Promise<boolean>;
 	executeJupyterCode: (

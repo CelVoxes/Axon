@@ -1,0 +1,246 @@
+import React, { useState, useRef, useEffect } from "react";
+import styled from "styled-components";
+import { FiPlay, FiCopy, FiCheck, FiX } from "react-icons/fi";
+
+const CellContainer = styled.div`
+	margin: 16px 0;
+	border: 1px solid #404040;
+	border-radius: 8px;
+	overflow: hidden;
+	background: #1e1e1e;
+`;
+
+const CellHeader = styled.div`
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 8px 12px;
+	background: #2d2d30;
+	border-bottom: 1px solid #404040;
+`;
+
+const CellType = styled.div`
+	font-size: 12px;
+	color: #858585;
+	font-weight: 500;
+`;
+
+const CellActions = styled.div`
+	display: flex;
+	gap: 8px;
+	align-items: center;
+`;
+
+const ActionButton = styled.button<{
+	variant?: "primary" | "secondary" | "success" | "danger";
+}>`
+	background: ${(props) => {
+		switch (props.variant) {
+			case "primary":
+				return "#007acc";
+			case "success":
+				return "#28a745";
+			case "danger":
+				return "#dc3545";
+			default:
+				return "#404040";
+		}
+	}};
+	border: none;
+	border-radius: 4px;
+	color: #ffffff;
+	padding: 4px 8px;
+	font-size: 12px;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	transition: all 0.2s ease;
+
+	&:hover {
+		opacity: 0.8;
+	}
+
+	&:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+`;
+
+const CodeInput = styled.textarea`
+	width: 100%;
+	min-height: 120px;
+	background: #1e1e1e;
+	border: none;
+	color: #d4d4d4;
+	font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+	font-size: 14px;
+	line-height: 1.4;
+	padding: 16px;
+	resize: vertical;
+	outline: none;
+
+	&::placeholder {
+		color: #858585;
+	}
+`;
+
+const OutputContainer = styled.div`
+	padding: 16px;
+	background: #18181a;
+	border-top: 1px solid #404040;
+`;
+
+const OutputHeader = styled.div`
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 8px;
+`;
+
+const OutputTitle = styled.div`
+	font-size: 12px;
+	color: #858585;
+	font-weight: 500;
+`;
+
+const OutputContent = styled.pre`
+	margin: 0;
+	font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+	font-size: 13px;
+	line-height: 1.4;
+	color: #d4d4d4;
+	white-space: pre-wrap;
+	word-break: break-word;
+`;
+
+const ErrorOutput = styled(OutputContent)`
+	color: #ff6b6b;
+`;
+
+const SuccessOutput = styled(OutputContent)`
+	color: #51cf66;
+`;
+
+interface CodeCellProps {
+	initialCode?: string;
+	language?: "python" | "r";
+	workspacePath?: string;
+	onExecute?: (code: string, output: string) => void;
+}
+
+export const CodeCell: React.FC<CodeCellProps> = ({
+	initialCode = "",
+	language = "python",
+	workspacePath,
+	onExecute,
+}) => {
+	const [code, setCode] = useState(initialCode);
+	const [output, setOutput] = useState<string>("");
+	const [isExecuting, setIsExecuting] = useState(false);
+	const [hasError, setHasError] = useState(false);
+	const [copied, setCopied] = useState(false);
+	const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+	const executeCode = async () => {
+		if (!code.trim()) return;
+
+		setIsExecuting(true);
+		setOutput("");
+		setHasError(false);
+
+		try {
+			console.log("Executing code in CodeCell:", code);
+			const result = await window.electronAPI.executeJupyterCode(code);
+
+			if (result.success) {
+				setOutput(result.output || "Code executed successfully");
+				setHasError(false);
+				onExecute?.(code, result.output || "");
+			} else {
+				setOutput(result.error || "Execution failed");
+				setHasError(true);
+				onExecute?.(code, result.error || "");
+			}
+		} catch (error) {
+			console.error("Error executing code:", error);
+			const errorMessage =
+				error instanceof Error ? error.message : String(error);
+			setOutput(`Error: ${errorMessage}`);
+			setHasError(true);
+			onExecute?.(code, errorMessage);
+		} finally {
+			setIsExecuting(false);
+		}
+	};
+
+	const copyCode = async () => {
+		try {
+			await navigator.clipboard.writeText(code);
+			setCopied(true);
+			setTimeout(() => setCopied(false), 2000);
+		} catch (error) {
+			console.error("Failed to copy code:", error);
+		}
+	};
+
+	const clearOutput = () => {
+		setOutput("");
+		setHasError(false);
+	};
+
+	// Auto-resize textarea
+	useEffect(() => {
+		if (textareaRef.current) {
+			textareaRef.current.style.height = "auto";
+			textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+		}
+	}, [code]);
+
+	return (
+		<CellContainer>
+			<CellHeader>
+				<CellType>{language.toUpperCase()}</CellType>
+				<CellActions>
+					<ActionButton onClick={copyCode} variant="secondary">
+						{copied ? <FiCheck size={12} /> : <FiCopy size={12} />}
+						{copied ? "Copied" : "Copy"}
+					</ActionButton>
+					<ActionButton
+						onClick={executeCode}
+						variant="primary"
+						disabled={isExecuting || !code.trim()}
+					>
+						<FiPlay size={12} />
+						{isExecuting ? "Running..." : "Run"}
+					</ActionButton>
+				</CellActions>
+			</CellHeader>
+
+			<CodeInput
+				ref={textareaRef}
+				value={code}
+				onChange={(e) => setCode(e.target.value)}
+				placeholder={`Enter your ${language} code here...`}
+				spellCheck={false}
+			/>
+
+			{output && (
+				<OutputContainer>
+					<OutputHeader>
+						<OutputTitle>{hasError ? "Error Output" : "Output"}</OutputTitle>
+						<ActionButton onClick={clearOutput} variant="danger">
+							<FiX size={12} />
+							Clear
+						</ActionButton>
+					</OutputHeader>
+					{hasError ? (
+						<ErrorOutput>{output}</ErrorOutput>
+					) : (
+						<SuccessOutput>{output}</SuccessOutput>
+					)}
+				</OutputContainer>
+			)}
+		</CellContainer>
+	);
+};

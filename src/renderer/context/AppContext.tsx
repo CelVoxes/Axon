@@ -30,6 +30,7 @@ interface AppState {
 	messages: Message[];
 	currentMessage: string;
 	isStreaming: boolean;
+	showNotebook: boolean;
 }
 
 type AppAction =
@@ -48,7 +49,8 @@ type AppAction =
 	  }
 	| { type: "SET_CURRENT_MESSAGE"; payload: string }
 	| { type: "SET_STREAMING"; payload: boolean }
-	| { type: "SET_CHAT_MESSAGES"; payload: Message[] };
+	| { type: "SET_CHAT_MESSAGES"; payload: Message[] }
+	| { type: "SET_SHOW_NOTEBOOK"; payload: boolean };
 
 const initialState: AppState = {
 	currentWorkspace: null,
@@ -61,6 +63,7 @@ const initialState: AppState = {
 	messages: [],
 	currentMessage: "",
 	isStreaming: false,
+	showNotebook: false,
 };
 
 function appReducer(state: AppState, action: AppAction): AppState {
@@ -132,6 +135,9 @@ function appReducer(state: AppState, action: AppAction): AppState {
 
 		case "SET_CHAT_MESSAGES":
 			return { ...state, messages: action.payload };
+
+		case "SET_SHOW_NOTEBOOK":
+			return { ...state, showNotebook: action.payload };
 
 		default:
 			return state;
