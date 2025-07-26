@@ -132,10 +132,20 @@ Node provides an **intelligent Electron desktop application** that acts as "Curs
 Create a `.env` file with:
 
 ```
+# Required
 OPENAI_API_KEY=your_openai_api_key
+
+# API Endpoints
 GEO_API_BASE=https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi
 PUBMED_API_BASE=https://eutils.ncbi.nlm.nih.gov/entrez/eutils/
 CHROMA_PERSIST_DIRECTORY=./chroma_db
+
+# Fix Common Issues
+TOKENIZERS_PARALLELISM=false
+CHROMA_DISABLE_TELEMETRY=true
+
+# Optional
+NCBI_API_KEY=your_ncbi_api_key
 ```
 
 ## Usage Examples
@@ -171,6 +181,22 @@ datasets = geo.search_datasets("breast cancer", limit=10)
 ```
 
 ## Troubleshooting
+
+### Common Server Errors
+
+#### ChromaDB Telemetry Error
+
+If you see `Failed to send telemetry event CollectionAddEvent`:
+
+- This is automatically fixed by setting `CHROMA_DISABLE_TELEMETRY=true` in your `.env` file
+- The error is harmless but disabling telemetry removes the warning
+
+#### HuggingFace Tokenizers Fork Warning
+
+If you see `huggingface/tokenizers: The current process just got forked`:
+
+- This is automatically fixed by setting `TOKENIZERS_PARALLELISM=false` in your `.env` file
+- This prevents tokenizer conflicts in multi-process environments
 
 ### Jupyter Integration Issues
 

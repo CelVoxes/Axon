@@ -31,14 +31,10 @@ class Settings(BaseSettings):
     )
     ncbi_api_key: Optional[str] = Field(default=None, env="NCBI_API_KEY")
     
-    # Vector Database Configuration
-    chroma_persist_directory: str = Field(
-        default="./chroma_db",
-        env="CHROMA_PERSIST_DIRECTORY"
-    )
-    chroma_collection_name: str = Field(
-        default="biorag_collection",
-        env="CHROMA_COLLECTION_NAME"
+    # Download Configuration
+    download_directory: str = Field(
+        default="./biorag_downloads",
+        env="DOWNLOAD_DIRECTORY"
     )
     
     # Embedding Configuration

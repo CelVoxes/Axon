@@ -1,0 +1,5 @@
+Protein Name: Ceramide synthase hyl-2
+
+Organism: Caenorhabditis elegans
+
+Gene Names: hyl-2

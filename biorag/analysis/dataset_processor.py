@@ -19,9 +19,18 @@ from ..config import settings
 class DatasetProcessor:
     """Handles dataset download, processing, and storage."""
     
-    def __init__(self):
-        self.data_dir = Path(settings.data_directory) if hasattr(settings, 'data_directory') else Path("./data")
-        self.data_dir.mkdir(exist_ok=True)
+    def __init__(self, workspace_dir: str = None):
+        """Initialize dataset processor.
+        
+        Args:
+            workspace_dir: User's workspace directory where data should be stored
+        """
+        if workspace_dir:
+            self.data_dir = Path(workspace_dir) / "biorag_downloads" / "datasets"
+        else:
+            self.data_dir = Path(settings.data_directory) if hasattr(settings, 'data_directory') else Path("./data")
+        
+        self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data_dir / "datasets.db"
         self._init_database()
     

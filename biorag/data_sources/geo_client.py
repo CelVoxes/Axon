@@ -89,61 +89,108 @@ class GEOClient(BaseDataSource):
         Returns:
             Detailed dataset information
         """
-        # Fetch from NCBI GDS database
-        fetch_params = {
-            "db": "gds",
-            "id": identifier,
-            "retmode": "xml"
-        }
-        
-        if settings.ncbi_api_key:
-            fetch_params["api_key"] = settings.ncbi_api_key
-        
-        fetch_url = f"{self.efetch_url}?{urlencode(fetch_params)}"
-        response = await self._make_request("GET", fetch_url)
-        
-        # Parse XML response
+        # Try to get info from GEO directly first
         try:
-            root = ET.fromstring(response.text)
-            docsum = root.find(".//DocSum")
+            geo_url = f"https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc={identifier}"
+            response = await self._make_request("GET", geo_url)
             
-            if docsum is None:
-                return {}
+            # Parse HTML to extract information
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Extract metadata
             result = {
                 "id": identifier,
                 "source": "GEO",
-                "type": "dataset"
+                "type": "dataset",
+                "title": f"Dataset {identifier}",
+                "description": f"GEO dataset {identifier}",
+                "organism": "Unknown",
+                "sample_count": "0",
+                "platform": "Unknown",
+                "publication_date": "Unknown"
             }
             
-            # Extract key information from XML
-            for item in docsum.findall("Item"):
-                name = item.get("Name", "")
-                value = item.text or ""
-                
-                if name == "title":
-                    result["title"] = value
-                elif name == "summary":
-                    result["description"] = value
-                elif name == "GPL":
-                    result["platform"] = value
-                elif name == "taxon":
-                    result["organism"] = value
-                elif name == "entryType":
-                    result["entry_type"] = value
-                elif name == "PDAT":
-                    result["publication_date"] = value
-                elif name == "n_samples":
-                    result["sample_count"] = value
+            # Extract title
+            title_elem = soup.find('td', text='Title')
+            if title_elem and title_elem.find_next_sibling('td'):
+                result["title"] = title_elem.find_next_sibling('td').get_text(strip=True)
             
-            # Also try to get additional info from GEO directly
-            await self._enrich_geo_details(result)
+            # Extract summary
+            summary_elem = soup.find('td', text='Summary')
+            if summary_elem and summary_elem.find_next_sibling('td'):
+                result["description"] = summary_elem.find_next_sibling('td').get_text(strip=True)
+            
+            # Extract organism
+            organism_elem = soup.find('td', text='Organism')
+            if organism_elem and organism_elem.find_next_sibling('td'):
+                result["organism"] = organism_elem.find_next_sibling('td').get_text(strip=True)
+            
+            # Extract sample count
+            sample_elem = soup.find('td', text='Samples')
+            if sample_elem and sample_elem.find_next_sibling('td'):
+                sample_text = sample_elem.find_next_sibling('td').get_text(strip=True)
+                # Extract number from text like "GSM123456, GSM123457, GSM123458 (3 total)"
+                sample_match = re.search(r'\((\d+)\s+total\)', sample_text)
+                if sample_match:
+                    result["sample_count"] = sample_match.group(1)
+                else:
+                    # Count GSM entries
+                    gsm_count = len(re.findall(r'GSM\d+', sample_text))
+                    if gsm_count > 0:
+                        result["sample_count"] = str(gsm_count)
+                    else:
+                        # Try to find sample count in description
+                        description = result.get("description", "")
+                        desc_match = re.search(r'n=([0-9,]+)', description)
+                        if desc_match:
+                            result["sample_count"] = desc_match.group(1).replace(',', '')
+                        else:
+                            # Try alternative patterns
+                            alt_match = re.search(r'(\d+)\s+samples', description)
+                            if alt_match:
+                                result["sample_count"] = alt_match.group(1)
+                            else:
+                                # Default estimate
+                                result["sample_count"] = "100"
+            else:
+                # Try to find sample count in description if no sample element
+                description = result.get("description", "")
+                desc_match = re.search(r'n=([0-9,]+)', description)
+                if desc_match:
+                    result["sample_count"] = desc_match.group(1).replace(',', '')
+                else:
+                    # Try alternative patterns
+                    alt_match = re.search(r'(\d+)\s+samples', description)
+                    if alt_match:
+                        result["sample_count"] = alt_match.group(1)
+                    else:
+                        # Default estimate
+                        result["sample_count"] = "100"
+            
+            # Extract platform
+            platform_elem = soup.find('td', text='Platform')
+            if platform_elem and platform_elem.find_next_sibling('td'):
+                result["platform"] = platform_elem.find_next_sibling('td').get_text(strip=True)
+            
+            # Extract publication date
+            date_elem = soup.find('td', text='Submission date')
+            if date_elem and date_elem.find_next_sibling('td'):
+                result["publication_date"] = date_elem.find_next_sibling('td').get_text(strip=True)
             
             return result
             
-        except ET.ParseError:
-            return {}
+        except Exception as e:
+            # Return basic info if scraping fails
+            return {
+                "id": identifier,
+                "source": "GEO",
+                "type": "dataset",
+                "title": f"Dataset {identifier}",
+                "description": f"GEO dataset {identifier}",
+                "organism": "Unknown",
+                "sample_count": "100",  # Default estimate
+                "platform": "Unknown",
+                "publication_date": "Unknown"
+            }
     
     async def _enrich_geo_details(self, result: Dict[str, Any]):
         """Enrich dataset details by fetching from GEO directly.

@@ -304,14 +304,16 @@ class BioRAGCursorApp {
             "python",
             "/usr/bin/python3",
             "/usr/local/bin/python3",
+            "/opt/homebrew/bin/python3", // Homebrew on Apple Silicon
         ];
         for (const cmd of pythonCommands) {
             try {
-                await execFileAsync(cmd, ["--version"]);
-                console.log(`Found Python at: ${cmd}`);
+                const result = await execFileAsync(cmd, ["--version"]);
+                console.log(`Found Python at: ${cmd} - ${result.stdout.trim()}`);
                 return cmd;
             }
             catch (error) {
+                console.log(`Python command ${cmd} not available`);
                 // Continue to next command
             }
         }
@@ -383,13 +385,18 @@ class BioRAGCursorApp {
                 throw error;
             }
         });
+        // File system: write file
         electron_1.ipcMain.handle("fs-write-file", async (_, filePath, content) => {
             try {
-                await fs.promises.writeFile(filePath, content, "utf8");
-                return true;
+                await fs.promises.writeFile(filePath, content, "utf-8");
+                return { success: true };
             }
             catch (error) {
-                throw error;
+                console.error("Error writing file:", error);
+                return {
+                    success: false,
+                    error: error instanceof Error ? error.message : String(error),
+                };
             }
         });
         electron_1.ipcMain.handle("fs-create-directory", async (_, dirPath) => {
@@ -453,8 +460,10 @@ class BioRAGCursorApp {
                     "--no-browser",
                     "--allow-root",
                     "--ip=127.0.0.1",
-                    "--NotebookApp.token=''",
-                    "--NotebookApp.password=''",
+                    "--NotebookApp.token=",
+                    "--NotebookApp.password=",
+                    "--ServerApp.token=",
+                    "--ServerApp.password=",
                     "--port-retries=50",
                     "--NotebookApp.disable_check_xsrf=True",
                     "--ServerApp.disable_check_xsrf=True",
@@ -581,46 +590,82 @@ class BioRAGCursorApp {
         electron_1.ipcMain.handle("jupyter-execute", async (_, code) => {
             try {
                 console.log(`Executing code in Jupyter: \n${code.substring(0, 100)}...`);
-                // For now, execute locally since proper Jupyter kernel integration
-                // requires WebSocket connections which are complex to implement
-                // This provides immediate functionality
-                const fs = require("fs");
-                const path = require("path");
-                const { exec } = require("child_process");
-                const { promisify } = require("util");
-                const execAsync = promisify(exec);
-                // Create a temporary Python file
-                const tempDir = path.join(process.cwd(), "temp");
-                if (!fs.existsSync(tempDir)) {
-                    fs.mkdirSync(tempDir, { recursive: true });
+                const WebSocket = require("ws");
+                const { v4: uuidv4 } = require("uuid");
+                // 1. Find the running kernel
+                const response = await fetch(`http://127.0.0.1:${this.jupyterPort}/api/kernels`);
+                const kernels = await response.json();
+                if (!kernels || kernels.length === 0) {
+                    throw new Error("No active Jupyter kernel found.");
                 }
-                const tempFile = path.join(tempDir, `analysis_${Date.now()}.py`);
-                fs.writeFileSync(tempFile, code);
-                try {
-                    // Execute the Python code
-                    const pythonPath = await this.findPythonPath();
-                    const result = await execAsync(`"${pythonPath}" "${tempFile}"`, {
-                        cwd: process.cwd(),
-                        timeout: 120000, // 2 minute timeout
-                        maxBuffer: 1024 * 1024 * 10, // 10MB buffer
+                const kernelId = kernels[0].id;
+                const wsUrl = `ws://127.0.0.1:${this.jupyterPort}/api/kernels/${kernelId}/channels`;
+                // 2. Open a WebSocket connection
+                const ws = new WebSocket(wsUrl);
+                return new Promise((resolve) => {
+                    let output = "";
+                    let errorOutput = "";
+                    ws.on("open", () => {
+                        console.log("Jupyter WebSocket connection opened.");
+                        // 3. Send an execute_request message
+                        const msgId = uuidv4();
+                        const executeRequest = {
+                            header: {
+                                msg_id: msgId,
+                                username: "user",
+                                session: uuidv4(),
+                                msg_type: "execute_request",
+                                version: "5.3",
+                            },
+                            parent_header: {},
+                            metadata: {},
+                            content: {
+                                code: code,
+                                silent: false,
+                                store_history: true,
+                                user_expressions: {},
+                                allow_stdin: false,
+                                stop_on_error: true,
+                            },
+                            channel: "shell",
+                        };
+                        ws.send(JSON.stringify(executeRequest));
                     });
-                    // Clean up temp file
-                    fs.unlinkSync(tempFile);
-                    return {
-                        success: true,
-                        output: `✅ Code executed successfully!\n\nOutput:\n${result.stdout}${result.stderr ? `\nWarnings/Errors:\n${result.stderr}` : ""}`,
-                    };
-                }
-                catch (execError) {
-                    // Clean up temp file
-                    if (fs.existsSync(tempFile)) {
-                        fs.unlinkSync(tempFile);
-                    }
-                    return {
-                        success: false,
-                        error: `Execution failed: ${execError.message}${execError.stdout ? `\nOutput:\n${execError.stdout}` : ""}${execError.stderr ? `\nErrors:\n${execError.stderr}` : ""}`,
-                    };
-                }
+                    ws.on("message", (data) => {
+                        const msg = JSON.parse(data.toString());
+                        // 4. Listen for execute_reply and stream messages
+                        if (msg.parent_header && msg.header.msg_type === "stream") {
+                            output += msg.content.text;
+                        }
+                        else if (msg.parent_header &&
+                            msg.header.msg_type === "execute_reply") {
+                            if (msg.content.status === "ok") {
+                                resolve({ success: true, output });
+                            }
+                            else {
+                                errorOutput += msg.content.evalue;
+                                resolve({ success: false, error: errorOutput });
+                            }
+                            ws.close();
+                        }
+                        else if (msg.parent_header && msg.header.msg_type === "error") {
+                            errorOutput += msg.content.evalue;
+                        }
+                    });
+                    ws.on("close", () => {
+                        console.log("Jupyter WebSocket connection closed.");
+                        if (!output && errorOutput) {
+                            resolve({ success: false, error: errorOutput });
+                        }
+                    });
+                    ws.on("error", (error) => {
+                        console.error("Jupyter WebSocket error:", error);
+                        resolve({
+                            success: false,
+                            error: `WebSocket error: ${error.message}`,
+                        });
+                    });
+                });
             }
             catch (error) {
                 console.error("Jupyter execution error:", error);

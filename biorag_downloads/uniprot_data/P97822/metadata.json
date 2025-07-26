@@ -1,0 +1,26 @@
+{
+  "uniprot_id": "P97822",
+  "download_date": "2025-07-25T20:19:17.096084",
+  "fasta_file": "/Users/onur-lumc/Desktop/Node/biorag_downloads/uniprot_data/P97822/P97822.fasta",
+  "info_file": "/Users/onur-lumc/Desktop/Node/biorag_downloads/uniprot_data/P97822/P97822_info.txt",
+  "entry_info": {
+    "source": "UniProt",
+    "type": "protein",
+    "id": "P97822",
+    "accession": "P97822",
+    "entry_name": "AN32E_MOUSE",
+    "protein_name": "Acidic leucine-rich nuclear phosphoprotein 32 family member E",
+    "title": "Acidic leucine-rich nuclear phosphoprotein 32 family member E",
+    "gene_names": [
+      "Anp32e"
+    ],
+    "primary_gene": "Anp32e",
+    "organism": "Mus musculus",
+    "organism_id": 10090,
+    "length": 260,
+    "sequence": "",
+    "domains": [],
+    "go_terms": [],
+    "pubmed_refs": []
+  }
+}

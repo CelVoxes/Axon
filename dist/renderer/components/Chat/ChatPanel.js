@@ -44,6 +44,7 @@ const fi_1 = require("react-icons/fi");
 const AppContext_1 = require("../../context/AppContext");
 const BioRAGClient_1 = require("../../services/BioRAGClient");
 const ChatMessage_1 = require("./ChatMessage");
+const DatasetSelectionModal_1 = require("./DatasetSelectionModal");
 const ChatContainer = styled_components_1.default.div `
 	width: 100%;
 	height: 100%;
@@ -208,6 +209,11 @@ const ChatPanel = ({ collapsed, onToggle, }) => {
     const messagesEndRef = (0, react_1.useRef)(null);
     const textAreaRef = (0, react_1.useRef)(null);
     const bioragClient = new BioRAGClient_1.BioRAGClient();
+    // New state for dataset selection
+    const [showDatasetModal, setShowDatasetModal] = (0, react_1.useState)(false);
+    const [availableDatasets, setAvailableDatasets] = (0, react_1.useState)([]);
+    const [currentQuery, setCurrentQuery] = (0, react_1.useState)("");
+    const [downloadProgress, setDownloadProgress] = (0, react_1.useState)({});
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     };
@@ -256,11 +262,13 @@ const ChatPanel = ({ collapsed, onToggle, }) => {
                 "DEG",
                 "RNA-seq",
                 "microarray",
+                "download",
+                "data",
             ];
             const isAnalysisRequest = analysisKeywords.some((keyword) => userMessage.toLowerCase().includes(keyword.toLowerCase()));
             if (isAnalysisRequest) {
-                // Use the autonomous agent for analysis
-                await executeAnalysisRequest(userMessage);
+                // Enhanced analysis workflow with dataset discovery
+                await executeEnhancedAnalysisRequest(userMessage);
             }
             else {
                 // Regular BioRAG query
@@ -293,6 +301,281 @@ const ChatPanel = ({ collapsed, onToggle, }) => {
             setIsLoading(false);
         }
     };
+    const executeEnhancedAnalysisRequest = async (query) => {
+        try {
+            dispatch({ type: "SET_ANALYZING", payload: true });
+            setCurrentQuery(query);
+            // Step 1: Search for relevant datasets first
+            dispatch({
+                type: "ADD_MESSAGE",
+                payload: {
+                    content: "🔍 Searching for relevant datasets and literature...",
+                    isUser: false,
+                },
+            });
+            const searchResult = await bioragClient.findDatasetsForQuery(query, {
+                includeDatasets: true,
+                maxDatasets: 10,
+            });
+            // Show the initial analysis
+            dispatch({
+                type: "ADD_MESSAGE",
+                payload: {
+                    content: `## Analysis Overview
+
+${searchResult.answer}
+
+**Found ${searchResult.datasets.length} relevant datasets that could help answer your question.**
+
+${searchResult.datasets.length > 0
+                        ? `**Available Datasets:**
+${searchResult.datasets
+                            .map((d, i) => `${i + 1}. **${d.id}** - ${d.title} (${d.samples} samples, ${d.organism})`)
+                            .join("\n")}
+
+Please select which datasets you'd like me to download and analyze.`
+                        : "No specific datasets were found, but I can help with general analysis."}`,
+                    isUser: false,
+                },
+            });
+            if (searchResult.datasets.length > 0) {
+                // Show dataset selection modal
+                setAvailableDatasets(searchResult.datasets);
+                setShowDatasetModal(true);
+            }
+            else {
+                // Proceed with general analysis
+                await executeAnalysisWithoutDatasets(query);
+            }
+        }
+        catch (error) {
+            console.error("Enhanced analysis error:", error);
+            dispatch({
+                type: "ADD_MESSAGE",
+                payload: {
+                    content: `Analysis failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+                    isUser: false,
+                    status: "failed",
+                },
+            });
+        }
+        finally {
+            if (!showDatasetModal) {
+                dispatch({ type: "SET_ANALYZING", payload: false });
+            }
+        }
+    };
+    const executeAnalysisWithoutDatasets = async (query) => {
+        // Fallback to original analysis approach
+        await executeAnalysisRequest(query);
+    };
+    const handleDatasetSelection = async (selectedDatasets) => {
+        setShowDatasetModal(false);
+        try {
+            dispatch({
+                type: "ADD_MESSAGE",
+                payload: {
+                    content: `📥 **Preparing notebook for ${selectedDatasets.length} datasets:**\n\n**Datasets:**\n${selectedDatasets
+                        .map((d, i) => `${i + 1}. ${d.id} - ${d.title}`)
+                        .join("\n")}\n\n**Note:** Data download and preprocessing will be performed in a Jupyter notebook for full user control.`,
+                    isUser: false,
+                },
+            });
+            // Import the autonomous agent
+            const { AutonomousAgent } = await Promise.resolve().then(() => __importStar(require("../../services/AutonomousAgent")));
+            const agent = new AutonomousAgent(bioragClient, state.currentWorkspace || "./");
+            setCurrentAgent(agent);
+            // Create analysis workspace
+            const analysisWorkspace = await agent.createAnalysisWorkspace(currentQuery);
+            // Generate the notebook for data download/preprocessing
+            const notebookPath = await agent.generateDataDownloadNotebook(currentQuery, selectedDatasets, analysisWorkspace);
+            dispatch({
+                type: "ADD_MESSAGE",
+                payload: {
+                    content: `📓 **Notebook created:** \`${notebookPath}\`\n\nOpen this notebook in Jupyter Lab to download and preprocess your data interactively.`,
+                    isUser: false,
+                },
+            });
+            // Start Jupyter in the analysis workspace
+            const jupyterResult = await window.electronAPI.startJupyter(analysisWorkspace);
+            if (!jupyterResult.success) {
+                throw new Error(jupyterResult.error || "Failed to start Jupyter server");
+            }
+            // Listen for Jupyter ready event to get the URL
+            window.electronAPI.onJupyterReady((data) => {
+                dispatch({
+                    type: "SET_JUPYTER_URL",
+                    payload: data.url,
+                });
+            });
+        }
+        catch (error) {
+            console.error("Dataset notebook/analysis error:", error);
+            dispatch({
+                type: "ADD_MESSAGE",
+                payload: {
+                    content: `Error during notebook generation/launch: ${error instanceof Error ? error.message : "Unknown error"}`,
+                    isUser: false,
+                },
+            });
+        }
+    };
+    const downloadAndTrackDataset = async (dataset, dataDirectory) => {
+        try {
+            // Start download to the analysis project's data directory
+            const downloadResponse = await bioragClient.downloadDataset(dataset.id, false, // force_redownload
+            dataDirectory || state.currentWorkspace || undefined);
+            dispatch({
+                type: "ADD_MESSAGE",
+                payload: {
+                    content: `⏳ Downloading ${dataset.id} to analysis data folder: ${downloadResponse.status}`,
+                    isUser: false,
+                },
+            });
+            // Track download progress
+            let completed = false;
+            const progressInterval = setInterval(async () => {
+                try {
+                    const status = await bioragClient.getDownloadStatus(dataset.id);
+                    setDownloadProgress((prev) => ({
+                        ...prev,
+                        [dataset.id]: status.progress,
+                    }));
+                    if (status.status === "completed") {
+                        completed = true;
+                        clearInterval(progressInterval);
+                        dispatch({
+                            type: "ADD_MESSAGE",
+                            payload: {
+                                content: `✅ ${dataset.id} download completed`,
+                                isUser: false,
+                            },
+                        });
+                    }
+                    else if (status.status === "error") {
+                        completed = true;
+                        clearInterval(progressInterval);
+                        throw new Error(status.error_message || "Download failed");
+                    }
+                }
+                catch (error) {
+                    clearInterval(progressInterval);
+                    if (!completed) {
+                        throw error;
+                    }
+                }
+            }, 2000);
+            // Wait for completion (max 5 minutes)
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    clearInterval(progressInterval);
+                    reject(new Error("Download timeout"));
+                }, 300000);
+                const checkCompleted = () => {
+                    if (completed) {
+                        clearTimeout(timeout);
+                        resolve(null);
+                    }
+                    else {
+                        setTimeout(checkCompleted, 1000);
+                    }
+                };
+                checkCompleted();
+            });
+        }
+        catch (error) {
+            throw new Error(`Failed to download ${dataset.id}: ${error instanceof Error ? error.message : "Unknown error"}`);
+        }
+    };
+    const executeAnalysisWithDownloadedData = async (query, datasets) => {
+        try {
+            // Import the autonomous agent
+            const { AutonomousAgent } = await Promise.resolve().then(() => __importStar(require("../../services/AutonomousAgent")));
+            const agent = new AutonomousAgent(bioragClient, state.currentWorkspace || "./");
+            setCurrentAgent(agent);
+            // Set up status callback for real-time updates
+            agent.setStatusCallback((status) => {
+                dispatch({
+                    type: "ADD_MESSAGE",
+                    payload: {
+                        content: status,
+                        isUser: false,
+                    },
+                });
+            });
+            // First create the analysis workspace to get the data directory
+            const analysisWorkspace = await agent.createAnalysisWorkspace(query);
+            const dataDirectory = `${analysisWorkspace}/data`;
+            // Set workspace directory to the analysis project's data folder
+            await bioragClient.setWorkspace(dataDirectory);
+            dispatch({
+                type: "ADD_MESSAGE",
+                payload: {
+                    content: `🚀 **Starting AI-powered analysis with Jupyter download:**
+
+**Analysis Project:** \`${analysisWorkspace}\`
+
+**Datasets to download:** ${datasets.length} datasets
+**Download Method:** Through Jupyter notebook with size checking
+
+Datasets will be downloaded and loaded directly in the analysis notebook...`,
+                    isUser: false,
+                },
+            });
+            // Get the analysis plan with real data
+            const analysisResult = await agent.executeAnalysisRequestWithData(query, datasets);
+            // Show the analysis plan
+            const planContent = `## Analysis Plan for Downloaded Data
+
+**Your Question:** ${analysisResult.understanding.userQuestion}
+
+**Analysis Project:** \`${analysisWorkspace}\`
+
+**Data Directory:** \`${dataDirectory}\`
+
+**Downloaded Datasets:**
+${datasets
+                .map((d, i) => `${i + 1}. **${d.id}** - ${d.title}\n   📊 ${d.samples} samples, ${d.organism}\n   📁 Expression matrix and metadata downloaded to analysis project data folder`)
+                .join("\n\n")}
+
+**Analysis Approach:**
+${analysisResult.understanding.requiredSteps
+                .map((step, i) => `${i + 1}. ${step}`)
+                .join("\n")}
+
+**Expected Outputs:**
+${analysisResult.understanding.expectedOutputs
+                .map((output) => `- ${output}`)
+                .join("\n")}
+
+**Working Directory:** \`${analysisResult.workingDirectory}\`
+
+---
+
+**Starting sequential execution in Jupyter...**`;
+            dispatch({
+                type: "ADD_MESSAGE",
+                payload: {
+                    content: planContent,
+                    isUser: false,
+                    analysisResult,
+                },
+            });
+            // Start Jupyter and execute steps with real data
+            await executeAnalysisSteps(analysisResult);
+        }
+        catch (error) {
+            console.error("Analysis with downloaded data error:", error);
+            dispatch({
+                type: "ADD_MESSAGE",
+                payload: {
+                    content: `Analysis failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+                    isUser: false,
+                    status: "failed",
+                },
+            });
+        }
+    };
     const executeAnalysisRequest = async (query) => {
         try {
             dispatch({ type: "SET_ANALYZING", payload: true });
@@ -307,7 +590,6 @@ const ChatPanel = ({ collapsed, onToggle, }) => {
                     payload: {
                         content: status,
                         isUser: false,
-                        // Don't set status="pending" for status updates - they have content
                     },
                 });
             });
@@ -399,7 +681,6 @@ ${analysisResult.datasets
                     payload: {
                         content: `**Step ${i + 1}:** ${step.description}`,
                         isUser: false,
-                        // Don't set status="pending" for step descriptions - they have content
                     },
                 });
                 // Wrap the code in proper setup
@@ -497,6 +778,7 @@ except Exception as e:
         }
         dispatch({ type: "SET_ANALYZING", payload: false });
         setIsLoading(false);
+        setShowDatasetModal(false);
     };
     const handleKeyPress = (e) => {
         if (e.key === "Enter" && !e.shiftKey) {
@@ -507,12 +789,15 @@ except Exception as e:
     if (collapsed) {
         return (0, jsx_runtime_1.jsx)("div", { style: { display: "none" } });
     }
-    return ((0, jsx_runtime_1.jsxs)(ChatContainer, { collapsed: collapsed, children: [(0, jsx_runtime_1.jsxs)(ChatHeader, { children: [(0, jsx_runtime_1.jsxs)(ChatTitle, { children: [(0, jsx_runtime_1.jsx)(fi_1.FiMessageSquare, { size: 16 }), "BioRAG Chat"] }), (0, jsx_runtime_1.jsx)(CollapseButton, { onClick: onToggle, children: (0, jsx_runtime_1.jsx)(fi_1.FiX, { size: 16 }) })] }), (0, jsx_runtime_1.jsxs)(MessagesContainer, { children: [state.messages.map((message) => ((0, jsx_runtime_1.jsx)(ChatMessage_1.ChatMessage, { message: {
-                            id: message.id,
-                            content: message.content,
-                            isUser: message.isUser,
-                            timestamp: message.timestamp,
-                            status: message.status,
-                        } }, message.id))), (0, jsx_runtime_1.jsx)("div", { ref: messagesEndRef })] }), (0, jsx_runtime_1.jsx)(InputContainer, { children: (0, jsx_runtime_1.jsxs)(InputWrapper, { children: [(0, jsx_runtime_1.jsx)(TextAreaWrapper, { children: (0, jsx_runtime_1.jsx)(TextArea, { ref: textAreaRef, value: inputValue, onChange: (e) => setInputValue(e.target.value), onKeyPress: handleKeyPress, placeholder: "Ask about biological data, request analysis, or search for information...", disabled: isLoading }) }), state.isAnalyzing ? ((0, jsx_runtime_1.jsx)(StopButton, { onClick: handleStopAnalysis, children: (0, jsx_runtime_1.jsx)(fi_1.FiStopCircle, { size: 16 }) })) : ((0, jsx_runtime_1.jsx)(SendButton, { disabled: !inputValue.trim() || isLoading || !state.currentWorkspace, onClick: handleSendMessage, children: (0, jsx_runtime_1.jsx)(fi_1.FiSend, { size: 16 }) }))] }) })] }));
+    return ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsxs)(ChatContainer, { collapsed: collapsed, children: [(0, jsx_runtime_1.jsxs)(ChatHeader, { children: [(0, jsx_runtime_1.jsxs)(ChatTitle, { children: [(0, jsx_runtime_1.jsx)(fi_1.FiMessageSquare, { size: 16 }), "BioRAG Chat"] }), (0, jsx_runtime_1.jsx)(CollapseButton, { onClick: onToggle, children: (0, jsx_runtime_1.jsx)(fi_1.FiX, { size: 16 }) })] }), (0, jsx_runtime_1.jsxs)(MessagesContainer, { children: [state.messages.map((message) => ((0, jsx_runtime_1.jsx)(ChatMessage_1.ChatMessage, { message: {
+                                    id: message.id,
+                                    content: message.content,
+                                    isUser: message.isUser,
+                                    timestamp: message.timestamp,
+                                    status: message.status,
+                                } }, message.id))), (0, jsx_runtime_1.jsx)("div", { ref: messagesEndRef })] }), (0, jsx_runtime_1.jsx)(InputContainer, { children: (0, jsx_runtime_1.jsxs)(InputWrapper, { children: [(0, jsx_runtime_1.jsx)(TextAreaWrapper, { children: (0, jsx_runtime_1.jsx)(TextArea, { ref: textAreaRef, value: inputValue, onChange: (e) => setInputValue(e.target.value), onKeyPress: handleKeyPress, placeholder: "Ask about biological data, request analysis, or search for information...", disabled: isLoading }) }), state.isAnalyzing ? ((0, jsx_runtime_1.jsx)(StopButton, { onClick: handleStopAnalysis, children: (0, jsx_runtime_1.jsx)(fi_1.FiStopCircle, { size: 16 }) })) : ((0, jsx_runtime_1.jsx)(SendButton, { disabled: !inputValue.trim() || isLoading || !state.currentWorkspace, onClick: handleSendMessage, children: (0, jsx_runtime_1.jsx)(fi_1.FiSend, { size: 16 }) }))] }) })] }), (0, jsx_runtime_1.jsx)(DatasetSelectionModal_1.DatasetSelectionModal, { isOpen: showDatasetModal, datasets: availableDatasets, onClose: () => {
+                    setShowDatasetModal(false);
+                    dispatch({ type: "SET_ANALYZING", payload: false });
+                }, onConfirm: handleDatasetSelection, isLoading: state.isAnalyzing })] }));
 };
 exports.ChatPanel = ChatPanel;

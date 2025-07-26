@@ -27,17 +27,27 @@ def serve(
     typer.echo(f"Auto-reload: {reload}")
     typer.echo("Access the API documentation at: http://localhost:8000/docs")
     
-    # Create FastAPI app
-    fastapi_app = create_app()
-    
     # Run with uvicorn
-    uvicorn.run(
-        fastapi_app,
-        host=host,
-        port=port,
-        reload=reload,
-        log_level=settings.log_level.lower()
-    )
+    if reload:
+        # For reload mode, we need to pass the app as an import string
+        uvicorn.run(
+            "biorag.api.app:create_app",
+            factory=True,
+            host=host,
+            port=port,
+            reload=reload,
+            log_level=settings.log_level.lower()
+        )
+    else:
+        # For non-reload mode, we can pass the app instance
+        fastapi_app = create_app()
+        uvicorn.run(
+            fastapi_app,
+            host=host,
+            port=port,
+            reload=reload,
+            log_level=settings.log_level.lower()
+        )
 
 
 @app_cli.command()
@@ -45,11 +55,26 @@ def info():
     """Show system information."""
     from . import __version__
     
-    typer.echo(f"BioRAG Version: {__version__}")
+    typer.echo("🧬 BioRAG System Information")
+    typer.echo("=" * 40)
+    typer.echo(f"Version: {__version__}")
+    typer.echo(f"Download Directory: {settings.download_directory}")
     typer.echo(f"Embedding Model: {settings.embedding_model}")
-    typer.echo(f"ChromaDB Directory: {settings.chroma_persist_directory}")
     typer.echo(f"OpenAI Model: {settings.openai_model}")
-    typer.echo(f"Rate Limit: {settings.rate_limit_per_second} requests/second")
+    typer.echo(f"API Host: {settings.api_host}:{settings.api_port}")
+    typer.echo(f"Log Level: {settings.log_level}")
+    
+    # Check if OpenAI API key is set
+    if settings.openai_api_key:
+        typer.echo("✅ OpenAI API key is configured")
+    else:
+        typer.echo("⚠️  OpenAI API key not configured")
+    
+    # Check if NCBI API key is set
+    if settings.ncbi_api_key:
+        typer.echo("✅ NCBI API key is configured")
+    else:
+        typer.echo("⚠️  NCBI API key not configured (optional)")
 
 
 @app_cli.command()

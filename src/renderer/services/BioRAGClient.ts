@@ -42,6 +42,30 @@ export interface DatasetInfo {
 	type: string;
 	platform: string;
 	publication_date: string;
+	downloaded: boolean;
+	processed: boolean;
+	download_status?: string;
+	file_paths?: {
+		expression_matrix?: string;
+		sample_info?: string;
+		analysis_info?: string;
+	};
+}
+
+export interface DatasetSearchParams {
+	query: string;
+	organism?: string;
+	min_samples?: number;
+	data_type?: string;
+	limit?: number;
+}
+
+export interface DownloadStatus {
+	dataset_id: string;
+	status: "not_started" | "downloading" | "processing" | "completed" | "error";
+	progress: number;
+	error_message?: string;
+	timestamp: string;
 }
 
 export class BioRAGClient {
@@ -100,6 +124,176 @@ export class BioRAGClient {
 				throw new Error(`BioRAG query failed: ${error.message}`);
 			}
 			throw error;
+		}
+	}
+
+	// Dataset Management Methods
+	async searchDatasets(params: DatasetSearchParams): Promise<DatasetInfo[]> {
+		try {
+			const client = await this.getClient();
+			const response = await client.get("/datasets/search", { params });
+			return response.data;
+		} catch (error) {
+			console.error("Dataset search failed:", error);
+			throw new Error("Failed to search for datasets");
+		}
+	}
+
+	async getDatasetInfo(datasetId: string): Promise<DatasetInfo> {
+		try {
+			const client = await this.getClient();
+			const response = await client.get(`/datasets/${datasetId}`);
+			return response.data;
+		} catch (error) {
+			console.error("Get dataset info failed:", error);
+			throw new Error("Failed to get dataset information");
+		}
+	}
+
+	async downloadDataset(
+		datasetId: string,
+		force_redownload: boolean = false,
+		workspace_dir?: string
+	): Promise<{ status: string; dataset_id: string; workspace_dir?: string }> {
+		try {
+			const client = await this.getClient();
+			const response = await client.post(`/datasets/${datasetId}/download`, {
+				force_redownload,
+				workspace_dir,
+			});
+			return response.data;
+		} catch (error) {
+			console.error("Dataset download failed:", error);
+			throw new Error("Failed to start dataset download");
+		}
+	}
+
+	async getDownloadStatus(datasetId: string): Promise<DownloadStatus> {
+		try {
+			const client = await this.getClient();
+			const response = await client.get(
+				`/datasets/${datasetId}/download/status`
+			);
+			return response.data;
+		} catch (error) {
+			console.error("Get download status failed:", error);
+			throw new Error("Failed to get download status");
+		}
+	}
+
+	async analyzeDataset(
+		datasetId: string,
+		prompt: string
+	): Promise<{ analysis_id: string; status: string; dataset_id: string }> {
+		try {
+			const client = await this.getClient();
+			const response = await client.post(`/datasets/${datasetId}/analyze`, {
+				dataset_id: datasetId,
+				prompt: prompt,
+			});
+			return response.data;
+		} catch (error) {
+			console.error("Dataset analysis failed:", error);
+			throw new Error("Failed to start dataset analysis");
+		}
+	}
+
+	async getAnalysisResults(analysisId: string): Promise<any> {
+		try {
+			const client = await this.getClient();
+			const response = await client.get(`/datasets/analysis/${analysisId}`);
+			return response.data;
+		} catch (error) {
+			console.error("Get analysis results failed:", error);
+			throw new Error("Failed to get analysis results");
+		}
+	}
+
+	async getAnalysisStatus(analysisId: string): Promise<any> {
+		try {
+			const client = await this.getClient();
+			const response = await client.get(
+				`/datasets/analysis/${analysisId}/status`
+			);
+			return response.data;
+		} catch (error) {
+			console.error("Get analysis status failed:", error);
+			throw new Error("Failed to get analysis status");
+		}
+	}
+
+	async setWorkspace(
+		workspace_dir: string
+	): Promise<{ status: string; workspace_dir: string }> {
+		try {
+			const client = await this.getClient();
+			const response = await client.post("/datasets/set-workspace", null, {
+				params: { workspace_dir },
+			});
+			return response.data;
+		} catch (error) {
+			console.error("Set workspace failed:", error);
+			throw new Error("Failed to set workspace directory");
+		}
+	}
+
+	// Enhanced search with dataset discovery
+	async findDatasetsForQuery(
+		query: string,
+		options?: {
+			includeDatasets?: boolean;
+			maxDatasets?: number;
+			organism?: string;
+		}
+	): Promise<{
+		answer: string;
+		datasets: DatasetInfo[];
+		suggestions: string[];
+	}> {
+		try {
+			const client = await this.getClient();
+
+			// First get the regular BioRAG response
+			const bioragResponse = await this.query({
+				question: `Find datasets relevant to: ${query}. Include specific GEO dataset IDs that would be useful for this analysis.`,
+				max_documents: 5,
+				response_type: "answer",
+			});
+
+			// Extract dataset IDs from the response
+			const geoIds = bioragResponse.answer.match(/GSE\d+/g) || [];
+			const datasets: DatasetInfo[] = [];
+
+			// Search for datasets if requested
+			if (options?.includeDatasets && geoIds.length > 0) {
+				for (const geoId of geoIds.slice(0, options.maxDatasets || 10)) {
+					try {
+						const datasetInfo = await this.getDatasetInfo(geoId);
+						datasets.push(datasetInfo);
+					} catch (error) {
+						// Continue if one dataset fails
+						console.warn(`Failed to get info for ${geoId}:`, error);
+					}
+				}
+			}
+
+			// Generate analysis suggestions
+			const suggestions = [
+				"Download and analyze differential expression",
+				"Compare expression profiles between conditions",
+				"Identify pathway enrichment",
+				"Perform clustering analysis",
+				"Generate expression heatmaps",
+			];
+
+			return {
+				answer: bioragResponse.answer,
+				datasets,
+				suggestions,
+			};
+		} catch (error) {
+			console.error("Find datasets for query failed:", error);
+			throw new Error("Failed to find relevant datasets");
 		}
 	}
 

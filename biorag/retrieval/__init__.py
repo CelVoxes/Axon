@@ -1,6 +1,6 @@
 """Retrieval engine and search components."""
 
-from .retriever import BioRetriever
 from .query_processor import QueryProcessor
+from .local_retriever import LocalRetriever
 
-__all__ = ["BioRetriever", "QueryProcessor"] 
+__all__ = ["QueryProcessor", "LocalRetriever"] 

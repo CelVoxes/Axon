@@ -1,10 +1,10 @@
 """Main RAG pipeline combining retrieval and generation."""
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 from datetime import datetime
 
 from .llm_client import LLMClient
-from ..retrieval import BioRetriever
+from ..retrieval import LocalRetriever
 
 
 class RAGPipeline:
@@ -12,16 +12,19 @@ class RAGPipeline:
     
     def __init__(
         self,
-        retriever: BioRetriever = None,
-        llm_client: LLMClient = None
+        retriever: Union[LocalRetriever, Any] = None,
+        llm_client: LLMClient = None,
+        workspace_dir: str = None
     ):
         """Initialize RAG pipeline.
         
         Args:
-            retriever: Document retriever
+            retriever: Document retriever (LocalRetriever)
             llm_client: Language model client
+            workspace_dir: User's workspace directory for downloads
         """
-        self.retriever = retriever or BioRetriever()
+        self.workspace_dir = workspace_dir
+        self.retriever = retriever or LocalRetriever(workspace_dir=workspace_dir)
         self.llm_client = llm_client or LLMClient()
     
     async def query(
