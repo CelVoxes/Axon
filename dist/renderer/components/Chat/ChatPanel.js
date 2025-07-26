@@ -43,7 +43,8 @@ const styled_components_1 = __importDefault(require("styled-components"));
 const fi_1 = require("react-icons/fi");
 const AppContext_1 = require("../../context/AppContext");
 const BioRAGClient_1 = require("../../services/BioRAGClient");
-const ChatMessage_1 = require("./ChatMessage");
+const react_markdown_1 = __importDefault(require("react-markdown"));
+const remark_gfm_1 = __importDefault(require("remark-gfm"));
 const DatasetSelectionModal_1 = require("./DatasetSelectionModal");
 const ChatContainer = styled_components_1.default.div `
 	width: 100%;
@@ -895,13 +896,68 @@ except Exception as e:
     if (collapsed) {
         return (0, jsx_runtime_1.jsx)("div", { style: { display: "none" } });
     }
-    return ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsxs)(ChatContainer, { collapsed: collapsed, children: [(0, jsx_runtime_1.jsxs)(ChatHeader, { children: [(0, jsx_runtime_1.jsxs)(ChatTitle, { children: [(0, jsx_runtime_1.jsx)(fi_1.FiMessageSquare, { size: 16 }), "BioRAG Chat"] }), (0, jsx_runtime_1.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [(0, jsx_runtime_1.jsx)(NewChatButton, { onClick: handleNewChat, children: "New Chat" }), (0, jsx_runtime_1.jsx)(CollapseButton, { onClick: () => setChatHistoryOpen((v) => !v), title: "Show past chats", children: (0, jsx_runtime_1.jsx)("span", { style: { fontSize: 15, color: "#aaa" }, children: "Past Chats" }) }), (0, jsx_runtime_1.jsx)(CollapseButton, { onClick: onToggle, title: "Close chat", children: (0, jsx_runtime_1.jsx)(fi_1.FiX, { size: 16 }) })] })] }), (0, jsx_runtime_1.jsxs)(MessagesContainer, { children: [state.messages.map((message) => ((0, jsx_runtime_1.jsx)(ChatMessage_1.ChatMessage, { message: {
-                                    id: message.id,
-                                    content: message.content,
-                                    isUser: message.isUser,
-                                    timestamp: message.timestamp,
-                                    status: message.status,
-                                } }, message.id))), (0, jsx_runtime_1.jsx)("div", { ref: messagesEndRef })] }), (0, jsx_runtime_1.jsx)(InputContainer, { children: (0, jsx_runtime_1.jsxs)(InputWrapper, { children: [(0, jsx_runtime_1.jsx)(TextAreaWrapper, { children: (0, jsx_runtime_1.jsx)(TextArea, { ref: textAreaRef, value: inputValue, onChange: (e) => setInputValue(e.target.value), onKeyPress: handleKeyPress, placeholder: "Ask about biological data, request analysis, or search for information...", disabled: isLoading }) }), state.isAnalyzing ? ((0, jsx_runtime_1.jsx)(StopButton, { onClick: handleStopAnalysis, children: (0, jsx_runtime_1.jsx)(fi_1.FiStopCircle, { size: 16 }) })) : ((0, jsx_runtime_1.jsx)(SendButton, { disabled: !inputValue.trim() || isLoading || !state.currentWorkspace, onClick: handleSendMessage, children: (0, jsx_runtime_1.jsx)(fi_1.FiSend, { size: 16 }) }))] }) })] }), (0, jsx_runtime_1.jsx)(DatasetSelectionModal_1.DatasetSelectionModal, { isOpen: showDatasetModal, datasets: availableDatasets, onClose: () => {
+    return ((0, jsx_runtime_1.jsxs)(jsx_runtime_1.Fragment, { children: [(0, jsx_runtime_1.jsxs)(ChatContainer, { collapsed: collapsed, children: [(0, jsx_runtime_1.jsxs)(ChatHeader, { children: [(0, jsx_runtime_1.jsxs)(ChatTitle, { children: [(0, jsx_runtime_1.jsx)(fi_1.FiMessageSquare, { size: 16 }), "BioRAG Chat"] }), (0, jsx_runtime_1.jsxs)("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [(0, jsx_runtime_1.jsx)(NewChatButton, { onClick: handleNewChat, children: "New Chat" }), (0, jsx_runtime_1.jsx)(CollapseButton, { onClick: () => setChatHistoryOpen((v) => !v), title: "Show past chats", children: (0, jsx_runtime_1.jsx)("span", { style: { fontSize: 15, color: "#aaa" }, children: "Past Chats" }) }), (0, jsx_runtime_1.jsx)(CollapseButton, { onClick: onToggle, title: "Close chat", children: (0, jsx_runtime_1.jsx)(fi_1.FiX, { size: 16 }) })] })] }), (0, jsx_runtime_1.jsxs)(MessagesContainer, { children: [state.messages.map((message) => ((0, jsx_runtime_1.jsx)("div", { style: {
+                                    alignSelf: message.isUser ? "flex-end" : "flex-start",
+                                    maxWidth: "80%",
+                                    background: message.isUser ? "#232326" : "#18181a",
+                                    color: "#fff",
+                                    borderRadius: 10,
+                                    marginBottom: 8,
+                                    padding: "14px 18px",
+                                    fontSize: 15,
+                                    boxShadow: message.isUser
+                                        ? "0 1px 4px 0 rgba(0,0,0,0.10)"
+                                        : "0 1px 4px 0 rgba(0,0,0,0.08)",
+                                    whiteSpace: "pre-wrap",
+                                    wordBreak: "break-word",
+                                    borderTopRightRadius: message.isUser ? 2 : 10,
+                                    borderTopLeftRadius: message.isUser ? 10 : 2,
+                                    border: message.isUser
+                                        ? "1px solid #232326"
+                                        : "1px solid #232326",
+                                }, children: (0, jsx_runtime_1.jsx)(react_markdown_1.default, { remarkPlugins: [remark_gfm_1.default], components: {
+                                        code({ inline, children, ...rest }) {
+                                            return !inline ? ((0, jsx_runtime_1.jsx)("pre", { style: {
+                                                    background: "#232326",
+                                                    borderRadius: 8,
+                                                    padding: "12px 16px",
+                                                    fontSize: 14,
+                                                    overflowX: "auto",
+                                                    margin: "10px 0",
+                                                }, children: (0, jsx_runtime_1.jsx)("code", { ...rest, children: children }) })) : ((0, jsx_runtime_1.jsx)("code", { style: {
+                                                    background: "#232326",
+                                                    borderRadius: 4,
+                                                    padding: "2px 6px",
+                                                    fontSize: 14,
+                                                }, ...rest, children: children }));
+                                        },
+                                        h1: (props) => ((0, jsx_runtime_1.jsx)("h1", { style: {
+                                                fontSize: 22,
+                                                fontWeight: 700,
+                                                margin: "18px 0 8px 0",
+                                            }, ...props })),
+                                        h2: (props) => ((0, jsx_runtime_1.jsx)("h2", { style: {
+                                                fontSize: 18,
+                                                fontWeight: 600,
+                                                margin: "14px 0 6px 0",
+                                            }, ...props })),
+                                        h3: (props) => ((0, jsx_runtime_1.jsx)("h3", { style: {
+                                                fontSize: 16,
+                                                fontWeight: 600,
+                                                margin: "10px 0 4px 0",
+                                            }, ...props })),
+                                        ul: (props) => ((0, jsx_runtime_1.jsx)("ul", { style: { margin: "8px 0 8px 18px" }, ...props })),
+                                        ol: (props) => ((0, jsx_runtime_1.jsx)("ol", { style: { margin: "8px 0 8px 18px" }, ...props })),
+                                        li: (props) => (0, jsx_runtime_1.jsx)("li", { style: { margin: "4px 0" }, ...props }),
+                                        blockquote: (props) => ((0, jsx_runtime_1.jsx)("blockquote", { style: {
+                                                borderLeft: "3px solid #444",
+                                                margin: "8px 0",
+                                                padding: "6px 0 6px 14px",
+                                                color: "#aaa",
+                                            }, ...props })),
+                                        a: (props) => ((0, jsx_runtime_1.jsx)("a", { style: { color: "#7ecfff", textDecoration: "underline" }, target: "_blank", rel: "noopener noreferrer", ...props })),
+                                        p: (props) => (0, jsx_runtime_1.jsx)("p", { style: { margin: "8px 0" }, ...props }),
+                                    }, children: message.content }) }, message.id))), (0, jsx_runtime_1.jsx)("div", { ref: messagesEndRef })] }), (0, jsx_runtime_1.jsx)(InputContainer, { children: (0, jsx_runtime_1.jsxs)(InputWrapper, { children: [(0, jsx_runtime_1.jsx)(TextAreaWrapper, { children: (0, jsx_runtime_1.jsx)(TextArea, { ref: textAreaRef, value: inputValue, onChange: (e) => setInputValue(e.target.value), onKeyPress: handleKeyPress, placeholder: "Ask about biological data, request analysis, or search for information...", disabled: isLoading }) }), state.isAnalyzing ? ((0, jsx_runtime_1.jsx)(StopButton, { onClick: handleStopAnalysis, children: (0, jsx_runtime_1.jsx)(fi_1.FiStopCircle, { size: 16 }) })) : ((0, jsx_runtime_1.jsx)(SendButton, { disabled: !inputValue.trim() || isLoading || !state.currentWorkspace, onClick: handleSendMessage, children: (0, jsx_runtime_1.jsx)(fi_1.FiSend, { size: 16 }) }))] }) })] }), (0, jsx_runtime_1.jsx)(DatasetSelectionModal_1.DatasetSelectionModal, { isOpen: showDatasetModal, datasets: availableDatasets, onClose: () => {
                     setShowDatasetModal(false);
                     dispatch({ type: "SET_ANALYZING", payload: false });
                 }, onConfirm: handleDatasetSelection, isLoading: state.isAnalyzing }), (0, jsx_runtime_1.jsxs)(ChatHistoryDrawer, { open: chatHistoryOpen, children: [(0, jsx_runtime_1.jsxs)(ChatHistoryHeader, { children: ["Past Chats", (0, jsx_runtime_1.jsx)(CollapseButton, { onClick: () => setChatHistoryOpen(false), title: "Close", children: (0, jsx_runtime_1.jsx)(fi_1.FiX, { size: 16 }) })] }), (0, jsx_runtime_1.jsx)(ChatHistoryList, { children: loadingChats ? ((0, jsx_runtime_1.jsx)("div", { style: { color: "#888", padding: "16px 20px" }, children: "Loading..." })) : chatSessions.length === 0 ? ((0, jsx_runtime_1.jsx)("div", { style: { color: "#888", padding: "16px 20px" }, children: "No past chats" })) : (chatSessions.map((item) => ((0, jsx_runtime_1.jsx)(ChatHistoryItem, { onClick: () => handleLoadChat(item.path), children: item.name

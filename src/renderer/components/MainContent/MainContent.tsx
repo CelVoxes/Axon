@@ -360,11 +360,7 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 			return <JupyterViewer url={state.jupyterUrl} />;
 		}
 
-		// Show welcome screen
-		if (state.activeFile && state.openFiles.includes(state.activeFile)) {
-			return <FileEditor filePath={state.activeFile} />;
-		}
-
+		// Show welcome screen when no workspace is open or no files are active
 		return (
 			<EmptyState>
 				<div className="app-logo">NODE</div>

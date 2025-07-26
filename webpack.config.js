@@ -23,6 +23,15 @@ module.exports = {
 	},
 	resolve: {
 		extensions: [".tsx", ".ts", ".js"],
+		fallback: {
+			path: false,
+			fs: false,
+			os: false,
+			net: false,
+			child_process: false,
+			util: false,
+			ws: false,
+		},
 	},
 	plugins: [
 		new HtmlWebpackPlugin({

@@ -314,10 +314,7 @@ const MainContent = (props) => {
         if (state.jupyterUrl && !state.activeFile) {
             return (0, jsx_runtime_1.jsx)(JupyterViewer_1.JupyterViewer, { url: state.jupyterUrl });
         }
-        // Show welcome screen
-        if (state.activeFile && state.openFiles.includes(state.activeFile)) {
-            return (0, jsx_runtime_1.jsx)(FileEditor_1.FileEditor, { filePath: state.activeFile });
-        }
+        // Show welcome screen when no workspace is open or no files are active
         return ((0, jsx_runtime_1.jsxs)(EmptyState, { children: [(0, jsx_runtime_1.jsx)("div", { className: "app-logo", children: "NODE" }), (0, jsx_runtime_1.jsx)("div", { className: "title", children: "Welcome to Node" }), (0, jsx_runtime_1.jsxs)("div", { className: "subtitle", children: ["AI-powered biological data analysis platform", (0, jsx_runtime_1.jsx)("br", {}), "Open a workspace and start analyzing biological data with intelligent assistance"] }), (0, jsx_runtime_1.jsxs)(WelcomeActions, { children: [(0, jsx_runtime_1.jsxs)(ActionCard, { onClick: openWorkspace, children: [(0, jsx_runtime_1.jsx)("div", { className: "icon", children: (0, jsx_runtime_1.jsx)(fi_1.FiFolder, { size: 24 }) }), (0, jsx_runtime_1.jsx)("div", { className: "label", children: "Open project" }), (0, jsx_runtime_1.jsx)("div", { className: "description", children: "Open an existing folder" })] }), (0, jsx_runtime_1.jsxs)(ActionCard, { onClick: () => {
                                 console.log("Clone repo clicked");
                             }, children: [(0, jsx_runtime_1.jsx)("div", { className: "icon", children: "\u2318" }), (0, jsx_runtime_1.jsx)("div", { className: "label", children: "Clone repo" }), (0, jsx_runtime_1.jsx)("div", { className: "description", children: "Clone from Git repository" })] })] }), (0, jsx_runtime_1.jsxs)(RecentProjects, { children: [(0, jsx_runtime_1.jsx)("div", { className: "section-title", children: "Recent projects" }), (0, jsx_runtime_1.jsxs)("div", { className: "project-item", onClick: () => {

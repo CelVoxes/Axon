@@ -3,7 +3,8 @@ import styled from "styled-components";
 import { FiSend, FiX, FiStopCircle, FiMessageSquare } from "react-icons/fi";
 import { useAppContext } from "../../context/AppContext";
 import { BioRAGClient } from "../../services/BioRAGClient";
-import { ChatMessage } from "./ChatMessage";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { DatasetSelectionModal } from "./DatasetSelectionModal";
 
 const ChatContainer = styled.div<{ collapsed: boolean }>`
@@ -1045,16 +1046,122 @@ except Exception as e:
 
 				<MessagesContainer>
 					{state.messages.map((message) => (
-						<ChatMessage
+						<div
 							key={message.id}
-							message={{
-								id: message.id,
-								content: message.content,
-								isUser: message.isUser,
-								timestamp: message.timestamp,
-								status: message.status,
+							style={{
+								alignSelf: message.isUser ? "flex-end" : "flex-start",
+								maxWidth: "80%",
+								background: message.isUser ? "#232326" : "#18181a",
+								color: "#fff",
+								borderRadius: 10,
+								marginBottom: 8,
+								padding: "14px 18px",
+								fontSize: 15,
+								boxShadow: message.isUser
+									? "0 1px 4px 0 rgba(0,0,0,0.10)"
+									: "0 1px 4px 0 rgba(0,0,0,0.08)",
+								whiteSpace: "pre-wrap",
+								wordBreak: "break-word",
+								borderTopRightRadius: message.isUser ? 2 : 10,
+								borderTopLeftRadius: message.isUser ? 10 : 2,
+								border: message.isUser
+									? "1px solid #232326"
+									: "1px solid #232326",
 							}}
-						/>
+						>
+							<ReactMarkdown
+								remarkPlugins={[remarkGfm]}
+								components={{
+									code({ inline, children, ...rest }) {
+										return !inline ? (
+											<pre
+												style={{
+													background: "#232326",
+													borderRadius: 8,
+													padding: "12px 16px",
+													fontSize: 14,
+													overflowX: "auto",
+													margin: "10px 0",
+												}}
+											>
+												<code {...rest}>{children}</code>
+											</pre>
+										) : (
+											<code
+												style={{
+													background: "#232326",
+													borderRadius: 4,
+													padding: "2px 6px",
+													fontSize: 14,
+												}}
+												{...rest}
+											>
+												{children}
+											</code>
+										);
+									},
+									h1: (props) => (
+										<h1
+											style={{
+												fontSize: 22,
+												fontWeight: 700,
+												margin: "18px 0 8px 0",
+											}}
+											{...props}
+										/>
+									),
+									h2: (props) => (
+										<h2
+											style={{
+												fontSize: 18,
+												fontWeight: 600,
+												margin: "14px 0 6px 0",
+											}}
+											{...props}
+										/>
+									),
+									h3: (props) => (
+										<h3
+											style={{
+												fontSize: 16,
+												fontWeight: 600,
+												margin: "10px 0 4px 0",
+											}}
+											{...props}
+										/>
+									),
+									ul: (props) => (
+										<ul style={{ margin: "8px 0 8px 18px" }} {...props} />
+									),
+									ol: (props) => (
+										<ol style={{ margin: "8px 0 8px 18px" }} {...props} />
+									),
+									li: (props) => <li style={{ margin: "4px 0" }} {...props} />,
+									blockquote: (props) => (
+										<blockquote
+											style={{
+												borderLeft: "3px solid #444",
+												margin: "8px 0",
+												padding: "6px 0 6px 14px",
+												color: "#aaa",
+											}}
+											{...props}
+										/>
+									),
+									a: (props) => (
+										<a
+											style={{ color: "#7ecfff", textDecoration: "underline" }}
+											target="_blank"
+											rel="noopener noreferrer"
+											{...props}
+										/>
+									),
+									p: (props) => <p style={{ margin: "8px 0" }} {...props} />,
+								}}
+							>
+								{message.content}
+							</ReactMarkdown>
+						</div>
 					))}
 					<div ref={messagesEndRef} />
 				</MessagesContainer>

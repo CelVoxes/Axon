@@ -77,12 +77,28 @@ export class BioRAGCursorApp {
 				nodeIntegration: false,
 				contextIsolation: true,
 				preload: path.join(__dirname, "preload.js"),
-				webSecurity: false, // Allow loading Jupyter Lab
+				webSecurity: true, // Enable web security
 				webviewTag: true, // Enable webview elements
+				allowRunningInsecureContent: false, // Disable insecure content
+				sandbox: false, // Disable sandbox for webview compatibility
 			},
 			titleBarStyle: "hiddenInset",
 			show: false,
 		});
+
+		// Set CSP headers for better security
+		this.mainWindow.webContents.session.webRequest.onHeadersReceived(
+			(details, callback) => {
+				callback({
+					responseHeaders: {
+						...details.responseHeaders,
+						"Content-Security-Policy": [
+							"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' http://localhost:* https://localhost:*; frame-src 'self' http://127.0.0.1:* https://127.0.0.1:*; frame-ancestors 'self';",
+						],
+					},
+				});
+			}
+		);
 
 		// Load the React app
 		if (process.env.NODE_ENV === "development") {
