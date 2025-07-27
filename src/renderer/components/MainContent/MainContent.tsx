@@ -373,8 +373,8 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 		// Show welcome screen when no workspace is open or no files are active
 		return (
 			<EmptyState>
-				<div className="app-logo">NODE</div>
-				<div className="title">Welcome to Node</div>
+				<div className="app-logo">AXON</div>
+				<div className="title">Welcome to Axon</div>
 				<div className="subtitle">
 					AI-powered biological data analysis platform
 					<br />

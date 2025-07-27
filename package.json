@@ -1,7 +1,7 @@
 {
-  "name": "node-biorag",
+  "name": "axon",
   "version": "1.0.0",
-  "description": "Node - AI-powered biological data analysis platform",
+  "description": "Axon - AI-powered biological data analysis platform",
   "main": "dist/main/main.js",
   "scripts": {
     "start": "electron .",
@@ -11,7 +11,7 @@
     "package": "electron-builder",
     "prepack": "npm run build"
   },
-  "author": "Node Team",
+  "author": "Celvox Team",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.0.0",
@@ -48,8 +48,8 @@
     "xterm-addon-fit": "^0.8.0"
   },
   "build": {
-    "appId": "com.node.biorag",
-    "productName": "Node",
+    "appId": "com.celvox.axon",
+    "productName": "Axon",
     "directories": {
       "output": "release"
     },

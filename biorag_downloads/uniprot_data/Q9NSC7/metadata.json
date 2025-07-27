@@ -1,0 +1,26 @@
+{
+  "uniprot_id": "Q9NSC7",
+  "download_date": "2025-07-27T09:02:01.728215",
+  "fasta_file": "/Users/onur-lumc/Desktop/Node/biorag_downloads/uniprot_data/Q9NSC7/Q9NSC7.fasta",
+  "info_file": "/Users/onur-lumc/Desktop/Node/biorag_downloads/uniprot_data/Q9NSC7/Q9NSC7_info.txt",
+  "entry_info": {
+    "source": "UniProt",
+    "type": "protein",
+    "id": "Q9NSC7",
+    "accession": "Q9NSC7",
+    "entry_name": "SIA7A_HUMAN",
+    "protein_name": "Alpha-N-acetylgalactosaminide alpha-2,6-sialyltransferase 1",
+    "title": "Alpha-N-acetylgalactosaminide alpha-2,6-sialyltransferase 1",
+    "gene_names": [
+      "ST6GALNAC1"
+    ],
+    "primary_gene": "ST6GALNAC1",
+    "organism": "Homo sapiens",
+    "organism_id": 9606,
+    "length": 600,
+    "sequence": "",
+    "domains": [],
+    "go_terms": [],
+    "pubmed_refs": []
+  }
+}

@@ -314,28 +314,27 @@ Focus on the specific biological analysis they're asking for. Be precise and act
 					setTimeout(() => reject(new Error("Dataset search timeout")), 15000);
 				});
 
+				// Use the dedicated dataset search method instead of general query
 				const searchResponse = await Promise.race([
-					this.bioragClient.query({
-						question: `Find datasets for: ${understanding.userQuestion}
-						
-						Look for specific GEO dataset IDs that would help answer this question.`,
-						max_documents: 5,
-						response_type: "answer",
+					this.bioragClient.searchDatasets({
+						query: understanding.userQuestion,
+						limit: 5,
+						organism: "Homo sapiens", // Default to human data
 					}),
 					timeoutPromise,
 				]);
 
-				const foundGeoIds = searchResponse.answer.match(/GSE\d+/g) || [];
-				for (const geoId of foundGeoIds.slice(0, 3)) {
+				// Convert BioRAG dataset format to our format
+				for (const dataset of searchResponse.slice(0, 3)) {
 					datasets.push({
-						id: geoId,
-						title: `Dataset for analysis`,
+						id: dataset.id,
+						title: dataset.title,
 						source: "GEO",
-						organism: "unknown",
-						samples: 0,
-						platform: "unknown",
-						description: `Dataset ${geoId} relevant to the question`,
-						url: `https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=${geoId}`,
+						organism: dataset.organism,
+						samples: dataset.samples,
+						platform: dataset.platform,
+						description: dataset.description,
+						url: `https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=${dataset.id}`,
 					});
 				}
 			} catch (error) {
@@ -599,57 +598,51 @@ def download_dataset(dataset_id):
                                json={'force_redownload': False})
         
         if response.status_code == 200:
-            result = response.json();
-            console.log(result);
-            print(f"   Download started: {result.get('status', 'unknown')}");
+            result = response.json()
+            print(f"   Download started: {result.get('status', 'unknown')}")
             
             # Monitor download progress
             max_attempts = 60  # 5 minutes max
             for attempt in range(max_attempts):
                 time.sleep(5)  # Check every 5 seconds
                 
-                try {
-                    status_response = requests.get(f"{BIORAG_API_BASE}/datasets/{dataset_id}/status");
-                    if (status_response.status_code == 200) {
-                        status_info = status_response.json();
-                        status = status_info.get('status', 'unknown');
-                        progress = status_info.get('progress', 0);
+                try:
+                    status_response = requests.get(f"{BIORAG_API_BASE}/datasets/{dataset_id}/status")
+                    if status_response.status_code == 200:
+                        status_info = status_response.json()
+                        status = status_info.get('status', 'unknown')
+                        progress = status_info.get('progress', 0)
                         
-                        print(f"   Progress: {progress}% - {status}");
+                        print(f"   Progress: {progress}% - {status}")
                         
-                        if (status == 'completed') {
-                            print(f"✅ {dataset_id} download completed!");
-                            return True;
-                        } else if (status == 'error') {
-                            print(f"❌ {dataset_id} download failed!");
-                            return False;
-                        }
-                    } else {
-                        print(f"   Status check failed: {status_response.status_code}");
-                    }
-                } catch (Exception status_error) {
-                    print(f"   Status check error: {status_error}");
-                }
+                        if status == 'completed':
+                            print(f"✅ {dataset_id} download completed!")
+                            return True
+                        elif status == 'error':
+                            print(f"❌ {dataset_id} download failed!")
+                            return False
+                    else:
+                        print(f"   Status check failed: {status_response.status_code}")
+                except Exception as status_error:
+                    print(f"   Status check error: {status_error}")
                 
-                print(f"   Checking status... (attempt {attempt + 1})");
+                print(f"   Checking status... (attempt {attempt + 1})")
             }
             
-            print(f"⏰ {dataset_id} download timeout");
-            return False;
-        } else {
-            print(f"❌ Failed to start download for {dataset_id} - Status: {response.status_code}");
-            print(f"   Response: {response.text}");
-            return False;
-        }
+            print(f"⏰ {dataset_id} download timeout")
+            return False
+        else:
+            print(f"❌ Failed to start download for {dataset_id} - Status: {response.status_code}")
+            print(f"   Response: {response.text}")
+            return False
             
-    } catch (Exception e) {
-        print(f"❌ Error downloading {dataset_id}: {e}");
-        return False;
-    }
+    except Exception as e:
+        print(f"❌ Error downloading {dataset_id}: {e}")
+        return False
 
 # Check dataset sizes and download
 print("\\n=== Dataset Information ===")
-dataset_info_list = [];
+dataset_info_list = []
 
 # Use default information if API doesn't provide details
 default_info = {
@@ -702,7 +695,7 @@ for i, info in enumerate(dataset_info_list):
 # Load downloaded datasets
 print("\n=== Loading Downloaded Data ===")
 data_files = {}
-sample_metadata = {};
+sample_metadata = {}
 
 ${datasets
 	.map(
@@ -720,7 +713,7 @@ try:
             
             # Show memory usage
             memory_mb = data_files['${d.id}'].memory_usage(deep=True).sum() / 1024 / 1024
-            print(f"   Memory usage: {memory_mb:.1f} MB")
+            print(f"   Memory usage: {{memory_mb:.1f}} MB")
         
         if sample_file.exists():
             sample_metadata['${d.id}'] = pd.read_csv(sample_file)
@@ -739,7 +732,7 @@ print("Available datasets:", list(data_files.keys()))
 
 # Show total memory usage
 total_memory = sum(df.memory_usage(deep=True).sum() for df in data_files.values()) / 1024 / 1024
-print(f"Total memory usage: {{total_memory:.1f}} MB");
+print(f"Total memory usage: {{total_memory:.1f}} MB")
 
 # Create combined dataset if multiple datasets
 if len(data_files) > 1:
@@ -971,7 +964,7 @@ try:
     # Example: results = analyze_data(data)
     print("Analysis completed")
     
-except Exception as e {
+except Exception as e:
     print(f"Analysis error: {e}")
 
 `;
@@ -994,7 +987,7 @@ try:
     # plt.savefig('figures/plot.png')
     print("Visualizations saved to figures/")
     
-except Exception as e {
+except Exception as e:
     print(f"Visualization error: {e}")
 
 `;
@@ -1014,7 +1007,7 @@ try:
     # Example: results.to_csv('results/output.csv')
     print("Results saved to results/")
     
-except Exception as e {
+except Exception as e:
     print(f"Output generation error: {e}")
 
 `;
@@ -1028,7 +1021,7 @@ try:
     
     print("Step execution completed")
     
-except Exception as e {
+except Exception as e:
     print(f"Step execution error: {e}")
 
 `;
@@ -1116,9 +1109,8 @@ try:
             cluster_results.to_csv(f'results/{{dataset_id}}_clusters.csv', index=False)
             print(f"Saved clustering results for {{dataset_id}}")
             
-except Exception as e {
+except Exception as e:
     print(f"Clustering analysis error: {{e}}")
-}
 
 `;
 		} else if (
@@ -1161,9 +1153,8 @@ try:
             
             print(f"Saved visualizations for {{dataset_id}}")
             
-except Exception as e {
+except Exception as e:
     print(f"Visualization error: {{e}}")
-}
 
 `;
 		} else {
@@ -1187,9 +1178,8 @@ try:
             summary_stats.to_csv(f'results/{{dataset_id}}_summary_stats.csv')
             print(f"Saved summary statistics for {{dataset_id}}")
             
-except Exception as e {
+except Exception as e:
     print(f"General analysis error: {{e}}")
-}
 
 `;
 		}

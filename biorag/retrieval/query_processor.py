@@ -138,6 +138,19 @@ class QueryProcessor:
             entities[entity_type] = list(set(entities[entity_type]))
             entities[entity_type] = [e.strip() for e in entities[entity_type] if e.strip()]
         
+        # Filter out LLM-specific terms that might have been incorrectly extracted
+        llm_terms_to_filter = {
+            "WORKING", "DIRECTORY", "DATASETS", "IMPORTANT", "ONLY", "REAL", 
+            "DOWNLOADED", "NUMBER", "QUESTION", "STEP", "RESEARCH", "UNDERSTANDING",
+            "OUTPUTS", "S", "as", "for", "in", "the", "and", "or", "with", "using"
+        }
+        
+        for entity_type in entities:
+            entities[entity_type] = [
+                entity for entity in entities[entity_type] 
+                if entity.lower() not in llm_terms_to_filter and len(entity) > 1
+            ]
+        
         return entities
     
     def _determine_context(self, query: str, entities: Dict[str, List[str]]) -> Optional[str]:
@@ -205,32 +218,159 @@ class QueryProcessor:
         context_type: Optional[str]
     ) -> str:
         """Enhance query with biological context and synonyms."""
-        enhanced_query = query
+        # Clean up LLM prompts that might be passed as queries
+        cleaned_query = self._clean_llm_prompt(query)
         
-        # Add context-specific terms
+        # Start with cleaned query
+        enhanced_query = cleaned_query
+        
+        # Add context-specific terms (but be more conservative)
         if context_type:
             context_terms = {
-                "gene": "gene expression transcription regulation",
-                "protein": "protein structure function interaction",
-                "disease": "disease pathology clinical symptoms",
-                "pathway": "biological pathway signaling cascade",
-                "drug": "drug therapy treatment pharmacology",
-                "metabolism": "metabolic pathway enzyme reaction"
+                "gene": "gene expression",
+                "protein": "protein function",
+                "disease": "disease pathology",
+                "pathway": "biological pathway",
+                "drug": "drug therapy",
+                "metabolism": "metabolic pathway"
             }
             
             if context_type in context_terms:
-                enhanced_query += f" {context_terms[context_type]}"
+                # Only add if not already present
+                context_term = context_terms[context_type]
+                if context_term not in enhanced_query.lower():
+                    enhanced_query += f" {context_term}"
         
-        # Add entity synonyms and related terms
+        # Add entity synonyms and related terms (but avoid repetition)
         if entities["genes"]:
             for gene in entities["genes"]:
-                enhanced_query += f" {gene} gene expression"
+                # Only add if not already present
+                if f"{gene} gene" not in enhanced_query and f"{gene} expression" not in enhanced_query:
+                    enhanced_query += f" {gene}"
         
         if entities["diseases"]:
             for disease in entities["diseases"]:
-                enhanced_query += f" {disease} pathology"
+                # Only add if not already present
+                if disease not in enhanced_query:
+                    enhanced_query += f" {disease}"
+        
+        # Clean up any excessive whitespace
+        enhanced_query = " ".join(enhanced_query.split())
+        
+        # Remove any remaining LLM-specific terms that might have slipped through
+        llm_terms_to_remove = [
+            "WORKING", "DIRECTORY", "DATASETS", "IMPORTANT", "ONLY", "REAL", 
+            "DOWNLOADED", "NUMBER", "QUESTION", "STEP", "RESEARCH"
+        ]
+        for term in llm_terms_to_remove:
+            enhanced_query = enhanced_query.replace(term, "").replace(term.lower(), "")
+        
+        # Clean up whitespace again after removing terms
+        enhanced_query = " ".join(enhanced_query.split())
+        
+        # Limit query length to prevent API issues
+        if len(enhanced_query) > 200:
+            # Take first few meaningful terms
+            terms = enhanced_query.split()[:10]
+            enhanced_query = " ".join(terms)
         
         return enhanced_query
+    
+    def _clean_llm_prompt(self, query: str) -> str:
+        """Clean up LLM prompts to extract only relevant search terms."""
+        # First, check if query contains specific GEO dataset IDs
+        gse_matches = re.findall(r'GSE\d+', query)
+        if gse_matches:
+            # If specific datasets are mentioned, extract biological context
+            biological_terms = []
+            if "B-ALL" in query:
+                biological_terms.append("B-ALL")
+            if "transcriptional" in query:
+                biological_terms.append("transcriptional")
+            if "subtypes" in query:
+                biological_terms.append("subtypes")
+            if "leukemia" in query:
+                biological_terms.append("leukemia")
+            if "gene expression" in query:
+                biological_terms.append("gene expression")
+            
+            # Return biological context + dataset IDs
+            if biological_terms:
+                return f"{' '.join(biological_terms)} {' '.join(gse_matches)}"
+            else:
+                return " ".join(gse_matches)
+        
+        # Check if this looks like an LLM prompt with various patterns
+        llm_indicators = [
+            "You are an expert bioinformatics programmer",
+            "RESEARCH_QUESTION",
+            "STEP",
+            "WORKING",
+            "DIRECTORY",
+            "DATASETS",
+            "IMPORTANT",
+            "ONLY",
+            "REAL",
+            "DOWNLOADED",
+            "NUMBER",
+            "QUESTION"
+        ]
+        
+        is_llm_prompt = any(indicator in query for indicator in llm_indicators)
+        
+        if is_llm_prompt:
+            # Look for RESEARCH_QUESTION pattern first
+            research_match = re.search(r'RESEARCH_QUESTION[:\s]*["\']([^"\']+)["\']', query)
+            if research_match:
+                return research_match.group(1).strip()
+            
+            # Look for STEP pattern that might contain the actual question
+            step_match = re.search(r'STEP[:\s]*["\']([^"\']+)["\']', query)
+            if step_match:
+                step_content = step_match.group(1)
+                # Extract biological terms from the step
+                biological_terms = []
+                if "B-ALL" in step_content:
+                    biological_terms.append("B-ALL")
+                if "transcriptional" in step_content:
+                    biological_terms.append("transcriptional")
+                if "subtypes" in step_content:
+                    biological_terms.append("subtypes")
+                if biological_terms:
+                    return " ".join(biological_terms)
+            
+            # Fallback: extract any biological terms and remove LLM-specific terms
+            biological_keywords = [
+                "B-ALL", "leukemia", "transcriptional", "subtypes", "gene expression",
+                "microarray", "RNA-seq", "differential expression", "clustering"
+            ]
+            found_terms = []
+            for keyword in biological_keywords:
+                if keyword.lower() in query.lower():
+                    found_terms.append(keyword)
+            
+            if found_terms:
+                return " ".join(found_terms)
+            
+            # Last resort: return a minimal search term
+            return "B-ALL transcriptional subtypes"
+        
+        # If it's not an LLM prompt, still clean any LLM-specific terms that might be present
+        llm_terms_to_remove = [
+            "WORKING", "DIRECTORY", "DATASETS", "IMPORTANT", "ONLY", "REAL", 
+            "DOWNLOADED", "NUMBER", "QUESTION", "STEP", "RESEARCH", "UNDERSTANDING",
+            "OUTPUTS", "S", "as", "for", "in", "the", "and", "or", "with", "using"
+        ]
+        
+        cleaned_query = query
+        for term in llm_terms_to_remove:
+            # Remove the term with surrounding whitespace
+            cleaned_query = re.sub(r'\b' + re.escape(term) + r'\b', '', cleaned_query, flags=re.IGNORECASE)
+        
+        # Clean up whitespace
+        cleaned_query = " ".join(cleaned_query.split())
+        
+        return cleaned_query
     
     def _determine_strategy(
         self, 

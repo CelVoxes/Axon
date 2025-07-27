@@ -195,7 +195,6 @@ export const Notebook: React.FC<NotebookProps> = ({
 					console.log("Jupyter started successfully:", result.url);
 					setJupyterStatus("ready");
 					createWelcomeCell();
-					loadAnalysisSteps();
 				} else {
 					console.error("Failed to start Jupyter:", result.error);
 					setJupyterStatus("error");
@@ -235,42 +234,69 @@ Ready to start your analysis!`,
 			title: "Welcome",
 			isMarkdown: true,
 		};
-		setCells([welcomeCell]);
+
+		const testCell: Cell = {
+			id: "test",
+			code: `# Test Cell - Verify Jupyter is Working
+
+print("🎉 Jupyter kernel is working!")
+print("Python version:", __import__('sys').version)
+print("Current working directory:", __import__('os').getcwd())
+
+# Test basic imports
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+print("✅ All basic libraries imported successfully!")
+print("NumPy version:", np.__version__)
+print("Pandas version:", pd.__version__)
+
+# Create a simple test plot
+fig, ax = plt.subplots(figsize=(6, 4))
+x = np.linspace(0, 10, 100)
+y = np.sin(x)
+ax.plot(x, y)
+ax.set_title("Test Plot: Sine Wave")
+ax.set_xlabel("X")
+ax.set_ylabel("Y")
+plt.tight_layout()
+plt.show()
+
+print("🎯 Notebook is ready for analysis!")`,
+			language: "python",
+			output: "",
+			hasError: false,
+			status: "pending",
+			title: "Test Cell",
+		};
+
+		setCells([welcomeCell, testCell]);
 	};
 
-	// Load analysis steps from the workspace
-	const loadAnalysisSteps = async () => {
-		if (!workspacePath) return;
+	// Listen for analysis results from chat panel
+	useEffect(() => {
+		const checkForAnalysis = async () => {
+			if (!workspacePath || jupyterStatus !== "ready") return;
 
-		try {
-			setIsLoadingAnalysis(true);
-			console.log("Loading analysis steps from workspace...");
-
-			// Check if there's an analysis result file in the workspace
-			const analysisFile = `${workspacePath}/analysis_result.json`;
 			try {
+				const analysisFile = `${workspacePath}/analysis_result.json`;
 				const analysisContent = await window.electronAPI.readFile(analysisFile);
 				const analysisResult = JSON.parse(analysisContent);
 
 				if (analysisResult.steps && Array.isArray(analysisResult.steps)) {
-					setAnalysisSteps(analysisResult.steps);
+					console.log("Found analysis result, creating cells...");
 					createCellsFromSteps(analysisResult.steps);
-					console.log("Loaded analysis steps:", analysisResult.steps.length);
-
-					// Automatically execute all steps after a short delay
-					setTimeout(() => {
-						executeAllSteps();
-					}, 2000);
 				}
 			} catch (error) {
-				console.log("No existing analysis found");
+				// No analysis file yet, that's fine
 			}
-		} catch (error) {
-			console.error("Error loading analysis steps:", error);
-		} finally {
-			setIsLoadingAnalysis(false);
-		}
-	};
+		};
+
+		// Check periodically for new analysis results
+		const interval = setInterval(checkForAnalysis, 2000);
+		return () => clearInterval(interval);
+	}, [workspacePath, jupyterStatus]);
 
 	const createCellsFromSteps = (steps: AnalysisStep[]) => {
 		const newCells: Cell[] = steps.map((step, index) => ({
@@ -279,7 +305,7 @@ Ready to start your analysis!`,
 			language: "python" as const,
 			output: step.output || "",
 			hasError: step.status === "failed",
-			status: step.status,
+			status: "pending", // Start as pending so user can run manually
 			title: `Step ${index + 1}: ${step.description}`,
 		}));
 		setCells((prev) => [...prev, ...newCells]);

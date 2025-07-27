@@ -7,7 +7,7 @@ import Store from "electron-store";
 // Store for app settings
 const store = new Store();
 
-export class BioRAGCursorApp {
+export class AxonApp {
 	private mainWindow: BrowserWindow | null = null;
 	private bioragServer: ChildProcess | null = null;
 	private jupyterProcess: ChildProcess | null = null;
@@ -72,7 +72,7 @@ export class BioRAGCursorApp {
 			height: 900,
 			minWidth: 1200,
 			minHeight: 700,
-			title: "Node",
+			title: "Axon",
 			webPreferences: {
 				nodeIntegration: false,
 				contextIsolation: true,
@@ -550,25 +550,57 @@ export class BioRAGCursorApp {
 						}
 					}, 10000);
 
-					this.jupyterProcess!.stdout?.on("data", (data) => {
-						const output = data.toString();
-						console.log(`Jupyter Log: ${output}`);
+					let jupyterUrl = `http://127.0.0.1:${this.jupyterPort}`;
 
-						// Look for the actual URL in the output
-						const urlMatch = output.match(/http:\/\/127\.0\.0\.1:(\d+)\/lab/);
-						if (urlMatch && !resolved) {
+					this.jupyterProcess!.stdout!.on("data", (data) => {
+						const output = data.toString();
+						console.log("Jupyter:", output);
+
+						// Check if Jupyter is ready
+						if (
+							output.includes("Jupyter Server") &&
+							output.includes("running at")
+						) {
+							const urlMatch = output.match(/http:\/\/[^\s]+/);
+							if (urlMatch) {
+								jupyterUrl = urlMatch[0];
+								console.log("Detected Jupyter URL:", jupyterUrl);
+							}
+						}
+
+						if (
+							output.includes("Jupyter Server") &&
+							output.includes("running at") &&
+							!resolved
+						) {
 							resolved = true;
 							clearTimeout(timeout);
-							this.jupyterPort = parseInt(urlMatch[1]);
-							const jupyterUrl = `http://127.0.0.1:${this.jupyterPort}`;
-							console.log(`Detected Jupyter URL: ${jupyterUrl}`);
 
-							// Notify the renderer process
-							this.mainWindow?.webContents.send("jupyter-ready", {
-								url: jupyterUrl,
-								token: "",
-								port: this.jupyterPort,
-							});
+							// Create a kernel for the notebook
+							setTimeout(async () => {
+								try {
+									const response = await fetch(
+										`http://127.0.0.1:${this.jupyterPort}/api/kernels`,
+										{
+											method: "POST",
+											headers: {
+												"Content-Type": "application/json",
+											},
+											body: JSON.stringify({
+												name: "python3",
+												path: ".",
+											}),
+										}
+									);
+
+									if (response.ok) {
+										const kernel = await response.json();
+										console.log("Created initial kernel:", kernel.id);
+									}
+								} catch (error) {
+									console.error("Failed to create initial kernel:", error);
+								}
+							}, 2000);
 
 							resolve({
 								success: true,
@@ -682,17 +714,42 @@ export class BioRAGCursorApp {
 				const WebSocket = require("ws");
 				const { v4: uuidv4 } = require("uuid");
 
-				// 1. Find the running kernel
-				const response = await fetch(
+				// 1. Find the running kernel or create one
+				let response = await fetch(
 					`http://127.0.0.1:${this.jupyterPort}/api/kernels`
 				);
-				const kernels = await response.json();
+				let kernels = await response.json();
 
+				let kernelId: string;
 				if (!kernels || kernels.length === 0) {
-					throw new Error("No active Jupyter kernel found.");
+					// Create a new kernel
+					console.log("No kernel found, creating new kernel...");
+					const createResponse = await fetch(
+						`http://127.0.0.1:${this.jupyterPort}/api/kernels`,
+						{
+							method: "POST",
+							headers: {
+								"Content-Type": "application/json",
+							},
+							body: JSON.stringify({
+								name: "python3",
+								path: ".",
+							}),
+						}
+					);
+
+					if (!createResponse.ok) {
+						throw new Error("Failed to create Jupyter kernel");
+					}
+
+					const newKernel = await createResponse.json();
+					kernelId = newKernel.id;
+					console.log("Created new kernel:", kernelId);
+				} else {
+					kernelId = kernels[0].id;
+					console.log("Using existing kernel:", kernelId);
 				}
 
-				const kernelId = kernels[0].id;
 				const wsUrl = `ws://127.0.0.1:${this.jupyterPort}/api/kernels/${kernelId}/channels`;
 
 				// 2. Open a WebSocket connection
@@ -814,6 +871,117 @@ export class BioRAGCursorApp {
 		});
 
 		// File operations
+		ipcMain.handle("read-file", async (_, filePath: string) => {
+			try {
+				const content = await fs.promises.readFile(filePath, "utf8");
+				return content;
+			} catch (error) {
+				throw error;
+			}
+		});
+
+		ipcMain.handle(
+			"write-file",
+			async (_, filePath: string, content: string) => {
+				try {
+					await fs.promises.writeFile(filePath, content, "utf8");
+					return { success: true };
+				} catch (error) {
+					return {
+						success: false,
+						error: error instanceof Error ? error.message : String(error),
+					};
+				}
+			}
+		);
+
+		ipcMain.handle("list-directory", async (_, dirPath: string) => {
+			try {
+				const items = await fs.promises.readdir(dirPath, {
+					withFileTypes: true,
+				});
+				return items.map((item) => ({
+					name: item.name,
+					isDirectory: item.isDirectory(),
+					path: path.join(dirPath, item.name),
+				}));
+			} catch (error) {
+				throw error;
+			}
+		});
+
+		ipcMain.handle("create-directory", async (_, dirPath: string) => {
+			try {
+				await fs.promises.mkdir(dirPath, { recursive: true });
+				return { success: true };
+			} catch (error) {
+				return {
+					success: false,
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+		});
+
+		ipcMain.handle("delete-file", async (_, filePath: string) => {
+			try {
+				await fs.promises.unlink(filePath);
+				return { success: true };
+			} catch (error) {
+				return {
+					success: false,
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+		});
+
+		ipcMain.handle("delete-directory", async (_, dirPath: string) => {
+			try {
+				await fs.promises.rmdir(dirPath, { recursive: true });
+				return { success: true };
+			} catch (error) {
+				return {
+					success: false,
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+		});
+
+		ipcMain.handle("file-exists", async (_, filePath: string) => {
+			try {
+				await fs.promises.access(filePath);
+				return true;
+			} catch {
+				return false;
+			}
+		});
+
+		ipcMain.handle("directory-exists", async (_, dirPath: string) => {
+			try {
+				const stat = await fs.promises.stat(dirPath);
+				return stat.isDirectory();
+			} catch {
+				return false;
+			}
+		});
+
+		ipcMain.handle("get-file-info", async (_, filePath: string) => {
+			try {
+				const stat = await fs.promises.stat(filePath);
+				return {
+					size: stat.size,
+					created: stat.birthtime,
+					modified: stat.mtime,
+					isDirectory: stat.isDirectory(),
+				};
+			} catch (error) {
+				throw error;
+			}
+		});
+
+		ipcMain.handle("on-jupyter-ready", (_, callback: (data: any) => void) => {
+			// This is handled by the renderer process
+			return true;
+		});
 	}
 
 	private cleanup() {
@@ -864,4 +1032,4 @@ export class BioRAGCursorApp {
 }
 
 // Initialize the app
-new BioRAGCursorApp();
+new AxonApp();

@@ -253,7 +253,41 @@ export class BioRAGClient {
 		try {
 			const client = await this.getClient();
 
-			// First get the regular BioRAG response
+			// Check if query contains specific GEO dataset IDs
+			const geoIds = query.match(/GSE\d+/g) || [];
+
+			if (geoIds.length > 0) {
+				// User mentioned specific datasets - fetch them directly
+				const datasets: DatasetInfo[] = [];
+				for (const geoId of geoIds.slice(0, options?.maxDatasets || 10)) {
+					try {
+						const datasetInfo = await this.getDatasetById(geoId);
+						datasets.push(datasetInfo);
+					} catch (error) {
+						console.warn(`Failed to get info for ${geoId}:`, error);
+					}
+				}
+
+				const answer = `Found ${
+					datasets.length
+				} specific dataset(s) mentioned in your query: ${geoIds.join(
+					", "
+				)}. These datasets are ready for analysis.`;
+
+				return {
+					answer,
+					datasets,
+					suggestions: [
+						"Download and analyze differential expression",
+						"Compare expression profiles between conditions",
+						"Identify pathway enrichment",
+						"Perform clustering analysis",
+						"Generate expression heatmaps",
+					],
+				};
+			}
+
+			// No specific IDs mentioned - search for relevant datasets
 			const bioragResponse = await this.query({
 				question: `Find datasets relevant to: ${query}. Include specific GEO dataset IDs that would be useful for this analysis.`,
 				max_documents: 5,
@@ -261,12 +295,15 @@ export class BioRAGClient {
 			});
 
 			// Extract dataset IDs from the response
-			const geoIds = bioragResponse.answer.match(/GSE\d+/g) || [];
+			const extractedGeoIds = bioragResponse.answer.match(/GSE\d+/g) || [];
 			const datasets: DatasetInfo[] = [];
 
 			// Search for datasets if requested
-			if (options?.includeDatasets && geoIds.length > 0) {
-				for (const geoId of geoIds.slice(0, options.maxDatasets || 10)) {
+			if (options?.includeDatasets && extractedGeoIds.length > 0) {
+				for (const geoId of extractedGeoIds.slice(
+					0,
+					options.maxDatasets || 10
+				)) {
 					try {
 						const datasetInfo = await this.getDatasetInfo(geoId);
 						datasets.push(datasetInfo);
@@ -310,6 +347,38 @@ export class BioRAGClient {
 		} catch (error) {
 			console.error("Gene search error:", error);
 			throw new Error("Failed to search for gene information");
+		}
+	}
+
+	// Direct dataset access by ID
+	async getDatasetById(datasetId: string): Promise<DatasetInfo> {
+		try {
+			const client = await this.getClient();
+			const response = await client.get(`/datasets/${datasetId}`);
+			return response.data;
+		} catch (error) {
+			console.error("Dataset info error:", error);
+			throw new Error(`Failed to get dataset info for ${datasetId}`);
+		}
+	}
+
+	// Get multiple datasets by IDs
+	async getDatasetsByIds(datasetIds: string[]): Promise<DatasetInfo[]> {
+		try {
+			const datasets: DatasetInfo[] = [];
+			for (const id of datasetIds) {
+				try {
+					const dataset = await this.getDatasetById(id);
+					datasets.push(dataset);
+				} catch (error) {
+					console.warn(`Failed to get dataset ${id}:`, error);
+					// Continue with other datasets
+				}
+			}
+			return datasets;
+		} catch (error) {
+			console.error("Get datasets by IDs error:", error);
+			throw new Error("Failed to get datasets by IDs");
 		}
 	}
 

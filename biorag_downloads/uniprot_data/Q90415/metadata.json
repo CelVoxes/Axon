@@ -1,0 +1,26 @@
+{
+  "uniprot_id": "Q90415",
+  "download_date": "2025-07-27T09:05:01.998536",
+  "fasta_file": "/Users/onur-lumc/Desktop/Node/biorag_downloads/uniprot_data/Q90415/Q90415.fasta",
+  "info_file": "/Users/onur-lumc/Desktop/Node/biorag_downloads/uniprot_data/Q90415/Q90415_info.txt",
+  "entry_info": {
+    "source": "UniProt",
+    "type": "protein",
+    "id": "Q90415",
+    "accession": "Q90415",
+    "entry_name": "RXRAB_DANRE",
+    "protein_name": "Retinoic acid receptor RXR-alpha-B",
+    "title": "Retinoic acid receptor RXR-alpha-B",
+    "gene_names": [
+      "rxrab"
+    ],
+    "primary_gene": "rxrab",
+    "organism": "Danio rerio",
+    "organism_id": 7955,
+    "length": 379,
+    "sequence": "",
+    "domains": [],
+    "go_terms": [],
+    "pubmed_refs": []
+  }
+}

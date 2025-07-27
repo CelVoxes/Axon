@@ -1,0 +1,26 @@
+{
+  "uniprot_id": "Q6UXN8",
+  "download_date": "2025-07-27T09:02:01.472141",
+  "fasta_file": "/Users/onur-lumc/Desktop/Node/biorag_downloads/uniprot_data/Q6UXN8/Q6UXN8.fasta",
+  "info_file": "/Users/onur-lumc/Desktop/Node/biorag_downloads/uniprot_data/Q6UXN8/Q6UXN8_info.txt",
+  "entry_info": {
+    "source": "UniProt",
+    "type": "protein",
+    "id": "Q6UXN8",
+    "accession": "Q6UXN8",
+    "entry_name": "CLC9A_HUMAN",
+    "protein_name": "C-type lectin domain family 9 member A",
+    "title": "C-type lectin domain family 9 member A",
+    "gene_names": [
+      "CLEC9A"
+    ],
+    "primary_gene": "CLEC9A",
+    "organism": "Homo sapiens",
+    "organism_id": 9606,
+    "length": 241,
+    "sequence": "",
+    "domains": [],
+    "go_terms": [],
+    "pubmed_refs": []
+  }
+}

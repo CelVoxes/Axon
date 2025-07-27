@@ -1,0 +1,26 @@
+{
+  "uniprot_id": "Q15788",
+  "download_date": "2025-07-27T09:05:01.729614",
+  "fasta_file": "/Users/onur-lumc/Desktop/Node/biorag_downloads/uniprot_data/Q15788/Q15788.fasta",
+  "info_file": "/Users/onur-lumc/Desktop/Node/biorag_downloads/uniprot_data/Q15788/Q15788_info.txt",
+  "entry_info": {
+    "source": "UniProt",
+    "type": "protein",
+    "id": "Q15788",
+    "accession": "Q15788",
+    "entry_name": "NCOA1_HUMAN",
+    "protein_name": "Nuclear receptor coactivator 1",
+    "title": "Nuclear receptor coactivator 1",
+    "gene_names": [
+      "NCOA1"
+    ],
+    "primary_gene": "NCOA1",
+    "organism": "Homo sapiens",
+    "organism_id": 9606,
+    "length": 1441,
+    "sequence": "",
+    "domains": [],
+    "go_terms": [],
+    "pubmed_refs": []
+  }
+}

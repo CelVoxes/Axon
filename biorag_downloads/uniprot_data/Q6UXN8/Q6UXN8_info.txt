@@ -1,0 +1,5 @@
+Protein Name: C-type lectin domain family 9 member A
+
+Organism: Homo sapiens
+
+Gene Names: CLEC9A

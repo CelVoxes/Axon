@@ -1,10 +1,10 @@
-# Node - AI-Powered Biological Analysis Platform
+# Axon - AI-Powered Biological Analysis Platform
 
 A comprehensive AI-driven system for biological data analysis that combines retrieval-augmented generation (RAG) with intelligent code generation for bioinformatics research.
 
 ## 🧬 AI-Powered Biological Analysis Agent
 
-Node provides an **intelligent Electron desktop application** that acts as "Cursor for Bioinformatics" - delivering autonomous biological data analysis through natural language interaction powered by Large Language Models.
+Axon provides an **intelligent Electron desktop application** that acts as "Cursor for Bioinformatics" - delivering autonomous biological data analysis through natural language interaction powered by Large Language Models.
 
 ### ✨ What Makes This Revolutionary
 
@@ -64,7 +64,7 @@ Node provides an **intelligent Electron desktop application** that acts as "Curs
 
 ### Backend (Python)
 
-- **🔍 Node Server**: Intelligent retrieval-augmented generation for biological queries
+- **🔍 Axon Server**: Intelligent retrieval-augmented generation for biological queries
 - **🗄️ Vector Database**: ChromaDB for efficient biological document storage
 - **🌐 API Integration**: Connects to GEO, PubMed, UniProt, and other databases
 - **⚡ FastAPI**: High-performance REST API
@@ -86,7 +86,7 @@ Node provides an **intelligent Electron desktop application** that acts as "Curs
    # Python dependencies
    pip install -r requirements.txt
 
-   # Node.js dependencies
+   # JavaScript dependencies
    npm install
    ```
 

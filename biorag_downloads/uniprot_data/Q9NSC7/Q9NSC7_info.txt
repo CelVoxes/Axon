@@ -1,0 +1,5 @@
+Protein Name: Alpha-N-acetylgalactosaminide alpha-2,6-sialyltransferase 1
+
+Organism: Homo sapiens
+
+Gene Names: ST6GALNAC1

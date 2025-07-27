@@ -3,6 +3,7 @@ import styled from "styled-components";
 import { FiSend, FiX, FiStopCircle, FiMessageSquare } from "react-icons/fi";
 import { useAppContext } from "../../context/AppContext";
 import { BioRAGClient } from "../../services/BioRAGClient";
+import { AutonomousAgent } from "../../services/AutonomousAgent";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { DatasetSelectionModal } from "./DatasetSelectionModal";
@@ -390,56 +391,63 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 			dispatch({ type: "SET_ANALYZING", payload: true });
 			setCurrentQuery(query);
 
-			// Step 1: Search for relevant datasets first
-			dispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content: "🔍 Searching for relevant datasets and literature...",
-					isUser: false,
-				},
-			});
+			// Check if query contains specific GEO dataset IDs
+			const geoIds = query.match(/GSE\d+/g) || [];
 
-			const searchResult = await bioragClient.findDatasetsForQuery(query, {
-				includeDatasets: true,
-				maxDatasets: 10,
-			});
+			if (geoIds.length > 0) {
+				// User mentioned specific datasets - fetch them directly
+				dispatch({
+					type: "ADD_MESSAGE",
+					payload: {
+						content: `🔍 Fetching information for specific datasets: ${geoIds.join(
+							", "
+						)}...`,
+						isUser: false,
+					},
+				});
 
-			// Show the initial analysis
-			dispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content: `## Analysis Overview
+				try {
+					const datasets = await bioragClient.getDatasetsByIds(geoIds);
 
-${searchResult.answer}
+					if (datasets.length > 0) {
+						dispatch({
+							type: "ADD_MESSAGE",
+							payload: {
+								content: `## Found ${datasets.length} Dataset(s)
 
-**Found ${
-						searchResult.datasets.length
-					} relevant datasets that could help answer your question.**
-
-${
-	searchResult.datasets.length > 0
-		? `**Available Datasets:**
-${searchResult.datasets
+${datasets
 	.map(
 		(d, i) =>
-			`${i + 1}. **${d.id}** - ${d.title} (${d.samples} samples, ${d.organism})`
+			`**${i + 1}. ${d.id}** - ${d.title}
+- Samples: ${d.samples}
+- Organism: ${d.organism}
+- Platform: ${d.platform}
+- Status: ${d.downloaded ? "Downloaded" : "Not downloaded"}
+
+${d.description}
+
+---`
 	)
-	.join("\n")}
+	.join("\n\n")}
 
-Please select which datasets you'd like me to download and analyze.`
-		: "No specific datasets were found, but I can help with general analysis."
-}`,
-					isUser: false,
-				},
-			});
+Please select which datasets you'd like me to download and analyze.`,
+								isUser: false,
+							},
+						});
 
-			if (searchResult.datasets.length > 0) {
-				// Show dataset selection modal
-				setAvailableDatasets(searchResult.datasets);
-				setShowDatasetModal(true);
+						setAvailableDatasets(datasets);
+						setShowDatasetModal(true);
+					} else {
+						throw new Error("No datasets found for the specified IDs");
+					}
+				} catch (error) {
+					console.error("Error fetching specific datasets:", error);
+					// Fall back to search approach
+					await executeDatasetSearch(query);
+				}
 			} else {
-				// Proceed with general analysis
-				await executeAnalysisWithoutDatasets(query);
+				// No specific IDs mentioned - search for relevant datasets
+				await executeDatasetSearch(query);
 			}
 		} catch (error) {
 			console.error("Enhanced analysis error:", error);
@@ -460,9 +468,205 @@ Please select which datasets you'd like me to download and analyze.`
 		}
 	};
 
+	const executeDatasetSearch = async (query: string) => {
+		// Step 1: Search for relevant datasets
+		dispatch({
+			type: "ADD_MESSAGE",
+			payload: {
+				content: "🔍 Searching for relevant datasets and literature...",
+				isUser: false,
+			},
+		});
+
+		const searchResult = await bioragClient.findDatasetsForQuery(query, {
+			includeDatasets: true,
+			maxDatasets: 10,
+		});
+
+		// Show the initial analysis
+		dispatch({
+			type: "ADD_MESSAGE",
+			payload: {
+				content: `## Analysis Overview
+
+${searchResult.answer}
+
+**Found ${
+					searchResult.datasets.length
+				} relevant datasets that could help answer your question.**
+
+${
+	searchResult.datasets.length > 0
+		? `**Available Datasets:**
+${searchResult.datasets
+	.map(
+		(d, i) =>
+			`${i + 1}. **${d.id}** - ${d.title} (${d.samples} samples, ${d.organism})`
+	)
+	.join("\n")}
+
+Please select which datasets you'd like me to download and analyze.`
+		: "No specific datasets were found, but I can help with general analysis."
+}`,
+				isUser: false,
+			},
+		});
+
+		if (searchResult.datasets.length > 0) {
+			// Show dataset selection modal
+			setAvailableDatasets(searchResult.datasets);
+			setShowDatasetModal(true);
+		} else {
+			// Proceed with general analysis
+			await executeAnalysisWithoutDatasets(query);
+		}
+	};
+
 	const executeAnalysisWithoutDatasets = async (query: string) => {
 		// Fallback to original analysis approach
 		await executeAnalysisRequest(query);
+	};
+
+	const createAnalysisWorkspace = async (query: string): Promise<string> => {
+		// Create a timestamped workspace directory
+		const timestamp = new Date()
+			.toISOString()
+			.replace(/[:.]/g, "-")
+			.slice(0, 19);
+		const workspaceName = `analysis_${timestamp}`;
+		const workspacePath = `${state.currentWorkspace || "./"}/${workspaceName}`;
+
+		// Create the directory
+		await window.electronAPI.createDirectory(workspacePath);
+
+		return workspacePath;
+	};
+
+	const generateInteractiveDownloadNotebook = (
+		query: string,
+		selectedDatasets: any[],
+		workspacePath: string
+	): string => {
+		return `
+# Interactive Dataset Download and Analysis
+# Query: ${query}
+# Selected Datasets: ${selectedDatasets.map((d) => d.id).join(", ")}
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import requests
+import json
+import time
+from pathlib import Path
+import os
+
+print("=== Interactive Dataset Download and Analysis ===")
+print(f"Query: ${query}")
+print(f"Selected Datasets: ${selectedDatasets.map((d) => d.id).join(", ")}")
+print(f"Workspace: ${workspacePath}")
+
+# BioRAG API configuration
+BIORAG_API_BASE = "http://localhost:8000"
+
+# Create data directory
+data_dir = Path('${workspacePath}/data')
+data_dir.mkdir(parents=True, exist_ok=True)
+
+def download_dataset_interactive(dataset_id, dataset_info):
+    """Download a specific dataset with user interaction"""
+    print(f"\\n📥 Downloading {dataset_id}...")
+    print(f"   Title: {dataset_info.title}")
+    print(f"   Samples: {dataset_info.samples}")
+    print(f"   Organism: {dataset_info.organism}")
+    
+    try:
+        # Start download
+        response = requests.post(f"{BIORAG_API_BASE}/datasets/{dataset_id}/download", 
+                               json={'force_redownload': False})
+        
+        if response.status_code == 200:
+            result = response.json()
+            print(f"   Download started: {result.get('status', 'unknown')}")
+            
+            # Monitor progress
+            max_attempts = 60  # 5 minutes max
+            for attempt in range(max_attempts):
+                time.sleep(5)  # Check every 5 seconds
+                
+                try:
+                    status_response = requests.get(f"{BIORAG_API_BASE}/datasets/{dataset_id}/status")
+                    if status_response.status_code == 200:
+                        status_info = status_response.json()
+                        status = status_info.get('status', 'unknown')
+                        progress = status_info.get('progress', 0)
+                        
+                        print(f"   Progress: {progress}% - {status}")
+                        
+                        if status == 'completed':
+                            print(f"✅ {dataset_id} download completed!")
+                            return True
+                        elif status == 'error':
+                            print(f"❌ {dataset_id} download failed!")
+                            return False
+                    else:
+                        print(f"   Status check failed: {status_response.status_code}")
+                except Exception as status_error:
+                    print(f"   Status check error: {status_error}")
+                
+                print(f"   Checking status... (attempt {attempt + 1})")
+            
+            print(f"⏰ {dataset_id} download timeout")
+            return False
+        else:
+            print(f"❌ Failed to start download for {dataset_id} - Status: {response.status_code}")
+            print(f"   Response: {response.text}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Error downloading {dataset_id}: {e}")
+        return False
+
+# Download all selected datasets
+print("\\n=== Starting Downloads ===")
+download_results = {}
+
+datasets_to_download = ${JSON.stringify(selectedDatasets)}
+for dataset in datasets_to_download:
+    success = download_dataset_interactive(dataset['id'], dataset)
+    download_results[dataset['id']] = success
+
+print("\\n=== Download Summary ===")
+for dataset_id, success in download_results.items():
+    status = "✅ Success" if success else "❌ Failed"
+    print(f"{dataset_id}: {status}")
+
+# Load and analyze downloaded data
+print("\\n=== Loading Downloaded Data ===")
+loaded_datasets = {}
+
+for dataset_id, success in download_results.items():
+    if success:
+        try:
+            # Get dataset info
+            info_response = requests.get(f"{BIORAG_API_BASE}/datasets/{dataset_id}")
+            if info_response.status_code == 200:
+                dataset_info = info_response.json()
+                file_paths = dataset_info.get('file_paths', {})
+                
+                print(f"📊 Loaded {dataset_id}: {dataset_info.get('samples', 0)} samples")
+                loaded_datasets[dataset_id] = dataset_info
+            else:
+                print(f"❌ Could not get info for {dataset_id}")
+        except Exception as e:
+            print(f"❌ Error loading {dataset_id}: {e}")
+
+print(f"\\n✅ Successfully loaded {len(loaded_datasets)} datasets")
+print("\\n=== Ready for Analysis ===")
+print("You can now analyze your downloaded datasets!")
+print("Available datasets:", list(loaded_datasets.keys()))
+`;
 	};
 
 	const handleDatasetSelection = async (selectedDatasets: any[]) => {
@@ -472,73 +676,156 @@ Please select which datasets you'd like me to download and analyze.`
 			dispatch({
 				type: "ADD_MESSAGE",
 				payload: {
-					content: `📥 **Preparing notebook for ${
+					content: `📥 **Selected ${
 						selectedDatasets.length
-					} datasets:**\n\n**Datasets:**\n${selectedDatasets
+					} dataset(s) for interactive download and analysis:**\n\n**Datasets:**\n${selectedDatasets
 						.map((d, i) => `${i + 1}. ${d.id} - ${d.title}`)
 						.join(
 							"\n"
-						)}\n\n**Note:** Data download and preprocessing will be performed in a Jupyter notebook for full user control.`,
+						)}\n\n**Next:** Starting Jupyter notebook for interactive download and analysis.`,
 					isUser: false,
 				},
 			});
-
-			// Import the autonomous agent
-			const { AutonomousAgent } = await import(
-				"../../services/AutonomousAgent"
-			);
-			const agent = new AutonomousAgent(
-				bioragClient,
-				state.currentWorkspace || "./"
-			);
-			setCurrentAgent(agent);
 
 			// Create analysis workspace
-			const analysisWorkspace = await agent.createAnalysisWorkspace(
-				currentQuery
-			);
+			const analysisWorkspace = await createAnalysisWorkspace(currentQuery);
 
-			// Generate the notebook for data download/preprocessing
-			const notebookPath = await agent.generateDataDownloadNotebook(
-				currentQuery,
-				selectedDatasets,
-				analysisWorkspace
-			);
+			// Start Jupyter if not already running
+			if (!state.jupyterUrl) {
+				dispatch({
+					type: "ADD_MESSAGE",
+					payload: {
+						content: "🚀 Starting Jupyter server...",
+						isUser: false,
+					},
+				});
 
+				try {
+					const jupyterResult = await window.electronAPI.startJupyter(
+						analysisWorkspace
+					);
+
+					if (jupyterResult.success && jupyterResult.url) {
+						dispatch({
+							type: "SET_JUPYTER_URL",
+							payload: jupyterResult.url,
+						});
+						dispatch({
+							type: "ADD_MESSAGE",
+							payload: {
+								content: `✅ Jupyter server started at: ${jupyterResult.url}`,
+								isUser: false,
+							},
+						});
+					} else {
+						throw new Error(jupyterResult.error || "Failed to start Jupyter");
+					}
+				} catch (error) {
+					console.error("Jupyter start error:", error);
+					dispatch({
+						type: "ADD_MESSAGE",
+						payload: {
+							content: `❌ Failed to start Jupyter: ${
+								error instanceof Error ? error.message : "Unknown error"
+							}`,
+							isUser: false,
+							status: "failed",
+						},
+					});
+					return;
+				}
+			}
+
+			// Generate notebook code using LLM
 			dispatch({
 				type: "ADD_MESSAGE",
 				payload: {
-					content: `📓 **Notebook created:** \`${notebookPath}\`\n\nOpen this notebook in Jupyter Lab to download and preprocess your data interactively.`,
+					content: "🤖 Generating interactive notebook code...",
 					isUser: false,
 				},
 			});
 
-			// Start Jupyter in the analysis workspace
-			const jupyterResult = await window.electronAPI.startJupyter(
-				analysisWorkspace
-			);
-			if (!jupyterResult.success) {
-				throw new Error(
-					jupyterResult.error || "Failed to start Jupyter server"
+			try {
+				// Use the autonomous agent to generate and execute the notebook code
+				const autonomousAgent = new AutonomousAgent(
+					bioragClient,
+					analysisWorkspace
 				);
+
+				// Set up status callback to show progress
+				autonomousAgent.setStatusCallback((status) => {
+					dispatch({
+						type: "ADD_MESSAGE",
+						payload: {
+							content: `🤖 ${status}`,
+							isUser: false,
+						},
+					});
+				});
+
+				// Generate the analysis plan and code using the autonomous agent
+				const analysisResult =
+					await autonomousAgent.executeAnalysisRequestWithData(
+						currentQuery,
+						selectedDatasets
+					);
+
+				// Execute the first step (data loading) in Jupyter
+				if (analysisResult.steps.length > 0) {
+					const firstStep = analysisResult.steps[0];
+					const executionResult = await window.electronAPI.executeJupyterCode(
+						firstStep.code
+					);
+
+					if (executionResult.success) {
+						dispatch({
+							type: "ADD_MESSAGE",
+							payload: {
+								content: `✅ Interactive notebook generated and executed successfully!\n\n**Analysis Plan:**\n${analysisResult.understanding.requiredSteps
+									.map((step, i) => `${i + 1}. ${step}`)
+									.join("\n")}\n\n**Selected Datasets:**\n${selectedDatasets
+									.map((d) => `- ${d.id}: ${d.title}`)
+									.join(
+										"\n"
+									)}\n\n**Next Steps:**\n1. The notebook is now running in Jupyter\n2. You can interactively work with your downloaded datasets\n3. All data will be saved to your workspace\n4. The autonomous agent will guide you through the analysis`,
+								isUser: false,
+							},
+						});
+					} else {
+						throw new Error(
+							executionResult.error || "Notebook execution failed"
+						);
+					}
+				} else {
+					throw new Error("No analysis steps generated");
+				}
+			} catch (error) {
+				console.error("Notebook generation/execution error:", error);
+				dispatch({
+					type: "ADD_MESSAGE",
+					payload: {
+						content: `❌ Failed to generate or execute notebook: ${
+							error instanceof Error ? error.message : "Unknown error"
+						}`,
+						isUser: false,
+						status: "failed",
+					},
+				});
 			}
 
-			// Listen for Jupyter ready event to get the URL
-			window.electronAPI.onJupyterReady((data) => {
-				dispatch({
-					type: "SET_JUPYTER_URL",
-					payload: data.url,
-				});
-			});
+			// Open the notebook tab
+			dispatch({ type: "SET_SHOW_NOTEBOOK", payload: true });
+			dispatch({ type: "SET_ANALYZING", payload: false });
 		} catch (error) {
-			console.error("Dataset notebook/analysis error:", error);
+			console.error("Dataset selection error:", error);
 			dispatch({
 				type: "ADD_MESSAGE",
 				payload: {
-					content: `Error during notebook generation/launch: ${
+					content: `❌ Failed to process selected datasets: ${
 						error instanceof Error ? error.message : "Unknown error"
 					}`,
 					isUser: false,
+					status: "failed",
 				},
 			});
 		}
