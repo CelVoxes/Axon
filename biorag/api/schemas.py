@@ -12,6 +12,7 @@ class QueryRequest(BaseModel):
     retrieve_from_sources: bool = Field(default=True, description="Whether to search external sources")
     response_type: str = Field(default="answer", description="Type of response: answer, summary, or insights")
     system_prompt: Optional[str] = Field(None, description="Custom system prompt")
+    model: Optional[str] = Field(None, description="Model to use for generation (e.g., gpt-4o-mini, gpt-4, claude-3)")
 
 
 class DocumentInfo(BaseModel):

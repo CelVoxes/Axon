@@ -38,9 +38,9 @@ const NotebookActions = styled.div`
 	align-items: center;
 `;
 
-const ActionButton = styled.button<{ variant?: "primary" | "secondary" }>`
+const ActionButton = styled.button<{ $variant?: "primary" | "secondary" }>`
 	background: ${(props) =>
-		props.variant === "primary" ? "#007acc" : "#404040"};
+		props.$variant === "primary" ? "#007acc" : "#404040"};
 	border: none;
 	border-radius: 6px;
 	color: #ffffff;
@@ -63,11 +63,11 @@ const ActionButton = styled.button<{ variant?: "primary" | "secondary" }>`
 `;
 
 const StatusIndicator = styled.div<{
-	status: "starting" | "ready" | "error" | "running";
+	$status: "starting" | "ready" | "error" | "running";
 }>`
 	font-size: 12px;
 	color: ${(props) => {
-		switch (props.status) {
+		switch (props.$status) {
 			case "ready":
 				return "#00ff00";
 			case "starting":
@@ -98,31 +98,6 @@ const AddCellButton = styled.button`
 	border: 2px dashed #404040;
 	border-radius: 8px;
 	color: #858585;
-	font-size: 14px;
-	cursor: pointer;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	gap: 8px;
-	transition: all 0.2s ease;
-	margin: 16px 0;
-
-	&:hover {
-		background: #383838;
-		border-color: #007acc;
-		color: #007acc;
-	}
-`;
-
-const LoadingMessage = styled.div`
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	justify-content: center;
-	height: 200px;
-	color: #858585;
-	font-size: 14px;
-	gap: 16px;
 `;
 
 const ProgressBar = styled.div`
@@ -134,11 +109,35 @@ const ProgressBar = styled.div`
 	margin: 8px 0;
 `;
 
-const ProgressFill = styled.div<{ progress: number }>`
+const ProgressFill = styled.div<{ $progress: number }>`
 	height: 100%;
 	background: #007acc;
-	width: ${(props) => props.progress}%;
+	width: ${(props) => props.$progress}%;
 	transition: width 0.3s ease;
+`;
+
+const AutoExecutionNotice = styled.div`
+	background: rgba(0, 122, 204, 0.1);
+	border: 1px solid rgba(0, 122, 204, 0.3);
+	border-radius: 8px;
+	padding: 12px 16px;
+	margin: 16px 0;
+	color: #007acc;
+	font-size: 14px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+`;
+
+const LoadingMessage = styled.div`
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	height: 200px;
+	color: #858585;
+	font-size: 14px;
+	gap: 16px;
 `;
 
 interface Cell {
@@ -176,129 +175,209 @@ export const Notebook: React.FC<NotebookProps> = ({
 	const [analysisSteps, setAnalysisSteps] = useState<AnalysisStep[]>([]);
 	const [currentStepIndex, setCurrentStepIndex] = useState(0);
 	const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
+	const [analysisCellsCreated, setAnalysisCellsCreated] = useState(false);
+	const [isAutoExecuting, setIsAutoExecuting] = useState(false);
+	const [analysisCheckAttempts, setAnalysisCheckAttempts] = useState(0);
 
-	// Start Jupyter when notebook is opened
+	// Check Jupyter status and start if needed
 	useEffect(() => {
-		const startJupyter = async () => {
+		const checkAndStartJupyter = async () => {
 			if (!workspacePath) {
 				setJupyterStatus("error");
 				return;
 			}
 
+			console.log(
+				`Notebook: Checking Jupyter status for workspace: ${workspacePath}`
+			);
+
 			try {
+				// First check if Jupyter is already running
+				const isRunning = await window.electronAPI.checkJupyterStatus();
+				console.log(`Notebook: Jupyter status check result: ${isRunning}`);
+
+				if (isRunning) {
+					console.log(
+						"Notebook: Jupyter is already running, using existing instance"
+					);
+					setJupyterStatus("ready");
+					// Reset cells when workspace changes
+					setCells([]);
+					setAnalysisCellsCreated(false);
+					setAnalysisCheckAttempts(0);
+					// Let the analysis check handle cell creation
+					return;
+				}
+
+				// If not running, start a new instance
+				console.log("Notebook: Jupyter not running, starting new instance...");
 				setJupyterStatus("starting");
-				console.log("Starting Jupyter for notebook...");
 
 				const result = await window.electronAPI.startJupyter(workspacePath);
 
 				if (result.success) {
-					console.log("Jupyter started successfully:", result.url);
+					console.log("Notebook: Jupyter started successfully:", result.url);
 					setJupyterStatus("ready");
-					createWelcomeCell();
+					// Reset cells when workspace changes
+					setCells([]);
+					setAnalysisCellsCreated(false);
+					setAnalysisCheckAttempts(0);
+					// Let the analysis check handle cell creation
 				} else {
-					console.error("Failed to start Jupyter:", result.error);
+					console.error("Notebook: Failed to start Jupyter:", result.error);
 					setJupyterStatus("error");
 				}
 			} catch (error) {
-				console.error("Error starting Jupyter:", error);
+				console.error("Notebook: Error checking/starting Jupyter:", error);
 				setJupyterStatus("error");
 			}
 		};
 
-		startJupyter();
+		checkAndStartJupyter();
 	}, [workspacePath]);
-
-	const createWelcomeCell = () => {
-		const welcomeCell: Cell = {
-			id: "welcome",
-			code: `# Welcome to Your Interactive Analysis Notebook!
-
-This notebook will help you analyze biological data step by step.
-
-## How to use:
-1. Use the chat panel to ask your research question
-2. Analysis steps will be generated and appear here as cells
-3. Run each cell to execute the analysis
-4. View results and modify code as needed
-
-## Example questions to ask in chat:
-- "Can you find me the different transcriptional subtypes of B-ALL?"
-- "Analyze gene expression patterns in cancer vs normal samples"
-- "Identify differentially expressed genes in this dataset"
-
-Ready to start your analysis!`,
-			language: "markdown",
-			output: "",
-			hasError: false,
-			status: "completed",
-			title: "Welcome",
-			isMarkdown: true,
-		};
-
-		const testCell: Cell = {
-			id: "test",
-			code: `# Test Cell - Verify Jupyter is Working
-
-print("🎉 Jupyter kernel is working!")
-print("Python version:", __import__('sys').version)
-print("Current working directory:", __import__('os').getcwd())
-
-# Test basic imports
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-
-print("✅ All basic libraries imported successfully!")
-print("NumPy version:", np.__version__)
-print("Pandas version:", pd.__version__)
-
-# Create a simple test plot
-fig, ax = plt.subplots(figsize=(6, 4))
-x = np.linspace(0, 10, 100)
-y = np.sin(x)
-ax.plot(x, y)
-ax.set_title("Test Plot: Sine Wave")
-ax.set_xlabel("X")
-ax.set_ylabel("Y")
-plt.tight_layout()
-plt.show()
-
-print("🎯 Notebook is ready for analysis!")`,
-			language: "python",
-			output: "",
-			hasError: false,
-			status: "pending",
-			title: "Test Cell",
-		};
-
-		setCells([welcomeCell, testCell]);
-	};
 
 	// Listen for analysis results from chat panel
 	useEffect(() => {
 		const checkForAnalysis = async () => {
-			if (!workspacePath || jupyterStatus !== "ready") return;
+			console.log(
+				`Notebook: checkForAnalysis called - workspacePath: ${workspacePath}, jupyterStatus: ${jupyterStatus}`
+			);
+
+			if (!workspacePath || jupyterStatus !== "ready") {
+				console.log(
+					`Notebook: Skipping analysis check - workspace: ${workspacePath}, jupyterStatus: ${jupyterStatus}`
+				);
+				return;
+			}
+
+			// Skip if analysis cells have already been created
+			if (analysisCellsCreated) {
+				console.log("Notebook: Analysis cells already created, skipping check");
+				return;
+			}
+
+			console.log(
+				`Notebook: Checking for analysis results in workspace: ${workspacePath}`
+			);
 
 			try {
+				// First, check if we're in an analysis workspace (contains analysis_result.json)
 				const analysisFile = `${workspacePath}/analysis_result.json`;
+				console.log(`Notebook: Looking for analysis file: ${analysisFile}`);
+
 				const analysisContent = await window.electronAPI.readFile(analysisFile);
 				const analysisResult = JSON.parse(analysisContent);
 
 				if (analysisResult.steps && Array.isArray(analysisResult.steps)) {
-					console.log("Found analysis result, creating cells...");
+					console.log(
+						`Notebook: Found analysis result in current workspace with ${analysisResult.steps.length} steps, creating cells...`
+					);
 					createCellsFromSteps(analysisResult.steps);
+					return;
+				} else {
+					console.log("Notebook: Analysis result found but no steps array");
 				}
 			} catch (error) {
-				// No analysis file yet, that's fine
+				console.log(
+					`Notebook: No analysis_result.json in current workspace: ${error}`
+				);
+
+				// Not in an analysis workspace, check for analysis workspaces in the parent directory
+				try {
+					const parentDir = workspacePath.split("/").slice(0, -1).join("/");
+					console.log(`Notebook: Checking parent directory: ${parentDir}`);
+
+					const files = await window.electronAPI.listDirectory(parentDir);
+
+					// Look for analysis_* directories
+					const analysisDirs = files.filter(
+						(f) => f.isDirectory && f.name.startsWith("analysis_")
+					);
+
+					console.log(
+						`Notebook: Found ${analysisDirs.length} analysis directories in parent`
+					);
+
+					// Check each analysis directory for analysis_result.json
+					for (const analysisDir of analysisDirs) {
+						try {
+							const analysisFile = `${analysisDir.path}/analysis_result.json`;
+							console.log(`Notebook: Checking analysis file: ${analysisFile}`);
+
+							const analysisContent = await window.electronAPI.readFile(
+								analysisFile
+							);
+							const analysisResult = JSON.parse(analysisContent);
+
+							if (analysisResult.steps && Array.isArray(analysisResult.steps)) {
+								console.log(
+									`Notebook: Found analysis result in ${analysisDir.name} with ${analysisResult.steps.length} steps, creating cells...`
+								);
+								createCellsFromSteps(analysisResult.steps);
+								return;
+							}
+						} catch (dirError) {
+							console.log(
+								`Notebook: Error reading ${analysisDir.name}: ${dirError}`
+							);
+							// Continue checking other directories
+							continue;
+						}
+					}
+				} catch (parentError) {
+					// No analysis directories found, that's fine
+					console.log(
+						`Notebook: Error checking parent directory: ${parentError}`
+					);
+				}
+			}
+
+			// If we still have no cells after checking, notebook will remain empty
+			if (cells.length === 0 && !analysisCellsCreated) {
+				console.log(
+					"Notebook: No analysis cells found, waiting for analysis request"
+				);
 			}
 		};
 
-		// Check periodically for new analysis results
-		const interval = setInterval(checkForAnalysis, 2000);
-		return () => clearInterval(interval);
-	}, [workspacePath, jupyterStatus]);
+		// Check immediately when Jupyter becomes ready
+		if (jupyterStatus === "ready") {
+			console.log("Notebook: Jupyter ready, checking for analysis immediately");
+			checkForAnalysis();
+		}
+
+		// Only set up periodic checking if we haven't found analysis cells yet and haven't exceeded max attempts
+		let interval: NodeJS.Timeout | null = null;
+		if (
+			!analysisCellsCreated &&
+			jupyterStatus === "ready" &&
+			analysisCheckAttempts < 10
+		) {
+			interval = setInterval(() => {
+				console.log("Notebook: Periodic analysis check");
+				setAnalysisCheckAttempts((prev) => prev + 1);
+				checkForAnalysis();
+			}, 5000); // Increased to 5 seconds to reduce spam
+		}
+
+		return () => {
+			if (interval) {
+				clearInterval(interval);
+			}
+		};
+	}, [
+		workspacePath,
+		jupyterStatus,
+		analysisCellsCreated,
+		analysisCheckAttempts,
+	]);
 
 	const createCellsFromSteps = (steps: AnalysisStep[]) => {
+		console.log(
+			`Notebook: Creating ${steps.length} cells from analysis steps:`,
+			steps
+		);
+
 		const newCells: Cell[] = steps.map((step, index) => ({
 			id: step.id,
 			code: step.code,
@@ -308,7 +387,93 @@ print("🎯 Notebook is ready for analysis!")`,
 			status: "pending", // Start as pending so user can run manually
 			title: `Step ${index + 1}: ${step.description}`,
 		}));
-		setCells((prev) => [...prev, ...newCells]);
+
+		console.log(
+			`Notebook: Created ${newCells.length} cell objects:`,
+			newCells.map((c) => ({ id: c.id, title: c.title }))
+		);
+
+		setCells((prev) => {
+			console.log(
+				`Notebook: Current cells before update:`,
+				prev.map((c) => ({ id: c.id, title: c.title }))
+			);
+
+			// Filter out any existing cells with the same IDs to avoid duplicates
+			const existingIds = new Set(prev.map((cell) => cell.id));
+			const uniqueNewCells = newCells.filter(
+				(cell) => !existingIds.has(cell.id)
+			);
+
+			if (uniqueNewCells.length > 0) {
+				console.log(
+					`Notebook: Added ${uniqueNewCells.length} new cells to notebook`
+				);
+				const updatedCells = [...prev, ...uniqueNewCells];
+				console.log(
+					`Notebook: Total cells after update:`,
+					updatedCells.map((c) => ({ id: c.id, title: c.title }))
+				);
+				setAnalysisCellsCreated(true); // Mark as created
+
+				// Auto-execute the new cells after a short delay
+				setTimeout(() => {
+					console.log("Notebook: Auto-executing new analysis cells...");
+					executeAnalysisCells(uniqueNewCells);
+				}, 1000); // Reduced delay to 1 second for faster execution
+
+				return updatedCells;
+			} else {
+				console.log("Notebook: No new cells to add (all already exist)");
+				setAnalysisCellsCreated(true); // Mark as created even if no new cells
+				return prev;
+			}
+		});
+	};
+
+	// New function to execute analysis cells automatically
+	const executeAnalysisCells = async (cellsToExecute: Cell[]) => {
+		console.log(
+			`Notebook: Starting auto-execution of ${cellsToExecute.length} cells...`
+		);
+		console.log(`Notebook: Current Jupyter status: ${jupyterStatus}`);
+
+		// Wait a bit more if Jupyter is still starting
+		if (jupyterStatus === "starting") {
+			console.log("Notebook: Jupyter still starting, waiting...");
+			await new Promise((resolve) => setTimeout(resolve, 3000));
+		}
+
+		if (jupyterStatus !== "ready") {
+			console.log("Notebook: Jupyter not ready, retrying in 2 seconds...");
+			setTimeout(() => executeAnalysisCells(cellsToExecute), 2000);
+			return;
+		}
+
+		console.log(
+			`Notebook: Auto-executing ${cellsToExecute.length} analysis cells...`
+		);
+		setJupyterStatus("running");
+		setIsAutoExecuting(true);
+
+		for (let i = 0; i < cellsToExecute.length; i++) {
+			const cell = cellsToExecute[i];
+			if (cell.status === "pending" && !cell.isMarkdown) {
+				console.log(
+					`Notebook: Auto-executing cell ${i + 1}/${cellsToExecute.length}: ${
+						cell.title
+					}`
+				);
+				await executeCell(cell.id, cell.code);
+
+				// Wait between cells to avoid overwhelming the kernel
+				await new Promise((resolve) => setTimeout(resolve, 1000));
+			}
+		}
+
+		setJupyterStatus("ready");
+		setIsAutoExecuting(false);
+		console.log("Notebook: Auto-execution of analysis cells completed!");
 	};
 
 	const addCell = (language: "python" | "r" = "python") => {
@@ -413,7 +578,7 @@ print("🎯 Notebook is ready for analysis!")`,
 			case "ready":
 				return "Jupyter Ready";
 			case "running":
-				return "Executing Analysis...";
+				return "Auto-Executing Analysis...";
 			case "error":
 				return "Jupyter Error";
 			default:
@@ -434,7 +599,7 @@ print("🎯 Notebook is ready for analysis!")`,
 			<NotebookContainer>
 				<NotebookHeader>
 					<NotebookTitle>Interactive Notebook</NotebookTitle>
-					<StatusIndicator status={jupyterStatus}>
+					<StatusIndicator $status={jupyterStatus}>
 						<FiPlay size={14} />
 						{getStatusText()}
 					</StatusIndicator>
@@ -456,7 +621,25 @@ print("🎯 Notebook is ready for analysis!")`,
 			<NotebookHeader>
 				<NotebookTitle>Interactive Notebook</NotebookTitle>
 				<NotebookActions>
-					<StatusIndicator status={jupyterStatus}>
+					{isAutoExecuting && (
+						<div
+							style={{
+								background: "rgba(0, 122, 204, 0.1)",
+								border: "1px solid rgba(0, 122, 204, 0.3)",
+								borderRadius: "4px",
+								padding: "4px 8px",
+								color: "#007acc",
+								fontSize: "12px",
+								display: "flex",
+								alignItems: "center",
+								gap: "4px",
+							}}
+						>
+							<FiPlay size={12} />
+							Auto-executing...
+						</div>
+					)}
+					<StatusIndicator $status={jupyterStatus}>
 						<FiPlay size={14} />
 						{getStatusText()}
 					</StatusIndicator>
@@ -464,7 +647,7 @@ print("🎯 Notebook is ready for analysis!")`,
 						<ActionButton
 							onClick={executeAllSteps}
 							disabled={jupyterStatus !== "ready"}
-							variant="primary"
+							$variant="primary"
 						>
 							<FiPlay size={14} />
 							Run All Steps
@@ -507,7 +690,7 @@ print("🎯 Notebook is ready for analysis!")`,
 							Progress:
 						</span>
 						<ProgressBar>
-							<ProgressFill progress={getProgressPercentage()} />
+							<ProgressFill $progress={getProgressPercentage()} />
 						</ProgressBar>
 						<span style={{ color: "#858585", fontSize: "12px" }}>
 							{Math.round(getProgressPercentage())}% Complete
@@ -517,71 +700,118 @@ print("🎯 Notebook is ready for analysis!")`,
 			)}
 
 			<CellsContainer>
-				{cells.map((cell, index) => (
-					<div key={cell.id} style={{ marginBottom: "16px" }}>
-						{cell.title && !cell.isMarkdown && (
-							<div
-								style={{
-									color: "#007acc",
-									fontSize: "14px",
-									fontWeight: "600",
-									marginBottom: "8px",
-									display: "flex",
-									alignItems: "center",
-									gap: "8px",
-								}}
-							>
-								{cell.status === "completed" && (
-									<FiCheck size={16} color="#00ff00" />
-								)}
-								{cell.status === "failed" && <FiX size={16} color="#ff0000" />}
-								{cell.status === "running" && (
-									<FiPlay size={16} color="#007acc" />
-								)}
-								{cell.title}
-							</div>
-						)}
-						{cell.isMarkdown ? (
-							<div
-								style={{
-									background: "#1e1e1e",
-									border: "1px solid #404040",
-									borderRadius: "8px",
-									padding: "16px",
-									color: "#ffffff",
-									fontSize: "14px",
-									lineHeight: "1.6",
-								}}
-							>
+				{cells.length === 0 ? (
+					<div
+						style={{
+							display: "flex",
+							flexDirection: "column",
+							alignItems: "center",
+							justifyContent: "center",
+							padding: "60px 20px",
+							color: "#858585",
+							textAlign: "center",
+						}}
+					>
+						<div style={{ fontSize: "48px", marginBottom: "16px" }}>📊</div>
+						<div
+							style={{
+								fontSize: "18px",
+								fontWeight: "600",
+								marginBottom: "8px",
+								color: "#cccccc",
+							}}
+						>
+							Interactive Analysis Notebook
+						</div>
+						<div
+							style={{
+								fontSize: "14px",
+								marginBottom: "24px",
+								maxWidth: "400px",
+							}}
+						>
+							Ask a question in the chat panel to generate analysis steps. The
+							notebook will automatically create and execute cells based on your
+							request.
+						</div>
+						<div style={{ fontSize: "12px", color: "#666" }}>
+							Example: "Can you find me the different transcriptional subtypes
+							of B-ALL?"
+						</div>
+					</div>
+				) : (
+					cells.map((cell, index) => (
+						<div key={cell.id} style={{ marginBottom: "16px" }}>
+							{cell.title && !cell.isMarkdown && (
 								<div
-									dangerouslySetInnerHTML={{
-										__html: cell.code.replace(/\n/g, "<br/>"),
+									style={{
+										color: "#007acc",
+										fontSize: "14px",
+										fontWeight: "600",
+										marginBottom: "8px",
+										display: "flex",
+										alignItems: "center",
+										gap: "8px",
+									}}
+								>
+									{cell.status === "completed" && (
+										<FiCheck size={16} color="#00ff00" />
+									)}
+									{cell.status === "failed" && (
+										<FiX size={16} color="#ff0000" />
+									)}
+									{cell.status === "running" && (
+										<FiPlay size={16} color="#007acc" />
+									)}
+									{cell.title}
+								</div>
+							)}
+							{cell.isMarkdown ? (
+								<div
+									style={{
+										background: "#1e1e1e",
+										border: "1px solid #404040",
+										borderRadius: "8px",
+										padding: "16px",
+										color: "#ffffff",
+										fontSize: "14px",
+										lineHeight: "1.6",
+									}}
+								>
+									<div
+										dangerouslySetInnerHTML={{
+											__html: cell.code.replace(/\n/g, "<br/>"),
+										}}
+									/>
+								</div>
+							) : (
+								<CodeCell
+									key={cell.id}
+									initialCode={cell.code}
+									language={cell.language}
+									workspacePath={workspacePath}
+									onExecute={(code, output) => {
+										updateCell(cell.id, { code, output });
 									}}
 								/>
-							</div>
-						) : (
-							<CodeCell
-								key={cell.id}
-								initialCode={cell.code}
-								language={cell.language}
-								workspacePath={workspacePath}
-								onExecute={(code, output) => {
-									updateCell(cell.id, { code, output });
-								}}
-							/>
-						)}
-					</div>
-				))}
+							)}
+						</div>
+					))
+				)}
 
-				<AddCellButton onClick={() => addCell("python")}>
-					<FiPlus size={16} />
-					Add Python Cell
-				</AddCellButton>
+				{cells.length > 0 && (
+					<>
+						<AddCellButton onClick={() => addCell("python")}>
+							<FiPlus size={16} />
+							Add Python Cell
+						</AddCellButton>
 
-				<AddCellButton onClick={() => addCell("r")}>
-					<FiPlus size={16} />
-					Add R Cell
-				</AddCellButton>
+						<AddCellButton onClick={() => addCell("r")}>
+							<FiPlus size={16} />
+							Add R Cell
+						</AddCellButton>
+					</>
+				)}
 			</CellsContainer>
 		</NotebookContainer>
 	);

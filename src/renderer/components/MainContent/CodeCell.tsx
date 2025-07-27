@@ -32,10 +32,10 @@ const CellActions = styled.div`
 `;
 
 const ActionButton = styled.button<{
-	variant?: "primary" | "secondary" | "success" | "danger";
+	$variant?: "primary" | "secondary" | "success" | "danger";
 }>`
 	background: ${(props) => {
-		switch (props.variant) {
+		switch (props.$variant) {
 			case "primary":
 				return "#007acc";
 			case "success":
@@ -203,13 +203,13 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 				<CellType>{language.toUpperCase()}</CellType>
 				{language !== "markdown" && (
 					<CellActions>
-						<ActionButton onClick={copyCode} variant="secondary">
+						<ActionButton onClick={copyCode} $variant="secondary">
 							{copied ? <FiCheck size={12} /> : <FiCopy size={12} />}
 							{copied ? "Copied" : "Copy"}
 						</ActionButton>
 						<ActionButton
 							onClick={executeCode}
-							variant="primary"
+							$variant="primary"
 							disabled={isExecuting || !code.trim()}
 						>
 							<FiPlay size={12} />
@@ -246,7 +246,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 								<span style={{ color: hasError ? "#ff6b6b" : "#4ecdc4" }}>
 									{hasError ? "Error" : "Output"}
 								</span>
-								<ActionButton onClick={clearOutput} variant="secondary">
+								<ActionButton onClick={clearOutput} $variant="secondary">
 									<FiX size={12} />
 									Clear
 								</ActionButton>

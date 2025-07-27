@@ -64,9 +64,47 @@ async def search_datasets(
 ) -> List[DatasetInfo]:
     """Search for GEO datasets based on query parameters."""
     try:
-        # For now, return some known datasets based on query
-        # In a real implementation, this would use the GEO client search
-        known_datasets = [
+        print(f"🔍 Searching for datasets with query: '{query}'")
+        
+        # Use the GEO client to perform real search
+        search_results = await geo_client.search_datasets(
+            query=query,
+            limit=limit * 2,  # Get more results to filter
+            organism=organism,
+            experiment_type=data_type
+        )
+        
+        print(f"📊 Found {len(search_results)} raw search results")
+        
+        # Convert to our format and check local status
+        datasets = []
+        for result in search_results:
+            try:
+                dataset_info = await _get_dataset_status(result)
+                
+                # Apply filters
+                if min_samples and dataset_info.samples < min_samples:
+                    continue
+                if data_type and dataset_info.type != data_type:
+                    continue
+                    
+                datasets.append(dataset_info)
+                
+                # Stop if we have enough results
+                if len(datasets) >= limit:
+                    break
+                    
+            except Exception as e:
+                print(f"⚠️ Error processing dataset {result.get('id', 'unknown')}: {e}")
+                continue
+        
+        print(f"✅ Returning {len(datasets)} filtered datasets")
+        return datasets
+        
+    except Exception as e:
+        print(f"❌ Dataset search failed: {e}")
+        # Fallback to a few relevant datasets if search fails
+        fallback_datasets = [
             {
                 "id": "GSE13159",
                 "title": "Microarray Innovations in LEukemia (MILE) study: Stage 1 data",
@@ -84,48 +122,21 @@ async def search_datasets(
                 "sample_count": "500",
                 "platform": "10x Genomics Chromium",
                 "publication_date": "Mar 15, 2021"
-            },
-            {
-                "id": "GSE145926",
-                "title": "COVID-19 severity correlates with airway epithelium-immune cell interactions",
-                "description": "Single-cell RNA sequencing of airway epithelial cells from COVID-19 patients with different disease severity",
-                "organism": "Homo sapiens",
-                "sample_count": "300",
-                "platform": "10x Genomics Chromium",
-                "publication_date": "Dec 20, 2020"
             }
         ]
         
-        # Filter based on query
-        search_results = []
-        query_lower = query.lower()
-        for dataset in known_datasets:
-            if (query_lower in dataset["title"].lower() or 
-                query_lower in dataset["description"].lower() or
-                query_lower in dataset["organism"].lower()):
-                search_results.append(dataset)
+        # Only return fallback if query is relevant
+        if any(term in query.lower() for term in ['leukemia', 'cancer', 'breast', 'expression']):
+            datasets = []
+            for result in fallback_datasets:
+                try:
+                    dataset_info = await _get_dataset_status(result)
+                    datasets.append(dataset_info)
+                except Exception:
+                    continue
+            return datasets[:limit]
         
-        # If no matches, return all datasets
-        if not search_results:
-            search_results = known_datasets
-        
-        # Convert to our format and check local status
-        datasets = []
-        for result in search_results:
-            dataset_info = await _get_dataset_status(result)
-            
-            # Apply filters
-            if min_samples and dataset_info.samples < min_samples:
-                continue
-            if data_type and dataset_info.type != data_type:
-                continue
-                
-            datasets.append(dataset_info)
-        
-        return datasets[:limit]
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+        return []
 
 @router.get("/{dataset_id}")
 async def get_dataset_info(dataset_id: str) -> DatasetInfo:

@@ -4,7 +4,6 @@ import { FiFolder, FiFile, FiChevronRight } from "react-icons/fi";
 import { useAppContext } from "../../context/AppContext";
 
 interface SidebarProps {
-	collapsed: boolean;
 	onToggle: () => void;
 	"data-layout-role"?: string;
 }
@@ -15,7 +14,7 @@ interface FileItem {
 	isDirectory: boolean;
 }
 
-const SidebarContainer = styled.div<{ collapsed: boolean }>`
+const SidebarContainer = styled.div<{ $collapsed: boolean }>`
 	width: 100%;
 	height: 100%;
 	background-color: #1a1a1a;
@@ -46,10 +45,10 @@ const FileTree = styled.div`
 	font-size: 13px;
 `;
 
-const FileItem = styled.div<{ isDirectory: boolean; level: number }>`
+const FileItem = styled.div<{ $isDirectory: boolean; $level: number }>`
 	display: flex;
 	align-items: center;
-	padding: 4px 8px 4px ${(props) => 8 + props.level * 16}px;
+	padding: 4px 8px 4px ${(props) => 8 + props.$level * 16}px;
 	cursor: pointer;
 	color: #cccccc;
 	height: 22px;
@@ -99,11 +98,7 @@ const BreadcrumbNav = styled.div`
 	}
 `;
 
-export const Sidebar: React.FC<SidebarProps> = ({
-	collapsed,
-	onToggle,
-	...props
-}) => {
+export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 	const { state, dispatch } = useAppContext();
 	const [currentPath, setCurrentPath] = useState<string>("");
 	const [currentFiles, setCurrentFiles] = useState<FileItem[]>([]);
@@ -202,7 +197,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 	};
 
 	return (
-		<SidebarContainer collapsed={false} {...props}>
+		<SidebarContainer $collapsed={false} {...props}>
 			{/* Explorer Section */}
 			<SidebarHeader>Explorer</SidebarHeader>
 
@@ -229,7 +224,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
 				{state.currentWorkspace ? (
 					<FileTree>
 						{currentPath !== state.currentWorkspace && (
-							<FileItem isDirectory={true} level={0} onClick={navigateToParent}>
+							<FileItem
+								$isDirectory={true}
+								$level={0}
+								onClick={navigateToParent}
+							>
 								<div className="icon">
 									<FiChevronRight
 										size={12}
@@ -243,8 +242,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
 						{currentFiles.map((item) => (
 							<FileItem
 								key={item.path}
-								isDirectory={item.isDirectory}
-								level={0}
+								$isDirectory={item.isDirectory}
+								$level={0}
 								onClick={() => handleItemClick(item)}
 							>
 								<div className="icon">

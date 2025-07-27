@@ -1,5 +1,0 @@
-Protein Name: Doublesex- and mab-3-related transcription factor 1
-
-Organism: Homo sapiens
-
-Gene Names: DMRT1

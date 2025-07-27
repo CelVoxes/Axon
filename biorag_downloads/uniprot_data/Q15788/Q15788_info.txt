@@ -1,5 +1,0 @@
-Protein Name: Nuclear receptor coactivator 1
-
-Organism: Homo sapiens
-
-Gene Names: NCOA1

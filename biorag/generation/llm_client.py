@@ -30,6 +30,7 @@ class LLMClient:
         query: str,
         context_documents: List[Dict[str, Any]],
         system_prompt: str = None,
+        model: Optional[str] = None,
         max_tokens: int = 1000,
         temperature: float = 0.3
     ) -> Dict[str, Any]:
@@ -62,9 +63,12 @@ class LLMClient:
         messages.append({"role": "user", "content": user_content})
         
         try:
+            # Use provided model or fall back to default
+            model_to_use = model or self.model
+            
             # Generate response
             response = await self.client.chat.completions.create(
-                model=self.model,
+                model=model_to_use,
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
@@ -77,7 +81,7 @@ class LLMClient:
                 "answer": answer,
                 "query": query,
                 "context_used": len(context_documents),
-                "model": self.model,
+                "model": model_to_use,
                 "usage": {
                     "prompt_tokens": response.usage.prompt_tokens,
                     "completion_tokens": response.usage.completion_tokens,
@@ -90,7 +94,7 @@ class LLMClient:
                 "answer": f"Error generating response: {str(e)}",
                 "query": query,
                 "context_used": 0,
-                "model": self.model,
+                "model": model_to_use,
                 "error": str(e)
             }
     
@@ -189,6 +193,7 @@ Remember that your audience consists of researchers and scientists who need accu
         self,
         documents: List[Dict[str, Any]],
         focus_area: str = None,
+        model: Optional[str] = None,
         max_tokens: int = 500
     ) -> str:
         """Generate a summary of multiple documents.
@@ -218,8 +223,11 @@ Documents:
 Summary:"""
         
         try:
+            # Use provided model or fall back to default
+            model_to_use = model or self.model
+            
             response = await self.client.chat.completions.create(
-                model=self.model,
+                model=model_to_use,
                 messages=[
                     {"role": "system", "content": "You are a scientific summarization assistant. Create clear, accurate summaries of biological research. Use academic citation format [1], [2], [3] when referencing documents."},
                     {"role": "user", "content": prompt}
@@ -237,6 +245,7 @@ Summary:"""
         self,
         query: str,
         documents: List[Dict[str, Any]],
+        model: Optional[str] = None,
         max_tokens: int = 800
     ) -> Dict[str, Any]:
         """Generate research insights and potential follow-up questions.
@@ -264,8 +273,11 @@ Documents:
 Please structure your response clearly with these four sections."""
         
         try:
+            # Use provided model or fall back to default
+            model_to_use = model or self.model
+            
             response = await self.client.chat.completions.create(
-                model=self.model,
+                model=model_to_use,
                 messages=[
                     {"role": "system", "content": "You are a research strategist helping scientists identify insights and research directions from biological literature. Use academic citation format [1], [2], [3] when referencing documents."},
                     {"role": "user", "content": prompt}

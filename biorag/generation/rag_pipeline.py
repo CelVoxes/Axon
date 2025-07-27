@@ -33,6 +33,8 @@ class RAGPipeline:
         max_documents: int = 10,
         retrieve_from_sources: bool = True,
         response_type: str = "answer",
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """Process a biological query through the RAG pipeline.
@@ -62,11 +64,11 @@ class RAGPipeline:
         
         # Step 2: Generate response based on retrieved documents
         if response_type == "summary":
-            response = await self._generate_summary(documents, kwargs.get("focus_area"))
+            response = await self._generate_summary(documents, kwargs.get("focus_area"), model)
         elif response_type == "insights":
-            response = await self._generate_insights(question, documents)
+            response = await self._generate_insights(question, documents, model)
         else:  # Default to answer
-            response = await self._generate_answer(question, documents, kwargs.get("system_prompt"))
+            response = await self._generate_answer(question, documents, system_prompt, model)
         
         generation_time = datetime.utcnow()
         
@@ -111,24 +113,28 @@ class RAGPipeline:
         self,
         question: str,
         documents: List[Dict[str, Any]],
-        system_prompt: Optional[str] = None
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None
     ) -> Dict[str, Any]:
         """Generate an answer to the question."""
         return await self.llm_client.generate_response(
             query=question,
             context_documents=documents,
-            system_prompt=system_prompt
+            system_prompt=system_prompt,
+            model=model
         )
     
     async def _generate_summary(
         self,
         documents: List[Dict[str, Any]],
-        focus_area: Optional[str] = None
+        focus_area: Optional[str] = None,
+        model: Optional[str] = None
     ) -> Dict[str, Any]:
         """Generate a summary of documents."""
         summary = await self.llm_client.generate_summary(
             documents=documents,
-            focus_area=focus_area
+            focus_area=focus_area,
+            model=model
         )
         
         return {
@@ -140,12 +146,14 @@ class RAGPipeline:
     async def _generate_insights(
         self,
         question: str,
-        documents: List[Dict[str, Any]]
+        documents: List[Dict[str, Any]],
+        model: Optional[str] = None
     ) -> Dict[str, Any]:
         """Generate research insights."""
         return await self.llm_client.generate_research_insights(
             query=question,
-            documents=documents
+            documents=documents,
+            model=model
         )
     
     async def search_by_gene(

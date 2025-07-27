@@ -6,6 +6,7 @@ export interface BioRAGQuery {
 	retrieve_from_sources?: boolean;
 	response_type?: "answer" | "summary" | "insights";
 	system_prompt?: string;
+	model?: string;
 }
 
 export interface BioRAGResponse {
@@ -251,13 +252,14 @@ export class BioRAGClient {
 		suggestions: string[];
 	}> {
 		try {
-			const client = await this.getClient();
+			console.log(`🔍 Finding datasets for query: "${query}"`);
 
 			// Check if query contains specific GEO dataset IDs
 			const geoIds = query.match(/GSE\d+/g) || [];
 
 			if (geoIds.length > 0) {
 				// User mentioned specific datasets - fetch them directly
+				console.log(`📋 Found specific dataset IDs: ${geoIds.join(", ")}`);
 				const datasets: DatasetInfo[] = [];
 				for (const geoId of geoIds.slice(0, options?.maxDatasets || 10)) {
 					try {
@@ -287,44 +289,100 @@ export class BioRAGClient {
 				};
 			}
 
-			// No specific IDs mentioned - search for relevant datasets
-			const bioragResponse = await this.query({
-				question: `Find datasets relevant to: ${query}. Include specific GEO dataset IDs that would be useful for this analysis.`,
-				max_documents: 5,
-				response_type: "answer",
-			});
+			// No specific IDs mentioned - try multiple approaches
+			let datasets: DatasetInfo[] = [];
+			let answer = "";
+			let suggestions: string[] = [];
 
-			// Extract dataset IDs from the response
-			const extractedGeoIds = bioragResponse.answer.match(/GSE\d+/g) || [];
-			const datasets: DatasetInfo[] = [];
+			// Approach 1: Direct dataset search using the search API
+			try {
+				console.log("🔍 Attempting direct dataset search...");
+				const searchResults = await this.searchDatasets({
+					query: query,
+					organism: options?.organism,
+					limit: options?.maxDatasets || 10,
+					data_type: "RNA-seq",
+				});
 
-			// Search for datasets if requested
-			if (options?.includeDatasets && extractedGeoIds.length > 0) {
-				for (const geoId of extractedGeoIds.slice(
-					0,
-					options.maxDatasets || 10
-				)) {
-					try {
-						const datasetInfo = await this.getDatasetInfo(geoId);
-						datasets.push(datasetInfo);
-					} catch (error) {
-						// Continue if one dataset fails
-						console.warn(`Failed to get info for ${geoId}:`, error);
+				if (searchResults.length > 0) {
+					console.log(
+						`✅ Found ${searchResults.length} datasets via direct search`
+					);
+					datasets = searchResults;
+					answer = `Found ${datasets.length} relevant datasets for your query: "${query}". These datasets are available for analysis.`;
+					suggestions = [
+						"Download and analyze differential expression",
+						"Compare expression profiles between conditions",
+						"Identify pathway enrichment",
+						"Perform clustering analysis",
+						"Generate expression heatmaps",
+					];
+				}
+			} catch (error) {
+				console.warn("Direct dataset search failed:", error);
+			}
+
+			// Approach 2: If direct search failed or returned no results, try BioRAG query
+			if (datasets.length === 0) {
+				try {
+					console.log("🤖 Attempting BioRAG query for dataset discovery...");
+					const bioragResponse = await this.query({
+						question: `Find datasets relevant to: ${query}. Include specific GEO dataset IDs that would be useful for this analysis.`,
+						max_documents: 5,
+						response_type: "answer",
+					});
+
+					// Extract dataset IDs from the response
+					const extractedGeoIds = bioragResponse.answer.match(/GSE\d+/g) || [];
+					console.log(
+						`📋 BioRAG suggested dataset IDs: ${extractedGeoIds.join(", ")}`
+					);
+
+					// Search for datasets if requested
+					if (options?.includeDatasets && extractedGeoIds.length > 0) {
+						for (const geoId of extractedGeoIds.slice(
+							0,
+							options.maxDatasets || 10
+						)) {
+							try {
+								const datasetInfo = await this.getDatasetInfo(geoId);
+								datasets.push(datasetInfo);
+							} catch (error) {
+								// Continue if one dataset fails
+								console.warn(`Failed to get info for ${geoId}:`, error);
+							}
+						}
 					}
+
+					if (datasets.length > 0) {
+						answer = bioragResponse.answer;
+						suggestions = [
+							"Download and analyze differential expression",
+							"Compare expression profiles between conditions",
+							"Identify pathway enrichment",
+							"Perform clustering analysis",
+							"Generate expression heatmaps",
+						];
+					}
+				} catch (error) {
+					console.warn("BioRAG query failed:", error);
 				}
 			}
 
-			// Generate analysis suggestions
-			const suggestions = [
-				"Download and analyze differential expression",
-				"Compare expression profiles between conditions",
-				"Identify pathway enrichment",
-				"Perform clustering analysis",
-				"Generate expression heatmaps",
-			];
+			// If still no datasets found, provide a helpful response
+			if (datasets.length === 0) {
+				answer = `I couldn't find specific datasets for your query: "${query}". However, I can help you with general analysis approaches or you can try searching with different terms.`;
+				suggestions = [
+					"Try searching with more specific terms",
+					"Use general analysis approaches",
+					"Search for specific disease or gene terms",
+					"Look for specific GEO dataset IDs",
+				];
+			}
 
+			console.log(`📊 Final result: ${datasets.length} datasets found`);
 			return {
-				answer: bioragResponse.answer,
+				answer,
 				datasets,
 				suggestions,
 			};

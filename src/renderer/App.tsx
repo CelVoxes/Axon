@@ -7,15 +7,17 @@ import { StatusBar } from "./components/StatusBar/StatusBar";
 import { AppProvider, useAppContext } from "./context/AppContext";
 
 const AppContent: React.FC = () => {
-	const { state } = useAppContext();
-	const [chatCollapsed, setChatCollapsed] = useState(true);
+	const { state, dispatch } = useAppContext();
 
 	useEffect(() => {
 		// Show chat panel when a workspace is opened
 		if (state.currentWorkspace) {
-			setChatCollapsed(false);
+			dispatch({
+				type: "SET_CHAT_COLLAPSED",
+				payload: false,
+			});
 		}
-	}, [state.currentWorkspace]);
+	}, [state.currentWorkspace, dispatch]);
 
 	return (
 		<Layout>
@@ -23,19 +25,19 @@ const AppContent: React.FC = () => {
 
 			<Layout.Body>
 				{state.currentWorkspace && (
-					<Sidebar
-						collapsed={false}
-						onToggle={() => {}}
-						data-layout-role="sidebar"
-					/>
+					<Sidebar onToggle={() => {}} data-layout-role="sidebar" />
 				)}
 
 				<MainContent data-layout-role="main" />
 
-				{!chatCollapsed && state.currentWorkspace && (
+				{!state.chatCollapsed && state.currentWorkspace && (
 					<ChatPanel
-						collapsed={false}
-						onToggle={() => setChatCollapsed(!chatCollapsed)}
+						onToggle={() =>
+							dispatch({
+								type: "SET_CHAT_COLLAPSED",
+								payload: !state.chatCollapsed,
+							})
+						}
 						data-layout-role="chat"
 					/>
 				)}

@@ -1,5 +1,0 @@
-Protein Name: Interleukin-23 subunit alpha
-
-Organism: Homo sapiens
-
-Gene Names: IL23A

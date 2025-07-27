@@ -67,12 +67,18 @@ export class AxonApp {
 	}
 
 	private createMainWindow() {
+		// Debug icon path
+		const iconPath = path.join(__dirname, "../png/axon.png");
+		console.log("Icon path:", iconPath);
+		console.log("Icon exists:", fs.existsSync(iconPath));
+
 		this.mainWindow = new BrowserWindow({
 			width: 1400,
 			height: 900,
 			minWidth: 1200,
 			minHeight: 700,
 			title: "Axon",
+			icon: iconPath,
 			webPreferences: {
 				nodeIntegration: false,
 				contextIsolation: true,
@@ -89,12 +95,18 @@ export class AxonApp {
 		// Set CSP headers for better security
 		this.mainWindow.webContents.session.webRequest.onHeadersReceived(
 			(details, callback) => {
+				// Use different CSP for development vs production
+				const isDevelopment = process.env.NODE_ENV === "development";
+				const scriptSrc = isDevelopment
+					? "'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net"
+					: "'self' 'unsafe-inline' http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net";
+
+				const csp = `default-src 'self' http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline' http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net; img-src 'self' data: https: http://127.0.0.1:* http://localhost:*; connect-src 'self' http://127.0.0.1:* http://localhost:* https://localhost:* https://cdn.jsdelivr.net; frame-src 'self' http://127.0.0.1:* http://localhost:*; worker-src 'self' blob:;`;
+
 				callback({
 					responseHeaders: {
 						...details.responseHeaders,
-						"Content-Security-Policy": [
-							"default-src 'self' http://127.0.0.1:* http://localhost:*; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline' http://127.0.0.1:* http://localhost:*; img-src 'self' data: https: http://127.0.0.1:* http://localhost:*; connect-src 'self' http://127.0.0.1:* http://localhost:* https://localhost:*; frame-src 'self' http://127.0.0.1:* http://localhost:*; worker-src 'self' blob:;",
-						],
+						"Content-Security-Policy": [csp],
 					},
 				});
 			}

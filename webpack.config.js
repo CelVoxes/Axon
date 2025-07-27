@@ -1,5 +1,6 @@
 const path = require("path");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
+const CopyWebpackPlugin = require("copy-webpack-plugin");
 
 module.exports = {
 	target: "electron-renderer",
@@ -19,6 +20,10 @@ module.exports = {
 				test: /\.css$/,
 				use: ["style-loader", "css-loader"],
 			},
+			{
+				test: /\.(png|jpg|jpeg|gif|svg)$/,
+				type: "asset/resource",
+			},
 		],
 	},
 	resolve: {
@@ -37,6 +42,14 @@ module.exports = {
 		new HtmlWebpackPlugin({
 			template: "./src/renderer/index.html",
 			filename: "index.html",
+		}),
+		new CopyWebpackPlugin({
+			patterns: [
+				{
+					from: "src/png",
+					to: "png",
+				},
+			],
 		}),
 	],
 	devtool: "source-map",

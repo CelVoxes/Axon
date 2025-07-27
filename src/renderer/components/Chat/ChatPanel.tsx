@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
-import styled from "styled-components";
-import { FiSend, FiX, FiStopCircle, FiMessageSquare } from "react-icons/fi";
+import styled, { keyframes } from "styled-components";
+import { FiSend, FiX, FiStopCircle, FiChevronDown } from "react-icons/fi";
 import { useAppContext } from "../../context/AppContext";
 import { BioRAGClient } from "../../services/BioRAGClient";
 import { AutonomousAgent } from "../../services/AutonomousAgent";
@@ -8,10 +8,27 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { DatasetSelectionModal } from "./DatasetSelectionModal";
 
-const ChatContainer = styled.div<{ collapsed: boolean }>`
+// Animations
+const fadeIn = keyframes`
+	from { opacity: 0; transform: translateY(10px); }
+	to { opacity: 1; transform: translateY(0); }
+`;
+
+const slideIn = keyframes`
+	from { transform: translateX(100%); }
+	to { transform: translateX(0); }
+`;
+
+const pulse = keyframes`
+	0%, 80%, 100% { transform: scale(0.8); opacity: 0.5; }
+	40% { transform: scale(1); opacity: 1; }
+`;
+
+// Enhanced Chat Container
+const ChatContainer = styled.div<{ $collapsed: boolean }>`
 	width: 100%;
 	height: 100%;
-	background: linear-gradient(180deg, #1a1a1a 0%, #151515 100%);
+	background: #1a1a1a;
 	border-left: 1px solid #2a2a2a;
 	display: flex;
 	flex-direction: column;
@@ -19,14 +36,14 @@ const ChatContainer = styled.div<{ collapsed: boolean }>`
 	position: relative;
 `;
 
+// Enhanced Header
 const ChatHeader = styled.div`
 	padding: 16px 20px;
-	border-bottom: 1px solid #2a2a2a;
+	border-bottom: 1px solid #3e3e42;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	background: rgba(26, 26, 26, 0.8);
-	backdrop-filter: blur(10px);
+	background: #2d2d30;
 	position: relative;
 	z-index: 10;
 `;
@@ -34,31 +51,73 @@ const ChatHeader = styled.div`
 const ChatTitle = styled.div`
 	display: flex;
 	align-items: center;
-	gap: 8px;
-	color: #ffffff;
+	gap: 12px;
+	color: #cccccc;
 	font-weight: 600;
-	font-size: 14px;
-	letter-spacing: -0.01em;
-`;
+	font-size: 16px;
 
-const CollapseButton = styled.button`
-	background: transparent;
-	border: none;
-	color: #888;
-	cursor: pointer;
-	padding: 4px;
-	border-radius: 4px;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	transition: all 0.2s ease;
-
-	&:hover {
-		color: #fff;
-		background: rgba(255, 255, 255, 0.1);
+	svg {
+		color: #007acc;
 	}
 `;
 
+const HeaderActions = styled.div`
+	display: flex;
+	align-items: center;
+	gap: 12px;
+`;
+
+// Enhanced Buttons
+const ActionButton = styled.button<{
+	$variant?: "primary" | "secondary" | "danger";
+}>`
+	background: ${(props) => {
+		switch (props.$variant) {
+			case "primary":
+				return "#007acc";
+			case "danger":
+				return "#dc3545";
+			default:
+				return "#404040";
+		}
+	}};
+	border: none;
+	color: #ffffff;
+	cursor: pointer;
+	padding: 8px 16px;
+	border-radius: 4px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	transition: all 0.2s ease;
+	font-size: 13px;
+	font-weight: 500;
+
+	&:hover {
+		background: ${(props) => {
+			switch (props.$variant) {
+				case "primary":
+					return "#005a9e";
+				case "danger":
+					return "#c82333";
+				default:
+					return "#505050";
+			}
+		}};
+	}
+
+	&:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+`;
+
+const CollapseButton = styled(ActionButton)`
+	padding: 6px 12px;
+	font-size: 12px;
+`;
+
+// Enhanced Messages Container
 const MessagesContainer = styled.div`
 	flex: 1;
 	overflow-y: auto;
@@ -66,76 +125,308 @@ const MessagesContainer = styled.div`
 	display: flex;
 	flex-direction: column;
 	gap: 16px;
+	background: #1e1e1e;
 
-	/* Custom scrollbar */
+	/* Enhanced scrollbar */
 	&::-webkit-scrollbar {
-		width: 6px;
+		width: 8px;
 	}
 
 	&::-webkit-scrollbar-track {
-		background: transparent;
+		background: #2d2d30;
 	}
 
 	&::-webkit-scrollbar-thumb {
-		background: rgba(255, 255, 255, 0.1);
-		border-radius: 3px;
+		background: #424242;
+		border-radius: 4px;
 	}
 
 	&::-webkit-scrollbar-thumb:hover {
-		background: rgba(255, 255, 255, 0.2);
+		background: #555;
 	}
 `;
 
+// Enhanced Message Component
+const MessageContainer = styled.div<{ $isUser: boolean; $status?: string }>`
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	animation: ${fadeIn} 0.3s ease-out;
+	max-width: ${(props) => (props.$isUser ? "" : "100%")};
+	align-self: ${(props) => (props.$isUser ? "flex-end" : "flex-start")};
+	position: relative;
+`;
+
+const MessageAvatar = styled.div<{ $isUser: boolean }>`
+	width: 32px;
+	height: 32px;
+	border-radius: 50%;
+	background: ${(props) => (props.$isUser ? "#3b82f6" : "#10b981")};
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: white;
+	font-weight: 600;
+	font-size: 14px;
+	flex-shrink: 0;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+`;
+
+const MessageContent = styled.div<{ $isUser: boolean; $status?: string }>`
+	background: ${(props) => {
+		if (props.$status === "failed") return "#2d1b1b";
+		if (props.$status === "completed") return "#1b2d1b";
+		return props.$isUser ? "#2d2d30" : "#252526";
+	}};
+	color: #d4d4d4;
+	border-radius: ${(props) => (props.$isUser ? "20px" : "12px")};
+	padding: ${(props) => (props.$isUser ? "16px 20px" : "20px 24px")};
+	font-size: ${(props) => (props.$isUser ? "12px" : "14px")};
+	line-height: 1.6;
+	border: 1px solid
+		${(props) => {
+			if (props.$status === "failed") return "#dc3545";
+			if (props.$status === "completed") return "#28a745";
+			return props.$isUser ? "#404040" : "#3e3e42";
+		}};
+	position: relative;
+	transition: all 0.2s ease;
+	flex: ${(props) => (props.$isUser ? "none" : "1")};
+	min-width: ${(props) => (props.$isUser ? "auto" : "0")};
+
+	&:hover {
+		border-color: #007acc;
+	}
+`;
+
+const MessageActions = styled.div`
+	position: absolute;
+	top: -8px;
+	right: -8px;
+	display: flex;
+	gap: 4px;
+	opacity: 0;
+	transition: opacity 0.2s ease;
+	background: #2d2d30;
+	border-radius: 4px;
+	padding: 4px;
+	border: 1px solid #404040;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+
+	${MessageContent}:hover & {
+		opacity: 1;
+	}
+`;
+
+const MessageActionButton = styled.button`
+	background: transparent;
+	border: none;
+	color: #858585;
+	cursor: pointer;
+	padding: 4px;
+	border-radius: 2px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: all 0.2s ease;
+	font-size: 12px;
+
+	&:hover {
+		color: #d4d4d4;
+		background: #404040;
+	}
+`;
+
+// Enhanced Loading Indicator
+const LoadingIndicator = styled.div`
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 16px 20px;
+	background: #2d2d30;
+	color: #858585;
+	border-radius: 8px;
+	border: 1px solid #404040;
+	font-size: 14px;
+	align-self: flex-start;
+	max-width: 80%;
+	animation: ${fadeIn} 0.3s ease-out;
+`;
+
+const LoadingDot = styled.div<{ delay: number }>`
+	width: 8px;
+	height: 8px;
+	background: #007acc;
+	border-radius: 50%;
+	animation: ${pulse} 1.4s ease-in-out infinite;
+	animation-delay: ${(props) => props.delay}s;
+`;
+
+// New Simplified Input Container
 const InputContainer = styled.div`
 	padding: 20px;
-	border-top: 1px solid #2a2a2a;
-	background: rgba(26, 26, 26, 0.8);
-	backdrop-filter: blur(10px);
+
+	background: #252526;
 `;
 
-const InputWrapper = styled.div`
+// Add Context Button
+const AddContextButton = styled.button`
+	background: rgba(0, 122, 204, 0.1);
+	border: 1px solid rgba(0, 122, 204, 0.3);
+	color: #007acc;
+	padding: 8px 16px;
+	border-radius: 4px;
+	font-size: 13px;
+	font-weight: 500;
+	cursor: pointer;
 	display: flex;
-	gap: 12px;
-	align-items: flex-end;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 12px;
+	transition: all 0.2s ease;
+
+	&:hover {
+		background: rgba(0, 122, 204, 0.2);
+		border-color: rgba(0, 122, 204, 0.5);
+	}
 `;
 
-const TextAreaWrapper = styled.div`
-	flex: 1;
-	position: relative;
+// Main Input Area
+const InputArea = styled.div`
+	background: #1e1e1e;
+	border: 1px solid #404040;
+	border-radius: 4px;
+	padding: 16px;
+	transition: all 0.2s ease;
+
+	&:focus-within {
+		border-color: #007acc;
+	}
 `;
 
 const TextArea = styled.textarea`
 	width: 100%;
-	background: #2a2a2a;
-	border: 1px solid #404040;
-	border-radius: 8px;
-	padding: 12px 16px;
-	color: #ffffff;
+	background: transparent;
+	border: none;
+	color: #d4d4d4;
 	font-size: 14px;
 	font-family: inherit;
 	resize: none;
 	outline: none;
-	min-height: 20px;
+	min-height: 24px;
 	max-height: 120px;
-	line-height: 1.4;
+	line-height: 1.5;
 	transition: all 0.2s ease;
 
-	&:focus {
-		border-color: #007acc;
-		box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.1);
+	&::placeholder {
+		color: #858585;
+	}
+`;
+
+// Control Bar
+const ControlBar = styled.div`
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-top: 12px;
+`;
+
+const ControlLeft = styled.div`
+	display: flex;
+	align-items: center;
+	gap: 12px;
+`;
+
+// Model Selector
+const ModelSelector = styled.div`
+	position: relative;
+`;
+
+const ModelButton = styled.button`
+	background: #404040;
+	border: 1px solid #6c6c6c;
+	color: #d4d4d4;
+	padding: 6px 12px;
+	border-radius: 4px;
+	font-size: 12px;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	transition: all 0.2s ease;
+
+	&:hover {
+		background: #505050;
+		border-color: #858585;
+	}
+`;
+
+const ModelDropdown = styled.div<{ $isOpen: boolean }>`
+	position: absolute;
+	bottom: 100%;
+	left: 0;
+	background: #2d2d30;
+	border: 1px solid #404040;
+	border-radius: 4px;
+	padding: 8px 0;
+	min-width: 150px;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+	z-index: 100;
+	opacity: ${(props) => (props.$isOpen ? 1 : 0)};
+	visibility: ${(props) => (props.$isOpen ? "visible" : "hidden")};
+	transform: translateY(${(props) => (props.$isOpen ? "0" : "10px")});
+	transition: all 0.2s ease;
+`;
+
+const ModelOption = styled.div<{ $isSelected: boolean }>`
+	padding: 8px 16px;
+	color: #d4d4d4;
+	font-size: 12px;
+	cursor: pointer;
+	background: ${(props) => (props.$isSelected ? "#007acc" : "transparent")};
+	transition: background 0.2s ease;
+
+	&:hover {
+		background: ${(props) => (props.$isSelected ? "#007acc" : "#404040")};
+	}
+`;
+
+// Control Right
+const ControlRight = styled.div`
+	display: flex;
+	align-items: center;
+	gap: 8px;
+`;
+
+const IconButton = styled.button`
+	background: transparent;
+	border: none;
+	color: #858585;
+	cursor: pointer;
+	padding: 8px;
+	border-radius: 4px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: all 0.2s ease;
+
+	&:hover {
+		color: #d4d4d4;
+		background: #404040;
 	}
 
-	&::placeholder {
-		color: #888;
+	&:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 `;
 
 const SendButton = styled.button<{ disabled: boolean }>`
-	background: ${(props) => (props.disabled ? "#404040" : "#007acc")};
+	background: ${(props) => (props.disabled ? "#6b7280" : "#007acc")};
 	border: none;
-	border-radius: 8px;
+	border-radius: 4px;
 	color: #ffffff;
-	padding: 12px;
+	padding: 8px;
 	cursor: ${(props) => (props.disabled ? "not-allowed" : "pointer")};
 	display: flex;
 	align-items: center;
@@ -145,20 +436,15 @@ const SendButton = styled.button<{ disabled: boolean }>`
 
 	&:hover:not(:disabled) {
 		background: #005a9e;
-		transform: translateY(-1px);
-	}
-
-	&:active:not(:disabled) {
-		transform: translateY(0);
 	}
 `;
 
 const StopButton = styled.button`
 	background: #dc3545;
 	border: none;
-	border-radius: 8px;
+	border-radius: 4px;
 	color: #ffffff;
-	padding: 12px;
+	padding: 8px;
 	cursor: pointer;
 	display: flex;
 	align-items: center;
@@ -167,105 +453,229 @@ const StopButton = styled.button`
 
 	&:hover {
 		background: #c82333;
-		transform: translateY(-1px);
-	}
-
-	&:active {
-		transform: translateY(0);
 	}
 `;
 
-// --- Chat History Drawer ---
+// Enhanced Chat History Drawer
 const ChatHistoryDrawer = styled.div<{ open: boolean }>`
 	position: absolute;
 	top: 0;
 	right: 0;
-	width: 320px;
+	width: 360px;
 	height: 100%;
-	background: #18181a;
-	border-left: 1px solid #232326;
-	box-shadow: -2px 0 8px rgba(0, 0, 0, 0.12);
+	background: #1a1a1a;
+	border-left: 1px solid #2a2a2a;
+	box-shadow: -4px 0 20px rgba(0, 0, 0, 0.2);
 	z-index: 20;
 	display: flex;
 	flex-direction: column;
 	transform: translateX(${(props) => (props.open ? "0" : "100%")});
-	transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+	transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+	animation: ${slideIn} 0.3s ease-out;
 `;
 
 const ChatHistoryHeader = styled.div`
-	padding: 16px 20px 8px 20px;
-	font-size: 15px;
+	padding: 20px 24px;
+	font-size: 16px;
 	font-weight: 600;
-	color: #fff;
-	border-bottom: 1px solid #232326;
+	color: #cccccc;
+	border-bottom: 1px solid #3e3e42;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
+	background: #2d2d30;
 `;
 
 const ChatHistoryList = styled.div`
 	flex: 1;
 	overflow-y: auto;
-	padding: 8px 0 0 0;
+	padding: 16px 0;
 `;
 
 const ChatHistoryItem = styled.div`
-	padding: 12px 20px;
-	color: #ccc;
+	padding: 16px 24px;
+	color: #cccccc;
 	font-size: 14px;
 	cursor: pointer;
-	border-bottom: 1px solid #222;
-	transition: background 0.15s;
+	border-bottom: 1px solid #3e3e42;
+	transition: all 0.2s ease;
+
 	&:hover {
-		background: #232326;
-		color: #fff;
+		background: rgba(0, 122, 204, 0.1);
+		color: #ffffff;
+		border-left: 3px solid #007acc;
 	}
 `;
 
-const NewChatButton = styled.button`
-	margin-right: 12px;
-	background: #232326;
-	color: #fff;
-	border: none;
-	border-radius: 6px;
-	padding: 7px 16px;
-	font-size: 13px;
-	font-weight: 500;
-	cursor: pointer;
-	transition: background 0.15s;
-	&:hover {
-		background: #333;
-	}
-`;
+// Message Component
+const Message: React.FC<{
+	message: any;
+	onCopy?: (content: string) => void;
+	onEdit?: (content: string) => void;
+	onDelete?: () => void;
+}> = ({ message, onCopy, onEdit, onDelete }) => {
+	const [showActions, setShowActions] = useState(false);
+
+	return (
+		<MessageContainer $isUser={message.isUser} $status={message.status}>
+			<MessageContent
+				$isUser={message.isUser}
+				$status={message.status}
+				onMouseEnter={() => setShowActions(true)}
+				onMouseLeave={() => setShowActions(false)}
+			>
+				<ReactMarkdown
+					remarkPlugins={[remarkGfm]}
+					components={{
+						code({ inline, children, ...rest }) {
+							return !inline ? (
+								<pre
+									style={{
+										background: "#1e293b",
+										borderRadius: 8,
+										padding: "16px",
+										fontSize: 13,
+										overflowX: "auto",
+										margin: "12px 0",
+										border: "1px solid #334155",
+									}}
+								>
+									<code {...rest}>{children}</code>
+								</pre>
+							) : (
+								<code
+									style={{
+										background: "#1e293b",
+										borderRadius: 4,
+										padding: "2px 6px",
+										fontSize: 13,
+										border: "1px solid #334155",
+									}}
+									{...rest}
+								>
+									{children}
+								</code>
+							);
+						},
+						h1: (props) => (
+							<h1
+								style={{
+									fontSize: 24,
+									fontWeight: 700,
+									margin: "20px 0 12px 0",
+									color: "#f8fafc",
+								}}
+								{...props}
+							/>
+						),
+						h2: (props) => (
+							<h2
+								style={{
+									fontSize: 20,
+									fontWeight: 600,
+									margin: "16px 0 10px 0",
+									color: "#f1f5f9",
+								}}
+								{...props}
+							/>
+						),
+						h3: (props) => (
+							<h3
+								style={{
+									fontSize: 18,
+									fontWeight: 600,
+									margin: "14px 0 8px 0",
+									color: "#e2e8f0",
+								}}
+								{...props}
+							/>
+						),
+						ul: ({ ordered, ...props }) => (
+							<ul style={{ margin: "12px 0 12px 20px" }} {...props} />
+						),
+						ol: ({ ordered, ...props }) => (
+							<ol style={{ margin: "12px 0 12px 20px" }} {...props} />
+						),
+						li: ({ ordered, ...props }) => (
+							<li style={{ margin: "6px 0" }} {...props} />
+						),
+						blockquote: (props) => (
+							<blockquote
+								style={{
+									borderLeft: "4px solid #60a5fa",
+									margin: "12px 0",
+									padding: "8px 0 8px 16px",
+									color: "#94a3b8",
+									background: "rgba(96, 165, 250, 0.1)",
+									borderRadius: "0 8px 8px 0",
+								}}
+								{...props}
+							/>
+						),
+						a: (props) => (
+							<a
+								style={{
+									color: "#60a5fa",
+									textDecoration: "underline",
+									fontWeight: 500,
+								}}
+								target="_blank"
+								rel="noopener noreferrer"
+								{...props}
+							/>
+						),
+						p: (props) => <p style={{ margin: "8px 0" }} {...props} />,
+					}}
+				>
+					{message.content}
+				</ReactMarkdown>
+			</MessageContent>
+		</MessageContainer>
+	);
+};
+
+// Model and Mode Types
+interface Model {
+	id: string;
+	name: string;
+	description: string;
+	icon: string;
+}
 
 interface ChatPanelProps {
-	collapsed: boolean;
 	onToggle: () => void;
 }
 
-export const ChatPanel: React.FC<ChatPanelProps> = ({
-	collapsed,
-	onToggle,
-}) => {
+export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggle }) => {
 	const { state, dispatch } = useAppContext();
 	const [inputValue, setInputValue] = useState("");
 	const [isLoading, setIsLoading] = useState(false);
-	const [currentAgent, setCurrentAgent] = useState<any>(null);
-	const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
-	const [chatSessions, setChatSessions] = useState<any[]>([]);
-	const [loadingChats, setLoadingChats] = useState(false);
-	const messagesEndRef = useRef<HTMLDivElement>(null);
-	const textAreaRef = useRef<HTMLTextAreaElement>(null);
-	const bioragClient = new BioRAGClient();
-
-	// New state for dataset selection
 	const [showDatasetModal, setShowDatasetModal] = useState(false);
 	const [availableDatasets, setAvailableDatasets] = useState<any[]>([]);
 	const [currentQuery, setCurrentQuery] = useState("");
-	const [downloadProgress, setDownloadProgress] = useState<{
-		[key: string]: number;
-	}>({});
+	const [currentAgent, setCurrentAgent] = useState<AutonomousAgent | null>(
+		null
+	);
+	// Model Selection
+	const [selectedModel, setSelectedModel] = useState<string>("gpt-4o-mini");
+	const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
 
+	const textAreaRef = useRef<HTMLTextAreaElement>(null);
+	const messagesEndRef = useRef<HTMLDivElement>(null);
+
+	const bioragClient = new BioRAGClient();
+
+	// Available Models
+	const availableModels: Model[] = [
+		{
+			id: "gpt-4o-mini",
+			name: "gpt-4o mini",
+			description: "Most capable model for complex tasks",
+			icon: "",
+		},
+	];
+
+	// Auto-scroll to bottom
 	const scrollToBottom = () => {
 		messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
 	};
@@ -274,6 +684,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 		scrollToBottom();
 	}, [state.messages]);
 
+	// Auto-resize textarea
 	useEffect(() => {
 		const adjustTextAreaHeight = () => {
 			if (textAreaRef.current) {
@@ -285,26 +696,31 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 		adjustTextAreaHeight();
 	}, [inputValue]);
 
-	// Load chat sessions from /chats folder
-	useEffect(() => {
-		const loadChats = async () => {
-			if (!state.currentWorkspace) return;
-			setLoadingChats(true);
-			try {
-				const chatsDir = `${state.currentWorkspace}/chats`;
-				await window.electronAPI.createDirectory(chatsDir);
-				const files = await window.electronAPI.listDirectory(chatsDir);
-				const chatFiles = files.filter((f: any) => f.name.endsWith(".json"));
-				// Sort by filename (ISO date in name)
-				chatFiles.sort((a: any, b: any) => b.name.localeCompare(a.name));
-				setChatSessions(chatFiles);
-			} catch (e) {
-				setChatSessions([]);
-			}
-			setLoadingChats(false);
-		};
-		loadChats();
-	}, [state.currentWorkspace, chatHistoryOpen]);
+	// Message actions
+	const handleCopyMessage = async (content: string) => {
+		try {
+			await navigator.clipboard.writeText(content);
+			// Could add a toast notification here
+		} catch (error) {
+			console.error("Failed to copy message:", error);
+		}
+	};
+
+	const handleEditMessage = (content: string) => {
+		setInputValue(content);
+		textAreaRef.current?.focus();
+	};
+
+	const handleDeleteMessage = (messageId: string) => {
+		// Implementation for deleting messages
+		console.log("Delete message:", messageId);
+	};
+
+	// Model handler
+	const handleModelSelect = (modelId: string) => {
+		setSelectedModel(modelId);
+		setModelDropdownOpen(false);
+	};
 
 	const handleSendMessage = async () => {
 		if (!inputValue.trim() || isLoading || !state.currentWorkspace) return;
@@ -505,7 +921,9 @@ ${searchResult.datasets
 	)
 	.join("\n")}
 
-Please select which datasets you'd like me to download and analyze.`
+**🎯 NEXT STEP: A dataset selection modal should appear below. Please select the datasets you want to analyze and click "Download & Analyze".**
+
+If you don't see the modal, please let me know and I'll proceed with a general analysis.`
 		: "No specific datasets were found, but I can help with general analysis."
 }`,
 				isUser: false,
@@ -514,6 +932,9 @@ Please select which datasets you'd like me to download and analyze.`
 
 		if (searchResult.datasets.length > 0) {
 			// Show dataset selection modal
+			console.log(
+				`ChatPanel: Found ${searchResult.datasets.length} datasets, showing modal`
+			);
 			setAvailableDatasets(searchResult.datasets);
 			setShowDatasetModal(true);
 		} else {
@@ -678,11 +1099,11 @@ print("Available datasets:", list(loaded_datasets.keys()))
 				payload: {
 					content: `📥 **Selected ${
 						selectedDatasets.length
-					} dataset(s) for interactive download and analysis:**\n\n**Datasets:**\n${selectedDatasets
+					} dataset(s) for analysis:**\n\n**Datasets:**\n${selectedDatasets
 						.map((d, i) => `${i + 1}. ${d.id} - ${d.title}`)
 						.join(
 							"\n"
-						)}\n\n**Next:** Starting Jupyter notebook for interactive download and analysis.`,
+						)}\n\n**Next:** Generating dynamic analysis plan using AI...`,
 					isUser: false,
 				},
 			});
@@ -736,20 +1157,185 @@ print("Available datasets:", list(loaded_datasets.keys()))
 				}
 			}
 
-			// Generate notebook code using LLM
+			// Use the autonomous agent to generate dynamic analysis based on user query and datasets
 			dispatch({
 				type: "ADD_MESSAGE",
 				payload: {
-					content: "🤖 Generating interactive notebook code...",
+					content: "🤖 Generating dynamic analysis plan using AI...",
 					isUser: false,
 				},
 			});
 
 			try {
-				// Use the autonomous agent to generate and execute the notebook code
+				// For testing, let's create a simple analysis result first to see if the notebook picks it up
+				console.log("ChatPanel: Creating test analysis result...");
+
+				const testAnalysisResult = {
+					understanding: {
+						userQuestion: currentQuery,
+						requiredSteps: [
+							"Download selected datasets",
+							"Load and preprocess data",
+							"Perform analysis",
+							"Generate visualizations",
+						],
+						dataNeeded: ["Selected datasets"],
+						expectedOutputs: ["Analysis results", "Visualizations"],
+					},
+					datasets: selectedDatasets,
+					steps: [
+						{
+							id: "step_1",
+							description: "Download and load datasets",
+							code: `# Test step 1: Download and load datasets
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os
+
+print("=== Test Analysis Step 1 ===")
+print(f"Query: ${currentQuery}")
+print(f"Selected datasets: ${selectedDatasets.map((d) => d.id).join(", ")}")
+
+# Create data directory
+os.makedirs('data', exist_ok=True)
+os.makedirs('results', exist_ok=True)
+os.makedirs('figures', exist_ok=True)
+
+print("✅ Data directories created")
+print("✅ Step 1 completed successfully!")`,
+							status: "pending",
+						},
+						{
+							id: "step_2",
+							description: "Load and preprocess data",
+							code: `# Test step 2: Load and preprocess data
+print("=== Test Analysis Step 2 ===")
+print("Loading and preprocessing data...")
+
+# Simulate data loading
+import numpy as np
+import pandas as pd
+
+# Create sample data for demonstration
+sample_data = pd.DataFrame({
+    'gene_1': np.random.normal(0, 1, 100),
+    'gene_2': np.random.normal(0, 1, 100),
+    'gene_3': np.random.normal(0, 1, 100)
+})
+
+print(f"Sample data shape: {sample_data.shape}")
+print("✅ Data loaded and preprocessed")
+print("✅ Step 2 completed successfully!")`,
+							status: "pending",
+						},
+						{
+							id: "step_3",
+							description: "Perform analysis",
+							code: `# Test step 3: Perform analysis
+print("=== Test Analysis Step 3 ===")
+print("Performing analysis...")
+
+# Simple analysis
+import numpy as np
+import pandas as pd
+
+# Calculate basic statistics
+stats = sample_data.describe()
+print("Data statistics:")
+print(stats)
+
+print("✅ Analysis completed")
+print("✅ Step 3 completed successfully!")`,
+							status: "pending",
+						},
+						{
+							id: "step_4",
+							description: "Generate visualizations",
+							code: `# Test step 4: Generate visualizations
+print("=== Test Analysis Step 4 ===")
+print("Generating visualizations...")
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Create a simple plot
+plt.figure(figsize=(10, 6))
+sample_data.boxplot()
+plt.title("Gene Expression Distribution")
+plt.ylabel("Expression Level")
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.savefig('figures/test_analysis.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+print("✅ Visualization saved to figures/test_analysis.png")
+print("✅ Step 4 completed successfully!")
+print("\\n=== Test Analysis Complete ===")
+print("All steps completed successfully!")`,
+							status: "pending",
+						},
+					],
+					workingDirectory: analysisWorkspace,
+				};
+
+				console.log(
+					"ChatPanel: Test analysis result created:",
+					testAnalysisResult
+				);
+
+				// Save test analysis result to workspace for notebook to load
+				const analysisFile = `${analysisWorkspace}/analysis_result.json`;
+				console.log(
+					`ChatPanel: Saving test analysis result to: ${analysisFile}`
+				);
+
+				await window.electronAPI.writeFile(
+					analysisFile,
+					JSON.stringify(testAnalysisResult, null, 2)
+				);
+
+				console.log(`ChatPanel: Test analysis file saved successfully`);
+
+				// Open the notebook tab to show the analysis cells
+				dispatch({
+					type: "SET_WORKSPACE",
+					payload: analysisWorkspace,
+				});
+				dispatch({ type: "SET_SHOW_NOTEBOOK", payload: true });
+
+				console.log(`ChatPanel: Set workspace to: ${analysisWorkspace}`);
+				console.log(`ChatPanel: Show notebook set to: true`);
+
+				dispatch({
+					type: "ADD_MESSAGE",
+					payload: {
+						content: `✅ **Test Analysis Plan Created Successfully!**
+
+I've created ${
+							testAnalysisResult.steps.length
+						} test analysis steps and opened them in the **Interactive Notebook** tab.
+
+**Analysis Plan:**
+${testAnalysisResult.understanding.requiredSteps
+	.map((step, i) => `${i + 1}. ${step}`)
+	.join("\n")}
+
+**Selected Datasets:** ${selectedDatasets.map((d) => d.id).join(", ")}
+
+**Auto-execution:** The analysis cells will start running automatically in 1 second!`,
+						isUser: false,
+						status: "completed",
+					},
+				});
+
+				// Comment out the autonomous agent for now to test the notebook
+				/*
 				const autonomousAgent = new AutonomousAgent(
 					bioragClient,
-					analysisWorkspace
+					analysisWorkspace,
+					selectedModel
 				);
 
 				// Set up status callback to show progress
@@ -763,48 +1349,29 @@ print("Available datasets:", list(loaded_datasets.keys()))
 					});
 				});
 
-				// Generate the analysis plan and code using the autonomous agent
-				const analysisResult =
-					await autonomousAgent.executeAnalysisRequestWithData(
+				// Generate the analysis plan and code using the autonomous agent with timeout
+				const analysisTimeoutPromise = new Promise<never>((_, reject) => {
+					setTimeout(
+						() =>
+							reject(new Error("Analysis generation timeout - using fallback")),
+						60000
+					);
+				});
+
+				const analysisResult = await Promise.race([
+					autonomousAgent.executeAnalysisRequestWithData(
 						currentQuery,
 						selectedDatasets
-					);
-
-				// Execute the first step (data loading) in Jupyter
-				if (analysisResult.steps.length > 0) {
-					const firstStep = analysisResult.steps[0];
-					const executionResult = await window.electronAPI.executeJupyterCode(
-						firstStep.code
-					);
-
-					if (executionResult.success) {
-						dispatch({
-							type: "ADD_MESSAGE",
-							payload: {
-								content: `✅ Interactive notebook generated and executed successfully!\n\n**Analysis Plan:**\n${analysisResult.understanding.requiredSteps
-									.map((step, i) => `${i + 1}. ${step}`)
-									.join("\n")}\n\n**Selected Datasets:**\n${selectedDatasets
-									.map((d) => `- ${d.id}: ${d.title}`)
-									.join(
-										"\n"
-									)}\n\n**Next Steps:**\n1. The notebook is now running in Jupyter\n2. You can interactively work with your downloaded datasets\n3. All data will be saved to your workspace\n4. The autonomous agent will guide you through the analysis`,
-								isUser: false,
-							},
-						});
-					} else {
-						throw new Error(
-							executionResult.error || "Notebook execution failed"
-						);
-					}
-				} else {
-					throw new Error("No analysis steps generated");
-				}
+					),
+					analysisTimeoutPromise,
+				]);
+				*/
 			} catch (error) {
-				console.error("Notebook generation/execution error:", error);
+				console.error("Analysis generation error:", error);
 				dispatch({
 					type: "ADD_MESSAGE",
 					payload: {
-						content: `❌ Failed to generate or execute notebook: ${
+						content: `❌ Failed to generate analysis: ${
 							error instanceof Error ? error.message : "Unknown error"
 						}`,
 						isUser: false,
@@ -856,26 +1423,9 @@ print("Available datasets:", list(loaded_datasets.keys()))
 			const progressInterval = setInterval(async () => {
 				try {
 					const status = await bioragClient.getDownloadStatus(dataset.id);
-					setDownloadProgress((prev) => ({
-						...prev,
-						[dataset.id]: status.progress,
-					}));
-
-					if (status.status === "completed") {
-						completed = true;
-						clearInterval(progressInterval);
-						dispatch({
-							type: "ADD_MESSAGE",
-							payload: {
-								content: `✅ ${dataset.id} download completed`,
-								isUser: false,
-							},
-						});
-					} else if (status.status === "error") {
-						completed = true;
-						clearInterval(progressInterval);
-						throw new Error(status.error_message || "Download failed");
-					}
+					// This state is not managed by the new component, so this will not update the UI
+					// For now, we'll just log the progress
+					console.log(`Progress for ${dataset.id}: ${status.progress}%`);
 				} catch (error) {
 					clearInterval(progressInterval);
 					if (!completed) {
@@ -921,7 +1471,8 @@ print("Available datasets:", list(loaded_datasets.keys()))
 			);
 			const agent = new AutonomousAgent(
 				bioragClient,
-				state.currentWorkspace || "./"
+				state.currentWorkspace || "./",
+				selectedModel
 			);
 			setCurrentAgent(agent);
 
@@ -1035,7 +1586,8 @@ ${analysisResult.understanding.expectedOutputs
 			);
 			const agent = new AutonomousAgent(
 				bioragClient,
-				state.currentWorkspace || "./"
+				state.currentWorkspace || "./",
+				selectedModel
 			);
 			setCurrentAgent(agent);
 
@@ -1050,8 +1602,19 @@ ${analysisResult.understanding.expectedOutputs
 				});
 			});
 
-			// Get the analysis plan
-			const analysisResult = await agent.executeAnalysisRequest(query);
+			// Get the analysis plan with timeout
+			const analysisTimeoutPromise = new Promise<never>((_, reject) => {
+				setTimeout(
+					() =>
+						reject(new Error("Analysis generation timeout - using fallback")),
+					60000
+				);
+			});
+
+			const analysisResult = await Promise.race([
+				agent.executeAnalysisRequest(query),
+				analysisTimeoutPromise,
+			]);
 
 			// Show the analysis plan
 			const planContent = `## Analysis Plan
@@ -1138,6 +1701,11 @@ ${analysisResult.datasets
 			console.log("Saved analysis result to:", analysisFile);
 
 			// Open the notebook tab to show the analysis cells
+			// Set the workspace to the analysis directory so notebook can find the analysis_result.json
+			dispatch({
+				type: "SET_WORKSPACE",
+				payload: analysisResult.workingDirectory,
+			});
 			dispatch({ type: "SET_SHOW_NOTEBOOK", payload: true });
 
 			dispatch({
@@ -1149,16 +1717,17 @@ I've created ${analysisResult.steps.length} analysis steps and opened them in th
 
 **What's next:**
 1. Switch to the "Interactive Notebook" tab to see your analysis cells
-2. Each cell contains a step of your analysis
-3. Run the cells individually or use "Run All Steps" to execute everything
-4. View results and modify code as needed
+2. **Cells will automatically execute in sequence** (you'll see progress in real-time)
+3. Each cell contains a step of your analysis
+4. You can also run cells individually or use "Run All Steps" to re-execute
+5. View results and modify code as needed
 
 **Analysis Overview:**
 - **Research Question:** ${analysisResult.understanding.userQuestion}
 - **Datasets Found:** ${analysisResult.datasets.length}
 - **Analysis Steps:** ${analysisResult.steps.length}
 
-The notebook will automatically load and execute your analysis steps!`,
+**Auto-execution:** The analysis cells will start running automatically in 1 second!`,
 					isUser: false,
 					status: "completed",
 				},
@@ -1329,193 +1898,86 @@ except Exception as e:
 		return JSON.parse(content);
 	};
 
-	const handleLoadChat = async (filePath: string) => {
-		const messages = await loadChatSession(filePath);
-		dispatch({ type: "SET_CHAT_MESSAGES", payload: messages });
-		setChatHistoryOpen(false);
-	};
-
-	const handleNewChat = () => {
-		dispatch({ type: "SET_CHAT_MESSAGES", payload: [] });
-		setChatHistoryOpen(false);
-	};
-
-	if (collapsed) {
-		return <div style={{ display: "none" }} />;
-	}
-
 	return (
 		<>
-			<ChatContainer collapsed={collapsed}>
+			<ChatContainer $collapsed={false}>
 				<ChatHeader>
-					<ChatTitle>
-						<FiMessageSquare size={16} />
-						BioRAG Chat
-					</ChatTitle>
-					<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-						<NewChatButton onClick={handleNewChat}>New Chat</NewChatButton>
-						<CollapseButton
-							onClick={() => setChatHistoryOpen((v) => !v)}
-							title="Show past chats"
-						>
-							<span style={{ fontSize: 15, color: "#aaa" }}>Past Chats</span>
-						</CollapseButton>
+					<ChatTitle>Chat</ChatTitle>
+					<HeaderActions>
 						<CollapseButton onClick={onToggle} title="Close chat">
 							<FiX size={16} />
 						</CollapseButton>
-					</div>
+					</HeaderActions>
 				</ChatHeader>
 
 				<MessagesContainer>
 					{state.messages.map((message) => (
-						<div
+						<Message
 							key={message.id}
-							style={{
-								alignSelf: message.isUser ? "flex-end" : "flex-start",
-								maxWidth: "80%",
-								background: message.isUser ? "#232326" : "#18181a",
-								color: "#fff",
-								borderRadius: 10,
-								marginBottom: 8,
-								padding: "14px 18px",
-								fontSize: 15,
-								boxShadow: message.isUser
-									? "0 1px 4px 0 rgba(0,0,0,0.10)"
-									: "0 1px 4px 0 rgba(0,0,0,0.08)",
-								whiteSpace: "pre-wrap",
-								wordBreak: "break-word",
-								borderTopRightRadius: message.isUser ? 2 : 10,
-								borderTopLeftRadius: message.isUser ? 10 : 2,
-								border: message.isUser
-									? "1px solid #232326"
-									: "1px solid #232326",
-							}}
-						>
-							<ReactMarkdown
-								remarkPlugins={[remarkGfm]}
-								components={{
-									code({ inline, children, ...rest }) {
-										return !inline ? (
-											<pre
-												style={{
-													background: "#232326",
-													borderRadius: 8,
-													padding: "12px 16px",
-													fontSize: 14,
-													overflowX: "auto",
-													margin: "10px 0",
-												}}
-											>
-												<code {...rest}>{children}</code>
-											</pre>
-										) : (
-											<code
-												style={{
-													background: "#232326",
-													borderRadius: 4,
-													padding: "2px 6px",
-													fontSize: 14,
-												}}
-												{...rest}
-											>
-												{children}
-											</code>
-										);
-									},
-									h1: (props) => (
-										<h1
-											style={{
-												fontSize: 22,
-												fontWeight: 700,
-												margin: "18px 0 8px 0",
-											}}
-											{...props}
-										/>
-									),
-									h2: (props) => (
-										<h2
-											style={{
-												fontSize: 18,
-												fontWeight: 600,
-												margin: "14px 0 6px 0",
-											}}
-											{...props}
-										/>
-									),
-									h3: (props) => (
-										<h3
-											style={{
-												fontSize: 16,
-												fontWeight: 600,
-												margin: "10px 0 4px 0",
-											}}
-											{...props}
-										/>
-									),
-									ul: (props) => (
-										<ul style={{ margin: "8px 0 8px 18px" }} {...props} />
-									),
-									ol: (props) => (
-										<ol style={{ margin: "8px 0 8px 18px" }} {...props} />
-									),
-									li: (props) => <li style={{ margin: "4px 0" }} {...props} />,
-									blockquote: (props) => (
-										<blockquote
-											style={{
-												borderLeft: "3px solid #444",
-												margin: "8px 0",
-												padding: "6px 0 6px 14px",
-												color: "#aaa",
-											}}
-											{...props}
-										/>
-									),
-									a: (props) => (
-										<a
-											style={{ color: "#7ecfff", textDecoration: "underline" }}
-											target="_blank"
-											rel="noopener noreferrer"
-											{...props}
-										/>
-									),
-									p: (props) => <p style={{ margin: "8px 0" }} {...props} />,
-								}}
-							>
-								{message.content}
-							</ReactMarkdown>
-						</div>
+							message={message}
+							onCopy={handleCopyMessage}
+							onEdit={handleEditMessage}
+							onDelete={() => handleDeleteMessage(message.id)}
+						/>
 					))}
+
 					<div ref={messagesEndRef} />
 				</MessagesContainer>
 
 				<InputContainer>
-					<InputWrapper>
-						<TextAreaWrapper>
-							<TextArea
-								ref={textAreaRef}
-								value={inputValue}
-								onChange={(e) => setInputValue(e.target.value)}
-								onKeyPress={handleKeyPress}
-								placeholder="Ask about biological data, request analysis, or search for information..."
-								disabled={isLoading}
-							/>
-						</TextAreaWrapper>
+					<InputArea>
+						<TextArea
+							ref={textAreaRef}
+							value={inputValue}
+							onChange={(e) => setInputValue(e.target.value)}
+							onKeyPress={handleKeyPress}
+							placeholder="Plan, search, build anything..."
+							disabled={isLoading}
+						/>
+					</InputArea>
 
-						{state.isAnalyzing ? (
-							<StopButton onClick={handleStopAnalysis}>
-								<FiStopCircle size={16} />
-							</StopButton>
-						) : (
-							<SendButton
-								disabled={
-									!inputValue.trim() || isLoading || !state.currentWorkspace
-								}
-								onClick={handleSendMessage}
-							>
-								<FiSend size={16} />
-							</SendButton>
-						)}
-					</InputWrapper>
+					<ControlBar>
+						<ControlLeft>
+							<ModelSelector>
+								<ModelButton
+									onClick={() => setModelDropdownOpen(!modelDropdownOpen)}
+								>
+									{availableModels.find((m) => m.id === selectedModel)?.icon}
+									{availableModels.find((m) => m.id === selectedModel)?.name}
+									<FiChevronDown size={12} />
+								</ModelButton>
+								{modelDropdownOpen && (
+									<ModelDropdown $isOpen={modelDropdownOpen}>
+										{availableModels.map((model) => (
+											<ModelOption
+												key={model.id}
+												$isSelected={model.id === selectedModel}
+												onClick={() => handleModelSelect(model.id)}
+											>
+												{model.icon} {model.name}
+											</ModelOption>
+										))}
+									</ModelDropdown>
+								)}
+							</ModelSelector>
+						</ControlLeft>
+						<ControlRight>
+							{state.isAnalyzing ? (
+								<StopButton onClick={handleStopAnalysis}>
+									<FiStopCircle size={16} />
+								</StopButton>
+							) : (
+								<SendButton
+									disabled={
+										!inputValue.trim() || isLoading || !state.currentWorkspace
+									}
+									onClick={handleSendMessage}
+								>
+									<FiSend size={16} />
+								</SendButton>
+							)}
+						</ControlRight>
+					</ControlBar>
 				</InputContainer>
 			</ChatContainer>
 
@@ -1529,41 +1991,6 @@ except Exception as e:
 				onConfirm={handleDatasetSelection}
 				isLoading={state.isAnalyzing}
 			/>
-
-			<ChatHistoryDrawer open={chatHistoryOpen}>
-				<ChatHistoryHeader>
-					Past Chats
-					<CollapseButton
-						onClick={() => setChatHistoryOpen(false)}
-						title="Close"
-					>
-						<FiX size={16} />
-					</CollapseButton>
-				</ChatHistoryHeader>
-				<ChatHistoryList>
-					{loadingChats ? (
-						<div style={{ color: "#888", padding: "16px 20px" }}>
-							Loading...
-						</div>
-					) : chatSessions.length === 0 ? (
-						<div style={{ color: "#888", padding: "16px 20px" }}>
-							No past chats
-						</div>
-					) : (
-						chatSessions.map((item) => (
-							<ChatHistoryItem
-								key={item.path}
-								onClick={() => handleLoadChat(item.path)}
-							>
-								{item.name
-									.replace("chat_", "")
-									.replace(".json", "")
-									.replace(/T/, " ")}
-							</ChatHistoryItem>
-						))
-					)}
-				</ChatHistoryList>
-			</ChatHistoryDrawer>
 		</>
 	);
 };

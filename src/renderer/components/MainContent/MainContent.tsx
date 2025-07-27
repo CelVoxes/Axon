@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from "react";
 import styled from "styled-components";
-import { FiFolder } from "react-icons/fi";
+import { FiFolder, FiMessageSquare, FiX } from "react-icons/fi";
 import { useAppContext } from "../../context/AppContext";
 import { FileEditor } from "./FileEditor";
 import { Notebook } from "./Notebook";
+// @ts-ignore
+import axonLogo from "../../../png/axon-no-background.png";
 
 const MainContainer = styled.div`
 	flex: 1;
@@ -23,17 +25,17 @@ const TabBar = styled.div`
 	overflow-x: auto;
 `;
 
-const Tab = styled.div<{ isActive: boolean }>`
+const Tab = styled.div<{ $isActive: boolean }>`
 	padding: 8px 16px;
 	font-size: 13px;
 	cursor: pointer;
 	border-right: 1px solid #3e3e42;
-	background-color: ${(props) => (props.isActive ? "#1e1e1e" : "transparent")};
-	color: ${(props) => (props.isActive ? "#ffffff" : "#cccccc")};
+	background-color: ${(props) => (props.$isActive ? "#1e1e1e" : "transparent")};
+	color: ${(props) => (props.$isActive ? "#ffffff" : "#cccccc")};
 	white-space: nowrap;
 
 	&:hover {
-		background-color: ${(props) => (props.isActive ? "#1e1e1e" : "#383838")};
+		background-color: ${(props) => (props.$isActive ? "#1e1e1e" : "#383838")};
 	}
 
 	.close {
@@ -52,20 +54,56 @@ const ControlBar = styled.div`
 	border-bottom: 1px solid #3e3e42;
 	display: flex;
 	align-items: center;
+	justify-content: space-between;
 	padding: 0 12px;
 	gap: 8px;
 `;
 
+const ControlLeft = styled.div`
+	display: flex;
+	align-items: center;
+	gap: 8px;
+`;
+
+const ControlRight = styled.div`
+	display: flex;
+	align-items: center;
+	gap: 8px;
+`;
+
+const ChatToggleButton = styled.button`
+	background: #007acc;
+	border: none;
+	border-radius: 4px;
+	color: #ffffff;
+	padding: 6px 12px;
+	font-size: 12px;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	transition: all 0.2s ease;
+
+	&:hover {
+		background: #005a9e;
+	}
+
+	&:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+`;
+
 const StatusIndicator = styled.div<{
-	status: "running" | "stopped" | "starting";
+	$status: "running" | "stopped" | "starting";
 }>`
 	font-size: 12px;
 	color: #858585;
 
 	${(props) => {
-		if (props.status === "running") {
+		if (props.$status === "running") {
 			return `color: #00ff00;`;
-		} else if (props.status === "starting") {
+		} else if (props.$status === "starting") {
 			return `color: #ffff00;`;
 		} else {
 			return `color: #ff0000;`;
@@ -90,11 +128,9 @@ const EmptyState = styled.div`
 	padding: 40px;
 
 	.app-logo {
-		font-size: 48px;
 		margin-bottom: 20px;
-		color: #007acc;
-		font-weight: bold;
-		letter-spacing: 2px;
+		width: 120px;
+		height: auto;
 	}
 
 	.title {
@@ -220,12 +256,29 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 		const loadRecentWorkspaces = async () => {
 			try {
 				const recent = await window.electronAPI.storeGet("recentWorkspaces");
+				console.log("Loaded recent workspaces from storage:", recent);
 				if (recent && Array.isArray(recent)) {
 					// Filter out null/undefined values and ensure all are strings
 					const validWorkspaces = recent.filter(
 						(w): w is string => typeof w === "string" && w.length > 0
 					);
-					setRecentWorkspaces(validWorkspaces);
+					console.log("Valid workspaces:", validWorkspaces);
+					// Limit to 3 most recent workspaces
+					const limitedWorkspaces = validWorkspaces.slice(0, 3);
+					console.log("Limited to 3 workspaces:", limitedWorkspaces);
+					setRecentWorkspaces(limitedWorkspaces);
+					// Update storage if we had to trim the list
+					if (validWorkspaces.length > 3) {
+						console.log(
+							"Trimming storage from",
+							validWorkspaces.length,
+							"to 3"
+						);
+						await window.electronAPI.storeSet(
+							"recentWorkspaces",
+							limitedWorkspaces
+						);
+					}
 				}
 			} catch (error) {
 				console.error("Error loading recent workspaces:", error);
@@ -244,8 +297,8 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 					);
 					const updated: string[] = [state.currentWorkspace!, ...current].slice(
 						0,
-						5
-					); // Keep last 5
+						3
+					); // Keep last 3
 					setRecentWorkspaces(updated);
 					await window.electronAPI.storeSet("recentWorkspaces", updated);
 				} catch (error) {
@@ -309,6 +362,27 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 		return `.../${parts.slice(-2).join("/")}`;
 	};
 
+	// Temporary function to force trim recent workspaces to 3
+	const forceTrimRecentWorkspaces = async () => {
+		try {
+			const recent = await window.electronAPI.storeGet("recentWorkspaces");
+			if (recent && Array.isArray(recent)) {
+				const validWorkspaces = recent.filter(
+					(w): w is string => typeof w === "string" && w.length > 0
+				);
+				const limitedWorkspaces = validWorkspaces.slice(0, 3);
+				setRecentWorkspaces(limitedWorkspaces);
+				await window.electronAPI.storeSet(
+					"recentWorkspaces",
+					limitedWorkspaces
+				);
+				console.log("Forced trim to 3 workspaces:", limitedWorkspaces);
+			}
+		} catch (error) {
+			console.error("Error forcing trim:", error);
+		}
+	};
+
 	const handleTabClose = (e: React.MouseEvent, filePath: string) => {
 		e.stopPropagation();
 		dispatch({ type: "CLOSE_FILE", payload: filePath });
@@ -327,7 +401,7 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 			tabs.push(
 				<Tab
 					key={filePath}
-					isActive={isActive}
+					$isActive={isActive}
 					onClick={() =>
 						dispatch({ type: "SET_ACTIVE_FILE", payload: filePath })
 					}
@@ -345,7 +419,7 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 			tabs.push(
 				<Tab
 					key="notebook"
-					isActive={state.showNotebook}
+					$isActive={state.showNotebook}
 					onClick={() => {
 						dispatch({ type: "SET_ACTIVE_FILE", payload: null });
 						dispatch({ type: "SET_SHOW_NOTEBOOK", payload: true });
@@ -373,7 +447,7 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 		// Show welcome screen when no workspace is open or no files are active
 		return (
 			<EmptyState>
-				<div className="app-logo">AXON</div>
+				<img src={axonLogo} alt="Axon" className="app-logo" />
 				<div className="title">Welcome to Axon</div>
 				<div className="subtitle">
 					AI-powered biological data analysis platform
@@ -403,7 +477,9 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 				</WelcomeActions>
 
 				<RecentProjects>
-					<div className="section-title">Recent projects</div>
+					<div className="section-title">
+						Recent projects ({recentWorkspaces.length})
+					</div>
 					{recentWorkspaces.length > 0 ? (
 						recentWorkspaces.map((workspacePath, index) => (
 							<div
@@ -442,7 +518,24 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 
 			{state.currentWorkspace && (
 				<ControlBar>
-					<StatusIndicator status="running">Workspace Open</StatusIndicator>
+					<ControlLeft>
+						<StatusIndicator $status="running">Workspace Open</StatusIndicator>
+					</ControlLeft>
+					<ControlRight>
+						{state.chatCollapsed && (
+							<ChatToggleButton
+								onClick={() =>
+									dispatch({
+										type: "SET_CHAT_COLLAPSED",
+										payload: false,
+									})
+								}
+								title="Open Chat"
+							>
+								<FiMessageSquare size={14} color="white" />
+							</ChatToggleButton>
+						)}
+					</ControlRight>
 				</ControlBar>
 			)}
 

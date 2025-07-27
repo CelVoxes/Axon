@@ -282,17 +282,7 @@ class QueryProcessor:
         gse_matches = re.findall(r'GSE\d+', query)
         if gse_matches:
             # If specific datasets are mentioned, extract biological context
-            biological_terms = []
-            if "B-ALL" in query:
-                biological_terms.append("B-ALL")
-            if "transcriptional" in query:
-                biological_terms.append("transcriptional")
-            if "subtypes" in query:
-                biological_terms.append("subtypes")
-            if "leukemia" in query:
-                biological_terms.append("leukemia")
-            if "gene expression" in query:
-                biological_terms.append("gene expression")
+            biological_terms = self._extract_biological_terms(query)
             
             # Return biological context + dataset IDs
             if biological_terms:
@@ -329,31 +319,17 @@ class QueryProcessor:
             if step_match:
                 step_content = step_match.group(1)
                 # Extract biological terms from the step
-                biological_terms = []
-                if "B-ALL" in step_content:
-                    biological_terms.append("B-ALL")
-                if "transcriptional" in step_content:
-                    biological_terms.append("transcriptional")
-                if "subtypes" in step_content:
-                    biological_terms.append("subtypes")
+                biological_terms = self._extract_biological_terms(step_content)
                 if biological_terms:
                     return " ".join(biological_terms)
             
             # Fallback: extract any biological terms and remove LLM-specific terms
-            biological_keywords = [
-                "B-ALL", "leukemia", "transcriptional", "subtypes", "gene expression",
-                "microarray", "RNA-seq", "differential expression", "clustering"
-            ]
-            found_terms = []
-            for keyword in biological_keywords:
-                if keyword.lower() in query.lower():
-                    found_terms.append(keyword)
-            
-            if found_terms:
-                return " ".join(found_terms)
+            biological_terms = self._extract_biological_terms(query)
+            if biological_terms:
+                return " ".join(biological_terms)
             
             # Last resort: return a minimal search term
-            return "B-ALL transcriptional subtypes"
+            return "gene expression analysis"
         
         # If it's not an LLM prompt, still clean any LLM-specific terms that might be present
         llm_terms_to_remove = [
@@ -371,6 +347,53 @@ class QueryProcessor:
         cleaned_query = " ".join(cleaned_query.split())
         
         return cleaned_query
+    
+    def _extract_biological_terms(self, text: str) -> List[str]:
+        """Extract biological terms from text."""
+        biological_keywords = [
+            # Diseases and conditions
+            "B-ALL", "leukemia", "cancer", "tumor", "carcinoma", "sarcoma", "lymphoma",
+            "AML", "CML", "ALL", "CLL", "breast cancer", "lung cancer", "colon cancer",
+            "melanoma", "glioblastoma", "pancreatic cancer", "ovarian cancer",
+            
+            # Biological processes
+            "transcriptional", "transcription", "gene expression", "differential expression",
+            "pathway", "signaling", "metabolism", "apoptosis", "proliferation",
+            "differentiation", "migration", "invasion", "angiogenesis",
+            
+            # Analysis types
+            "subtypes", "clustering", "classification", "biomarker", "signature",
+            "microarray", "RNA-seq", "single-cell", "bulk RNA-seq", "scRNA-seq",
+            "differential", "enrichment", "pathway analysis", "gene ontology",
+            
+            # Organisms
+            "human", "mouse", "rat", "Homo sapiens", "Mus musculus", "Rattus norvegicus",
+            
+            # Cell types
+            "epithelial", "mesenchymal", "stromal", "immune", "T-cell", "B-cell",
+            "macrophage", "neutrophil", "fibroblast", "endothelial",
+            
+            # Genes and proteins (common ones)
+            "TP53", "BRCA1", "BRCA2", "EGFR", "HER2", "KRAS", "BRAF", "PIK3CA",
+            "MYC", "BCL2", "CDKN2A", "PTEN", "APC", "VHL", "RB1"
+        ]
+        
+        found_terms = []
+        text_lower = text.lower()
+        
+        for keyword in biological_keywords:
+            if keyword.lower() in text_lower:
+                found_terms.append(keyword)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_terms = []
+        for term in found_terms:
+            if term.lower() not in seen:
+                seen.add(term.lower())
+                unique_terms.append(term)
+        
+        return unique_terms
     
     def _determine_strategy(
         self, 

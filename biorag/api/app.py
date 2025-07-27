@@ -72,7 +72,8 @@ def create_app() -> FastAPI:
                 max_documents=request.max_documents,
                 retrieve_from_sources=request.retrieve_from_sources,
                 response_type=request.response_type,
-                system_prompt=request.system_prompt
+                system_prompt=request.system_prompt,
+                model=request.model
             )
             
             return QueryResponse(**result)

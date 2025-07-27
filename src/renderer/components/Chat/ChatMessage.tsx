@@ -19,14 +19,14 @@ const pulse = keyframes`
 	80%, 100% { opacity: 0.4; }
 `;
 
-const MessageContainer = styled.div<{ messageType: string }>`
+const MessageContainer = styled.div<{ $messageType: string }>`
 	display: flex;
 	align-items: flex-start;
 	gap: 12px;
 	margin-bottom: ${(props) =>
-		props.messageType === "system" ? "8px" : "16px"};
+		props.$messageType === "system" ? "8px" : "16px"};
 	animation: ${(props) =>
-		props.messageType === "system" ? "none" : "fadeIn 0.3s ease-out"};
+		props.$messageType === "system" ? "none" : "fadeIn 0.3s ease-out"};
 
 	@keyframes fadeIn {
 		from {
@@ -40,7 +40,7 @@ const MessageContainer = styled.div<{ messageType: string }>`
 	}
 `;
 
-const Avatar = styled.div<{ messageType: string }>`
+const Avatar = styled.div<{ $messageType: string }>`
 	width: 32px;
 	height: 32px;
 	border-radius: 8px;
@@ -51,7 +51,7 @@ const Avatar = styled.div<{ messageType: string }>`
 	font-size: 14px;
 
 	${(props) => {
-		switch (props.messageType) {
+		switch (props.$messageType) {
 			case "user":
 				return `
 					background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
@@ -76,14 +76,14 @@ const Avatar = styled.div<{ messageType: string }>`
 	}}
 `;
 
-const MessageContent = styled.div<{ messageType: string }>`
+const MessageContent = styled.div<{ $messageType: string }>`
 	flex: 1;
 	min-width: 0;
 `;
 
-const MessageText = styled.div<{ messageType: string }>`
+const MessageText = styled.div<{ $messageType: string }>`
 	${(props) => {
-		switch (props.messageType) {
+		switch (props.$messageType) {
 			case "user":
 				return `
 					background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
@@ -166,7 +166,8 @@ const MessageText = styled.div<{ messageType: string }>`
 
 	strong {
 		font-weight: 600;
-		color: ${(props) => (props.messageType === "user" ? "#ffffff" : "#ffffff")};
+		color: ${(props) =>
+			props.$messageType === "user" ? "#ffffff" : "#ffffff"};
 	}
 
 	p {
@@ -309,15 +310,15 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
 	const isThinking = message.status === "pending" && !message.content.trim();
 
 	return (
-		<MessageContainer messageType={messageType}>
-			<Avatar messageType={messageType}>{getMessageIcon(messageType)}</Avatar>
-			<MessageContent messageType={messageType}>
+		<MessageContainer $messageType={messageType}>
+			<Avatar $messageType={messageType}>{getMessageIcon(messageType)}</Avatar>
+			<MessageContent $messageType={messageType}>
 				{isThinking && !message.isUser ? (
 					<ThinkingComponent />
 				) : (
 					<>
 						<MessageText
-							messageType={messageType}
+							$messageType={messageType}
 							dangerouslySetInnerHTML={{
 								__html: formatContent(message.content),
 							}}

@@ -53,12 +53,12 @@ const LayoutBodyContainer = styled.div`
 
 const ResizablePane = styled.div<{
 	width: number;
-	minWidth: number;
-	maxWidth: number;
+	$minWidth: number;
+	$maxWidth: number;
 }>`
 	width: ${(props) => props.width}px;
-	min-width: ${(props) => props.minWidth}px;
-	max-width: ${(props) => props.maxWidth}px;
+	min-width: ${(props) => props.$minWidth}px;
+	max-width: ${(props) => props.$maxWidth}px;
 	flex-shrink: 0;
 	overflow: hidden;
 	position: relative;
@@ -171,7 +171,7 @@ const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 		<LayoutBodyContainer>
 			{leftPane && (
 				<>
-					<ResizablePane width={leftPaneWidth} minWidth={200} maxWidth={500}>
+					<ResizablePane width={leftPaneWidth} $minWidth={200} $maxWidth={500}>
 						{leftPane}
 					</ResizablePane>
 					<Resizer onMouseDown={handleMouseDown("left")} />
@@ -183,7 +183,7 @@ const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 			{rightPane && (
 				<>
 					<Resizer onMouseDown={handleMouseDown("right")} />
-					<ResizablePane width={rightPaneWidth} minWidth={300} maxWidth={600}>
+					<ResizablePane width={rightPaneWidth} $minWidth={300} $maxWidth={600}>
 						{rightPane}
 					</ResizablePane>
 				</>

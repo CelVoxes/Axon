@@ -1,5 +1,0 @@
-Protein Name: Signal peptide, CUB and EGF-like domain-containing protein 2
-
-Organism: Danio rerio
-
-Gene Names: scube2

@@ -1,5 +1,0 @@
-Protein Name: Retinoic acid receptor RXR-alpha-B
-
-Organism: Danio rerio
-
-Gene Names: rxrab

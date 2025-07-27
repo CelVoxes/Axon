@@ -187,11 +187,11 @@ const ActionButtons = styled.div`
 	gap: 12px;
 `;
 
-const Button = styled.button<{ variant?: "primary" | "secondary" }>`
+const Button = styled.button<{ $variant?: "primary" | "secondary" }>`
 	background: ${(props) =>
-		props.variant === "primary" ? "#007acc" : "transparent"};
+		props.$variant === "primary" ? "#007acc" : "transparent"};
 	border: 1px solid
-		${(props) => (props.variant === "primary" ? "#007acc" : "#666")};
+		${(props) => (props.$variant === "primary" ? "#007acc" : "#666")};
 	color: #fff;
 	padding: 10px 20px;
 	border-radius: 6px;
@@ -204,7 +204,7 @@ const Button = styled.button<{ variant?: "primary" | "secondary" }>`
 
 	&:hover {
 		background: ${(props) =>
-			props.variant === "primary" ? "#005a9e" : "rgba(255, 255, 255, 0.1)"};
+			props.$variant === "primary" ? "#005a9e" : "rgba(255, 255, 255, 0.1)"};
 	}
 
 	&:disabled {
@@ -240,6 +240,9 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 	onConfirm,
 	isLoading = false,
 }) => {
+	console.log(
+		`DatasetSelectionModal: isOpen=${isOpen}, datasets=${datasets.length}`
+	);
 	const [selectedDatasets, setSelectedDatasets] = useState<Set<string>>(
 		new Set()
 	);
@@ -342,11 +345,11 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 					</SelectionInfo>
 
 					<ActionButtons>
-						<Button variant="secondary" onClick={onClose}>
+						<Button $variant="secondary" onClick={onClose}>
 							Cancel
 						</Button>
 						<Button
-							variant="primary"
+							$variant="primary"
 							onClick={handleConfirm}
 							disabled={selectedDatasets.size === 0 || isLoading}
 						>

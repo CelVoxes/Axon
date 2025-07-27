@@ -40,10 +40,22 @@ export class AutonomousAgent {
 	public isRunning: boolean = false;
 	private shouldStopAnalysis: boolean = false;
 	private statusCallback?: (status: string) => void;
+	private selectedModel: string = "gpt-4o-mini";
 
-	constructor(bioragClient: BioRAGClient, workspacePath: string) {
+	constructor(
+		bioragClient: BioRAGClient,
+		workspacePath: string,
+		selectedModel?: string
+	) {
 		this.bioragClient = bioragClient;
 		this.workspacePath = workspacePath;
+		if (selectedModel) {
+			this.selectedModel = selectedModel;
+		}
+	}
+
+	setModel(model: string) {
+		this.selectedModel = model;
 	}
 
 	setStatusCallback(callback: (status: string) => void) {
@@ -138,8 +150,17 @@ export class AutonomousAgent {
 			// Use LLM to intelligently analyze the user's question
 			this.updateStatus("Analyzing your research question with AI...");
 
-			const planningResponse = await this.bioragClient.query({
-				question: `As a bioinformatics expert, analyze this research question and create a detailed analysis plan:
+			// Add timeout to prevent hanging
+			const timeoutPromise = new Promise<never>((_, reject) => {
+				setTimeout(
+					() => reject(new Error("Analysis timeout - using fallback approach")),
+					60000
+				);
+			});
+
+			const planningResponse = await Promise.race([
+				this.bioragClient.query({
+					question: `As a bioinformatics expert, analyze this research question and create a detailed analysis plan:
 
 "${query}"
 
@@ -159,9 +180,12 @@ DATA_NEEDED: [list of data types/sources]
 OUTPUTS: [expected result types]
 
 Focus on the specific biological analysis they're asking for. Be precise and actionable.`,
-				max_documents: 5,
-				response_type: "answer",
-			});
+					max_documents: 5,
+					response_type: "answer",
+					model: this.selectedModel,
+				}),
+				timeoutPromise,
+			]);
 
 			// Parse the LLM response
 			const understanding = this.parseLLMPlanningResponse(
@@ -175,20 +199,114 @@ Focus on the specific biological analysis they're asking for. Be precise and act
 			console.error("Error in LLM-based analysis:", error);
 			this.updateStatus("Using backup analysis approach...");
 
-			// Minimal fallback only if LLM completely fails
-			return {
-				userQuestion: query,
-				requiredSteps: [
-					"Set up analysis environment and install required packages",
-					"Acquire and preprocess relevant biological datasets",
-					"Perform the requested analysis",
-					"Generate visualizations and results",
-					"Create comprehensive summary report",
-				],
-				dataNeeded: ["Biological datasets relevant to the question"],
-				expectedOutputs: ["Analysis results", "Visualizations"],
-			};
+			// Enhanced fallback with better analysis based on query content
+			return this.generateFallbackAnalysis(query);
 		}
+	}
+
+	private generateFallbackAnalysis(query: string) {
+		// Extract key terms from the query to create a more intelligent fallback
+		const queryLower = query.toLowerCase();
+
+		let analysisType = "general biological analysis";
+		let steps = [
+			"Set up analysis environment and install required packages",
+			"Acquire and preprocess relevant biological datasets",
+			"Perform the requested analysis",
+			"Generate visualizations and results",
+			"Create comprehensive summary report",
+		];
+		let dataNeeded = ["Biological datasets relevant to the question"];
+		let expectedOutputs = ["Analysis results", "Visualizations"];
+
+		// Detect analysis type based on query content
+		if (queryLower.includes("differential") || queryLower.includes("deg")) {
+			analysisType = "differential gene expression analysis";
+			steps = [
+				"Load and preprocess gene expression data",
+				"Perform quality control and normalization",
+				"Identify differentially expressed genes",
+				"Perform statistical analysis and multiple testing correction",
+				"Generate volcano plots and heatmaps",
+				"Perform pathway enrichment analysis",
+				"Create comprehensive differential expression report",
+			];
+			dataNeeded = ["Gene expression datasets (RNA-seq or microarray)"];
+			expectedOutputs = [
+				"DEG lists",
+				"Volcano plots",
+				"Heatmaps",
+				"Pathway enrichment results",
+			];
+		} else if (
+			queryLower.includes("subtype") ||
+			queryLower.includes("cluster")
+		) {
+			analysisType = "subtype/clustering analysis";
+			steps = [
+				"Load and preprocess gene expression data",
+				"Perform quality control and normalization",
+				"Apply dimensionality reduction (PCA, t-SNE)",
+				"Perform clustering analysis (k-means, hierarchical)",
+				"Identify subtype-specific gene signatures",
+				"Validate clustering results",
+				"Generate subtype-specific visualizations",
+			];
+			dataNeeded = ["Gene expression datasets with multiple samples"];
+			expectedOutputs = [
+				"Clustering results",
+				"Subtype assignments",
+				"Signature genes",
+				"Visualization plots",
+			];
+		} else if (
+			queryLower.includes("biomarker") ||
+			queryLower.includes("signature")
+		) {
+			analysisType = "biomarker discovery analysis";
+			steps = [
+				"Load and preprocess gene expression data",
+				"Perform quality control and normalization",
+				"Apply feature selection methods",
+				"Train machine learning models for classification",
+				"Perform cross-validation and model evaluation",
+				"Identify top biomarker candidates",
+				"Generate biomarker validation plots",
+			];
+			dataNeeded = ["Gene expression datasets with clinical annotations"];
+			expectedOutputs = [
+				"Biomarker lists",
+				"Model performance metrics",
+				"Validation plots",
+			];
+		} else if (
+			queryLower.includes("pathway") ||
+			queryLower.includes("enrichment")
+		) {
+			analysisType = "pathway enrichment analysis";
+			steps = [
+				"Load gene expression or gene list data",
+				"Perform differential expression analysis if needed",
+				"Extract gene lists for enrichment analysis",
+				"Perform pathway enrichment analysis (GO, KEGG)",
+				"Apply statistical testing and multiple correction",
+				"Generate enrichment plots and networks",
+				"Create pathway analysis report",
+			];
+			dataNeeded = ["Gene expression data or gene lists"];
+			expectedOutputs = [
+				"Enrichment results",
+				"Pathway plots",
+				"Gene set analysis",
+			];
+		}
+
+		return {
+			userQuestion: query,
+			requiredSteps: steps,
+			dataNeeded: dataNeeded,
+			expectedOutputs: expectedOutputs,
+		};
 	}
 
 	private parseLLMPlanningResponse(response: string, originalQuery: string) {
@@ -801,11 +919,23 @@ IMPORTANT:
 
 Generate the Python code:`;
 
-			const codeResponse = await this.bioragClient.query({
-				question: codePrompt,
-				max_documents: 3,
-				response_type: "answer",
+			// Add timeout to prevent hanging
+			const timeoutPromise = new Promise<never>((_, reject) => {
+				setTimeout(
+					() => reject(new Error("Code generation timeout - using fallback")),
+					45000
+				);
 			});
+
+			const codeResponse = await Promise.race([
+				this.bioragClient.query({
+					question: codePrompt,
+					max_documents: 3,
+					response_type: "answer",
+					model: this.selectedModel,
+				}),
+				timeoutPromise,
+			]);
 
 			let generatedCode = this.extractPythonCode(codeResponse.answer);
 

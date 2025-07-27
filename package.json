@@ -19,6 +19,7 @@
     "@types/react-dom": "^18.2.0",
     "@types/uuid": "^9.0.0",
     "concurrently": "^8.2.0",
+    "copy-webpack-plugin": "^11.0.0",
     "css-loader": "^6.8.0",
     "electron": "^25.0.0",
     "electron-builder": "^24.0.0",
@@ -56,6 +57,15 @@
     "files": [
       "dist/**/*",
       "node_modules/**/*"
-    ]
+    ],
+    "mac": {
+      "icon": "src/png/axon.png"
+    },
+    "win": {
+      "icon": "src/png/axon.png"
+    },
+    "linux": {
+      "icon": "src/png/axon.png"
+    }
   }
 }
