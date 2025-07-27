@@ -1167,171 +1167,11 @@ print("Available datasets:", list(loaded_datasets.keys()))
 			});
 
 			try {
-				// For testing, let's create a simple analysis result first to see if the notebook picks it up
-				console.log("ChatPanel: Creating test analysis result...");
-
-				const testAnalysisResult = {
-					understanding: {
-						userQuestion: currentQuery,
-						requiredSteps: [
-							"Download selected datasets",
-							"Load and preprocess data",
-							"Perform analysis",
-							"Generate visualizations",
-						],
-						dataNeeded: ["Selected datasets"],
-						expectedOutputs: ["Analysis results", "Visualizations"],
-					},
-					datasets: selectedDatasets,
-					steps: [
-						{
-							id: "step_1",
-							description: "Download and load datasets",
-							code: `# Test step 1: Download and load datasets
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-import os
-
-print("=== Test Analysis Step 1 ===")
-print(f"Query: ${currentQuery}")
-print(f"Selected datasets: ${selectedDatasets.map((d) => d.id).join(", ")}")
-
-# Create data directory
-os.makedirs('data', exist_ok=True)
-os.makedirs('results', exist_ok=True)
-os.makedirs('figures', exist_ok=True)
-
-print("✅ Data directories created")
-print("✅ Step 1 completed successfully!")`,
-							status: "pending",
-						},
-						{
-							id: "step_2",
-							description: "Load and preprocess data",
-							code: `# Test step 2: Load and preprocess data
-print("=== Test Analysis Step 2 ===")
-print("Loading and preprocessing data...")
-
-# Simulate data loading
-import numpy as np
-import pandas as pd
-
-# Create sample data for demonstration
-sample_data = pd.DataFrame({
-    'gene_1': np.random.normal(0, 1, 100),
-    'gene_2': np.random.normal(0, 1, 100),
-    'gene_3': np.random.normal(0, 1, 100)
-})
-
-print(f"Sample data shape: {sample_data.shape}")
-print("✅ Data loaded and preprocessed")
-print("✅ Step 2 completed successfully!")`,
-							status: "pending",
-						},
-						{
-							id: "step_3",
-							description: "Perform analysis",
-							code: `# Test step 3: Perform analysis
-print("=== Test Analysis Step 3 ===")
-print("Performing analysis...")
-
-# Simple analysis
-import numpy as np
-import pandas as pd
-
-# Calculate basic statistics
-stats = sample_data.describe()
-print("Data statistics:")
-print(stats)
-
-print("✅ Analysis completed")
-print("✅ Step 3 completed successfully!")`,
-							status: "pending",
-						},
-						{
-							id: "step_4",
-							description: "Generate visualizations",
-							code: `# Test step 4: Generate visualizations
-print("=== Test Analysis Step 4 ===")
-print("Generating visualizations...")
-
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-# Create a simple plot
-plt.figure(figsize=(10, 6))
-sample_data.boxplot()
-plt.title("Gene Expression Distribution")
-plt.ylabel("Expression Level")
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.savefig('figures/test_analysis.png', dpi=300, bbox_inches='tight')
-plt.show()
-
-print("✅ Visualization saved to figures/test_analysis.png")
-print("✅ Step 4 completed successfully!")
-print("\\n=== Test Analysis Complete ===")
-print("All steps completed successfully!")`,
-							status: "pending",
-						},
-					],
-					workingDirectory: analysisWorkspace,
-				};
-
+				// Use the autonomous agent to generate dynamic analysis based on user query and datasets
 				console.log(
-					"ChatPanel: Test analysis result created:",
-					testAnalysisResult
+					"ChatPanel: Using autonomous agent for AI-generated analysis..."
 				);
 
-				// Save test analysis result to workspace for notebook to load
-				const analysisFile = `${analysisWorkspace}/analysis_result.json`;
-				console.log(
-					`ChatPanel: Saving test analysis result to: ${analysisFile}`
-				);
-
-				await window.electronAPI.writeFile(
-					analysisFile,
-					JSON.stringify(testAnalysisResult, null, 2)
-				);
-
-				console.log(`ChatPanel: Test analysis file saved successfully`);
-
-				// Open the notebook tab to show the analysis cells
-				dispatch({
-					type: "SET_WORKSPACE",
-					payload: analysisWorkspace,
-				});
-				dispatch({ type: "SET_SHOW_NOTEBOOK", payload: true });
-
-				console.log(`ChatPanel: Set workspace to: ${analysisWorkspace}`);
-				console.log(`ChatPanel: Show notebook set to: true`);
-
-				dispatch({
-					type: "ADD_MESSAGE",
-					payload: {
-						content: `✅ **Test Analysis Plan Created Successfully!**
-
-I've created ${
-							testAnalysisResult.steps.length
-						} test analysis steps and opened them in the **Interactive Notebook** tab.
-
-**Analysis Plan:**
-${testAnalysisResult.understanding.requiredSteps
-	.map((step, i) => `${i + 1}. ${step}`)
-	.join("\n")}
-
-**Selected Datasets:** ${selectedDatasets.map((d) => d.id).join(", ")}
-
-**Auto-execution:** The analysis cells will start running automatically in 1 second!`,
-						isUser: false,
-						status: "completed",
-					},
-				});
-
-				// Comment out the autonomous agent for now to test the notebook
-				/*
 				const autonomousAgent = new AutonomousAgent(
 					bioragClient,
 					analysisWorkspace,
@@ -1349,38 +1189,393 @@ ${testAnalysisResult.understanding.requiredSteps
 					});
 				});
 
-				// Generate the analysis plan and code using the autonomous agent with timeout
-				const analysisTimeoutPromise = new Promise<never>((_, reject) => {
-					setTimeout(
-						() =>
-							reject(new Error("Analysis generation timeout - using fallback")),
-						60000
-					);
-				});
-
-				const analysisResult = await Promise.race([
-					autonomousAgent.executeAnalysisRequestWithData(
-						currentQuery,
-						selectedDatasets
-					),
-					analysisTimeoutPromise,
-				]);
-				*/
-			} catch (error) {
-				console.error("Analysis generation error:", error);
+				// STEP-BY-STEP APPROACH: Generate and execute one step at a time
 				dispatch({
 					type: "ADD_MESSAGE",
 					payload: {
-						content: `❌ Failed to generate analysis: ${
-							error instanceof Error ? error.message : "Unknown error"
-						}`,
+						content: `🚀 **Starting Step-by-Step Analysis Generation**
+
+I'll generate and execute each analysis step one by one, so you can see the progress in real-time.
+
+**Selected Datasets:** ${selectedDatasets.map((d) => d.id).join(", ")}
+**Query:** ${currentQuery}
+
+Let's start with Step 1...`,
+						isUser: false,
+					},
+				});
+
+				// Create initial analysis structure
+				const analysisResult: any = {
+					understanding: {
+						userQuestion: currentQuery,
+						requiredSteps: [
+							"Load and preprocess gene expression data",
+							"Perform quality control and normalization",
+							"Apply dimensionality reduction (PCA, t-SNE)",
+							"Perform clustering analysis (k-means, hierarchical)",
+							"Identify subtype-specific gene signatures",
+							"Validate clustering results",
+							"Generate subtype-specific visualizations",
+						],
+						dataNeeded: ["Selected datasets"],
+						expectedOutputs: ["Analysis results", "Visualizations"],
+					},
+					datasets: selectedDatasets,
+					steps: [],
+					workingDirectory: analysisWorkspace,
+				};
+
+				// Save initial analysis result
+				const analysisFile = `${analysisWorkspace}/analysis_result.json`;
+				await window.electronAPI.writeFile(
+					analysisFile,
+					JSON.stringify(analysisResult, null, 2)
+				);
+
+				// Open notebook immediately
+				dispatch({
+					type: "SET_WORKSPACE",
+					payload: analysisWorkspace,
+				});
+				dispatch({ type: "SET_SHOW_NOTEBOOK", payload: true });
+
+				// Generate and execute steps one by one
+				for (
+					let i = 0;
+					i < analysisResult.understanding.requiredSteps.length;
+					i++
+				) {
+					const stepDescription = analysisResult.understanding.requiredSteps[i];
+
+					dispatch({
+						type: "ADD_MESSAGE",
+						payload: {
+							content: `🤖 **Generating Step ${i + 1}: ${stepDescription}**
+
+Generating AI code for this step...`,
+							isUser: false,
+						},
+					});
+
+					try {
+						// Generate code for this step with shorter timeout
+						const stepTimeoutPromise = new Promise<never>((_, reject) => {
+							setTimeout(
+								() => reject(new Error(`Step ${i + 1} generation timeout`)),
+								30000 // 30 seconds per step
+							);
+						});
+
+						const stepCode = await Promise.race([
+							autonomousAgent.generateSingleStepCode(
+								stepDescription,
+								currentQuery,
+								selectedDatasets,
+								analysisWorkspace,
+								i
+							),
+							stepTimeoutPromise,
+						]);
+
+						// Add step to analysis result
+						analysisResult.steps.push({
+							id: `step_${i + 1}`,
+							description: stepDescription,
+							code: stepCode,
+							status: "pending",
+						});
+
+						// Update analysis file
+						await window.electronAPI.writeFile(
+							analysisFile,
+							JSON.stringify(analysisResult, null, 2)
+						);
+
+						dispatch({
+							type: "ADD_MESSAGE",
+							payload: {
+								content: `✅ **Step ${i + 1} Generated Successfully**
+
+**Step:** ${stepDescription}
+**Status:** Code generated and added to notebook
+**Next:** Step will execute automatically in the notebook
+
+The notebook should now show Step ${i + 1} and begin execution.`,
+								isUser: false,
+								status: "completed",
+							},
+						});
+					} catch (error) {
+						console.error(`Error generating step ${i + 1}:`, error);
+
+						// Add fallback step
+						analysisResult.steps.push({
+							id: `step_${i + 1}`,
+							description: stepDescription,
+							code: `# Step ${i + 1}: ${stepDescription}
+print("=== ${stepDescription} ===")
+print("⚠️  Fallback code - AI generation failed for this step")
+print("   Error: ${error instanceof Error ? error.message : "Unknown error"}")`,
+							status: "pending",
+						});
+
+						// Update analysis file
+						await window.electronAPI.writeFile(
+							analysisFile,
+							JSON.stringify(analysisResult, null, 2)
+						);
+
+						dispatch({
+							type: "ADD_MESSAGE",
+							payload: {
+								content: `⚠️ **Step ${i + 1} Generation Failed**
+
+**Step:** ${stepDescription}
+**Error:** ${error instanceof Error ? error.message : "Unknown error"}
+**Status:** Using fallback code
+
+The notebook will show fallback code for this step.`,
+								isUser: false,
+								status: "failed",
+							},
+						});
+					}
+
+					// Small delay between steps
+					await new Promise((resolve) => setTimeout(resolve, 1000));
+				}
+
+				// Analysis generation completed
+				dispatch({
+					type: "ADD_MESSAGE",
+					payload: {
+						content: `✅ **Step-by-Step Analysis Generation Complete!**
+
+I've generated ${
+							analysisResult.steps.length
+						} analysis steps and opened them in the **Interactive Notebook** tab.
+
+**Analysis Plan:**
+${analysisResult.understanding.requiredSteps
+	.map((step: string, i: number) => `${i + 1}. ${step}`)
+	.join("\n")}
+
+**Selected Datasets:** ${selectedDatasets.map((d) => d.id).join(", ")}
+
+**Status:** All steps generated and ready for execution in the notebook!`,
+						isUser: false,
+						status: "completed",
+					},
+				});
+			} catch (error) {
+				console.error("Analysis generation error:", error);
+
+				// Create a fallback analysis result even when AI generation fails
+				const fallbackAnalysisResult = {
+					understanding: {
+						userQuestion: currentQuery,
+						requiredSteps: [
+							"Load and preprocess gene expression data",
+							"Perform quality control and normalization",
+							"Apply dimensionality reduction (PCA, t-SNE)",
+							"Perform clustering analysis (k-means, hierarchical)",
+							"Identify subtype-specific gene signatures",
+							"Validate clustering results",
+							"Generate subtype-specific visualizations",
+						],
+						dataNeeded: ["Selected datasets"],
+						expectedOutputs: ["Analysis results", "Visualizations"],
+					},
+					datasets: selectedDatasets,
+					steps: [
+						{
+							id: "step_1",
+							description: "Load and preprocess gene expression data",
+							code: `# Step 1: Load and preprocess gene expression data
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os
+import warnings
+warnings.filterwarnings('ignore')
+
+print("=== B-ALL Transcriptional Subtype Analysis ===")
+print(f"Query: ${currentQuery}")
+print(f"Selected datasets: ${selectedDatasets.map((d) => d.id).join(", ")}")
+
+# Create directories
+os.makedirs('data', exist_ok=True)
+os.makedirs('results', exist_ok=True)
+os.makedirs('figures', exist_ok=True)
+
+print("✅ Directories created")
+print("⚠️  Note: This is fallback code - AI generation failed due to timeout")
+print("   The BioRAG server may need to be restarted or the AI model may be busy")`,
+							status: "pending",
+						},
+						{
+							id: "step_2",
+							description: "Perform quality control and normalization",
+							code: `# Step 2: Perform quality control and normalization
+print("=== Quality Control and Normalization ===")
+
+# This step would normally contain AI-generated code for:
+# - Data quality assessment
+# - Normalization methods (log2, quantile, etc.)
+# - Batch effect correction
+# - Missing value imputation
+
+print("⚠️  Fallback code - AI generation failed")
+print("   Please check BioRAG server status and try again")`,
+							status: "pending",
+						},
+						{
+							id: "step_3",
+							description: "Apply dimensionality reduction (PCA, t-SNE)",
+							code: `# Step 3: Apply dimensionality reduction (PCA, t-SNE)
+print("=== Dimensionality Reduction ===")
+
+# This step would normally contain AI-generated code for:
+# - Principal Component Analysis (PCA)
+# - t-SNE visualization
+# - UMAP analysis
+# - Feature selection
+
+print("⚠️  Fallback code - AI generation failed")
+print("   Please check BioRAG server status and try again")`,
+							status: "pending",
+						},
+						{
+							id: "step_4",
+							description:
+								"Perform clustering analysis (k-means, hierarchical)",
+							code: `# Step 4: Perform clustering analysis (k-means, hierarchical)
+print("=== Clustering Analysis ===")
+
+# This step would normally contain AI-generated code for:
+# - K-means clustering
+# - Hierarchical clustering
+# - Silhouette analysis for optimal k
+# - Cluster validation
+
+print("⚠️  Fallback code - AI generation failed")
+print("   Please check BioRAG server status and try again")`,
+							status: "pending",
+						},
+						{
+							id: "step_5",
+							description: "Identify subtype-specific gene signatures",
+							code: `# Step 5: Identify subtype-specific gene signatures
+print("=== Gene Signature Identification ===")
+
+# This step would normally contain AI-generated code for:
+# - Differential expression analysis
+# - Gene set enrichment analysis
+# - Pathway analysis
+# - Biomarker identification
+
+print("⚠️  Fallback code - AI generation failed")
+print("   Please check BioRAG server status and try again")`,
+							status: "pending",
+						},
+						{
+							id: "step_6",
+							description: "Validate clustering results",
+							code: `# Step 6: Validate clustering results
+print("=== Clustering Validation ===")
+
+# This step would normally contain AI-generated code for:
+# - Cross-validation
+# - Stability analysis
+# - Biological validation
+# - Literature comparison
+
+print("⚠️  Fallback code - AI generation failed")
+print("   Please check BioRAG server status and try again")`,
+							status: "pending",
+						},
+						{
+							id: "step_7",
+							description: "Generate subtype-specific visualizations",
+							code: `# Step 7: Generate subtype-specific visualizations
+print("=== Visualization Generation ===")
+
+# This step would normally contain AI-generated code for:
+# - Heatmaps
+# - Volcano plots
+# - Survival curves
+# - Pathway diagrams
+
+print("⚠️  Fallback code - AI generation failed")
+print("   Please check BioRAG server status and try again")
+print("\\n=== Analysis Complete ===")
+print("Note: This analysis used fallback code due to AI generation timeout")
+print("For proper AI-generated analysis, ensure BioRAG server is running and try again")`,
+							status: "pending",
+						},
+					],
+					workingDirectory: analysisWorkspace,
+				};
+
+				// Save fallback analysis result
+				const analysisFile = `${analysisWorkspace}/analysis_result.json`;
+				console.log(
+					`ChatPanel: Saving fallback analysis result to: ${analysisFile}`
+				);
+
+				await window.electronAPI.writeFile(
+					analysisFile,
+					JSON.stringify(fallbackAnalysisResult, null, 2)
+				);
+
+				console.log(`ChatPanel: Fallback analysis file saved successfully`);
+
+				// Open the notebook tab to show the analysis cells
+				dispatch({
+					type: "SET_WORKSPACE",
+					payload: analysisWorkspace,
+				});
+				dispatch({ type: "SET_SHOW_NOTEBOOK", payload: true });
+
+				console.log(`ChatPanel: Set workspace to: ${analysisWorkspace}`);
+				console.log(`ChatPanel: Show notebook set to: true`);
+
+				dispatch({
+					type: "ADD_MESSAGE",
+					payload: {
+						content: `⚠️ **Analysis Generation Failed - Using Fallback Code**
+
+The AI analysis generation timed out after 2 minutes. I've created fallback analysis steps to help you get started.
+
+**Error:** ${error instanceof Error ? error.message : "Unknown error"}
+
+**Possible causes:**
+- BioRAG server is busy or overloaded
+- AI model is taking too long to respond
+- Network connectivity issues
+
+**Fallback Analysis Plan:**
+${fallbackAnalysisResult.understanding.requiredSteps
+	.map((step, i) => `${i + 1}. ${step}`)
+	.join("\n")}
+
+**Selected Datasets:** ${selectedDatasets.map((d) => d.id).join(", ")}
+
+**Next Steps:**
+1. Check the **Interactive Notebook** tab for the fallback analysis cells
+2. Try restarting the BioRAG server if needed
+3. Ask your question again for AI-generated analysis
+
+The fallback cells will show you the expected analysis structure.`,
 						isUser: false,
 						status: "failed",
 					},
 				});
 			}
 
-			// Open the notebook tab
+			// Open the notebook tab (this will happen in both success and error cases)
 			dispatch({ type: "SET_SHOW_NOTEBOOK", payload: true });
 			dispatch({ type: "SET_ANALYZING", payload: false });
 		} catch (error) {

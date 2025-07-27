@@ -235,6 +235,10 @@ const RecentProjects = styled.div`
 			color: #858585;
 			font-size: 12px;
 			margin-left: auto;
+			max-width: 120px;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
 		}
 	}
 `;
@@ -353,13 +357,13 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 	};
 
 	const getWorkspaceDisplayPath = (path: string) => {
-		// Simple approach: just show the last two parts of the path
+		// Show only the last directory name for shorter display
 		const parts = path.split("/").filter((part) => part.length > 0);
-		if (parts.length <= 2) {
+		if (parts.length <= 1) {
 			return path;
 		}
-		// Show last two directories
-		return `.../${parts.slice(-2).join("/")}`;
+		// Show only the last directory
+		return parts[parts.length - 1];
 	};
 
 	// Temporary function to force trim recent workspaces to 3
