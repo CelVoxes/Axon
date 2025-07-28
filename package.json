@@ -5,7 +5,7 @@
   "main": "dist/main/main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "concurrently \"npm run build:watch\" \"wait-on dist/main/main.js && electron .\"",
+    "dev": "NODE_ENV=development concurrently \"npm run build:watch\" \"wait-on dist/main/main.js && electron .\"",
     "build": "tsc && webpack --mode production",
     "build:watch": "concurrently \"tsc --watch\" \"webpack --mode development --watch\"",
     "package": "electron-builder",
@@ -59,13 +59,13 @@
       "node_modules/**/*"
     ],
     "mac": {
-      "icon": "src/png/axon.png"
+      "icon": "src/png/axon-very-rounded-150.icns"
     },
     "win": {
-      "icon": "src/png/axon.png"
+      "icon": "src/png/axon-very-rounded-150.png"
     },
     "linux": {
-      "icon": "src/png/axon.png"
+      "icon": "src/png/axon-very-rounded-150.png"
     }
   }
 }

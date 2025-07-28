@@ -14,6 +14,13 @@ export interface ElectronAPI {
 	executeJupyterCode: (
 		code: string
 	) => Promise<{ success: boolean; output?: string; error?: string }>;
+	createVirtualEnv: (workspacePath: string) => Promise<{
+		success: boolean;
+		venvPath?: string;
+		pythonPath?: string;
+		kernelName?: string;
+		error?: string;
+	}>;
 
 	showOpenDialog: (options: any) => Promise<any>;
 	showSaveDialog: (options: any) => Promise<any>;
@@ -30,6 +37,8 @@ export interface ElectronAPI {
 		callback: (data: { url: string; token: string }) => void
 	) => void;
 	onJupyterError: (callback: (data: string) => void) => void;
+	onVirtualEnvStatus: (callback: (data: any) => void) => void;
+	onJupyterCodeWriting: (callback: (data: any) => void) => void;
 
 	onSetWorkspace: (callback: (workspacePath: string) => void) => void;
 	onTriggerOpenWorkspace: (callback: () => void) => void;

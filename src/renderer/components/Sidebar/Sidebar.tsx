@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import styled from "styled-components";
 import { FiFolder, FiFile, FiChevronRight } from "react-icons/fi";
 import { useAppContext } from "../../context/AppContext";
+import { openFile } from "../../utils";
 
 interface SidebarProps {
 	onToggle: () => void;
@@ -144,13 +145,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 
 	const handleItemClick = (item: FileItem) => {
 		if (item.isDirectory) {
-			// Navigate into the directory
 			setCurrentPath(item.path);
 			loadDirectory(item.path);
 		} else {
-			// Open the file
-			dispatch({ type: "OPEN_FILE", payload: item.path });
-			dispatch({ type: "SET_ACTIVE_FILE", payload: item.path });
+			openFile(item.path, dispatch);
 		}
 	};
 

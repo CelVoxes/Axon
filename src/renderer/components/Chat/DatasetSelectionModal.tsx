@@ -219,9 +219,12 @@ interface Dataset {
 	description: string;
 	organism: string;
 	samples: number;
-	type: string;
+	sample_count?: string;
+	type?: string;
 	platform: string;
-	publication_date: string;
+	publication_date?: string;
+	similarity_score?: number;
+	source?: string;
 	url?: string;
 }
 
@@ -246,14 +249,17 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 	const [selectedDatasets, setSelectedDatasets] = useState<Set<string>>(
 		new Set()
 	);
+	const [wasOpen, setWasOpen] = useState(false);
 
 	useEffect(() => {
-		if (isOpen) {
-			// Auto-select first 2 datasets by default
+		if (isOpen && !wasOpen) {
+			// Auto-select first 2 datasets only when modal is first opened
 			const initialSelection = new Set(datasets.slice(0, 2).map((d) => d.id));
 			setSelectedDatasets(initialSelection);
 		}
-	}, [isOpen, datasets]);
+		setWasOpen(isOpen);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [isOpen]);
 
 	const toggleDataset = (datasetId: string) => {
 		const newSelection = new Set(selectedDatasets);
@@ -313,15 +319,23 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 										<strong>Organism:</strong> {dataset.organism || "Unknown"}
 									</MetaItem>
 									<MetaItem>
-										<strong>Samples:</strong> {dataset.samples || "Unknown"}
+										<strong>Samples:</strong>{" "}
+										{dataset.sample_count || dataset.samples || "Unknown"}
 									</MetaItem>
 									<MetaItem>
 										<strong>Platform:</strong> {dataset.platform || "Unknown"}
 									</MetaItem>
-									<MetaItem>
-										<strong>Date:</strong>{" "}
-										{dataset.publication_date || "Unknown"}
-									</MetaItem>
+									{dataset.similarity_score && (
+										<MetaItem>
+											<strong>Similarity:</strong>{" "}
+											{(dataset.similarity_score * 100).toFixed(1)}%
+										</MetaItem>
+									)}
+									{dataset.publication_date && (
+										<MetaItem>
+											<strong>Date:</strong> {dataset.publication_date}
+										</MetaItem>
+									)}
 								</DatasetMeta>
 
 								<DatasetDescription>

@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import styled from "styled-components";
-import { FiFolder, FiMessageSquare, FiX } from "react-icons/fi";
+import { FiFolder, FiMessageSquare } from "react-icons/fi";
 import { useAppContext } from "../../context/AppContext";
 import { FileEditor } from "./FileEditor";
 import { Notebook } from "./Notebook";
+import { openWorkspace } from "../../utils";
 // @ts-ignore
 import axonLogo from "../../../png/axon-no-background.png";
 
@@ -248,143 +249,25 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 ) => {
 	const { state, dispatch } = useAppContext();
 	const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>([]);
-	const recentWorkspacesRef = useRef<string[]>([]);
 
-	// Keep ref in sync with state
 	useEffect(() => {
-		recentWorkspacesRef.current = recentWorkspaces;
-	}, [recentWorkspaces]);
-
-	// Load recent workspaces from storage
-	useEffect(() => {
-		const loadRecentWorkspaces = async () => {
+		async function syncRecentWorkspaces() {
 			try {
 				const recent = await window.electronAPI.storeGet("recentWorkspaces");
-				console.log("Loaded recent workspaces from storage:", recent);
-				if (recent && Array.isArray(recent)) {
-					// Filter out null/undefined values and ensure all are strings
-					const validWorkspaces = recent.filter(
-						(w): w is string => typeof w === "string" && w.length > 0
-					);
-					console.log("Valid workspaces:", validWorkspaces);
-					// Limit to 3 most recent workspaces
-					const limitedWorkspaces = validWorkspaces.slice(0, 3);
-					console.log("Limited to 3 workspaces:", limitedWorkspaces);
-					setRecentWorkspaces(limitedWorkspaces);
-					// Update storage if we had to trim the list
-					if (validWorkspaces.length > 3) {
-						console.log(
-							"Trimming storage from",
-							validWorkspaces.length,
-							"to 3"
-						);
-						await window.electronAPI.storeSet(
-							"recentWorkspaces",
-							limitedWorkspaces
-						);
-					}
-				}
-			} catch (error) {
-				console.error("Error loading recent workspaces:", error);
+				setRecentWorkspaces(
+					(recent || [])
+						.filter((w: any) => typeof w === "string" && w.length > 0)
+						.slice(0, 3)
+				);
+			} catch (e) {
+				console.error("Error loading recent workspaces:", e);
 			}
-		};
-		loadRecentWorkspaces();
+		}
+		syncRecentWorkspaces();
 	}, []);
 
-	// Update recent workspaces when a new workspace is opened
-	useEffect(() => {
-		if (state.currentWorkspace && typeof state.currentWorkspace === "string") {
-			const updateRecentWorkspaces = async () => {
-				try {
-					const current = recentWorkspacesRef.current.filter(
-						(w) => w !== state.currentWorkspace
-					);
-					const updated: string[] = [state.currentWorkspace!, ...current].slice(
-						0,
-						3
-					); // Keep last 3
-					setRecentWorkspaces(updated);
-					await window.electronAPI.storeSet("recentWorkspaces", updated);
-				} catch (error) {
-					console.error("Error updating recent workspaces:", error);
-				}
-			};
-			updateRecentWorkspaces();
-		}
-	}, [state.currentWorkspace]); // Removed recentWorkspaces from dependencies
-
-	const openWorkspace = async () => {
-		try {
-			const result = await window.electronAPI.showOpenDialog({
-				properties: ["openDirectory", "createDirectory"],
-				title: "Select Workspace Folder",
-			});
-
-			if (!result.canceled && result.filePaths.length > 0) {
-				const workspacePath = result.filePaths[0];
-				dispatch({ type: "SET_WORKSPACE", payload: workspacePath });
-			}
-		} catch (error) {
-			console.error("Error opening workspace:", error);
-		}
-	};
-
-	const openRecentWorkspace = async (workspacePath: string) => {
-		try {
-			// Check if the workspace still exists
-			const exists = await window.electronAPI
-				.listDirectory(workspacePath)
-				.catch(() => false);
-			if (exists) {
-				dispatch({ type: "SET_WORKSPACE", payload: workspacePath });
-			} else {
-				// Remove from recent if it doesn't exist
-				const updated = recentWorkspacesRef.current.filter(
-					(w) => w !== workspacePath
-				);
-				setRecentWorkspaces(updated);
-				await window.electronAPI.storeSet("recentWorkspaces", updated);
-				console.warn(`Workspace ${workspacePath} no longer exists`);
-			}
-		} catch (error) {
-			console.error("Error opening recent workspace:", error);
-		}
-	};
-
-	const getWorkspaceDisplayName = (path: string) => {
-		const parts = path.split("/");
-		return parts[parts.length - 1] || path;
-	};
-
-	const getWorkspaceDisplayPath = (path: string) => {
-		// Show only the last directory name for shorter display
-		const parts = path.split("/").filter((part) => part.length > 0);
-		if (parts.length <= 1) {
-			return path;
-		}
-		// Show only the last directory
-		return parts[parts.length - 1];
-	};
-
-	// Temporary function to force trim recent workspaces to 3
-	const forceTrimRecentWorkspaces = async () => {
-		try {
-			const recent = await window.electronAPI.storeGet("recentWorkspaces");
-			if (recent && Array.isArray(recent)) {
-				const validWorkspaces = recent.filter(
-					(w): w is string => typeof w === "string" && w.length > 0
-				);
-				const limitedWorkspaces = validWorkspaces.slice(0, 3);
-				setRecentWorkspaces(limitedWorkspaces);
-				await window.electronAPI.storeSet(
-					"recentWorkspaces",
-					limitedWorkspaces
-				);
-				console.log("Forced trim to 3 workspaces:", limitedWorkspaces);
-			}
-		} catch (error) {
-			console.error("Error forcing trim:", error);
-		}
+	const handleOpenWorkspace = (path: string) => {
+		openWorkspace(path, dispatch, setRecentWorkspaces);
 	};
 
 	const handleTabClose = (e: React.MouseEvent, filePath: string) => {
@@ -461,7 +344,7 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 				</div>
 
 				<WelcomeActions>
-					<ActionCard onClick={openWorkspace}>
+					<ActionCard onClick={() => handleOpenWorkspace("")}>
 						<div className="icon">
 							<FiFolder size={24} />
 						</div>
@@ -489,13 +372,13 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 							<div
 								key={workspacePath}
 								className="project-item"
-								onClick={() => openRecentWorkspace(workspacePath)}
+								onClick={() => handleOpenWorkspace(workspacePath)}
 							>
 								<div className="project-name">
-									{getWorkspaceDisplayName(workspacePath)}
+									{workspacePath.split("/").pop()}
 								</div>
 								<div className="project-path">
-									{getWorkspaceDisplayPath(workspacePath)}
+									{workspacePath.split("/").slice(0, -1).join("/")}
 								</div>
 							</div>
 						))

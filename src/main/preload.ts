@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	checkJupyterStatus: () => ipcRenderer.invoke("jupyter-status"),
 	executeJupyterCode: (code: string) =>
 		ipcRenderer.invoke("jupyter-execute", code),
+	createVirtualEnv: (workspacePath: string) =>
+		ipcRenderer.invoke("create-virtual-env", workspacePath),
 
 	// Dialog operations
 	showOpenDialog: (options: any) =>
@@ -59,6 +61,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	onJupyterError: (callback: (data: string) => void) => {
 		ipcRenderer.on("jupyter-error", (_, data) => callback(data));
 	},
+	onVirtualEnvStatus: (callback: (data: any) => void) => {
+		ipcRenderer.on("virtual-env-status", (_, data) => callback(data));
+	},
+	onJupyterCodeWriting: (callback: (data: any) => void) => {
+		ipcRenderer.on("jupyter-code-writing", (_, data) => callback(data));
+	},
 
 	// Workspace events
 	onSetWorkspace: (callback: (workspacePath: string) => void) => {
@@ -93,6 +101,13 @@ export interface ElectronAPI {
 	executeJupyterCode: (
 		code: string
 	) => Promise<{ success: boolean; output?: string; error?: string }>;
+	createVirtualEnv: (workspacePath: string) => Promise<{
+		success: boolean;
+		venvPath?: string;
+		pythonPath?: string;
+		kernelName?: string;
+		error?: string;
+	}>;
 
 	showOpenDialog: (options: any) => Promise<any>;
 	showSaveDialog: (options: any) => Promise<any>;
@@ -114,6 +129,8 @@ export interface ElectronAPI {
 		callback: (data: { url: string; token: string }) => void
 	) => void;
 	onJupyterError: (callback: (data: string) => void) => void;
+	onVirtualEnvStatus: (callback: (data: any) => void) => void;
+	onJupyterCodeWriting: (callback: (data: any) => void) => void;
 
 	onSetWorkspace: (callback: (workspacePath: string) => void) => void;
 	onTriggerOpenWorkspace: (callback: () => void) => void;

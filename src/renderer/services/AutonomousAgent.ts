@@ -1,4 +1,4 @@
-import { BioRAGClient } from "./BioRAGClient";
+import { BackendClient } from "./BackendClient";
 import { v4 as uuidv4 } from "uuid";
 
 interface Dataset {
@@ -34,7 +34,7 @@ interface AnalysisResult {
 }
 
 export class AutonomousAgent {
-	private bioragClient: BioRAGClient;
+	private backendClient: BackendClient;
 	private workspacePath: string;
 	private originalQuery: string = "";
 	public isRunning: boolean = false;
@@ -43,11 +43,11 @@ export class AutonomousAgent {
 	private selectedModel: string = "gpt-4o-mini";
 
 	constructor(
-		bioragClient: BioRAGClient,
+		backendClient: BackendClient,
 		workspacePath: string,
 		selectedModel?: string
 	) {
-		this.bioragClient = bioragClient;
+		this.backendClient = backendClient;
 		this.workspacePath = workspacePath;
 		if (selectedModel) {
 			this.selectedModel = selectedModel;
@@ -76,7 +76,7 @@ export class AutonomousAgent {
 		try {
 			// Step 1: Understand what the user actually wants to do
 			this.updateStatus("Understanding your question...");
-			const understanding = await this.analyzeUserQuestion(query);
+			const understanding = await this.analyzeUserQuestion(query, []);
 
 			// Step 2: Find what data is needed to answer their question
 			this.updateStatus("Identifying required data...");
@@ -118,7 +118,10 @@ export class AutonomousAgent {
 		try {
 			// Step 1: Understand what the user actually wants to do
 			this.updateStatus("Understanding your question...");
-			const understanding = await this.analyzeUserQuestion(query);
+			const understanding = await this.analyzeUserQuestion(
+				query,
+				downloadedDatasets
+			);
 
 			// Step 3: Create working space
 			this.updateStatus("Setting up workspace...");
@@ -145,63 +148,76 @@ export class AutonomousAgent {
 		}
 	}
 
-	private async analyzeUserQuestion(query: string) {
+	private async analyzeUserQuestion(
+		question: string,
+		datasets: Dataset[]
+	): Promise<any> {
+		this.updateStatus("Analyzing your research question...");
+
 		try {
-			// Use LLM to intelligently analyze the user's question
-			this.updateStatus("Analyzing your research question with AI...");
-
-			// Add timeout to prevent hanging
-			const timeoutPromise = new Promise<never>((_, reject) => {
-				setTimeout(
-					() => reject(new Error("Analysis timeout - using fallback approach")),
-					60000
-				);
-			});
-
-			const planningResponse = await Promise.race([
-				this.bioragClient.query({
-					question: `As a bioinformatics expert, analyze this research question and create a detailed analysis plan:
-
-"${query}"
-
-Please provide:
-1. A clear understanding of what the user wants to accomplish
-2. Specific, actionable steps needed to answer their question (5-7 steps maximum)
-3. What types of biological data would be needed
-4. What the expected outputs should be
-
-Format your response as:
-UNDERSTANDING: [clear description of the research goal]
-STEPS:
-1. [step 1]
-2. [step 2]
-...
-DATA_NEEDED: [list of data types/sources]
-OUTPUTS: [expected result types]
-
-Focus on the specific biological analysis they're asking for. Be precise and actionable.`,
-					max_documents: 5,
-					response_type: "answer",
-					model: this.selectedModel,
-				}),
-				timeoutPromise,
-			]);
-
-			// Parse the LLM response
-			const understanding = this.parseLLMPlanningResponse(
-				planningResponse.answer,
-				query
+			// Call the backend LLM API to generate a plan
+			const response = await fetch(
+				`${this.backendClient.getBaseUrl()}/llm/plan`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({
+						question: question,
+						context: `Research question: ${question}`,
+						current_state: {
+							datasets_available: datasets.length,
+							datasets: datasets.map((d) => ({ id: d.id, title: d.title })),
+						},
+						available_data: datasets.map((d) => ({
+							id: d.id,
+							title: d.title,
+							description: d.description,
+							samples: d.samples,
+							platform: d.platform,
+						})),
+						task_type: "analysis",
+					}),
+				}
 			);
 
-			this.updateStatus("AI analysis plan generated successfully");
-			return understanding;
-		} catch (error) {
-			console.error("Error in LLM-based analysis:", error);
-			this.updateStatus("Using backup analysis approach...");
-
-			// Enhanced fallback with better analysis based on query content
-			return this.generateFallbackAnalysis(query);
+			if (response.ok) {
+				const result = await response.json();
+				console.log("LLM plan result:", result);
+				return {
+					userQuestion: question,
+					requiredSteps: result.next_steps || [],
+					analysisType: result.task_type || "analysis",
+					priority: result.priority || "medium",
+					estimatedTime: result.estimated_time || "unknown",
+					datasets: datasets,
+				};
+			} else {
+				const errorText = await response.text();
+				console.warn(
+					`LLM plan API call failed. Status: ${response.status}, Error: ${errorText}`
+				);
+			}
+		} catch (apiError) {
+			console.warn(`LLM plan API error:`, apiError);
 		}
+
+		// Fallback to basic analysis if LLM fails
+		console.log("Using fallback analysis for user question");
+		return {
+			userQuestion: question,
+			requiredSteps: [
+				"Load and preprocess the datasets",
+				"Perform exploratory data analysis",
+				"Apply appropriate statistical methods",
+				"Generate visualizations and interpret results",
+			],
+			analysisType: "general",
+			priority: "medium",
+			estimatedTime: "variable",
+			datasets: datasets,
+		};
 	}
 
 	private generateFallbackAnalysis(query: string) {
@@ -428,31 +444,35 @@ Focus on the specific biological analysis they're asking for. Be precise and act
 			try {
 				this.updateStatus("Searching for relevant datasets...");
 
-				const timeoutPromise = new Promise<never>((_, reject) => {
-					setTimeout(() => reject(new Error("Dataset search timeout")), 15000);
+				console.log(
+					"Searching for datasets with query:",
+					understanding.userQuestion
+				);
+
+				// Use the new backend client to search for datasets
+				const searchResponse = await this.backendClient.searchDatasets({
+					query: understanding.userQuestion,
+					limit: 5,
+					organism: "Homo sapiens", // Default to human data
 				});
 
-				// Use the dedicated dataset search method instead of general query
-				const searchResponse = await Promise.race([
-					this.bioragClient.searchDatasets({
-						query: understanding.userQuestion,
-						limit: 5,
-						organism: "Homo sapiens", // Default to human data
-					}),
-					timeoutPromise,
-				]);
+				console.log("Search response:", {
+					datasetsFound: searchResponse.length,
+				});
 
-				// Convert BioRAG dataset format to our format
+				// Convert backend dataset format to our format
 				for (const dataset of searchResponse.slice(0, 3)) {
 					datasets.push({
 						id: dataset.id,
 						title: dataset.title,
 						source: "GEO",
-						organism: dataset.organism,
-						samples: dataset.samples,
-						platform: dataset.platform,
-						description: dataset.description,
-						url: `https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=${dataset.id}`,
+						organism: dataset.organism || "Unknown",
+						samples: 0, // Default value since sample_count is not available
+						platform: "Unknown", // Default value since platform is not available
+						description: dataset.description || "",
+						url:
+							dataset.url ||
+							`https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=${dataset.id}`,
 					});
 				}
 			} catch (error) {
@@ -478,6 +498,12 @@ Focus on the specific biological analysis they're asking for. Be precise and act
 		const dirName = `${safeName}_${timestamp}`;
 		const fullPath = `${this.workspacePath}/${dirName}`;
 
+		console.log("AutonomousAgent: Creating workspace:", {
+			basePath: this.workspacePath,
+			dirName,
+			fullPath,
+		});
+
 		const directories = [
 			fullPath,
 			`${fullPath}/data`,
@@ -488,17 +514,43 @@ Focus on the specific biological analysis they're asking for. Be precise and act
 		for (const dir of directories) {
 			try {
 				await window.electronAPI.createDirectory(dir);
+				console.log("AutonomousAgent: Created directory:", dir);
 			} catch (error) {
 				console.warn(`Could not create directory ${dir}:`, error);
 			}
 		}
 
+		console.log("AutonomousAgent: Workspace created successfully:", fullPath);
 		return fullPath;
 	}
 
 	// Public method to create analysis workspace and return the path
 	public async createAnalysisWorkspace(query: string): Promise<string> {
-		return await this.createWorkspace(query);
+		const workspaceDir = await this.createWorkspace(query);
+
+		// Create virtual environment in the workspace
+		this.updateStatus("Setting up virtual environment...");
+		try {
+			const venvResult = await window.electronAPI.createVirtualEnv(
+				workspaceDir
+			);
+			if (venvResult.success) {
+				console.log("Virtual environment created successfully:", venvResult);
+				this.updateStatus("Virtual environment ready!");
+			} else {
+				console.warn("Failed to create virtual environment:", venvResult.error);
+				this.updateStatus(
+					"Warning: Using system Python (virtual environment creation failed)"
+				);
+			}
+		} catch (error) {
+			console.error("Error creating virtual environment:", error);
+			this.updateStatus(
+				"Warning: Using system Python (virtual environment creation failed)"
+			);
+		}
+
+		return workspaceDir;
 	}
 
 	private async generateQuestionSpecificSteps(
@@ -575,67 +627,34 @@ Focus on the specific biological analysis they're asking for. Be precise and act
 		const steps: AnalysisStep[] = [];
 
 		this.updateStatus(
-			`Generating code for ${understanding.requiredSteps.length} analysis steps using downloaded data...`
+			`Generating initial data loading step for analysis pipeline...`
 		);
 
-		// First step: Load downloaded data
+		// First step: Load downloaded data (this is the only step we generate initially)
 		const dataLoadingStep = await this.generateDataLoadingStep(
 			datasets,
 			workingDir
 		);
 		steps.push(dataLoadingStep);
 
-		// Generate code for each analysis step based on the user's question and real data
-		for (let i = 0; i < understanding.requiredSteps.length; i++) {
-			const stepDescription = understanding.requiredSteps[i];
+		// Store the analysis plan for future step generation
+		const analysisPlan = {
+			understanding,
+			datasets,
+			workingDir,
+			requiredSteps: understanding.requiredSteps,
+			userQuestion: understanding.userQuestion,
+		};
 
-			this.updateStatus(
-				`Generating code for step ${i + 2}/${
-					understanding.requiredSteps.length + 1
-				}: ${stepDescription.substring(0, 50)}...`
-			);
+		// Save the analysis plan for the pipeline to use later
+		await window.electronAPI.writeFile(
+			`${workingDir}/analysis_plan.json`,
+			JSON.stringify(analysisPlan, null, 2)
+		);
 
-			try {
-				const code = await this.generateDataDrivenStepCode(
-					stepDescription,
-					understanding.userQuestion,
-					datasets,
-					workingDir,
-					i + 1 // +1 because we have data loading as step 0
-				);
-
-				steps.push({
-					id: `step_${i + 2}`,
-					description: stepDescription,
-					code,
-					status: "pending",
-				});
-
-				this.updateStatus(
-					`Generated code for step ${i + 2}/${
-						understanding.requiredSteps.length + 1
-					}`
-				);
-			} catch (error) {
-				console.error(`Error generating code for step ${i + 2}:`, error);
-
-				// Create a fallback step
-				steps.push({
-					id: `step_${i + 2}`,
-					description: stepDescription,
-					code: this.generateBasicStepCode(stepDescription, i + 1),
-					status: "pending",
-				});
-
-				this.updateStatus(
-					`Used fallback code for step ${i + 2}/${
-						understanding.requiredSteps.length + 1
-					}`
-				);
-			}
-		}
-
-		this.updateStatus("All analysis steps prepared!");
+		this.updateStatus(
+			"Initial data loading step prepared for pipeline execution!"
+		);
 		return steps;
 	}
 
@@ -667,38 +686,47 @@ geo_dir.mkdir(exist_ok=True)
 processed_dir = geo_dir / 'processed_data'
 processed_dir.mkdir(exist_ok=True)
 
-# BioRAG API configuration
-BIORAG_API_BASE = "http://localhost:8000"
+# Backend API configuration
+BACKEND_API_BASE = "http://localhost:8000"
 
-def check_dataset_size(dataset_id):
-    """Check dataset size and download status"""
+def check_dataset_info(dataset_id):
+    """Check dataset info using the new backend API"""
     try:
         print(f"🔍 Checking dataset info for {dataset_id}...")
-        response = requests.get(f"{BIORAG_API_BASE}/datasets/{dataset_id}")
+        
+        # Use the search endpoint to find dataset info
+        response = requests.post(f"{BACKEND_API_BASE}/search", 
+                               json={'query': dataset_id, 'limit': 1})
+        
         print(f"   Response status: {response.status_code}")
         
         if response.status_code == 200:
-            dataset_info = response.json()
-            print(f"   Raw response: {dataset_info}")
-            
-            samples = dataset_info.get('samples', 0)
-            organism = dataset_info.get('organism', 'Unknown')
-            title = dataset_info.get('title', dataset_id)
-            
-            # Estimate file size based on samples (rough estimate)
-            estimated_size_mb = samples * 0.1  # ~0.1MB per sample
-            
-            print(f"📊 {dataset_id}: {samples} samples, {organism}")
-            print(f"   Estimated size: ~{estimated_size_mb:.1f} MB")
-            print(f"   Title: {title}")
-            
-            return {
-                'id': dataset_id,
-                'samples': samples,
-                'organism': organism,
-                'title': title,
-                'estimated_size_mb': estimated_size_mb
-            }
+            datasets = response.json()
+            if datasets and len(datasets) > 0:
+                dataset_info = datasets[0]
+                print(f"   Raw response: {dataset_info}")
+                
+                samples = int(dataset_info.get('sample_count', 0))
+                organism = dataset_info.get('organism', 'Unknown')
+                title = dataset_info.get('title', dataset_id)
+                
+                # Estimate file size based on samples (rough estimate)
+                estimated_size_mb = samples * 0.1  # ~0.1MB per sample
+                
+                print(f"📊 {dataset_id}: {samples} samples, {organism}")
+                print(f"   Estimated size: ~{estimated_size_mb:.1f} MB")
+                print(f"   Title: {title}")
+                
+                return {
+                    'id': dataset_id,
+                    'samples': samples,
+                    'organism': organism,
+                    'title': title,
+                    'estimated_size_mb': estimated_size_mb
+                }
+            else:
+                print(f"❌ No dataset found for {dataset_id}")
+                return None
         else:
             print(f"❌ Could not get info for {dataset_id} - Status: {response.status_code}")
             print(f"   Response text: {response.text}")
@@ -707,57 +735,24 @@ def check_dataset_size(dataset_id):
         print(f"❌ Error checking {dataset_id}: {e}")
         return None
 
-def download_dataset(dataset_id):
-    """Download dataset through BioRAG API"""
+def search_datasets(query):
+    """Search for datasets using the new backend API"""
     try:
-        print(f"📥 Downloading {dataset_id}...")
+        print(f"🔍 Searching for datasets: {query}")
         
-        # Start download
-        response = requests.post(f"{BIORAG_API_BASE}/datasets/{dataset_id}/download", 
-                               json={'force_redownload': False})
+        response = requests.post(f"{BACKEND_API_BASE}/search", 
+                               json={'query': query, 'limit': 10})
         
         if response.status_code == 200:
-            result = response.json()
-            print(f"   Download started: {result.get('status', 'unknown')}")
-            
-            # Monitor download progress
-            max_attempts = 60  # 5 minutes max
-            for attempt in range(max_attempts):
-                time.sleep(5)  # Check every 5 seconds
-                
-                try:
-                    status_response = requests.get(f"{BIORAG_API_BASE}/datasets/{dataset_id}/status")
-                    if status_response.status_code == 200:
-                        status_info = status_response.json()
-                        status = status_info.get('status', 'unknown')
-                        progress = status_info.get('progress', 0)
-                        
-                        print(f"   Progress: {progress}% - {status}")
-                        
-                        if status == 'completed':
-                            print(f"✅ {dataset_id} download completed!")
-                            return True
-                        elif status == 'error':
-                            print(f"❌ {dataset_id} download failed!")
-                            return False
-                    else:
-                        print(f"   Status check failed: {status_response.status_code}")
-                except Exception as status_error:
-                    print(f"   Status check error: {status_error}")
-                
-                print(f"   Checking status... (attempt {attempt + 1})")
-            }
-            
-            print(f"⏰ {dataset_id} download timeout")
-            return False
+            datasets = response.json()
+            print(f"✅ Found {len(datasets)} datasets")
+            return datasets
         else:
-            print(f"❌ Failed to start download for {dataset_id} - Status: {response.status_code}")
-            print(f"   Response: {response.text}")
-            return False
-            
+            print(f"❌ Search failed - Status: {response.status_code}")
+            return []
     except Exception as e:
-        print(f"❌ Error downloading {dataset_id}: {e}")
-        return False
+        print(f"❌ Error searching datasets: {e}")
+        return []
 
 # Check dataset sizes and download
 print("\\n=== Dataset Information ===")
@@ -778,38 +773,30 @@ default_info = {
 			.join(",\n    ")}
 }
 
-for dataset in [${datasets.map((d) => `'${d.id}'`).join(", ")}]:
-    info = check_dataset_size(dataset)
-    if info and info.get('samples', 0) > 0:
-        dataset_info_list.append(info)
-    else:
-        # Use default information
-        default_data = default_info.get(dataset, {
-            'id': dataset,
-            'samples': 100,
-            'organism': 'Homo sapiens',
-            'title': f'Dataset {dataset}',
-            'estimated_size_mb': 10.0
-        })
-        print(f"📊 {dataset}: {default_data['samples']} samples, {default_data['organism']} (estimated)")
-        print(f"   Estimated size: ~{default_data['estimated_size_mb']:.1f} MB")
-        print(f"   Title: {default_data['title']}")
-        dataset_info_list.append(default_data)
+# Search for datasets using the new API
+search_query = " ".join([${datasets.map((d) => `'${d.id}'`).join(", ")}])
+datasets_found = search_datasets(search_query)
 
-print(f"\n=== Downloading {{len(dataset_info_list)}} datasets ===")
-total_estimated_size = sum(info['estimated_size_mb'] for info in dataset_info_list)
-print(f"Total estimated size: ~{{total_estimated_size:.1f}} MB")
+print(f"\n=== Found Datasets ===")
+for dataset in datasets_found:
+    samples = int(dataset.get('sample_count', 0))
+    organism = dataset.get('organism', 'Unknown')
+    title = dataset.get('title', dataset.get('id', 'Unknown'))
+    similarity = dataset.get('similarity_score', 0)
+    
+    print(f"📊 {dataset['id']}: {samples} samples, {organism}")
+    print(f"   Title: {title}")
+    print(f"   Similarity: {similarity:.3f}")
+    dataset_info_list.append({
+        'id': dataset['id'],
+        'samples': samples,
+        'organism': organism,
+        'title': title,
+        'estimated_size_mb': samples * 0.1
+    })
 
-# Download each dataset
-download_success = []
-for info in dataset_info_list:
-    success = download_dataset(info['id'])
-    download_success.append(success)
-
-print(f"\n=== Download Summary ===")
-for i, info in enumerate(dataset_info_list):
-    status = "✅ Success" if download_success[i] else "❌ Failed"
-    print(f"{{info['id']}}: {{status}}")
+print(f"\n=== Dataset Summary ===")
+print(f"Found {len(datasets_found)} datasets for analysis")
 
 # Load downloaded datasets
 print("\n=== Loading Downloaded Data ===")
@@ -920,36 +907,66 @@ IMPORTANT:
 
 Generate the Python code:`;
 
-			// Add timeout to prevent hanging
-			const timeoutPromise = new Promise<never>((_, reject) => {
-				setTimeout(
-					() => reject(new Error("Code generation timeout - using fallback")),
-					45000
+			// Call the backend LLM API for code generation
+			try {
+				console.log(`Calling LLM API for step: ${stepDescription}`);
+				console.log(`API URL: ${this.backendClient.getBaseUrl()}/llm/code`);
+
+				const requestBody = {
+					task_description: codePrompt,
+					language: "python",
+					context: `Research question: ${originalQuestion}\nDatasets: ${datasets
+						.map((d) => d.id)
+						.join(", ")}\nWorking directory: ${workingDir}`,
+				};
+
+				console.log(`Request body:`, requestBody);
+
+				const response = await fetch(
+					`${this.backendClient.getBaseUrl()}/llm/code`,
+					{
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+						},
+						body: JSON.stringify(requestBody),
+					}
 				);
-			});
 
-			const codeResponse = await Promise.race([
-				this.bioragClient.query({
-					question: codePrompt,
-					max_documents: 3,
-					response_type: "answer",
-					model: this.selectedModel,
-				}),
-				timeoutPromise,
-			]);
+				console.log(`LLM API response status: ${response.status}`);
 
-			let generatedCode = this.extractPythonCode(codeResponse.answer);
+				if (response.ok) {
+					const result = await response.json();
+					console.log(`LLM API response:`, result);
+					const generatedCode = result.code;
 
-			if (!generatedCode || generatedCode.length < 50) {
-				console.warn(`Generated code too short for step: ${stepDescription}`);
-				generatedCode = this.generateDataAwareBasicStepCode(
-					stepDescription,
-					datasets,
-					stepIndex
-				);
+					if (generatedCode && generatedCode.length > 50) {
+						console.log(`LLM generated code for step: ${stepDescription}`);
+						return generatedCode;
+					} else {
+						console.warn(
+							`LLM generated code too short for step: ${stepDescription}`
+						);
+					}
+				} else {
+					const errorText = await response.text();
+					console.warn(
+						`LLM API call failed for step: ${stepDescription}. Status: ${response.status}, Error: ${errorText}`
+					);
+				}
+			} catch (apiError) {
+				console.warn(`LLM API error for step: ${stepDescription}:`, apiError);
 			}
 
-			return generatedCode;
+			// Fallback to basic code generation if LLM fails
+			console.log(
+				`Using fallback code generation for step: ${stepDescription}`
+			);
+			return this.generateDataAwareBasicStepCode(
+				stepDescription,
+				datasets,
+				stepIndex
+			);
 		} catch (error) {
 			console.error(
 				`LLM code generation failed for "${stepDescription}":`,
@@ -1038,7 +1055,7 @@ Generate the Python code:`;
 		);
 
 		return `# Step ${stepIndex + 1}: ${stepDescription}
-# WARNING: This is fallback code - AI should generate proper analysis code
+# WARNING: This is fallback code - AI should generate proper analysis")
 import os
 import pandas as pd
 import numpy as np
@@ -1104,25 +1121,66 @@ IMPORTANT:
 
 Generate the Python code:`;
 
-			const codeResponse = await this.bioragClient.query({
-				question: codePrompt,
-				max_documents: 3,
-				response_type: "answer",
-				model: this.selectedModel,
-			});
+			// Call the backend LLM API for code generation
+			try {
+				console.log(`Calling LLM API for step: ${stepDescription}`);
+				console.log(`API URL: ${this.backendClient.getBaseUrl()}/llm/code`);
 
-			let generatedCode = this.extractPythonCode(codeResponse.answer);
+				const requestBody = {
+					task_description: codePrompt,
+					language: "python",
+					context: `Research question: ${originalQuestion}\nDatasets: ${datasets
+						.map((d) => d.id)
+						.join(", ")}\nWorking directory: ${workingDir}`,
+				};
 
-			if (!generatedCode || generatedCode.length < 50) {
-				console.warn(`Generated code too short for step: ${stepDescription}`);
-				generatedCode = this.generateDataAwareBasicStepCode(
-					stepDescription,
-					datasets,
-					stepIndex
+				console.log(`Request body:`, requestBody);
+
+				const response = await fetch(
+					`${this.backendClient.getBaseUrl()}/llm/code`,
+					{
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+						},
+						body: JSON.stringify(requestBody),
+					}
 				);
+
+				console.log(`LLM API response status: ${response.status}`);
+
+				if (response.ok) {
+					const result = await response.json();
+					console.log(`LLM API response:`, result);
+					const generatedCode = result.code;
+
+					if (generatedCode && generatedCode.length > 50) {
+						console.log(`LLM generated code for step: ${stepDescription}`);
+						return generatedCode;
+					} else {
+						console.warn(
+							`LLM generated code too short for step: ${stepDescription}`
+						);
+					}
+				} else {
+					const errorText = await response.text();
+					console.warn(
+						`LLM API call failed for step: ${stepDescription}. Status: ${response.status}, Error: ${errorText}`
+					);
+				}
+			} catch (apiError) {
+				console.warn(`LLM API error for step: ${stepDescription}:`, apiError);
 			}
 
-			return generatedCode;
+			// Fallback to basic code generation if LLM fails
+			console.log(
+				`Using fallback code generation for step: ${stepDescription}`
+			);
+			return this.generateDataAwareBasicStepCode(
+				stepDescription,
+				datasets,
+				stepIndex
+			);
 		} catch (error) {
 			console.error(
 				`LLM code generation failed for "${stepDescription}":`,

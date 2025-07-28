@@ -9,6 +9,7 @@ import {
 	FiX,
 } from "react-icons/fi";
 import { CodeCell } from "./CodeCell";
+import { runNotebookStep } from "../../utils";
 
 const NotebookContainer = styled.div`
 	display: flex;
@@ -98,6 +99,57 @@ const AddCellButton = styled.button`
 	border: 2px dashed #404040;
 	border-radius: 8px;
 	color: #858585;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	font-size: 14px;
+	transition: all 0.2s ease;
+
+	&:hover {
+		background: #404040;
+		color: #ffffff;
+		border-color: #007acc;
+	}
+`;
+
+const StatusDisplay = styled.div`
+	background: #1e1e1e;
+	border: 1px solid #404040;
+	border-radius: 6px;
+	padding: 12px;
+	margin: 8px 0;
+	font-size: 12px;
+	color: #cccccc;
+`;
+
+const VirtualEnvStatus = styled.div<{ $status?: string }>`
+	color: ${(props) => {
+		if (props.$status?.includes("error")) return "#ff6b6b";
+		if (props.$status?.includes("ready")) return "#51cf66";
+		if (props.$status?.includes("installing")) return "#ffd43b";
+		return "#74c0fc";
+	}};
+	margin-bottom: 8px;
+`;
+
+const CodeWritingLog = styled.div`
+	max-height: 200px;
+	overflow-y: auto;
+	border-top: 1px solid #404040;
+	padding-top: 8px;
+`;
+
+const CodeEntry = styled.div`
+	background: #2d2d30;
+	border-radius: 4px;
+	padding: 8px;
+	margin: 4px 0;
+	font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+	font-size: 11px;
+	color: #e9ecef;
+	border-left: 3px solid #007acc;
 `;
 
 const ProgressBar = styled.div`
@@ -172,12 +224,16 @@ export const Notebook: React.FC<NotebookProps> = ({
 	const [jupyterStatus, setJupyterStatus] = useState<
 		"starting" | "ready" | "error" | "running"
 	>("starting");
+	const [isAutoExecuting, setIsAutoExecuting] = useState(false);
+	const [analysisCellsCreated, setAnalysisCellsCreated] = useState(false);
+	const [analysisCheckAttempts, setAnalysisCheckAttempts] = useState(0);
+	const [codeWritingLog, setCodeWritingLog] = useState<
+		Array<{ code: string; timestamp: string }>
+	>([]);
+	const [virtualEnvStatus, setVirtualEnvStatus] = useState<string>("");
 	const [analysisSteps, setAnalysisSteps] = useState<AnalysisStep[]>([]);
 	const [currentStepIndex, setCurrentStepIndex] = useState(0);
 	const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
-	const [analysisCellsCreated, setAnalysisCellsCreated] = useState(false);
-	const [isAutoExecuting, setIsAutoExecuting] = useState(false);
-	const [analysisCheckAttempts, setAnalysisCheckAttempts] = useState(0);
 
 	// Check Jupyter status and start if needed
 	useEffect(() => {
@@ -236,6 +292,46 @@ export const Notebook: React.FC<NotebookProps> = ({
 		checkAndStartJupyter();
 	}, [workspacePath]);
 
+	// Reset analysis state when workspace changes
+	useEffect(() => {
+		console.log("Notebook: Workspace changed to:", workspacePath);
+		setAnalysisCellsCreated(false);
+		setAnalysisCheckAttempts(0);
+		setCells([]);
+	}, [workspacePath]);
+
+	// Listen for virtual environment status updates
+	useEffect(() => {
+		const handleVirtualEnvStatus = (data: any) => {
+			console.log("Notebook: Virtual environment status:", data);
+			setVirtualEnvStatus(data.message);
+		};
+
+		window.electronAPI.onVirtualEnvStatus(handleVirtualEnvStatus);
+		return () => {
+			window.electronAPI.removeAllListeners("virtual-env-status");
+		};
+	}, []);
+
+	// Listen for code being written to notebook
+	useEffect(() => {
+		const handleCodeWriting = (data: any) => {
+			console.log("Notebook: Code being written:", data);
+			setCodeWritingLog((prev) => [
+				...prev,
+				{
+					code: data.code,
+					timestamp: data.timestamp,
+				},
+			]);
+		};
+
+		window.electronAPI.onJupyterCodeWriting(handleCodeWriting);
+		return () => {
+			window.electronAPI.removeAllListeners("jupyter-code-writing");
+		};
+	}, []);
+
 	// Listen for analysis results from chat panel
 	useEffect(() => {
 		const checkForAnalysis = async () => {
@@ -264,6 +360,17 @@ export const Notebook: React.FC<NotebookProps> = ({
 				// First, check if we're in an analysis workspace (contains analysis_result.json)
 				const analysisFile = `${workspacePath}/analysis_result.json`;
 				console.log(`Notebook: Looking for analysis file: ${analysisFile}`);
+
+				// Check if the file exists first
+				try {
+					const files = await window.electronAPI.listDirectory(workspacePath);
+					console.log(
+						"Notebook: Files in workspace:",
+						files.map((f) => f.name)
+					);
+				} catch (dirError) {
+					console.log("Notebook: Error listing directory:", dirError);
+				}
 
 				const analysisContent = await window.electronAPI.readFile(analysisFile);
 				const analysisResult = JSON.parse(analysisContent);
@@ -419,8 +526,8 @@ export const Notebook: React.FC<NotebookProps> = ({
 				// Auto-execute the new cells after a short delay
 				setTimeout(() => {
 					console.log("Notebook: Auto-executing new analysis cells...");
-					executeAnalysisCells(uniqueNewCells);
-				}, 1000); // Reduced delay to 1 second for faster execution
+					executeAnalysisPipeline(uniqueNewCells);
+				}, 1000);
 
 				return updatedCells;
 			} else {
@@ -431,10 +538,10 @@ export const Notebook: React.FC<NotebookProps> = ({
 		});
 	};
 
-	// New function to execute analysis cells automatically
-	const executeAnalysisCells = async (cellsToExecute: Cell[]) => {
+	// New function to execute analysis cells one by one with dynamic generation
+	const executeAnalysisPipeline = async (cellsToExecute: Cell[]) => {
 		console.log(
-			`Notebook: Starting auto-execution of ${cellsToExecute.length} cells...`
+			`Notebook: Starting analysis pipeline with ${cellsToExecute.length} initial cells...`
 		);
 		console.log(`Notebook: Current Jupyter status: ${jupyterStatus}`);
 
@@ -446,34 +553,210 @@ export const Notebook: React.FC<NotebookProps> = ({
 
 		if (jupyterStatus !== "ready") {
 			console.log("Notebook: Jupyter not ready, retrying in 2 seconds...");
-			setTimeout(() => executeAnalysisCells(cellsToExecute), 2000);
+			setTimeout(() => executeAnalysisPipeline(cellsToExecute), 2000);
 			return;
 		}
 
 		console.log(
-			`Notebook: Auto-executing ${cellsToExecute.length} analysis cells...`
+			`Notebook: Starting analysis pipeline with ${cellsToExecute.length} cells...`
 		);
 		setJupyterStatus("running");
 		setIsAutoExecuting(true);
 
-		for (let i = 0; i < cellsToExecute.length; i++) {
-			const cell = cellsToExecute[i];
-			if (cell.status === "pending" && !cell.isMarkdown) {
-				console.log(
-					`Notebook: Auto-executing cell ${i + 1}/${cellsToExecute.length}: ${
-						cell.title
-					}`
-				);
-				await executeCell(cell.id, cell.code);
+		// Execute the first cell (data loading) - subsequent cells will be generated dynamically
+		const firstCell = cellsToExecute[0];
+		if (firstCell && firstCell.status === "pending" && !firstCell.isMarkdown) {
+			console.log(`Notebook: Executing first cell: ${firstCell.title}`);
 
-				// Wait between cells to avoid overwhelming the kernel
-				await new Promise((resolve) => setTimeout(resolve, 1000));
-			}
+			// Execute the first cell - next steps will be generated when it completes
+			await executeCell(firstCell.id, firstCell.code);
 		}
 
 		setJupyterStatus("ready");
 		setIsAutoExecuting(false);
-		console.log("Notebook: Auto-execution of analysis cells completed!");
+		console.log(
+			"Notebook: Initial cell execution completed - pipeline will continue automatically!"
+		);
+	};
+
+	// Helper function to get workspace files
+	const getWorkspaceFiles = async (): Promise<string[]> => {
+		try {
+			// Use a simple approach to get files - just return empty array for now
+			// We can enhance this later if needed
+			return [];
+		} catch (error) {
+			console.error("Error reading workspace files:", error);
+			return [];
+		}
+	};
+
+	// Function to generate next analysis steps based on current data
+	const generateNextAnalysisSteps = async () => {
+		try {
+			console.log("Notebook: Generating next analysis steps...");
+
+			// Get the current cells to see what's already been done
+			const currentCells = cells.filter((c) => c.status === "completed");
+			const completedSteps = currentCells.length;
+
+			console.log(
+				`Notebook: Completed ${completedSteps} steps, planning next step...`
+			);
+
+			// Get current state for planning
+			const currentState = {
+				completed_steps: completedSteps,
+				workspace_path: workspacePath || "",
+				available_files: await getWorkspaceFiles(),
+				last_cell_output:
+					currentCells.length > 0
+						? currentCells[currentCells.length - 1].output || ""
+						: "",
+			};
+
+			// Generate plan for next steps using the general planning API
+			const planResponse = await fetch(`http://localhost:8000/llm/plan`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					question: "What should be the next analysis step?",
+					context: `Currently analyzing datasets in workspace. Completed ${completedSteps} steps.`,
+					current_state: currentState,
+					available_data: [],
+					task_type: "analysis_step",
+				}),
+			});
+
+			if (planResponse.ok) {
+				const planResult = await planResponse.json();
+				console.log("Planning result:", planResult);
+
+				if (planResult.next_steps && planResult.next_steps.length > 0) {
+					const nextStepDescription = planResult.next_steps[0]; // Take the first next step
+
+					console.log(`Notebook: Planning to execute: ${nextStepDescription}`);
+
+					// Generate code for the next step
+					const nextStepCode = await generateStepCode(
+						nextStepDescription,
+						"Continue analysis",
+						[],
+						workspacePath || "",
+						completedSteps + 1
+					);
+
+					// Create a new cell for the next step
+					const newCell: Cell = {
+						id: `step_${completedSteps + 2}`,
+						code: nextStepCode,
+						language: "python" as const,
+						output: "",
+						hasError: false,
+						status: "pending",
+						title: `Step ${completedSteps + 2}: ${nextStepDescription}`,
+					};
+
+					// Add the new cell
+					setCells((prev) => [...prev, newCell]);
+
+					// Execute the new cell
+					setTimeout(() => {
+						executeCell(newCell.id, newCell.code);
+					}, 1000);
+
+					console.log(
+						`Notebook: Generated and executing next step: ${nextStepDescription}`
+					);
+				} else {
+					console.log("Notebook: No more steps planned - analysis complete!");
+				}
+			} else {
+				console.warn("Notebook: Planning API call failed, using fallback");
+				// Fallback: generate a basic next step
+				const fallbackStep = `Continue analysis with step ${
+					completedSteps + 2
+				}`;
+				const fallbackCode = await generateStepCode(
+					fallbackStep,
+					"Continue analysis",
+					[],
+					workspacePath || "",
+					completedSteps + 1
+				);
+
+				const newCell: Cell = {
+					id: `step_${completedSteps + 2}`,
+					code: fallbackCode,
+					language: "python" as const,
+					output: "",
+					hasError: false,
+					status: "pending",
+					title: `Step ${completedSteps + 2}: ${fallbackStep}`,
+				};
+
+				setCells((prev) => [...prev, newCell]);
+				setTimeout(() => {
+					executeCell(newCell.id, newCell.code);
+				}, 1000);
+			}
+		} catch (error) {
+			console.error("Notebook: Error generating next analysis steps:", error);
+		}
+	};
+
+	// Function to generate code for a specific step
+	const generateStepCode = async (
+		stepDescription: string,
+		userQuestion: string,
+		datasets: any[],
+		workingDir: string,
+		stepIndex: number
+	): Promise<string> => {
+		try {
+			// Try to use the LLM API to generate code
+			const response = await fetch(`http://localhost:8000/llm/code`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					task_description: `Generate Python code for: ${stepDescription}`,
+					language: "python",
+					context: `Research question: ${userQuestion}\nDatasets: ${datasets
+						.map((d) => d.id)
+						.join(
+							", "
+						)}\nWorking directory: ${workingDir}\nStep: ${stepDescription}`,
+				}),
+			});
+
+			if (response.ok) {
+				const result = await response.json();
+				if (result.code && result.code.length > 50) {
+					console.log(`LLM generated code for step: ${stepDescription}`);
+					return result.code;
+				}
+			}
+		} catch (error) {
+			console.warn(`LLM API error for step generation:`, error);
+		}
+
+		// Fallback to basic code generation
+		return `# Step ${stepIndex}: ${stepDescription}
+print("Executing: ${stepDescription}")
+
+# Basic implementation for: ${stepDescription}
+# This is a fallback implementation - LLM should generate more sophisticated code
+
+try:
+    # Your analysis code here
+    print("Step ${stepIndex} completed successfully")
+except Exception as e:
+    print(f"Error in step ${stepIndex}: {e}")
+`;
 	};
 
 	const addCell = (language: "python" | "r" = "python") => {
@@ -506,37 +789,44 @@ export const Notebook: React.FC<NotebookProps> = ({
 			console.error("Jupyter not ready for execution");
 			return;
 		}
-
 		const cell = cells.find((c) => c.id === id);
 		if (!cell || cell.isMarkdown) return;
 
-		try {
-			console.log("Executing cell:", id);
-			updateCell(id, { status: "running", output: "Executing..." });
+		// Update cell status to running
+		updateCell(id, { status: "running" });
 
-			const result = await window.electronAPI.executeJupyterCode(code);
+		await runNotebookStep(
+			id,
+			code,
+			(payload: { output: string | null; error: string | null }) => {
+				const newStatus = payload.error ? "failed" : "completed";
+				updateCell(id, {
+					output: payload.output ?? undefined,
+					hasError: !!payload.error,
+					status: newStatus,
+				});
 
-			if (result.success) {
-				updateCell(id, {
-					output: result.output || "Code executed successfully",
-					hasError: false,
-					status: "completed",
-				});
-			} else {
-				updateCell(id, {
-					output: result.error || "Execution failed",
-					hasError: true,
-					status: "failed",
-				});
+				// If cell completed successfully and this is an analysis cell, generate next step
+				if (
+					newStatus === "completed" &&
+					cell.title &&
+					cell.title.includes("Step")
+				) {
+					console.log(`Notebook: Cell ${cell.title} completed successfully`);
+
+					// Check if this was the data loading cell or if we should generate the next step
+					if (
+						cell.title.includes("Download and load datasets") ||
+						(cell.title.includes("Step") && !cell.title.includes("Download"))
+					) {
+						// Wait a bit for the cell output to be processed
+						setTimeout(() => {
+							generateNextAnalysisSteps();
+						}, 2000);
+					}
+				}
 			}
-		} catch (error) {
-			console.error("Error executing code:", error);
-			updateCell(id, {
-				output: `Error: ${error}`,
-				hasError: true,
-				status: "failed",
-			});
-		}
+		);
 	};
 
 	const executeAllSteps = async () => {
@@ -669,6 +959,47 @@ export const Notebook: React.FC<NotebookProps> = ({
 					</ActionButton>
 				</NotebookActions>
 			</NotebookHeader>
+
+			{/* Status Display */}
+			{(virtualEnvStatus || codeWritingLog.length > 0) && (
+				<StatusDisplay>
+					{virtualEnvStatus && (
+						<VirtualEnvStatus $status={virtualEnvStatus}>
+							🔧 {virtualEnvStatus}
+						</VirtualEnvStatus>
+					)}
+					{codeWritingLog.length > 0 && (
+						<CodeWritingLog>
+							<div
+								style={{
+									marginBottom: "8px",
+									color: "#007acc",
+									fontWeight: "600",
+								}}
+							>
+								📝 Code Generation Log:
+							</div>
+							{codeWritingLog.slice(-3).map((entry, index) => (
+								<CodeEntry key={index}>
+									<div
+										style={{
+											color: "#858585",
+											fontSize: "10px",
+											marginBottom: "4px",
+										}}
+									>
+										{new Date(entry.timestamp).toLocaleTimeString()}
+									</div>
+									<div style={{ whiteSpace: "pre-wrap" }}>
+										{entry.code.substring(0, 200)}
+										{entry.code.length > 200 ? "..." : ""}
+									</div>
+								</CodeEntry>
+							))}
+						</CodeWritingLog>
+					)}
+				</StatusDisplay>
+			)}
 
 			{cells.length > 0 && (
 				<div

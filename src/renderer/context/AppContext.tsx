@@ -72,7 +72,14 @@ const initialState: AppState = {
 function appReducer(state: AppState, action: AppAction): AppState {
 	switch (action.type) {
 		case "SET_WORKSPACE":
-			return { ...state, currentWorkspace: action.payload };
+			return {
+				...state,
+				currentWorkspace: action.payload,
+				openFiles: [],
+				activeFile: null,
+				fileTree: [],
+				showNotebook: false,
+			};
 
 		case "SET_FILE_TREE":
 			return { ...state, fileTree: action.payload };

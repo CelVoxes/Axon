@@ -31,15 +31,7 @@ const AppContent: React.FC = () => {
 				<MainContent data-layout-role="main" />
 
 				{!state.chatCollapsed && state.currentWorkspace && (
-					<ChatPanel
-						onToggle={() =>
-							dispatch({
-								type: "SET_CHAT_COLLAPSED",
-								payload: !state.chatCollapsed,
-							})
-						}
-						data-layout-role="chat"
-					/>
+					<ChatPanel data-layout-role="chat" />
 				)}
 			</Layout.Body>
 

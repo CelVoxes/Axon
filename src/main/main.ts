@@ -67,10 +67,59 @@ export class AxonApp {
 	}
 
 	private createMainWindow() {
-		// Debug icon path
-		const iconPath = path.join(__dirname, "../png/axon.png");
+		// Use PNG for development, ICNS for production on macOS
+		const isDevelopment = process.env.NODE_ENV === "development";
+		const iconPath =
+			process.platform === "darwin" && !isDevelopment
+				? path.join(__dirname, "..", "png", "axon-very-rounded-150.icns")
+				: path.join(__dirname, "..", "png", "axon-very-rounded-150.png");
+
 		console.log("Icon path:", iconPath);
 		console.log("Icon exists:", fs.existsSync(iconPath));
+		console.log("Current directory (__dirname):", __dirname);
+		console.log("App path:", app.getAppPath());
+		console.log("Platform:", process.platform);
+		console.log("Development mode:", isDevelopment);
+
+		// Try alternative icon paths if the first one doesn't exist
+		let finalIconPath = iconPath;
+		if (!fs.existsSync(iconPath)) {
+			const alternativePaths = [
+				path.join(app.getAppPath(), "src", "png", "axon-very-rounded-150.png"),
+				path.join(app.getAppPath(), "dist", "png", "axon-very-rounded-150.png"),
+				path.join(
+					__dirname,
+					"..",
+					"..",
+					"src",
+					"png",
+					"axon-very-rounded-150.png"
+				),
+				// Fallback to other rounded versions
+				path.join(app.getAppPath(), "src", "png", "axon-very-rounded.png"),
+				path.join(app.getAppPath(), "dist", "png", "axon-very-rounded.png"),
+				path.join(__dirname, "..", "..", "src", "png", "axon-very-rounded.png"),
+				// Fallback to original rounded
+				path.join(app.getAppPath(), "src", "png", "axon-rounded.png"),
+				path.join(app.getAppPath(), "dist", "png", "axon-rounded.png"),
+				path.join(__dirname, "..", "..", "src", "png", "axon-rounded.png"),
+				// Final fallback to original
+				path.join(app.getAppPath(), "src", "png", "axon.png"),
+				path.join(app.getAppPath(), "dist", "png", "axon.png"),
+				path.join(__dirname, "..", "..", "src", "png", "axon.png"),
+			];
+
+			for (const altPath of alternativePaths) {
+				console.log("Trying alternative path:", altPath);
+				if (fs.existsSync(altPath)) {
+					finalIconPath = altPath;
+					console.log("Found icon at:", finalIconPath);
+					break;
+				}
+			}
+		}
+
+		console.log("Final icon path being used:", finalIconPath);
 
 		this.mainWindow = new BrowserWindow({
 			width: 1400,
@@ -78,7 +127,7 @@ export class AxonApp {
 			minWidth: 1200,
 			minHeight: 700,
 			title: "Axon",
-			icon: iconPath,
+			icon: finalIconPath,
 			webPreferences: {
 				nodeIntegration: false,
 				contextIsolation: true,
@@ -91,6 +140,12 @@ export class AxonApp {
 			titleBarStyle: "hiddenInset",
 			show: false,
 		});
+
+		// Set dock icon programmatically for macOS
+		if (process.platform === "darwin") {
+			app.dock.setIcon(finalIconPath);
+			console.log("Set dock icon to:", finalIconPath);
+		}
 
 		// Set CSP headers for better security
 		this.mainWindow.webContents.session.webRequest.onHeadersReceived(
@@ -197,22 +252,21 @@ export class AxonApp {
 
 			// Start the BioRAG API server with the available port
 			const pythonPath = await this.findPythonPath();
-			const bioragPath = path.join(__dirname, "..", "..", "biorag");
+			const backendPath = path.join(__dirname, "..", "..", "backend");
 
 			this.bioragServer = spawn(
 				pythonPath,
 				[
 					"-m",
-					"biorag.main",
+					"backend.cli",
 					"serve",
 					"--host",
 					"0.0.0.0",
 					"--port",
 					this.bioragPort.toString(),
-					"--no-reload",
 				],
 				{
-					cwd: path.dirname(bioragPath),
+					cwd: path.dirname(backendPath),
 					stdio: "pipe",
 				}
 			);
@@ -669,6 +723,157 @@ export class AxonApp {
 			}
 		});
 
+		ipcMain.handle("create-virtual-env", async (_, workspacePath: string) => {
+			try {
+				console.log(`Creating virtual environment in: ${workspacePath}`);
+
+				// Notify renderer about virtual environment creation
+				this.mainWindow?.webContents.send("virtual-env-status", {
+					status: "creating",
+					message: "Creating virtual environment...",
+					timestamp: new Date().toISOString(),
+				});
+
+				const pythonPath = await this.findPythonPath();
+				const venvPath = path.join(workspacePath, "venv");
+
+				// Create virtual environment
+				const createVenvProcess = spawn(pythonPath, ["-m", "venv", venvPath], {
+					cwd: workspacePath,
+					stdio: "pipe",
+				});
+
+				await new Promise<void>((resolve, reject) => {
+					createVenvProcess.on("close", (code) => {
+						if (code === 0) {
+							console.log("Virtual environment created successfully");
+							resolve();
+						} else {
+							reject(
+								new Error(
+									`Failed to create virtual environment, exit code: ${code}`
+								)
+							);
+						}
+					});
+					createVenvProcess.on("error", reject);
+				});
+
+				// Determine the pip path in the virtual environment
+				const pipPath = path.join(venvPath, "bin", "pip");
+				const pythonVenvPath = path.join(venvPath, "bin", "python");
+
+				// Notify renderer about package installation
+				this.mainWindow?.webContents.send("virtual-env-status", {
+					status: "installing",
+					message: "Installing required packages...",
+					timestamp: new Date().toISOString(),
+				});
+
+				// Install required packages
+				const requiredPackages = [
+					"pandas",
+					"numpy",
+					"matplotlib",
+					"seaborn",
+					"scikit-learn",
+					"requests",
+					"beautifulsoup4",
+					"jupyter",
+					"notebook",
+					"ipykernel",
+				];
+
+				const installProcess = spawn(
+					pipPath,
+					["install", ...requiredPackages],
+					{
+						cwd: workspacePath,
+						stdio: "pipe",
+					}
+				);
+
+				await new Promise<void>((resolve, reject) => {
+					installProcess.on("close", (code) => {
+						if (code === 0) {
+							console.log("Packages installed successfully");
+							resolve();
+						} else {
+							reject(
+								new Error(`Failed to install packages, exit code: ${code}`)
+							);
+						}
+					});
+					installProcess.on("error", reject);
+				});
+
+				// Register the virtual environment kernel with Jupyter
+				const registerProcess = spawn(
+					pythonVenvPath,
+					[
+						"-m",
+						"ipykernel",
+						"install",
+						"--user",
+						"--name",
+						`axon-${path.basename(workspacePath)}`,
+						"--display-name",
+						`Axon Analysis (${path.basename(workspacePath)})`,
+					],
+					{
+						cwd: workspacePath,
+						stdio: "pipe",
+					}
+				);
+
+				await new Promise<void>((resolve, reject) => {
+					registerProcess.on("close", (code) => {
+						if (code === 0) {
+							console.log("Kernel registered successfully");
+							resolve();
+						} else {
+							reject(
+								new Error(`Failed to register kernel, exit code: ${code}`)
+							);
+						}
+					});
+					registerProcess.on("error", reject);
+				});
+
+				// Notify renderer about completion
+				this.mainWindow?.webContents.send("virtual-env-status", {
+					status: "completed",
+					message: "Virtual environment ready!",
+					venvPath: venvPath,
+					pythonPath: pythonVenvPath,
+					timestamp: new Date().toISOString(),
+				});
+
+				return {
+					success: true,
+					venvPath: venvPath,
+					pythonPath: pythonVenvPath,
+					kernelName: `axon-${path.basename(workspacePath)}`,
+				};
+			} catch (error) {
+				console.error("Failed to create virtual environment:", error);
+
+				// Notify renderer about error
+				this.mainWindow?.webContents.send("virtual-env-status", {
+					status: "error",
+					message: `Failed to create virtual environment: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+					timestamp: new Date().toISOString(),
+				});
+
+				return {
+					success: false,
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+		});
+
 		ipcMain.handle("jupyter-stop", async () => {
 			if (this.jupyterProcess) {
 				this.jupyterProcess.kill("SIGTERM");
@@ -722,6 +927,12 @@ export class AxonApp {
 				console.log(
 					`Executing code in Jupyter: \n${code.substring(0, 100)}...`
 				);
+
+				// Notify renderer that code is being written
+				this.mainWindow?.webContents.send("jupyter-code-writing", {
+					code: code,
+					timestamp: new Date().toISOString(),
+				});
 
 				const WebSocket = require("ws");
 				const { v4: uuidv4 } = require("uuid");

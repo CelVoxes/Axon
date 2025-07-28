@@ -1,2071 +1,412 @@
-import React, { useState, useEffect, useRef } from "react";
-import styled, { keyframes } from "styled-components";
-import { FiSend, FiX, FiStopCircle, FiChevronDown } from "react-icons/fi";
+import React, { useState, useRef, useEffect } from "react";
 import { useAppContext } from "../../context/AppContext";
-import { BioRAGClient } from "../../services/BioRAGClient";
-import { AutonomousAgent } from "../../services/AutonomousAgent";
+import { BackendClient } from "../../services/BackendClient";
 import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { DatasetSelectionModal } from "./DatasetSelectionModal";
+import { FiSend } from "react-icons/fi";
+import { AutonomousAgent } from "../../services/AutonomousAgent";
 
-// Animations
-const fadeIn = keyframes`
-	from { opacity: 0; transform: translateY(10px); }
-	to { opacity: 1; transform: translateY(0); }
-`;
-
-const slideIn = keyframes`
-	from { transform: translateX(100%); }
-	to { transform: translateX(0); }
-`;
-
-const pulse = keyframes`
-	0%, 80%, 100% { transform: scale(0.8); opacity: 0.5; }
-	40% { transform: scale(1); opacity: 1; }
-`;
-
-// Enhanced Chat Container
-const ChatContainer = styled.div<{ $collapsed: boolean }>`
-	width: 100%;
-	height: 100%;
-	background: #1a1a1a;
-	border-left: 1px solid #2a2a2a;
-	display: flex;
-	flex-direction: column;
-	overflow: hidden;
-	position: relative;
-`;
-
-// Enhanced Header
-const ChatHeader = styled.div`
-	padding: 16px 20px;
-	border-bottom: 1px solid #3e3e42;
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	background: #2d2d30;
-	position: relative;
-	z-index: 10;
-`;
-
-const ChatTitle = styled.div`
-	display: flex;
-	align-items: center;
-	gap: 12px;
-	color: #cccccc;
-	font-weight: 600;
-	font-size: 16px;
-
-	svg {
-		color: #007acc;
-	}
-`;
-
-const HeaderActions = styled.div`
-	display: flex;
-	align-items: center;
-	gap: 12px;
-`;
-
-// Enhanced Buttons
-const ActionButton = styled.button<{
-	$variant?: "primary" | "secondary" | "danger";
-}>`
-	background: ${(props) => {
-		switch (props.$variant) {
-			case "primary":
-				return "#007acc";
-			case "danger":
-				return "#dc3545";
-			default:
-				return "#404040";
-		}
-	}};
-	border: none;
-	color: #ffffff;
-	cursor: pointer;
-	padding: 8px 16px;
-	border-radius: 4px;
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	transition: all 0.2s ease;
-	font-size: 13px;
-	font-weight: 500;
-
-	&:hover {
-		background: ${(props) => {
-			switch (props.$variant) {
-				case "primary":
-					return "#005a9e";
-				case "danger":
-					return "#c82333";
-				default:
-					return "#505050";
-			}
-		}};
-	}
-
-	&:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-`;
-
-const CollapseButton = styled(ActionButton)`
-	padding: 6px 12px;
-	font-size: 12px;
-`;
-
-// Enhanced Messages Container
-const MessagesContainer = styled.div`
-	flex: 1;
-	overflow-y: auto;
-	padding: 20px;
-	display: flex;
-	flex-direction: column;
-	gap: 16px;
-	background: #1e1e1e;
-
-	/* Enhanced scrollbar */
-	&::-webkit-scrollbar {
-		width: 8px;
-	}
-
-	&::-webkit-scrollbar-track {
-		background: #2d2d30;
-	}
-
-	&::-webkit-scrollbar-thumb {
-		background: #424242;
-		border-radius: 4px;
-	}
-
-	&::-webkit-scrollbar-thumb:hover {
-		background: #555;
-	}
-`;
-
-// Enhanced Message Component
-const MessageContainer = styled.div<{ $isUser: boolean; $status?: string }>`
-	display: flex;
-	align-items: flex-start;
-	gap: 12px;
-	animation: ${fadeIn} 0.3s ease-out;
-	max-width: ${(props) => (props.$isUser ? "" : "100%")};
-	align-self: ${(props) => (props.$isUser ? "flex-end" : "flex-start")};
-	position: relative;
-`;
-
-const MessageAvatar = styled.div<{ $isUser: boolean }>`
-	width: 32px;
-	height: 32px;
-	border-radius: 50%;
-	background: ${(props) => (props.$isUser ? "#3b82f6" : "#10b981")};
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	color: white;
-	font-weight: 600;
-	font-size: 14px;
-	flex-shrink: 0;
-	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-`;
-
-const MessageContent = styled.div<{ $isUser: boolean; $status?: string }>`
-	background: ${(props) => {
-		if (props.$status === "failed") return "#2d1b1b";
-		if (props.$status === "completed") return "#1b2d1b";
-		return props.$isUser ? "#2d2d30" : "#252526";
-	}};
-	color: #d4d4d4;
-	border-radius: ${(props) => (props.$isUser ? "20px" : "12px")};
-	padding: ${(props) => (props.$isUser ? "16px 20px" : "20px 24px")};
-	font-size: ${(props) => (props.$isUser ? "12px" : "14px")};
-	line-height: 1.6;
-	border: 1px solid
-		${(props) => {
-			if (props.$status === "failed") return "#dc3545";
-			if (props.$status === "completed") return "#28a745";
-			return props.$isUser ? "#404040" : "#3e3e42";
-		}};
-	position: relative;
-	transition: all 0.2s ease;
-	flex: ${(props) => (props.$isUser ? "none" : "1")};
-	min-width: ${(props) => (props.$isUser ? "auto" : "0")};
-
-	&:hover {
-		border-color: #007acc;
-	}
-`;
-
-const MessageActions = styled.div`
-	position: absolute;
-	top: -8px;
-	right: -8px;
-	display: flex;
-	gap: 4px;
-	opacity: 0;
-	transition: opacity 0.2s ease;
-	background: #2d2d30;
-	border-radius: 4px;
-	padding: 4px;
-	border: 1px solid #404040;
-	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-
-	${MessageContent}:hover & {
-		opacity: 1;
-	}
-`;
-
-const MessageActionButton = styled.button`
-	background: transparent;
-	border: none;
-	color: #858585;
-	cursor: pointer;
-	padding: 4px;
-	border-radius: 2px;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	transition: all 0.2s ease;
-	font-size: 12px;
-
-	&:hover {
-		color: #d4d4d4;
-		background: #404040;
-	}
-`;
-
-// Enhanced Loading Indicator
-const LoadingIndicator = styled.div`
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	padding: 16px 20px;
-	background: #2d2d30;
-	color: #858585;
-	border-radius: 8px;
-	border: 1px solid #404040;
-	font-size: 14px;
-	align-self: flex-start;
-	max-width: 80%;
-	animation: ${fadeIn} 0.3s ease-out;
-`;
-
-const LoadingDot = styled.div<{ delay: number }>`
-	width: 8px;
-	height: 8px;
-	background: #007acc;
-	border-radius: 50%;
-	animation: ${pulse} 1.4s ease-in-out infinite;
-	animation-delay: ${(props) => props.delay}s;
-`;
-
-// New Simplified Input Container
-const InputContainer = styled.div`
-	padding: 20px;
-
-	background: #252526;
-`;
-
-// Add Context Button
-const AddContextButton = styled.button`
-	background: rgba(0, 122, 204, 0.1);
-	border: 1px solid rgba(0, 122, 204, 0.3);
-	color: #007acc;
-	padding: 8px 16px;
-	border-radius: 4px;
-	font-size: 13px;
-	font-weight: 500;
-	cursor: pointer;
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	margin-bottom: 12px;
-	transition: all 0.2s ease;
-
-	&:hover {
-		background: rgba(0, 122, 204, 0.2);
-		border-color: rgba(0, 122, 204, 0.5);
-	}
-`;
-
-// Main Input Area
-const InputArea = styled.div`
-	background: #1e1e1e;
-	border: 1px solid #404040;
-	border-radius: 4px;
-	padding: 16px;
-	transition: all 0.2s ease;
-
-	&:focus-within {
-		border-color: #007acc;
-	}
-`;
-
-const TextArea = styled.textarea`
-	width: 100%;
-	background: transparent;
-	border: none;
-	color: #d4d4d4;
-	font-size: 14px;
-	font-family: inherit;
-	resize: none;
-	outline: none;
-	min-height: 24px;
-	max-height: 120px;
-	line-height: 1.5;
-	transition: all 0.2s ease;
-
-	&::placeholder {
-		color: #858585;
-	}
-`;
-
-// Control Bar
-const ControlBar = styled.div`
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	margin-top: 12px;
-`;
-
-const ControlLeft = styled.div`
-	display: flex;
-	align-items: center;
-	gap: 12px;
-`;
-
-// Model Selector
-const ModelSelector = styled.div`
-	position: relative;
-`;
-
-const ModelButton = styled.button`
-	background: #404040;
-	border: 1px solid #6c6c6c;
-	color: #d4d4d4;
-	padding: 6px 12px;
-	border-radius: 4px;
-	font-size: 12px;
-	cursor: pointer;
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	transition: all 0.2s ease;
-
-	&:hover {
-		background: #505050;
-		border-color: #858585;
-	}
-`;
-
-const ModelDropdown = styled.div<{ $isOpen: boolean }>`
-	position: absolute;
-	bottom: 100%;
-	left: 0;
-	background: #2d2d30;
-	border: 1px solid #404040;
-	border-radius: 4px;
-	padding: 8px 0;
-	min-width: 150px;
-	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-	z-index: 100;
-	opacity: ${(props) => (props.$isOpen ? 1 : 0)};
-	visibility: ${(props) => (props.$isOpen ? "visible" : "hidden")};
-	transform: translateY(${(props) => (props.$isOpen ? "0" : "10px")});
-	transition: all 0.2s ease;
-`;
-
-const ModelOption = styled.div<{ $isSelected: boolean }>`
-	padding: 8px 16px;
-	color: #d4d4d4;
-	font-size: 12px;
-	cursor: pointer;
-	background: ${(props) => (props.$isSelected ? "#007acc" : "transparent")};
-	transition: background 0.2s ease;
-
-	&:hover {
-		background: ${(props) => (props.$isSelected ? "#007acc" : "#404040")};
-	}
-`;
-
-// Control Right
-const ControlRight = styled.div`
-	display: flex;
-	align-items: center;
-	gap: 8px;
-`;
-
-const IconButton = styled.button`
-	background: transparent;
-	border: none;
-	color: #858585;
-	cursor: pointer;
-	padding: 8px;
-	border-radius: 4px;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	transition: all 0.2s ease;
-
-	&:hover {
-		color: #d4d4d4;
-		background: #404040;
-	}
-
-	&:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-`;
-
-const SendButton = styled.button<{ disabled: boolean }>`
-	background: ${(props) => (props.disabled ? "#6b7280" : "#007acc")};
-	border: none;
-	border-radius: 4px;
-	color: #ffffff;
-	padding: 8px;
-	cursor: ${(props) => (props.disabled ? "not-allowed" : "pointer")};
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	transition: all 0.2s ease;
-	opacity: ${(props) => (props.disabled ? 0.5 : 1)};
-
-	&:hover:not(:disabled) {
-		background: #005a9e;
-	}
-`;
-
-const StopButton = styled.button`
-	background: #dc3545;
-	border: none;
-	border-radius: 4px;
-	color: #ffffff;
-	padding: 8px;
-	cursor: pointer;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	transition: all 0.2s ease;
-
-	&:hover {
-		background: #c82333;
-	}
-`;
-
-// Enhanced Chat History Drawer
-const ChatHistoryDrawer = styled.div<{ open: boolean }>`
-	position: absolute;
-	top: 0;
-	right: 0;
-	width: 360px;
-	height: 100%;
-	background: #1a1a1a;
-	border-left: 1px solid #2a2a2a;
-	box-shadow: -4px 0 20px rgba(0, 0, 0, 0.2);
-	z-index: 20;
-	display: flex;
-	flex-direction: column;
-	transform: translateX(${(props) => (props.open ? "0" : "100%")});
-	transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-	animation: ${slideIn} 0.3s ease-out;
-`;
-
-const ChatHistoryHeader = styled.div`
-	padding: 20px 24px;
-	font-size: 16px;
-	font-weight: 600;
-	color: #cccccc;
-	border-bottom: 1px solid #3e3e42;
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	background: #2d2d30;
-`;
-
-const ChatHistoryList = styled.div`
-	flex: 1;
-	overflow-y: auto;
-	padding: 16px 0;
-`;
-
-const ChatHistoryItem = styled.div`
-	padding: 16px 24px;
-	color: #cccccc;
-	font-size: 14px;
-	cursor: pointer;
-	border-bottom: 1px solid #3e3e42;
-	transition: all 0.2s ease;
-
-	&:hover {
-		background: rgba(0, 122, 204, 0.1);
-		color: #ffffff;
-		border-left: 3px solid #007acc;
-	}
-`;
-
-// Message Component
-const Message: React.FC<{
-	message: any;
-	onCopy?: (content: string) => void;
-	onEdit?: (content: string) => void;
-	onDelete?: () => void;
-}> = ({ message, onCopy, onEdit, onDelete }) => {
-	const [showActions, setShowActions] = useState(false);
-
-	return (
-		<MessageContainer $isUser={message.isUser} $status={message.status}>
-			<MessageContent
-				$isUser={message.isUser}
-				$status={message.status}
-				onMouseEnter={() => setShowActions(true)}
-				onMouseLeave={() => setShowActions(false)}
-			>
-				<ReactMarkdown
-					remarkPlugins={[remarkGfm]}
-					components={{
-						code({ inline, children, ...rest }) {
-							return !inline ? (
-								<pre
-									style={{
-										background: "#1e293b",
-										borderRadius: 8,
-										padding: "16px",
-										fontSize: 13,
-										overflowX: "auto",
-										margin: "12px 0",
-										border: "1px solid #334155",
-									}}
-								>
-									<code {...rest}>{children}</code>
-								</pre>
-							) : (
-								<code
-									style={{
-										background: "#1e293b",
-										borderRadius: 4,
-										padding: "2px 6px",
-										fontSize: 13,
-										border: "1px solid #334155",
-									}}
-									{...rest}
-								>
-									{children}
-								</code>
-							);
-						},
-						h1: (props) => (
-							<h1
-								style={{
-									fontSize: 24,
-									fontWeight: 700,
-									margin: "20px 0 12px 0",
-									color: "#f8fafc",
-								}}
-								{...props}
-							/>
-						),
-						h2: (props) => (
-							<h2
-								style={{
-									fontSize: 20,
-									fontWeight: 600,
-									margin: "16px 0 10px 0",
-									color: "#f1f5f9",
-								}}
-								{...props}
-							/>
-						),
-						h3: (props) => (
-							<h3
-								style={{
-									fontSize: 18,
-									fontWeight: 600,
-									margin: "14px 0 8px 0",
-									color: "#e2e8f0",
-								}}
-								{...props}
-							/>
-						),
-						ul: ({ ordered, ...props }) => (
-							<ul style={{ margin: "12px 0 12px 20px" }} {...props} />
-						),
-						ol: ({ ordered, ...props }) => (
-							<ol style={{ margin: "12px 0 12px 20px" }} {...props} />
-						),
-						li: ({ ordered, ...props }) => (
-							<li style={{ margin: "6px 0" }} {...props} />
-						),
-						blockquote: (props) => (
-							<blockquote
-								style={{
-									borderLeft: "4px solid #60a5fa",
-									margin: "12px 0",
-									padding: "8px 0 8px 16px",
-									color: "#94a3b8",
-									background: "rgba(96, 165, 250, 0.1)",
-									borderRadius: "0 8px 8px 0",
-								}}
-								{...props}
-							/>
-						),
-						a: (props) => (
-							<a
-								style={{
-									color: "#60a5fa",
-									textDecoration: "underline",
-									fontWeight: 500,
-								}}
-								target="_blank"
-								rel="noopener noreferrer"
-								{...props}
-							/>
-						),
-						p: (props) => <p style={{ margin: "8px 0" }} {...props} />,
-					}}
-				>
-					{message.content}
-				</ReactMarkdown>
-			</MessageContent>
-		</MessageContainer>
-	);
-};
-
-// Model and Mode Types
-interface Model {
+interface Message {
 	id: string;
-	name: string;
-	description: string;
-	icon: string;
+	content: string;
+	isUser: boolean;
+	timestamp: Date;
 }
 
 interface ChatPanelProps {
-	onToggle: () => void;
+	className?: string;
 }
 
-export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggle }) => {
+export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const { state, dispatch } = useAppContext();
+	const [messages, setMessages] = useState<Message[]>([]);
 	const [inputValue, setInputValue] = useState("");
 	const [isLoading, setIsLoading] = useState(false);
-	const [showDatasetModal, setShowDatasetModal] = useState(false);
+	const [progressMessage, setProgressMessage] = useState("");
+	const [progressData, setProgressData] = useState<any>(null);
 	const [availableDatasets, setAvailableDatasets] = useState<any[]>([]);
-	const [currentQuery, setCurrentQuery] = useState("");
-	const [currentAgent, setCurrentAgent] = useState<AutonomousAgent | null>(
-		null
-	);
-	// Model Selection
-	const [selectedModel, setSelectedModel] = useState<string>("gpt-4o-mini");
-	const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
-
-	const textAreaRef = useRef<HTMLTextAreaElement>(null);
+	const [showDatasetModal, setShowDatasetModal] = useState(false);
+	const [searchLog, setSearchLog] = useState<string[]>([]);
 	const messagesEndRef = useRef<HTMLDivElement>(null);
+	const backendClient = new BackendClient();
 
-	const bioragClient = new BioRAGClient();
-
-	// Available Models
-	const availableModels: Model[] = [
-		{
-			id: "gpt-4o-mini",
-			name: "gpt-4o mini",
-			description: "Most capable model for complex tasks",
-			icon: "",
-		},
-	];
-
-	// Auto-scroll to bottom
 	const scrollToBottom = () => {
 		messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
 	};
 
 	useEffect(() => {
 		scrollToBottom();
-	}, [state.messages]);
+	}, [messages]);
 
-	// Auto-resize textarea
-	useEffect(() => {
-		const adjustTextAreaHeight = () => {
-			if (textAreaRef.current) {
-				textAreaRef.current.style.height = "auto";
-				textAreaRef.current.style.height = `${textAreaRef.current.scrollHeight}px`;
-			}
+	const addMessage = (content: string, isUser: boolean = false) => {
+		const newMessage: Message = {
+			id: Date.now().toString(),
+			content,
+			isUser,
+			timestamp: new Date(),
 		};
+		setMessages((prev) => [...prev, newMessage]);
+	};
 
-		adjustTextAreaHeight();
-	}, [inputValue]);
+	const updateProgressMessage = (message: string) => {
+		setProgressMessage(message);
+	};
 
-	// Message actions
-	const handleCopyMessage = async (content: string) => {
-		try {
-			await navigator.clipboard.writeText(content);
-			// Could add a toast notification here
-		} catch (error) {
-			console.error("Failed to copy message:", error);
+	const updateProgressData = (data: {
+		message: string;
+		progress: number;
+		step: string;
+		datasetsFound?: number;
+		currentTerm?: string;
+	}) => {
+		setProgressData(data);
+
+		// Create a formatted progress message similar to backend logs
+		let progressText = "";
+
+		switch (data.step) {
+			case "init":
+				progressText = `🔍 Starting dataset search...`;
+				break;
+			case "simplify":
+				progressText = `🤖 Simplifying query with AI...`;
+				break;
+			case "simplified":
+				progressText = `✅ Query simplified to: "${data.message}"`;
+				break;
+			case "search":
+				progressText = `🔍 Searching databases for: "${data.currentTerm}"`;
+				break;
+			case "search_results":
+				progressText = `📊 Found ${data.datasetsFound} datasets for "${data.currentTerm}"`;
+				break;
+			case "search_no_results":
+				progressText = `❌ No datasets found for "${data.currentTerm}"`;
+				break;
+			case "search_error":
+				progressText = `⚠️ Search failed for "${data.currentTerm}"`;
+				break;
+			case "initial_results":
+				progressText = `📊 Found ${data.datasetsFound} datasets for "${data.currentTerm}"`;
+				break;
+			case "fallback":
+				progressText = `🔄 Need more results, generating alternative search terms...`;
+				break;
+			case "deduplicate":
+				progressText = `🧹 Removing duplicates and finalizing results...`;
+				break;
+			case "complete":
+				progressText = `✅ Search complete! Found ${data.datasetsFound} unique datasets`;
+				break;
+			case "error":
+				progressText = `❌ Search failed: ${data.message}`;
+				break;
+			default:
+				progressText = data.message;
 		}
-	};
 
-	const handleEditMessage = (content: string) => {
-		setInputValue(content);
-		textAreaRef.current?.focus();
-	};
+		// Add to search log for real-time display
+		setSearchLog((prev) => [...prev, progressText]);
 
-	const handleDeleteMessage = (messageId: string) => {
-		// Implementation for deleting messages
-		console.log("Delete message:", messageId);
-	};
-
-	// Model handler
-	const handleModelSelect = (modelId: string) => {
-		setSelectedModel(modelId);
-		setModelDropdownOpen(false);
+		setProgressMessage(progressText);
 	};
 
 	const handleSendMessage = async () => {
-		if (!inputValue.trim() || isLoading || !state.currentWorkspace) return;
+		if (!inputValue.trim() || isLoading) return;
 
 		const userMessage = inputValue.trim();
 		setInputValue("");
+		setIsLoading(true);
+		setProgressMessage("");
+		setSearchLog([]); // Clear search log for new search
 
 		// Add user message
-		dispatch({
-			type: "ADD_MESSAGE",
-			payload: {
-				content: userMessage,
-				isUser: true,
-			},
-		});
-
-		setIsLoading(true);
+		addMessage(userMessage, true);
 
 		try {
-			// Check if this looks like a biological analysis request
-			const analysisKeywords = [
-				"analyze",
-				"analysis",
-				"compare",
-				"differential",
-				"expression",
-				"dataset",
-				"gene",
-				"protein",
-				"pathway",
-				"AML",
-				"cancer",
-				"subtype",
-				"biomarker",
-				"DEG",
-				"RNA-seq",
-				"microarray",
-				"download",
-				"data",
-			];
+			// Set up progress callback for real-time updates
+			backendClient.setProgressCallback((progress) => {
+				updateProgressData(progress);
+			});
 
-			const isAnalysisRequest = analysisKeywords.some((keyword) =>
-				userMessage.toLowerCase().includes(keyword.toLowerCase())
-			);
+			// Search for datasets with real-time progress updates
+			const searchResult = await backendClient.discoverDatasets(userMessage);
 
-			if (isAnalysisRequest) {
-				// Enhanced analysis workflow with dataset discovery
-				await executeEnhancedAnalysisRequest(userMessage);
+			if (searchResult.datasets.length > 0) {
+				// Show datasets in modal for selection
+				setAvailableDatasets(searchResult.datasets);
+				setShowDatasetModal(true);
+
+				// Add response message with search info
+				let responseContent = `## 🔍 Query Processing\n\n`;
+				responseContent += `**Original Query:** ${userMessage}\n\n`;
+
+				if (searchResult.queryTransformation) {
+					responseContent += `**AI Processing:** ${searchResult.queryTransformation}\n\n`;
+				}
+
+				if (searchResult.searchSteps?.length) {
+					responseContent += `**Search Process:**\n`;
+					searchResult.searchSteps.forEach((step, index) => {
+						// Format the step similar to backend logs
+						if (step.includes("Searching for:")) {
+							responseContent += `🔍 ${step}\n`;
+						} else if (step.includes("Found") && step.includes("datasets")) {
+							responseContent += `📊 ${step}\n`;
+						} else if (step.includes("No datasets found")) {
+							responseContent += `❌ ${step}\n`;
+						} else if (
+							step.includes("Enough results found") ||
+							step.includes("Found sufficient results")
+						) {
+							responseContent += `✅ ${step}\n`;
+						} else if (step.includes("Processing query")) {
+							responseContent += `🤖 ${step}\n`;
+						} else if (step.includes("Simplifying query")) {
+							responseContent += `🔄 ${step}\n`;
+						} else if (step.includes("Generated terms")) {
+							responseContent += `🎯 ${step}\n`;
+						} else if (step.includes("Final result")) {
+							responseContent += `✅ ${step}\n`;
+						} else {
+							responseContent += `${index + 1}. ${step}\n`;
+						}
+					});
+					responseContent += `\n`;
+				}
+
+				responseContent += `## 📊 Found ${searchResult.datasets.length} Datasets\n\n`;
+
+				// Show dataset details similar to backend format
+				searchResult.datasets.forEach((dataset, index) => {
+					responseContent += `**${index + 1}. ${dataset.id}** - ${
+						dataset.title
+					}\n`;
+					if (dataset.organism) {
+						responseContent += `   Organism: ${dataset.organism}\n`;
+					}
+					if (dataset.description) {
+						responseContent += `   Description: ${dataset.description.substring(
+							0,
+							100
+						)}${dataset.description.length > 100 ? "..." : ""}\n`;
+					}
+					responseContent += `   URL: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=${dataset.id}\n\n`;
+				});
+
+				responseContent += `Please select the datasets you'd like to analyze from the modal below.`;
+
+				addMessage(responseContent);
 			} else {
-				// Regular BioRAG query
-				const response = await bioragClient.query({
-					question: userMessage,
-					max_documents: 5,
-					response_type: "answer",
+				// No datasets found
+				let responseContent = `## ❌ No Datasets Found\n\n`;
+				responseContent += `I couldn't find any datasets for your query: "${userMessage}"\n\n`;
+
+				if (searchResult.searchTerms?.length) {
+					responseContent += `**🔍 Search terms tried:** ${searchResult.searchTerms.join(
+						", "
+					)}\n\n`;
+				}
+
+				if (searchResult.searchSteps?.length) {
+					responseContent += `**📋 Search Process:**\n`;
+					searchResult.searchSteps.forEach((step, index) => {
+						// Format the step similar to backend logs
+						if (step.includes("Searching for:")) {
+							responseContent += `🔍 ${step}\n`;
+						} else if (step.includes("Found") && step.includes("datasets")) {
+							responseContent += `📊 ${step}\n`;
+						} else if (step.includes("No datasets found")) {
+							responseContent += `❌ ${step}\n`;
+						} else if (step.includes("Processing query")) {
+							responseContent += `🤖 ${step}\n`;
+						} else if (step.includes("Simplifying query")) {
+							responseContent += `🔄 ${step}\n`;
+						} else if (step.includes("Generated terms")) {
+							responseContent += `🎯 ${step}\n`;
+						} else {
+							responseContent += `${index + 1}. ${step}\n`;
+						}
+					});
+					responseContent += `\n`;
+				}
+
+				responseContent += `**Suggestions:**\n`;
+				searchResult.suggestions.forEach((suggestion) => {
+					responseContent += `- ${suggestion}\n`;
 				});
 
-				dispatch({
-					type: "ADD_MESSAGE",
-					payload: {
-						content: response.answer,
-						isUser: false,
-					},
-				});
+				addMessage(responseContent);
 			}
 		} catch (error) {
-			console.error("Chat error:", error);
-			dispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content: `Error: ${
-						error instanceof Error ? error.message : "Unknown error occurred"
-					}`,
-					isUser: false,
-					status: "failed",
-				},
-			});
+			console.error("Error processing message:", error);
+			addMessage(
+				"❌ Sorry, I encountered an error while processing your request. Please try again."
+			);
 		} finally {
 			setIsLoading(false);
+			setProgressMessage("");
 		}
-	};
-
-	const executeEnhancedAnalysisRequest = async (query: string) => {
-		try {
-			dispatch({ type: "SET_ANALYZING", payload: true });
-			setCurrentQuery(query);
-
-			// Check if query contains specific GEO dataset IDs
-			const geoIds = query.match(/GSE\d+/g) || [];
-
-			if (geoIds.length > 0) {
-				// User mentioned specific datasets - fetch them directly
-				dispatch({
-					type: "ADD_MESSAGE",
-					payload: {
-						content: `🔍 Fetching information for specific datasets: ${geoIds.join(
-							", "
-						)}...`,
-						isUser: false,
-					},
-				});
-
-				try {
-					const datasets = await bioragClient.getDatasetsByIds(geoIds);
-
-					if (datasets.length > 0) {
-						dispatch({
-							type: "ADD_MESSAGE",
-							payload: {
-								content: `## Found ${datasets.length} Dataset(s)
-
-${datasets
-	.map(
-		(d, i) =>
-			`**${i + 1}. ${d.id}** - ${d.title}
-- Samples: ${d.samples}
-- Organism: ${d.organism}
-- Platform: ${d.platform}
-- Status: ${d.downloaded ? "Downloaded" : "Not downloaded"}
-
-${d.description}
-
----`
-	)
-	.join("\n\n")}
-
-Please select which datasets you'd like me to download and analyze.`,
-								isUser: false,
-							},
-						});
-
-						setAvailableDatasets(datasets);
-						setShowDatasetModal(true);
-					} else {
-						throw new Error("No datasets found for the specified IDs");
-					}
-				} catch (error) {
-					console.error("Error fetching specific datasets:", error);
-					// Fall back to search approach
-					await executeDatasetSearch(query);
-				}
-			} else {
-				// No specific IDs mentioned - search for relevant datasets
-				await executeDatasetSearch(query);
-			}
-		} catch (error) {
-			console.error("Enhanced analysis error:", error);
-			dispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content: `Analysis failed: ${
-						error instanceof Error ? error.message : "Unknown error"
-					}`,
-					isUser: false,
-					status: "failed",
-				},
-			});
-		} finally {
-			if (!showDatasetModal) {
-				dispatch({ type: "SET_ANALYZING", payload: false });
-			}
-		}
-	};
-
-	const executeDatasetSearch = async (query: string) => {
-		// Step 1: Search for relevant datasets
-		dispatch({
-			type: "ADD_MESSAGE",
-			payload: {
-				content: "🔍 Searching for relevant datasets and literature...",
-				isUser: false,
-			},
-		});
-
-		const searchResult = await bioragClient.findDatasetsForQuery(query, {
-			includeDatasets: true,
-			maxDatasets: 10,
-		});
-
-		// Show the initial analysis
-		dispatch({
-			type: "ADD_MESSAGE",
-			payload: {
-				content: `## Analysis Overview
-
-${searchResult.answer}
-
-**Found ${
-					searchResult.datasets.length
-				} relevant datasets that could help answer your question.**
-
-${
-	searchResult.datasets.length > 0
-		? `**Available Datasets:**
-${searchResult.datasets
-	.map(
-		(d, i) =>
-			`${i + 1}. **${d.id}** - ${d.title} (${d.samples} samples, ${d.organism})`
-	)
-	.join("\n")}
-
-**🎯 NEXT STEP: A dataset selection modal should appear below. Please select the datasets you want to analyze and click "Download & Analyze".**
-
-If you don't see the modal, please let me know and I'll proceed with a general analysis.`
-		: "No specific datasets were found, but I can help with general analysis."
-}`,
-				isUser: false,
-			},
-		});
-
-		if (searchResult.datasets.length > 0) {
-			// Show dataset selection modal
-			console.log(
-				`ChatPanel: Found ${searchResult.datasets.length} datasets, showing modal`
-			);
-			setAvailableDatasets(searchResult.datasets);
-			setShowDatasetModal(true);
-		} else {
-			// Proceed with general analysis
-			await executeAnalysisWithoutDatasets(query);
-		}
-	};
-
-	const executeAnalysisWithoutDatasets = async (query: string) => {
-		// Fallback to original analysis approach
-		await executeAnalysisRequest(query);
-	};
-
-	const createAnalysisWorkspace = async (query: string): Promise<string> => {
-		// Create a timestamped workspace directory
-		const timestamp = new Date()
-			.toISOString()
-			.replace(/[:.]/g, "-")
-			.slice(0, 19);
-		const workspaceName = `analysis_${timestamp}`;
-		const workspacePath = `${state.currentWorkspace || "./"}/${workspaceName}`;
-
-		// Create the directory
-		await window.electronAPI.createDirectory(workspacePath);
-
-		return workspacePath;
-	};
-
-	const generateInteractiveDownloadNotebook = (
-		query: string,
-		selectedDatasets: any[],
-		workspacePath: string
-	): string => {
-		return `
-# Interactive Dataset Download and Analysis
-# Query: ${query}
-# Selected Datasets: ${selectedDatasets.map((d) => d.id).join(", ")}
-
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-import requests
-import json
-import time
-from pathlib import Path
-import os
-
-print("=== Interactive Dataset Download and Analysis ===")
-print(f"Query: ${query}")
-print(f"Selected Datasets: ${selectedDatasets.map((d) => d.id).join(", ")}")
-print(f"Workspace: ${workspacePath}")
-
-# BioRAG API configuration
-BIORAG_API_BASE = "http://localhost:8000"
-
-# Create data directory
-data_dir = Path('${workspacePath}/data')
-data_dir.mkdir(parents=True, exist_ok=True)
-
-def download_dataset_interactive(dataset_id, dataset_info):
-    """Download a specific dataset with user interaction"""
-    print(f"\\n📥 Downloading {dataset_id}...")
-    print(f"   Title: {dataset_info.title}")
-    print(f"   Samples: {dataset_info.samples}")
-    print(f"   Organism: {dataset_info.organism}")
-    
-    try:
-        # Start download
-        response = requests.post(f"{BIORAG_API_BASE}/datasets/{dataset_id}/download", 
-                               json={'force_redownload': False})
-        
-        if response.status_code == 200:
-            result = response.json()
-            print(f"   Download started: {result.get('status', 'unknown')}")
-            
-            # Monitor progress
-            max_attempts = 60  # 5 minutes max
-            for attempt in range(max_attempts):
-                time.sleep(5)  # Check every 5 seconds
-                
-                try:
-                    status_response = requests.get(f"{BIORAG_API_BASE}/datasets/{dataset_id}/status")
-                    if status_response.status_code == 200:
-                        status_info = status_response.json()
-                        status = status_info.get('status', 'unknown')
-                        progress = status_info.get('progress', 0)
-                        
-                        print(f"   Progress: {progress}% - {status}")
-                        
-                        if status == 'completed':
-                            print(f"✅ {dataset_id} download completed!")
-                            return True
-                        elif status == 'error':
-                            print(f"❌ {dataset_id} download failed!")
-                            return False
-                    else:
-                        print(f"   Status check failed: {status_response.status_code}")
-                except Exception as status_error:
-                    print(f"   Status check error: {status_error}")
-                
-                print(f"   Checking status... (attempt {attempt + 1})")
-            
-            print(f"⏰ {dataset_id} download timeout")
-            return False
-        else:
-            print(f"❌ Failed to start download for {dataset_id} - Status: {response.status_code}")
-            print(f"   Response: {response.text}")
-            return False
-            
-    except Exception as e:
-        print(f"❌ Error downloading {dataset_id}: {e}")
-        return False
-
-# Download all selected datasets
-print("\\n=== Starting Downloads ===")
-download_results = {}
-
-datasets_to_download = ${JSON.stringify(selectedDatasets)}
-for dataset in datasets_to_download:
-    success = download_dataset_interactive(dataset['id'], dataset)
-    download_results[dataset['id']] = success
-
-print("\\n=== Download Summary ===")
-for dataset_id, success in download_results.items():
-    status = "✅ Success" if success else "❌ Failed"
-    print(f"{dataset_id}: {status}")
-
-# Load and analyze downloaded data
-print("\\n=== Loading Downloaded Data ===")
-loaded_datasets = {}
-
-for dataset_id, success in download_results.items():
-    if success:
-        try:
-            # Get dataset info
-            info_response = requests.get(f"{BIORAG_API_BASE}/datasets/{dataset_id}")
-            if info_response.status_code == 200:
-                dataset_info = info_response.json()
-                file_paths = dataset_info.get('file_paths', {})
-                
-                print(f"📊 Loaded {dataset_id}: {dataset_info.get('samples', 0)} samples")
-                loaded_datasets[dataset_id] = dataset_info
-            else:
-                print(f"❌ Could not get info for {dataset_id}")
-        except Exception as e:
-            print(f"❌ Error loading {dataset_id}: {e}")
-
-print(f"\\n✅ Successfully loaded {len(loaded_datasets)} datasets")
-print("\\n=== Ready for Analysis ===")
-print("You can now analyze your downloaded datasets!")
-print("Available datasets:", list(loaded_datasets.keys()))
-`;
 	};
 
 	const handleDatasetSelection = async (selectedDatasets: any[]) => {
 		setShowDatasetModal(false);
 
-		try {
-			dispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content: `📥 **Selected ${
-						selectedDatasets.length
-					} dataset(s) for analysis:**\n\n**Datasets:**\n${selectedDatasets
-						.map((d, i) => `${i + 1}. ${d.id} - ${d.title}`)
-						.join(
-							"\n"
-						)}\n\n**Next:** Generating dynamic analysis plan using AI...`,
-					isUser: false,
-				},
-			});
+		if (selectedDatasets.length > 0) {
+			// Show initial selection message
+			let responseContent = `## ✅ Selected ${selectedDatasets.length} Datasets\n\n`;
 
-			// Create analysis workspace
-			const analysisWorkspace = await createAnalysisWorkspace(currentQuery);
-
-			// Start Jupyter if not already running
-			if (!state.jupyterUrl) {
-				dispatch({
-					type: "ADD_MESSAGE",
-					payload: {
-						content: "🚀 Starting Jupyter server...",
-						isUser: false,
-					},
-				});
-
-				try {
-					const jupyterResult = await window.electronAPI.startJupyter(
-						analysisWorkspace
-					);
-
-					if (jupyterResult.success && jupyterResult.url) {
-						dispatch({
-							type: "SET_JUPYTER_URL",
-							payload: jupyterResult.url,
-						});
-						dispatch({
-							type: "ADD_MESSAGE",
-							payload: {
-								content: `✅ Jupyter server started at: ${jupyterResult.url}`,
-								isUser: false,
-							},
-						});
-					} else {
-						throw new Error(jupyterResult.error || "Failed to start Jupyter");
-					}
-				} catch (error) {
-					console.error("Jupyter start error:", error);
-					dispatch({
-						type: "ADD_MESSAGE",
-						payload: {
-							content: `❌ Failed to start Jupyter: ${
-								error instanceof Error ? error.message : "Unknown error"
-							}`,
-							isUser: false,
-							status: "failed",
-						},
-					});
-					return;
+			selectedDatasets.forEach((dataset, index) => {
+				responseContent += `### ${index + 1}. ${dataset.title}\n`;
+				responseContent += `**ID:** ${dataset.id}\n`;
+				if (dataset.description) {
+					responseContent += `**Description:** ${dataset.description}\n`;
 				}
-			}
-
-			// Use the autonomous agent to generate dynamic analysis based on user query and datasets
-			dispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content: "🤖 Generating dynamic analysis plan using AI...",
-					isUser: false,
-				},
+				if (dataset.organism) {
+					responseContent += `**Organism:** ${dataset.organism}\n`;
+				}
+				responseContent += `\n`;
 			});
 
+			responseContent += `**🚀 Starting Analysis...**\n`;
+			responseContent += `- Creating Jupyter notebook for data download\n`;
+			responseContent += `- Generating analysis steps\n`;
+			responseContent += `- Preparing to execute cells automatically\n`;
+
+			addMessage(responseContent);
+
+			// Start the analysis process
 			try {
-				// Use the autonomous agent to generate dynamic analysis based on user query and datasets
+				setIsLoading(true);
+				setProgressMessage("🚀 Starting analysis process...");
+
+				// Convert selected datasets to the format expected by AutonomousAgent
+				const datasets = selectedDatasets.map((dataset) => ({
+					id: dataset.id,
+					title: dataset.title,
+					source: "GEO",
+					organism: dataset.organism || "Unknown",
+					samples: 0, // Will be updated during download
+					platform: "Unknown",
+					description: dataset.description || "",
+					url:
+						dataset.url ||
+						`https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=${dataset.id}`,
+				}));
+
+				// Get the original query from the last user message
+				const originalQuery =
+					messages.find((m) => m.isUser)?.content ||
+					"Analysis of selected datasets";
+
+				console.log("Starting analysis with:", {
+					originalQuery,
+					datasets: datasets.map((d) => d.id),
+					currentWorkspace: state.currentWorkspace,
+				});
+
+				// Create AutonomousAgent instance
+				const baseWorkspacePath = state.currentWorkspace || "/tmp";
+				console.log("Using base workspace path:", baseWorkspacePath);
+				const agent = new AutonomousAgent(backendClient, baseWorkspacePath);
+				agent.setStatusCallback((status) => {
+					setProgressMessage(status);
+				});
+
+				// Create analysis workspace
+				setProgressMessage("📁 Creating analysis workspace...");
+				const workspaceDir = await agent.createAnalysisWorkspace(originalQuery);
+				console.log("Analysis workspace created:", workspaceDir);
+
+				// Generate data download notebook
+				setProgressMessage("📓 Generating data download notebook...");
+				const notebookPath = await agent.generateDataDownloadNotebook(
+					originalQuery,
+					datasets,
+					workspaceDir
+				);
+				console.log("Notebook generated:", notebookPath);
+
+				// Generate analysis steps
+				setProgressMessage("🔬 Generating analysis steps...");
+				const analysisResult = await agent.executeAnalysisRequestWithData(
+					originalQuery,
+					datasets
+				);
 				console.log(
-					"ChatPanel: Using autonomous agent for AI-generated analysis..."
+					"Analysis result generated with",
+					analysisResult.steps.length,
+					"steps"
 				);
 
-				const autonomousAgent = new AutonomousAgent(
-					bioragClient,
-					analysisWorkspace,
-					selectedModel
-				);
-
-				// Set up status callback to show progress
-				autonomousAgent.setStatusCallback((status) => {
-					dispatch({
-						type: "ADD_MESSAGE",
-						payload: {
-							content: `🤖 ${status}`,
-							isUser: false,
-						},
-					});
-				});
-
-				// STEP-BY-STEP APPROACH: Generate and execute one step at a time
-				dispatch({
-					type: "ADD_MESSAGE",
-					payload: {
-						content: `🚀 **Starting Step-by-Step Analysis Generation**
-
-I'll generate and execute each analysis step one by one, so you can see the progress in real-time.
-
-**Selected Datasets:** ${selectedDatasets.map((d) => d.id).join(", ")}
-**Query:** ${currentQuery}
-
-Let's start with Step 1...`,
-						isUser: false,
-					},
-				});
-
-				// Create initial analysis structure
-				const analysisResult: any = {
-					understanding: {
-						userQuestion: currentQuery,
-						requiredSteps: [
-							"Load and preprocess gene expression data",
-							"Perform quality control and normalization",
-							"Apply dimensionality reduction (PCA, t-SNE)",
-							"Perform clustering analysis (k-means, hierarchical)",
-							"Identify subtype-specific gene signatures",
-							"Validate clustering results",
-							"Generate subtype-specific visualizations",
-						],
-						dataNeeded: ["Selected datasets"],
-						expectedOutputs: ["Analysis results", "Visualizations"],
-					},
-					datasets: selectedDatasets,
-					steps: [],
-					workingDirectory: analysisWorkspace,
-				};
-
-				// Save initial analysis result
-				const analysisFile = `${analysisWorkspace}/analysis_result.json`;
+				// Save analysis result to workspace for notebook to pick up
+				const analysisFilePath = `${workspaceDir}/analysis_result.json`;
 				await window.electronAPI.writeFile(
-					analysisFile,
+					analysisFilePath,
 					JSON.stringify(analysisResult, null, 2)
 				);
 
-				// Open notebook immediately
-				dispatch({
-					type: "SET_WORKSPACE",
-					payload: analysisWorkspace,
-				});
-				dispatch({ type: "SET_SHOW_NOTEBOOK", payload: true });
+				console.log("Analysis workspace created:", workspaceDir);
+				console.log("Analysis result saved to:", analysisFilePath);
 
-				// Generate and execute steps one by one
-				for (
-					let i = 0;
-					i < analysisResult.understanding.requiredSteps.length;
-					i++
-				) {
-					const stepDescription = analysisResult.understanding.requiredSteps[i];
-
-					dispatch({
-						type: "ADD_MESSAGE",
-						payload: {
-							content: `🤖 **Generating Step ${i + 1}: ${stepDescription}**
-
-Generating AI code for this step...`,
-							isUser: false,
-						},
-					});
-
-					try {
-						// Generate code for this step with shorter timeout
-						const stepTimeoutPromise = new Promise<never>((_, reject) => {
-							setTimeout(
-								() => reject(new Error(`Step ${i + 1} generation timeout`)),
-								30000 // 30 seconds per step
-							);
-						});
-
-						const stepCode = await Promise.race([
-							autonomousAgent.generateSingleStepCode(
-								stepDescription,
-								currentQuery,
-								selectedDatasets,
-								analysisWorkspace,
-								i
-							),
-							stepTimeoutPromise,
-						]);
-
-						// Add step to analysis result
-						analysisResult.steps.push({
-							id: `step_${i + 1}`,
-							description: stepDescription,
-							code: stepCode,
-							status: "pending",
-						});
-
-						// Update analysis file
-						await window.electronAPI.writeFile(
-							analysisFile,
-							JSON.stringify(analysisResult, null, 2)
-						);
-
-						dispatch({
-							type: "ADD_MESSAGE",
-							payload: {
-								content: `✅ **Step ${i + 1} Generated Successfully**
-
-**Step:** ${stepDescription}
-**Status:** Code generated and added to notebook
-**Next:** Step will execute automatically in the notebook
-
-The notebook should now show Step ${i + 1} and begin execution.`,
-								isUser: false,
-								status: "completed",
-							},
-						});
-					} catch (error) {
-						console.error(`Error generating step ${i + 1}:`, error);
-
-						// Add fallback step
-						analysisResult.steps.push({
-							id: `step_${i + 1}`,
-							description: stepDescription,
-							code: `# Step ${i + 1}: ${stepDescription}
-print("=== ${stepDescription} ===")
-print("⚠️  Fallback code - AI generation failed for this step")
-print("   Error: ${error instanceof Error ? error.message : "Unknown error"}")`,
-							status: "pending",
-						});
-
-						// Update analysis file
-						await window.electronAPI.writeFile(
-							analysisFile,
-							JSON.stringify(analysisResult, null, 2)
-						);
-
-						dispatch({
-							type: "ADD_MESSAGE",
-							payload: {
-								content: `⚠️ **Step ${i + 1} Generation Failed**
-
-**Step:** ${stepDescription}
-**Error:** ${error instanceof Error ? error.message : "Unknown error"}
-**Status:** Using fallback code
-
-The notebook will show fallback code for this step.`,
-								isUser: false,
-								status: "failed",
-							},
-						});
-					}
-
-					// Small delay between steps
-					await new Promise((resolve) => setTimeout(resolve, 1000));
-				}
-
-				// Analysis generation completed
-				dispatch({
-					type: "ADD_MESSAGE",
-					payload: {
-						content: `✅ **Step-by-Step Analysis Generation Complete!**
-
-I've generated ${
-							analysisResult.steps.length
-						} analysis steps and opened them in the **Interactive Notebook** tab.
-
-**Analysis Plan:**
-${analysisResult.understanding.requiredSteps
-	.map((step: string, i: number) => `${i + 1}. ${step}`)
-	.join("\n")}
-
-**Selected Datasets:** ${selectedDatasets.map((d) => d.id).join(", ")}
-
-**Status:** All steps generated and ready for execution in the notebook!`,
-						isUser: false,
-						status: "completed",
-					},
-				});
-			} catch (error) {
-				console.error("Analysis generation error:", error);
-
-				// Create a fallback analysis result even when AI generation fails
-				const fallbackAnalysisResult = {
-					understanding: {
-						userQuestion: currentQuery,
-						requiredSteps: [
-							"Load and preprocess gene expression data",
-							"Perform quality control and normalization",
-							"Apply dimensionality reduction (PCA, t-SNE)",
-							"Perform clustering analysis (k-means, hierarchical)",
-							"Identify subtype-specific gene signatures",
-							"Validate clustering results",
-							"Generate subtype-specific visualizations",
-						],
-						dataNeeded: ["Selected datasets"],
-						expectedOutputs: ["Analysis results", "Visualizations"],
-					},
-					datasets: selectedDatasets,
-					steps: [
-						{
-							id: "step_1",
-							description: "Load and preprocess gene expression data",
-							code: `# Step 1: Load and preprocess gene expression data
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-import os
-import warnings
-warnings.filterwarnings('ignore')
-
-print("=== B-ALL Transcriptional Subtype Analysis ===")
-print(f"Query: ${currentQuery}")
-print(f"Selected datasets: ${selectedDatasets.map((d) => d.id).join(", ")}")
-
-# Create directories
-os.makedirs('data', exist_ok=True)
-os.makedirs('results', exist_ok=True)
-os.makedirs('figures', exist_ok=True)
-
-print("✅ Directories created")
-print("⚠️  Note: This is fallback code - AI generation failed due to timeout")
-print("   The BioRAG server may need to be restarted or the AI model may be busy")`,
-							status: "pending",
-						},
-						{
-							id: "step_2",
-							description: "Perform quality control and normalization",
-							code: `# Step 2: Perform quality control and normalization
-print("=== Quality Control and Normalization ===")
-
-# This step would normally contain AI-generated code for:
-# - Data quality assessment
-# - Normalization methods (log2, quantile, etc.)
-# - Batch effect correction
-# - Missing value imputation
-
-print("⚠️  Fallback code - AI generation failed")
-print("   Please check BioRAG server status and try again")`,
-							status: "pending",
-						},
-						{
-							id: "step_3",
-							description: "Apply dimensionality reduction (PCA, t-SNE)",
-							code: `# Step 3: Apply dimensionality reduction (PCA, t-SNE)
-print("=== Dimensionality Reduction ===")
-
-# This step would normally contain AI-generated code for:
-# - Principal Component Analysis (PCA)
-# - t-SNE visualization
-# - UMAP analysis
-# - Feature selection
-
-print("⚠️  Fallback code - AI generation failed")
-print("   Please check BioRAG server status and try again")`,
-							status: "pending",
-						},
-						{
-							id: "step_4",
-							description:
-								"Perform clustering analysis (k-means, hierarchical)",
-							code: `# Step 4: Perform clustering analysis (k-means, hierarchical)
-print("=== Clustering Analysis ===")
-
-# This step would normally contain AI-generated code for:
-# - K-means clustering
-# - Hierarchical clustering
-# - Silhouette analysis for optimal k
-# - Cluster validation
-
-print("⚠️  Fallback code - AI generation failed")
-print("   Please check BioRAG server status and try again")`,
-							status: "pending",
-						},
-						{
-							id: "step_5",
-							description: "Identify subtype-specific gene signatures",
-							code: `# Step 5: Identify subtype-specific gene signatures
-print("=== Gene Signature Identification ===")
-
-# This step would normally contain AI-generated code for:
-# - Differential expression analysis
-# - Gene set enrichment analysis
-# - Pathway analysis
-# - Biomarker identification
-
-print("⚠️  Fallback code - AI generation failed")
-print("   Please check BioRAG server status and try again")`,
-							status: "pending",
-						},
-						{
-							id: "step_6",
-							description: "Validate clustering results",
-							code: `# Step 6: Validate clustering results
-print("=== Clustering Validation ===")
-
-# This step would normally contain AI-generated code for:
-# - Cross-validation
-# - Stability analysis
-# - Biological validation
-# - Literature comparison
-
-print("⚠️  Fallback code - AI generation failed")
-print("   Please check BioRAG server status and try again")`,
-							status: "pending",
-						},
-						{
-							id: "step_7",
-							description: "Generate subtype-specific visualizations",
-							code: `# Step 7: Generate subtype-specific visualizations
-print("=== Visualization Generation ===")
-
-# This step would normally contain AI-generated code for:
-# - Heatmaps
-# - Volcano plots
-# - Survival curves
-# - Pathway diagrams
-
-print("⚠️  Fallback code - AI generation failed")
-print("   Please check BioRAG server status and try again")
-print("\\n=== Analysis Complete ===")
-print("Note: This analysis used fallback code due to AI generation timeout")
-print("For proper AI-generated analysis, ensure BioRAG server is running and try again")`,
-							status: "pending",
-						},
-					],
-					workingDirectory: analysisWorkspace,
-				};
-
-				// Save fallback analysis result
-				const analysisFile = `${analysisWorkspace}/analysis_result.json`;
-				console.log(
-					`ChatPanel: Saving fallback analysis result to: ${analysisFile}`
-				);
-
-				await window.electronAPI.writeFile(
-					analysisFile,
-					JSON.stringify(fallbackAnalysisResult, null, 2)
-				);
-
-				console.log(`ChatPanel: Fallback analysis file saved successfully`);
-
-				// Open the notebook tab to show the analysis cells
-				dispatch({
-					type: "SET_WORKSPACE",
-					payload: analysisWorkspace,
-				});
-				dispatch({ type: "SET_SHOW_NOTEBOOK", payload: true });
-
-				console.log(`ChatPanel: Set workspace to: ${analysisWorkspace}`);
-				console.log(`ChatPanel: Show notebook set to: true`);
-
-				dispatch({
-					type: "ADD_MESSAGE",
-					payload: {
-						content: `⚠️ **Analysis Generation Failed - Using Fallback Code**
-
-The AI analysis generation timed out after 2 minutes. I've created fallback analysis steps to help you get started.
-
-**Error:** ${error instanceof Error ? error.message : "Unknown error"}
-
-**Possible causes:**
-- BioRAG server is busy or overloaded
-- AI model is taking too long to respond
-- Network connectivity issues
-
-**Fallback Analysis Plan:**
-${fallbackAnalysisResult.understanding.requiredSteps
-	.map((step, i) => `${i + 1}. ${step}`)
-	.join("\n")}
-
-**Selected Datasets:** ${selectedDatasets.map((d) => d.id).join(", ")}
-
-**Next Steps:**
-1. Check the **Interactive Notebook** tab for the fallback analysis cells
-2. Try restarting the BioRAG server if needed
-3. Ask your question again for AI-generated analysis
-
-The fallback cells will show you the expected analysis structure.`,
-						isUser: false,
-						status: "failed",
-					},
-				});
-			}
-
-			// Open the notebook tab (this will happen in both success and error cases)
-			dispatch({ type: "SET_SHOW_NOTEBOOK", payload: true });
-			dispatch({ type: "SET_ANALYZING", payload: false });
-		} catch (error) {
-			console.error("Dataset selection error:", error);
-			dispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content: `❌ Failed to process selected datasets: ${
-						error instanceof Error ? error.message : "Unknown error"
-					}`,
-					isUser: false,
-					status: "failed",
-				},
-			});
-		}
-	};
-
-	const downloadAndTrackDataset = async (
-		dataset: any,
-		dataDirectory?: string
-	) => {
-		try {
-			// Start download to the analysis project's data directory
-			const downloadResponse = await bioragClient.downloadDataset(
-				dataset.id,
-				false, // force_redownload
-				dataDirectory || state.currentWorkspace || undefined
-			);
-
-			dispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content: `⏳ Downloading ${dataset.id} to analysis data folder: ${downloadResponse.status}`,
-					isUser: false,
-				},
-			});
-
-			// Track download progress
-			let completed = false;
-			const progressInterval = setInterval(async () => {
+				// Verify the file was created
 				try {
-					const status = await bioragClient.getDownloadStatus(dataset.id);
-					// This state is not managed by the new component, so this will not update the UI
-					// For now, we'll just log the progress
-					console.log(`Progress for ${dataset.id}: ${status.progress}%`);
-				} catch (error) {
-					clearInterval(progressInterval);
-					if (!completed) {
-						throw error;
-					}
-				}
-			}, 2000);
-
-			// Wait for completion (max 5 minutes)
-			await new Promise((resolve, reject) => {
-				const timeout = setTimeout(() => {
-					clearInterval(progressInterval);
-					reject(new Error("Download timeout"));
-				}, 300000);
-
-				const checkCompleted = () => {
-					if (completed) {
-						clearTimeout(timeout);
-						resolve(null);
-					} else {
-						setTimeout(checkCompleted, 1000);
-					}
-				};
-				checkCompleted();
-			});
-		} catch (error) {
-			throw new Error(
-				`Failed to download ${dataset.id}: ${
-					error instanceof Error ? error.message : "Unknown error"
-				}`
-			);
-		}
-	};
-
-	const executeAnalysisWithDownloadedData = async (
-		query: string,
-		datasets: any[]
-	) => {
-		try {
-			// Import the autonomous agent
-			const { AutonomousAgent } = await import(
-				"../../services/AutonomousAgent"
-			);
-			const agent = new AutonomousAgent(
-				bioragClient,
-				state.currentWorkspace || "./",
-				selectedModel
-			);
-			setCurrentAgent(agent);
-
-			// Set up status callback for real-time updates
-			agent.setStatusCallback((status: string) => {
-				dispatch({
-					type: "ADD_MESSAGE",
-					payload: {
-						content: status,
-						isUser: false,
-					},
-				});
-			});
-
-			// First create the analysis workspace to get the data directory
-			const analysisWorkspace = await agent.createAnalysisWorkspace(query);
-			const dataDirectory = `${analysisWorkspace}/data`;
-
-			// Set workspace directory to the analysis project's data folder
-			await bioragClient.setWorkspace(dataDirectory);
-
-			dispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content: `🚀 **Starting AI-powered analysis with Jupyter download:**
-
-**Analysis Project:** \`${analysisWorkspace}\`
-
-**Datasets to download:** ${datasets.length} datasets
-**Download Method:** Through Jupyter notebook with size checking
-
-Datasets will be downloaded and loaded directly in the analysis notebook...`,
-					isUser: false,
-				},
-			});
-
-			// Get the analysis plan with real data
-			const analysisResult = await agent.executeAnalysisRequestWithData(
-				query,
-				datasets
-			);
-
-			// Show the analysis plan
-			const planContent = `## Analysis Plan for Downloaded Data
-
-**Your Question:** ${analysisResult.understanding.userQuestion}
-
-**Analysis Project:** \`${analysisWorkspace}\`
-
-**Data Directory:** \`${dataDirectory}\`
-
-**Downloaded Datasets:**
-${datasets
-	.map(
-		(d, i) =>
-			`${i + 1}. **${d.id}** - ${d.title}\n   📊 ${d.samples} samples, ${
-				d.organism
-			}\n   📁 Expression matrix and metadata downloaded to analysis project data folder`
-	)
-	.join("\n\n")}
-
-**Analysis Approach:**
-${analysisResult.understanding.requiredSteps
-	.map((step: string, i: number) => `${i + 1}. ${step}`)
-	.join("\n")}
-
-**Expected Outputs:**
-${analysisResult.understanding.expectedOutputs
-	.map((output: string) => `- ${output}`)
-	.join("\n")}
-
-**Working Directory:** \`${analysisResult.workingDirectory}\`
-
----
-
-**Starting sequential execution in Jupyter...**`;
-
-			dispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content: planContent,
-					isUser: false,
-					analysisResult,
-				},
-			});
-
-			// Start Jupyter and execute steps with real data
-			await executeAnalysisSteps(analysisResult);
-		} catch (error) {
-			console.error("Analysis with downloaded data error:", error);
-			dispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content: `Analysis failed: ${
-						error instanceof Error ? error.message : "Unknown error"
-					}`,
-					isUser: false,
-					status: "failed",
-				},
-			});
-		}
-	};
-
-	const executeAnalysisRequest = async (query: string) => {
-		try {
-			dispatch({ type: "SET_ANALYZING", payload: true });
-
-			// Import the autonomous agent
-			const { AutonomousAgent } = await import(
-				"../../services/AutonomousAgent"
-			);
-			const agent = new AutonomousAgent(
-				bioragClient,
-				state.currentWorkspace || "./",
-				selectedModel
-			);
-			setCurrentAgent(agent);
-
-			// Set up status callback for real-time updates
-			agent.setStatusCallback((status: string) => {
-				dispatch({
-					type: "ADD_MESSAGE",
-					payload: {
-						content: status,
-						isUser: false,
-					},
-				});
-			});
-
-			// Get the analysis plan with timeout
-			const analysisTimeoutPromise = new Promise<never>((_, reject) => {
-				setTimeout(
-					() =>
-						reject(new Error("Analysis generation timeout - using fallback")),
-					60000
-				);
-			});
-
-			const analysisResult = await Promise.race([
-				agent.executeAnalysisRequest(query),
-				analysisTimeoutPromise,
-			]);
-
-			// Show the analysis plan
-			const planContent = `## Analysis Plan
-
-**Your Question:** ${analysisResult.understanding.userQuestion}
-
-**Approach:**
-${analysisResult.understanding.requiredSteps
-	.map((step, i) => `${i + 1}. ${step}`)
-	.join("\n")}
-
-**Data Requirements:**
-${
-	analysisResult.understanding.dataNeeded.length > 0
-		? analysisResult.understanding.dataNeeded
-				.map((data) => `- ${data}`)
-				.join("\n")
-		: "- Analysis will use available data sources"
-}
-
-**Expected Outputs:**
-${analysisResult.understanding.expectedOutputs
-	.map((output) => `- ${output}`)
-	.join("\n")}
-
-${
-	analysisResult.datasets.length > 0
-		? `
-**Datasets to be Used:**
-${analysisResult.datasets
-	.map(
-		(dataset, i) =>
-			`${i + 1}. **${dataset.id}** - ${dataset.title}\n   Source: ${
-				dataset.source
-			}\n   ${dataset.description}`
-	)
-	.join("\n\n")}`
-		: ""
-}
-
-**Working Directory:** \`${analysisResult.workingDirectory}\`
-
----
-
-**Starting sequential execution in Jupyter...**`;
-
-			dispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content: planContent,
-					isUser: false,
-					analysisResult,
-				},
-			});
-
-			// Start Jupyter and execute steps
-			await executeAnalysisSteps(analysisResult);
-		} catch (error) {
-			console.error("Analysis error:", error);
-			dispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content: `Analysis failed: ${
-						error instanceof Error ? error.message : "Unknown error"
-					}`,
-					isUser: false,
-					status: "failed",
-				},
-			});
-		} finally {
-			dispatch({ type: "SET_ANALYZING", payload: false });
-			setCurrentAgent(null);
-		}
-	};
-
-	const executeAnalysisSteps = async (analysisResult: any) => {
-		try {
-			// Save analysis result to workspace for notebook to load
-			const analysisFile = `${analysisResult.workingDirectory}/analysis_result.json`;
-			await window.electronAPI.writeFile(
-				analysisFile,
-				JSON.stringify(analysisResult, null, 2)
-			);
-			console.log("Saved analysis result to:", analysisFile);
-
-			// Open the notebook tab to show the analysis cells
-			// Set the workspace to the analysis directory so notebook can find the analysis_result.json
-			dispatch({
-				type: "SET_WORKSPACE",
-				payload: analysisResult.workingDirectory,
-			});
-			dispatch({ type: "SET_SHOW_NOTEBOOK", payload: true });
-
-			dispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content: `📊 **Analysis Generated Successfully!**
-
-I've created ${analysisResult.steps.length} analysis steps and opened them in the **Interactive Notebook** tab.
-
-**What's next:**
-1. Switch to the "Interactive Notebook" tab to see your analysis cells
-2. **Cells will automatically execute in sequence** (you'll see progress in real-time)
-3. Each cell contains a step of your analysis
-4. You can also run cells individually or use "Run All Steps" to re-execute
-5. View results and modify code as needed
-
-**Analysis Overview:**
-- **Research Question:** ${analysisResult.understanding.userQuestion}
-- **Datasets Found:** ${analysisResult.datasets.length}
-- **Analysis Steps:** ${analysisResult.steps.length}
-
-**Auto-execution:** The analysis cells will start running automatically in 1 second!`,
-					isUser: false,
-					status: "completed",
-				},
-			});
-
-			// Start Jupyter in working directory
-			const jupyterResult = await window.electronAPI.startJupyter(
-				analysisResult.workingDirectory
-			);
-
-			if (!jupyterResult.success) {
-				throw new Error(
-					jupyterResult.error || "Failed to start Jupyter server"
-				);
-			}
-
-			// Listen for Jupyter ready event to get the URL
-			let jupyterUrl = "http://localhost:8888"; // Default fallback
-			window.electronAPI.onJupyterReady((data) => {
-				jupyterUrl = data.url;
-				dispatch({
-					type: "SET_JUPYTER_URL",
-					payload: data.url,
-				});
-			});
-
-			// Execute each step sequentially
-			for (let i = 0; i < analysisResult.steps.length; i++) {
-				const step = analysisResult.steps[i];
-
-				dispatch({
-					type: "ADD_MESSAGE",
-					payload: {
-						content: `**Step ${i + 1}:** ${step.description}`,
-						isUser: false,
-					},
-				});
-
-				// Wrap the code in proper setup
-				const wrappedCode = `
-import os
-import sys
-import warnings
-warnings.filterwarnings('ignore')
-
-# Set working directory
-os.chdir(r'${analysisResult.workingDirectory}')
-
-# Create necessary directories
-os.makedirs('data', exist_ok=True)
-os.makedirs('results', exist_ok=True) 
-os.makedirs('figures', exist_ok=True)
-
-# Execute the analysis step
-try {
-${step.code
-	.split("\n")
-	.map((line: string) => "    " + line)
-	.join("\n")}
-except Exception as e:
-    print(f"Error in step: {e}")
-    import traceback
-    traceback.print_exc()
-`;
-
-				try {
-					const result = await window.electronAPI.executeJupyterCode(
-						wrappedCode
+					const files = await window.electronAPI.listDirectory(workspaceDir);
+					console.log(
+						"Files in analysis workspace:",
+						files.map((f) => f.name)
 					);
-
-					if (result.success) {
-						dispatch({
-							type: "ADD_MESSAGE",
-							payload: {
-								content: `Step completed successfully.\n\n\`\`\`\n${
-									result.output || "No output"
-								}\n\`\`\``,
-								isUser: false,
-								status: "completed",
-							},
-						});
-					} else {
-						dispatch({
-							type: "ADD_MESSAGE",
-							payload: {
-								content: `Step failed: ${result.error}`,
-								isUser: false,
-								status: "failed",
-							},
-						});
-					}
-				} catch (error) {
-					dispatch({
-						type: "ADD_MESSAGE",
-						payload: {
-							content: `Execution error: ${
-								error instanceof Error ? error.message : "Unknown error"
-							}`,
-							isUser: false,
-							status: "failed",
-						},
-					});
+				} catch (dirError) {
+					console.error("Error listing analysis workspace:", dirError);
 				}
+
+				// Set the analysis workspace as the current workspace so notebook can find it
+				dispatch({ type: "SET_WORKSPACE", payload: workspaceDir });
+
+				// Show the notebook panel
+				dispatch({ type: "SET_SHOW_NOTEBOOK", payload: true });
+
+				// Give the notebook component time to detect the workspace change
+				await new Promise((resolve) => setTimeout(resolve, 1000));
+
+				// Update progress
+				setProgressMessage(
+					"✅ Analysis setup complete! Jupyter cells are being created..."
+				);
+
+				// Add completion message
+				let completionMessage = `## 🎉 Analysis Setup Complete!\n\n`;
+				completionMessage += `**Workspace:** ${workspaceDir}\n`;
+				completionMessage += `**Notebook:** ${notebookPath}\n`;
+				completionMessage += `**Steps Generated:** ${analysisResult.steps.length}\n\n`;
+				completionMessage += `**Next Steps:**\n`;
+				completionMessage += `- Jupyter notebook is being created with data download cells\n`;
+				completionMessage += `- Analysis steps will be executed automatically\n`;
+				completionMessage += `- The notebook panel has been opened for you\n`;
+				completionMessage += `- Check the notebook for real-time progress and results\n\n`;
+				completionMessage += `**Generated Steps:**\n`;
+				analysisResult.steps.forEach((step, index) => {
+					completionMessage += `${index + 1}. ${step.description}\n`;
+				});
+
+				addMessage(completionMessage);
+			} catch (error) {
+				console.error("Error starting analysis:", error);
+				let errorMessage = `## ❌ Analysis Setup Failed\n\n`;
+				errorMessage += `**Error:** ${
+					error instanceof Error ? error.message : String(error)
+				}\n\n`;
+				errorMessage += `**Troubleshooting:**\n`;
+				errorMessage += `- Check that Jupyter Lab is properly installed\n`;
+				errorMessage += `- Ensure you have write permissions to the workspace\n`;
+				errorMessage += `- Try restarting the application\n`;
+
+				addMessage(errorMessage);
+			} finally {
+				setIsLoading(false);
+				setProgressMessage("");
 			}
-
-			// Analysis completed
-			dispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content: `## Analysis Pipeline Completed!
-
-- Question analyzed: ${analysisResult.understanding.userQuestion}
-- Analysis steps completed: ${analysisResult.steps.length}
-- Working directory: \`${analysisResult.workingDirectory}\`
-
-**Results have been saved to the working directory. Check the figures/ and results/ folders for outputs.**`,
-					isUser: false,
-					status: "completed",
-				},
-			});
-		} catch (error) {
-			console.error("Step execution error:", error);
-			dispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content: `Pipeline execution failed: ${
-						error instanceof Error ? error.message : "Unknown error"
-					}`,
-					isUser: false,
-					status: "failed",
-				},
-			});
 		}
-	};
-
-	const handleStopAnalysis = () => {
-		if (currentAgent) {
-			currentAgent.stopAnalysis();
-			setCurrentAgent(null);
-		}
-		dispatch({ type: "SET_ANALYZING", payload: false });
-		setIsLoading(false);
-		setShowDatasetModal(false);
 	};
 
 	const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -2075,117 +416,97 @@ except Exception as e:
 		}
 	};
 
-	// Chat session persistence helpers
-	const saveChatSession = async (messages: any[], workspace: string) => {
-		if (!workspace) return;
-		const chatsDir = `${workspace}/chats`;
-		await window.electronAPI.createDirectory(chatsDir);
-		const sessionId = new Date().toISOString().replace(/[:.]/g, "-");
-		const filePath = `${chatsDir}/chat_${sessionId}.json`;
-		await window.electronAPI.writeFile(
-			filePath,
-			JSON.stringify(messages, null, 2)
-		);
-	};
-
-	const loadChatSession = async (filePath: string) => {
-		const content = await window.electronAPI.readFile(filePath);
-		return JSON.parse(content);
-	};
-
 	return (
-		<>
-			<ChatContainer $collapsed={false}>
-				<ChatHeader>
-					<ChatTitle>Chat</ChatTitle>
-					<HeaderActions>
-						<CollapseButton onClick={onToggle} title="Close chat">
-							<FiX size={16} />
-						</CollapseButton>
-					</HeaderActions>
-				</ChatHeader>
+		<div className={`chat-panel ${className || ""}`}>
+			<div className="chat-header">
+				<h3>AI Assistant</h3>
+			</div>
 
-				<MessagesContainer>
-					{state.messages.map((message) => (
-						<Message
-							key={message.id}
-							message={message}
-							onCopy={handleCopyMessage}
-							onEdit={handleEditMessage}
-							onDelete={() => handleDeleteMessage(message.id)}
-						/>
-					))}
+			<div className="chat-messages">
+				{messages.map((message) => (
+					<div
+						key={message.id}
+						className={`message ${message.isUser ? "user" : "assistant"}`}
+					>
+						<div className="message-content">
+							<ReactMarkdown>{message.content}</ReactMarkdown>
+						</div>
+					</div>
+				))}
 
-					<div ref={messagesEndRef} />
-				</MessagesContainer>
+				{/* Progress message */}
+				{progressData && (
+					<div className="progress-message">
+						<div className="progress-header">
+							<span className="progress-text">{progressData.message}</span>
+							<span className="progress-percentage">
+								{progressData.progress}%
+							</span>
+						</div>
+						<div className="progress-bar-container">
+							<div
+								className="progress-bar-fill"
+								style={{ width: `${progressData.progress}%` }}
+							></div>
+						</div>
+						{progressData.currentTerm && (
+							<div className="progress-detail">
+								Searching: <strong>{progressData.currentTerm}</strong>
+							</div>
+						)}
+						{progressData.datasetsFound !== undefined && (
+							<div className="progress-detail">
+								Datasets found: <strong>{progressData.datasetsFound}</strong>
+							</div>
+						)}
 
-				<InputContainer>
-					<InputArea>
-						<TextArea
-							ref={textAreaRef}
-							value={inputValue}
-							onChange={(e) => setInputValue(e.target.value)}
-							onKeyPress={handleKeyPress}
-							placeholder="Plan, search, build anything..."
-							disabled={isLoading}
-						/>
-					</InputArea>
+						{/* Real-time search log */}
+						{searchLog.length > 0 && (
+							<div className="search-log">
+								<div className="search-log-header">
+									<strong>🔍 Search Progress:</strong>
+								</div>
+								<div className="search-log-entries">
+									{searchLog.map((entry, index) => (
+										<div key={index} className="search-log-entry">
+											{entry}
+										</div>
+									))}
+								</div>
+							</div>
+						)}
+					</div>
+				)}
 
-					<ControlBar>
-						<ControlLeft>
-							<ModelSelector>
-								<ModelButton
-									onClick={() => setModelDropdownOpen(!modelDropdownOpen)}
-								>
-									{availableModels.find((m) => m.id === selectedModel)?.icon}
-									{availableModels.find((m) => m.id === selectedModel)?.name}
-									<FiChevronDown size={12} />
-								</ModelButton>
-								{modelDropdownOpen && (
-									<ModelDropdown $isOpen={modelDropdownOpen}>
-										{availableModels.map((model) => (
-											<ModelOption
-												key={model.id}
-												$isSelected={model.id === selectedModel}
-												onClick={() => handleModelSelect(model.id)}
-											>
-												{model.icon} {model.name}
-											</ModelOption>
-										))}
-									</ModelDropdown>
-								)}
-							</ModelSelector>
-						</ControlLeft>
-						<ControlRight>
-							{state.isAnalyzing ? (
-								<StopButton onClick={handleStopAnalysis}>
-									<FiStopCircle size={16} />
-								</StopButton>
-							) : (
-								<SendButton
-									disabled={
-										!inputValue.trim() || isLoading || !state.currentWorkspace
-									}
-									onClick={handleSendMessage}
-								>
-									<FiSend size={16} />
-								</SendButton>
-							)}
-						</ControlRight>
-					</ControlBar>
-				</InputContainer>
-			</ChatContainer>
+				<div ref={messagesEndRef} />
+			</div>
 
+			<div className="chat-input-container">
+				<textarea
+					value={inputValue}
+					onChange={(e) => setInputValue(e.target.value)}
+					onKeyPress={handleKeyPress}
+					placeholder="Ask me to find datasets or analyze data..."
+					disabled={isLoading}
+					rows={1}
+				/>
+				<button
+					onClick={handleSendMessage}
+					disabled={isLoading || !inputValue.trim()}
+					className="send-button"
+				>
+					{isLoading ? "..." : <FiSend />}
+				</button>
+			</div>
+
+			{/* Dataset Selection Modal */}
 			<DatasetSelectionModal
 				isOpen={showDatasetModal}
 				datasets={availableDatasets}
-				onClose={() => {
-					setShowDatasetModal(false);
-					dispatch({ type: "SET_ANALYZING", payload: false });
-				}}
+				onClose={() => setShowDatasetModal(false)}
 				onConfirm={handleDatasetSelection}
-				isLoading={state.isAnalyzing}
+				isLoading={false}
 			/>
-		</>
+		</div>
 	);
 };
