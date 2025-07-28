@@ -864,123 +864,115 @@ print("Ready for analysis...")
 		workingDir: string,
 		stepIndex: number
 	): Promise<string> {
+		this.updateStatus(`Generating code for step ${stepIndex + 1}...`);
+
 		try {
-			// Use LLM to generate specific Python code that uses the loaded data
-			this.updateStatus(
-				`Generating AI code for: ${stepDescription.substring(0, 50)}...`
-			);
-
-			const codePrompt = `You are an expert bioinformatics programmer. Generate executable Python code for this specific analysis step using REAL downloaded data:
-
-STEP: "${stepDescription}"
-RESEARCH QUESTION: "${originalQuestion}"
-WORKING DIRECTORY: ${workingDir}
-DOWNLOADED DATASETS: ${datasets
-				.map((d) => `${d.id} (${d.samples} samples, ${d.organism})`)
-				.join(", ")}
-STEP NUMBER: ${stepIndex + 1}
-
-The data has already been loaded in previous steps as:
-- data_files['${
-				datasets[0]?.id
-			}'] = pandas DataFrame with expression data (genes as rows, samples as columns)
-- sample_metadata['${
-				datasets[0]?.id
-			}'] = pandas DataFrame with sample information
-
-Requirements:
-1. Write complete, executable Python code that uses the loaded data_files and sample_metadata
-2. Focus specifically on: "${stepDescription}"
-3. Use realistic biological analysis methods appropriate for expression data
-4. Include proper error handling and informative print statements
-5. Save outputs to 'results/' or 'figures/' directories as appropriate
-6. Make the code specific to the research question: "${originalQuestion}"
-7. Use appropriate statistical and visualization libraries (pandas, numpy, matplotlib, seaborn, scipy, sklearn)
-8. Generate meaningful biological insights from the real data
-
-IMPORTANT: 
-- Return ONLY the Python code, no explanations
-- Assume data_files and sample_metadata dictionaries are already available
-- Make the code production-ready and biologically meaningful
-- Include comments explaining the biological significance
-- Use the actual dataset IDs: ${datasets.map((d) => d.id).join(", ")}
-
-Generate the Python code:`;
-
-			// Call the backend LLM API for code generation
-			try {
-				console.log(`Calling LLM API for step: ${stepDescription}`);
-				console.log(`API URL: ${this.backendClient.getBaseUrl()}/llm/code`);
-
-				const requestBody = {
-					task_description: codePrompt,
-					language: "python",
-					context: `Research question: ${originalQuestion}\nDatasets: ${datasets
-						.map((d) => d.id)
-						.join(", ")}\nWorking directory: ${workingDir}`,
-				};
-
-				console.log(`Request body:`, requestBody);
-
-				const response = await fetch(
-					`${this.backendClient.getBaseUrl()}/llm/code`,
-					{
-						method: "POST",
-						headers: {
-							"Content-Type": "application/json",
-						},
-						body: JSON.stringify(requestBody),
-					}
-				);
-
-				console.log(`LLM API response status: ${response.status}`);
-
-				if (response.ok) {
-					const result = await response.json();
-					console.log(`LLM API response:`, result);
-					const generatedCode = result.code;
-
-					if (generatedCode && generatedCode.length > 50) {
-						console.log(`LLM generated code for step: ${stepDescription}`);
-						return generatedCode;
-					} else {
-						console.warn(
-							`LLM generated code too short for step: ${stepDescription}`
-						);
-					}
-				} else {
-					const errorText = await response.text();
-					console.warn(
-						`LLM API call failed for step: ${stepDescription}. Status: ${response.status}, Error: ${errorText}`
-					);
+			const response = await fetch(
+				`${this.backendClient.getBaseUrl()}/llm/code`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						task_description: stepDescription,
+						language: "python",
+						context: `Original question: ${originalQuestion}\nWorking directory: ${workingDir}\nAvailable datasets: ${datasets
+							.map((d) => d.id)
+							.join(", ")}`,
+					}),
 				}
-			} catch (apiError) {
-				console.warn(`LLM API error for step: ${stepDescription}:`, apiError);
-			}
+			);
 
-			// Fallback to basic code generation if LLM fails
-			console.log(
-				`Using fallback code generation for step: ${stepDescription}`
-			);
-			return this.generateDataAwareBasicStepCode(
-				stepDescription,
-				datasets,
-				stepIndex
-			);
-		} catch (error) {
-			console.error(
-				`LLM code generation failed for "${stepDescription}":`,
-				error
-			);
-			this.updateStatus(
-				`Using fallback code for: ${stepDescription.substring(0, 50)}...`
-			);
-			return this.generateDataAwareBasicStepCode(
-				stepDescription,
-				datasets,
-				stepIndex
-			);
+			if (response.ok) {
+				const result = await response.json();
+				console.log("LLM code generation result:", result);
+				return (
+					result.code || this.generateBasicStepCode(stepDescription, stepIndex)
+				);
+			} else {
+				const errorText = await response.text();
+				console.warn(
+					`LLM code API call failed. Status: ${response.status}, Error: ${errorText}`
+				);
+			}
+		} catch (apiError) {
+			console.warn(`LLM code API error:`, apiError);
 		}
+
+		// Fallback to basic code generation
+		console.log("Using fallback code generation for step:", stepDescription);
+		return this.generateBasicStepCode(stepDescription, stepIndex);
+	}
+
+	private async generateDataDrivenStepCodeStream(
+		stepDescription: string,
+		originalQuestion: string,
+		datasets: Dataset[],
+		workingDir: string,
+		stepIndex: number,
+		onChunk: (chunk: string) => void
+	): Promise<string> {
+		this.updateStatus(`Generating code for step ${stepIndex + 1}...`);
+
+		try {
+			const response = await fetch(
+				`${this.backendClient.getBaseUrl()}/llm/code/stream`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						task_description: stepDescription,
+						language: "python",
+						context: `Original question: ${originalQuestion}\nWorking directory: ${workingDir}\nAvailable datasets: ${datasets
+							.map((d) => d.id)
+							.join(", ")}`,
+					}),
+				}
+			);
+
+			if (response.ok && response.body) {
+				const reader = response.body.getReader();
+				const decoder = new TextDecoder();
+				let fullCode = "";
+
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) break;
+
+					const chunk = decoder.decode(value);
+					const lines = chunk.split("\n");
+
+					for (const line of lines) {
+						if (line.startsWith("data: ")) {
+							try {
+								const data = JSON.parse(line.slice(6));
+								if (data.chunk) {
+									fullCode += data.chunk;
+									onChunk(data.chunk);
+								}
+							} catch (e) {
+								console.warn("Failed to parse streaming chunk:", e);
+							}
+						}
+					}
+				}
+
+				console.log("Streaming code generation completed:", fullCode);
+				return (
+					fullCode || this.generateBasicStepCode(stepDescription, stepIndex)
+				);
+			} else {
+				const errorText = await response.text();
+				console.warn(
+					`LLM streaming code API call failed. Status: ${response.status}, Error: ${errorText}`
+				);
+			}
+		} catch (apiError) {
+			console.warn(`LLM streaming code API error:`, apiError);
+		}
+
+		// Fallback to basic code generation
+		console.log("Using fallback code generation for step:", stepDescription);
+		return this.generateBasicStepCode(stepDescription, stepIndex);
 	}
 
 	private extractPythonCode(response: string): string | null {

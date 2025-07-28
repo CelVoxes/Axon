@@ -16,6 +16,11 @@ class LLMProvider(ABC):
     async def generate(self, messages: List[Dict[str, str]], **kwargs) -> str:
         """Generate response from messages."""
         pass
+    
+    @abstractmethod
+    async def generate_stream(self, messages: List[Dict[str, str]], **kwargs):
+        """Generate streaming response from messages."""
+        pass
 
 
 class OpenAIProvider(LLMProvider):
@@ -32,6 +37,19 @@ class OpenAIProvider(LLMProvider):
             **kwargs
         )
         return response.choices[0].message.content.strip()
+    
+    async def generate_stream(self, messages: List[Dict[str, str]], **kwargs):
+        """Generate streaming response from messages."""
+        stream = await self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            stream=True,
+            **kwargs
+        )
+        
+        for chunk in stream:
+            if chunk.choices[0].delta.content is not None:
+                yield chunk.choices[0].delta.content
 
 
 class AnthropicProvider(LLMProvider):
@@ -63,6 +81,29 @@ class AnthropicProvider(LLMProvider):
         )
         
         return response.content[0].text
+    
+    async def generate_stream(self, messages: List[Dict[str, str]], **kwargs):
+        """Generate streaming response from messages."""
+        # Convert OpenAI format to Anthropic format
+        prompt = ""
+        for msg in messages:
+            if msg["role"] == "system":
+                prompt += f"System: {msg['content']}\n\n"
+            elif msg["role"] == "user":
+                prompt += f"Human: {msg['content']}\n\n"
+            elif msg["role"] == "assistant":
+                prompt += f"Assistant: {msg['content']}\n\n"
+        
+        prompt += "Assistant:"
+        
+        with self.client.messages.stream(
+            model=self.model,
+            max_tokens=kwargs.get("max_tokens", 1000),
+            temperature=kwargs.get("temperature", 0.7),
+            messages=[{"role": "user", "content": prompt}]
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
 
 
 class LLMService:
@@ -156,37 +197,129 @@ Simplified query:"""
         language: str = "python",
         context: Optional[str] = None
     ) -> str:
-        """Generate code for a given task."""
+        """Generate code for a given task description."""
         if not self.provider:
-            return f"# Code generation not available\n# Task: {task_description}"
+            return self._generate_fallback_code(task_description, language)
         
-        try:
-            system_prompt = f"You are an expert {language} programmer specializing in bioinformatics and data analysis."
-            
-            user_prompt = f"""Generate {language} code for the following task:
+        prompt = f"""
+You are an expert Python programmer specializing in data analysis and bioinformatics. 
+Generate clean, well-documented code for the following task.
 
 Task: {task_description}
+Language: {language}
 
 {f"Context: {context}" if context else ""}
 
 Requirements:
-- Write complete, executable code
-- Include proper error handling
-- Add comments explaining the logic
-- Use best practices for {language}
+- Write only the code, no explanations
+- Include necessary imports
+- Add comments for clarity
+- Handle errors gracefully
+- Follow Python best practices
 
-Return only the code, no explanations:"""
-            
+Code:
+"""
+        
+        try:
             response = await self.provider.generate([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ], max_tokens=1000, temperature=0.1)
+                {"role": "system", "content": "You are an expert Python programmer. Generate only code, no explanations."},
+                {"role": "user", "content": prompt}
+            ], max_tokens=2000, temperature=0.1)
             
-            return response.strip()
+            return self.extract_python_code(response) or self._generate_fallback_code(task_description, language)
             
         except Exception as e:
-            print(f"Code generation error: {e}")
-            return f"# Error generating code: {e}\n# Task: {task_description}"
+            print(f"Error generating code: {e}")
+            return self._generate_fallback_code(task_description, language)
+    
+    async def generate_code_stream(
+        self, 
+        task_description: str, 
+        language: str = "python",
+        context: Optional[str] = None
+    ):
+        """Generate code with streaming for a given task description."""
+        if not self.provider:
+            # For fallback, yield the entire code at once
+            fallback_code = self._generate_fallback_code(task_description, language)
+            yield fallback_code
+            return
+        
+        prompt = f"""
+You are an expert Python programmer specializing in data analysis and bioinformatics. 
+Generate clean, well-documented code for the following task.
+
+Task: {task_description}
+Language: {language}
+
+{f"Context: {context}" if context else ""}
+
+Requirements:
+- Write only the code, no explanations
+- Include necessary imports
+- Add comments for clarity
+- Handle errors gracefully
+- Follow Python best practices
+
+Code:
+"""
+        
+        try:
+            async for chunk in self.provider.generate_stream([
+                {"role": "system", "content": "You are an expert Python programmer. Generate only code, no explanations."},
+                {"role": "user", "content": prompt}
+            ], max_tokens=2000, temperature=0.1):
+                yield chunk
+                
+        except Exception as e:
+            print(f"Error generating streaming code: {e}")
+            # Yield fallback code
+            fallback_code = self._generate_fallback_code(task_description, language)
+            yield fallback_code
+    
+    def extract_python_code(self, response: str) -> Optional[str]:
+        """Extract Python code from LLM response."""
+        # Look for code blocks
+        import re
+        
+        # Try to find code blocks
+        code_block_pattern = r"```(?:python)?\s*\n(.*?)\n```"
+        match = re.search(code_block_pattern, response, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        
+        # If no code blocks, try to extract from the response
+        lines = response.split('\n')
+        code_lines = []
+        in_code = False
+        
+        for line in lines:
+            if line.strip().startswith('import ') or line.strip().startswith('from '):
+                in_code = True
+            elif line.strip().startswith('#') or line.strip().startswith('def ') or line.strip().startswith('class '):
+                in_code = True
+            
+            if in_code:
+                code_lines.append(line)
+        
+        if code_lines:
+            return '\n'.join(code_lines).strip()
+        
+        return None
+    
+    def _generate_fallback_code(self, task_description: str, language: str = "python") -> str:
+        """Generate fallback code when LLM is not available."""
+        return f"""# Fallback code generation
+# Task: {task_description}
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# TODO: Implement {task_description}
+print("Code generation not available. Please implement manually.")
+"""
     
     async def call_tool(
         self, 

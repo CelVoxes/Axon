@@ -1,228 +1,49 @@
-# Axon - AI-Powered Biological Analysis Platform
+# Axon
 
-A comprehensive AI-driven system for biological data analysis that combines retrieval-augmented generation (RAG) with intelligent code generation for bioinformatics research.
+![Axon Logo](src/png/axon-no-background.png)
 
-## 🧬 AI-Powered Biological Analysis Agent
+AI-powered biological analysis platform that combines LLM-driven code generation with intelligent dataset discovery.
 
-Axon provides an **intelligent Electron desktop application** that acts as "Cursor for Bioinformatics" - delivering autonomous biological data analysis through natural language interaction powered by Large Language Models.
+## Features
 
-### ✨ What Makes This Revolutionary
-
-- **🤖 LLM-Driven Analysis Planning**: AI analyzes your research question and creates custom analysis workflows
-- **💻 Dynamic Code Generation**: Generates Python code specifically tailored to your biological question (no templates!)
-- **🔬 Intelligent Dataset Discovery**: Uses RAG to find and acquire real biological datasets from GEO, PubMed, UniProt
-- **📊 Jupyter Integration**: Seamlessly integrates with Jupyter Lab for interactive analysis
-- **🗣️ Natural Language Interface**: Simply describe your research question in plain English
-
-### 🚀 How It Works
-
-1. **Ask any biological research question**:
-
-   ```
-   "Compare AML vs ALL gene expression patterns"
-   "Find transcriptional subtypes of B-cell leukemia"
-   "Identify biomarkers for breast cancer subtypes"
-   ```
-
-2. **AI automatically**:
-   - **Understands** your specific biological context using LLM analysis
-   - **Plans** appropriate analysis steps tailored to your question
-   - **Searches** biological databases for relevant datasets
-   - **Generates** production-ready Python code for each analysis step
-   - **Executes** code sequentially in Jupyter Lab
-   - **Creates** visualizations, statistical analyses, and biological interpretations
-
-### 💡 Key Innovations
-
-#### 🧠 LLM-Based Analysis Planning
-
-- **No Hardcoded Workflows**: Every analysis plan is generated fresh by AI
-- **Question-Specific**: Understands the difference between differential expression, clustering, subtyping, biomarker discovery, etc.
-- **Biologically Informed**: AI has deep knowledge of bioinformatics methods and best practices
-
-#### 💻 Dynamic Code Generation
-
-- **Custom Python Code**: Generates specific code for your exact research question
-- **Real Bioinformatics**: Uses proper libraries (pandas, scikit-learn, matplotlib, seaborn, GEOparse)
-- **Production Ready**: Includes error handling, proper imports, and biological interpretation
-
-#### 🔬 Intelligent Data Integration
-
-- **Smart Dataset Search**: Extracts meaningful search terms from complex queries
-- **Real Data Sources**: Connects to GEO, PubMed, UniProt APIs
-- **Rate Limiting**: Respects API limits and handles errors gracefully
-
-### 💻 Desktop Application Features
-
-- **🤖 AI Chat Interface**: Specialized biological research assistant
-- **📁 File Management**: Organize analysis files and datasets
-- **📓 Jupyter Integration**: Embedded Jupyter Lab with proper CSP handling
-- **📊 Real-time Analysis**: Watch your analysis execute step-by-step
-- **🧬 Biological Context**: AI understands cancer types, gene expression, pathways, etc.
-
-## Architecture
-
-### Backend (Python)
-
-- **🔍 Axon Server**: Intelligent retrieval-augmented generation for biological queries
-- **🗄️ Vector Database**: ChromaDB for efficient biological document storage
-- **🌐 API Integration**: Connects to GEO, PubMed, UniProt, and other databases
-- **⚡ FastAPI**: High-performance REST API
-
-### Frontend (TypeScript/Electron)
-
-- **🎨 Modern UI**: Clean, professional interface built with React
-- **🔧 Autonomous Agent**: LLM-powered analysis orchestration
-- **📓 Jupyter Viewer**: Embedded notebook interface with webview
-- **💬 Chat System**: Natural language interaction with the AI
+- **🤖 LLM-Driven Analysis**: AI generates custom Python code for your research questions
+- **🔬 Smart Dataset Search**: Finds relevant biological datasets from GEO, PubMed, UniProt
+- **📊 Jupyter Integration**: Seamless notebook execution with virtual environments
+- **💬 Natural Language Interface**: Ask questions like "Find transcriptional subtypes of B-ALL"
 
 ## Quick Start
 
-### Desktop Application (Recommended)
-
 1. **Install Dependencies**
 
    ```bash
-   # Python dependencies
    pip install -r requirements.txt
-
-   # JavaScript dependencies
    npm install
    ```
 
-2. **Start the Application**
-
-   ```bash
-   npm start
-   ```
-
-3. **Try the Autonomous Agent**
-   - Open the chat panel on the right
-   - Ask questions like:
-     - "Compare different cancer subtypes and find biomarkers"
-     - "Analyze Alzheimer's disease gene expression data"
-     - "Find differentially expressed genes in breast cancer"
-
-### Command Line Usage
-
-1. **Install Dependencies**
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. **Set Environment Variables**
+2. **Set API Keys**
 
    ```bash
    cp .env.example .env
-   # Edit .env with your API keys
+   # Add your OPENAI_API_KEY
    ```
 
-3. **Run the System**
+3. **Start Application**
 
    ```bash
-   python -m biorag.main
+   npm run dev
    ```
 
-4. **Access API Documentation**
-   Open http://localhost:8000/docs
+4. **Ask Questions**
+   - "Compare AML vs ALL gene expression patterns"
+   - "Find biomarkers for breast cancer subtypes"
+   - "Analyze Alzheimer's disease gene expression data"
 
-## Configuration
+## Architecture
 
-Create a `.env` file with:
-
-```
-# Required
-OPENAI_API_KEY=your_openai_api_key
-
-# API Endpoints
-GEO_API_BASE=https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi
-PUBMED_API_BASE=https://eutils.ncbi.nlm.nih.gov/entrez/eutils/
-CHROMA_PERSIST_DIRECTORY=./chroma_db
-
-# Fix Common Issues
-TOKENIZERS_PARALLELISM=false
-CHROMA_DISABLE_TELEMETRY=true
-
-# Optional
-NCBI_API_KEY=your_ncbi_api_key
-```
-
-## Usage Examples
-
-### Desktop Agent Examples
-
-```
-🧬 Try these biological analysis queries:
-
-"Can you compare different AML subtypes and give me the top 10 DEGs?"
-"Find lung cancer biomarkers using RNA-seq data"
-"Compare Alzheimer's brain samples to controls and find pathway changes"
-"Analyze breast cancer metastasis genes"
-```
-
-### Programmatic API Usage
-
-```python
-from biorag.client import BioRAGClient
-
-client = BioRAGClient()
-response = client.query("What are the effects of p53 mutations in cancer?")
-print(response.answer)
-```
-
-### Retrieve GEO Datasets
-
-```python
-from biorag.data_sources import GEOClient
-
-geo = GEOClient()
-datasets = geo.search_datasets("breast cancer", limit=10)
-```
-
-## Troubleshooting
-
-### Common Server Errors
-
-#### ChromaDB Telemetry Error
-
-If you see `Failed to send telemetry event CollectionAddEvent`:
-
-- This is automatically fixed by setting `CHROMA_DISABLE_TELEMETRY=true` in your `.env` file
-- The error is harmless but disabling telemetry removes the warning
-
-#### HuggingFace Tokenizers Fork Warning
-
-If you see `huggingface/tokenizers: The current process just got forked`:
-
-- This is automatically fixed by setting `TOKENIZERS_PARALLELISM=false` in your `.env` file
-- This prevents tokenizer conflicts in multi-process environments
-
-### Jupyter Integration Issues
-
-If you encounter Jupyter authentication errors:
-
-1. **Check Python Installation**: The app will try to find Python automatically
-2. **Install Jupyter Lab**: `pip install jupyterlab`
-3. **Check Logs**: Look at the console for detailed error messages
-
-The application now includes improved Jupyter authentication handling and should work seamlessly with most Python environments.
+- **Backend**: Python FastAPI with LLM integration
+- **Frontend**: Electron app with React/TypeScript
+- **Analysis**: Jupyter notebooks with virtual environments
 
 ## License
 
-**Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)**
-
-This work is licensed under a [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License](http://creativecommons.org/licenses/by-nc-sa/4.0/).
-
-You are free to:
-
-- **Share** — copy and redistribute the material in any medium or format
-- **Adapt** — remix, transform, and build upon the material
-
-Under the following terms:
-
-- **Attribution** — You must give appropriate credit, provide a link to the license, and indicate if changes were made
-- **NonCommercial** — You may not use the material for commercial purposes
-- **ShareAlike** — If you remix, transform, or build upon the material, you must distribute your contributions under the same license
-
-For commercial licensing inquiries, please contact the project maintainer.
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International

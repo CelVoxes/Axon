@@ -928,10 +928,11 @@ export class AxonApp {
 					`Executing code in Jupyter: \n${code.substring(0, 100)}...`
 				);
 
-				// Notify renderer that code is being written
+				// Notify renderer that code is being written (for streaming)
 				this.mainWindow?.webContents.send("jupyter-code-writing", {
 					code: code,
 					timestamp: new Date().toISOString(),
+					type: "full_code",
 				});
 
 				const WebSocket = require("ws");
@@ -1016,6 +1017,12 @@ export class AxonApp {
 						// 4. Listen for execute_reply and stream messages
 						if (msg.parent_header && msg.header.msg_type === "stream") {
 							output += msg.content.text;
+							// Notify renderer about streamed output
+							this.mainWindow?.webContents.send("jupyter-code-writing", {
+								code: output, // Send the current accumulated output
+								timestamp: new Date().toISOString(),
+								type: "stream",
+							});
 						} else if (
 							msg.parent_header &&
 							msg.header.msg_type === "execute_reply"

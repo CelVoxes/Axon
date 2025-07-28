@@ -715,48 +715,77 @@ export const Notebook: React.FC<NotebookProps> = ({
 		workingDir: string,
 		stepIndex: number
 	): Promise<string> => {
+		console.log(`Notebook: Generating code for step: ${stepDescription}`);
+
 		try {
-			// Try to use the LLM API to generate code
-			const response = await fetch(`http://localhost:8000/llm/code`, {
+			const response = await fetch(`http://localhost:8000/llm/code/stream`, {
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
+				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
-					task_description: `Generate Python code for: ${stepDescription}`,
+					task_description: stepDescription,
 					language: "python",
-					context: `Research question: ${userQuestion}\nDatasets: ${datasets
+					context: `Original question: ${userQuestion}\nWorking directory: ${workingDir}\nAvailable datasets: ${datasets
 						.map((d) => d.id)
-						.join(
-							", "
-						)}\nWorking directory: ${workingDir}\nStep: ${stepDescription}`,
+						.join(", ")}`,
 				}),
 			});
 
-			if (response.ok) {
-				const result = await response.json();
-				if (result.code && result.code.length > 50) {
-					console.log(`LLM generated code for step: ${stepDescription}`);
-					return result.code;
+			if (response.ok && response.body) {
+				const reader = response.body.getReader();
+				const decoder = new TextDecoder();
+				let fullCode = "";
+
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) break;
+
+					const chunk = decoder.decode(value);
+					const lines = chunk.split("\n");
+
+					for (const line of lines) {
+						if (line.startsWith("data: ")) {
+							try {
+								const data = JSON.parse(line.slice(6));
+								if (data.chunk) {
+									fullCode += data.chunk;
+									// Update the code writing log in real-time
+									setCodeWritingLog((prev) => [
+										...prev,
+										{
+											code: data.chunk,
+											timestamp: new Date().toISOString(),
+										},
+									]);
+								}
+							} catch (e) {
+								console.warn("Failed to parse streaming chunk:", e);
+							}
+						}
+					}
 				}
+
+				console.log("Streaming code generation completed:", fullCode);
+				return fullCode;
+			} else {
+				const errorText = await response.text();
+				console.warn(
+					`LLM streaming code API call failed. Status: ${response.status}, Error: ${errorText}`
+				);
 			}
-		} catch (error) {
-			console.warn(`LLM API error for step generation:`, error);
+		} catch (apiError) {
+			console.warn(`LLM streaming code API error:`, apiError);
 		}
 
 		// Fallback to basic code generation
-		return `# Step ${stepIndex}: ${stepDescription}
-print("Executing: ${stepDescription}")
+		console.log("Using fallback code generation for step:", stepDescription);
+		return `# Fallback code for: ${stepDescription}
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-# Basic implementation for: ${stepDescription}
-# This is a fallback implementation - LLM should generate more sophisticated code
-
-try:
-    # Your analysis code here
-    print("Step ${stepIndex} completed successfully")
-except Exception as e:
-    print(f"Error in step ${stepIndex}: {e}")
-`;
+# TODO: Implement ${stepDescription}
+print("Code generation not available. Please implement manually.")`;
 	};
 
 	const addCell = (language: "python" | "r" = "python") => {

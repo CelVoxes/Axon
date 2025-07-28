@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import uvicorn
+import json
 
 from .geo_search import SimpleGEOClient
 from .llm_service import get_llm_service
@@ -274,24 +275,70 @@ async def simplify_query(request: QuerySimplificationRequest):
         raise HTTPException(status_code=500, detail=f"Query simplification failed: {str(e)}")
 
 
-@app.post("/llm/code", response_model=CodeGenerationResponse)
-async def generate_code(request: CodeGenerationRequest):
+@app.post("/llm/code")
+async def generate_code(request: dict):
     """Generate code for a given task."""
     try:
         llm_service = get_llm_service()
+        task_description = request.get("task_description", "")
+        language = request.get("language", "python")
+        context = request.get("context", "")
+        
+        if not task_description:
+            return {"error": "Task description is required"}
+        
         code = await llm_service.generate_code(
-            request.task_description,
-            request.language,
-            request.context
+            task_description=task_description,
+            language=language,
+            context=context
         )
         
-        return CodeGenerationResponse(
-            code=code,
-            language=request.language,
-            task_description=request.task_description
-        )
+        return {
+            "task_description": task_description,
+            "language": language,
+            "code": code
+        }
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Code generation failed: {str(e)}")
+        print(f"Error generating code: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/llm/code/stream")
+async def generate_code_stream(request: dict):
+    """Generate code with streaming for a given task."""
+    try:
+        llm_service = get_llm_service()
+        task_description = request.get("task_description", "")
+        language = request.get("language", "python")
+        context = request.get("context", "")
+        
+        if not task_description:
+            return {"error": "Task description is required"}
+        
+        from fastapi.responses import StreamingResponse
+        
+        async def generate():
+            async for chunk in llm_service.generate_code_stream(
+                task_description=task_description,
+                language=language,
+                context=context
+            ):
+                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+        
+        return StreamingResponse(
+            generate(),
+            media_type="text/plain",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Content-Type": "text/event-stream"
+            }
+        )
+        
+    except Exception as e:
+        print(f"Error generating streaming code: {e}")
+        return {"error": str(e)}
 
 
 @app.post("/llm/tool", response_model=ToolCallResponse)
