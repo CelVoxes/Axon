@@ -1,6 +1,6 @@
 # Axon
 
-![Axon Logo](src/png/axon-no-background.png)
+![Axon Logo](src/png/axon-very-rounded-150.png)
 
 AI-powered biological analysis platform that combines LLM-driven code generation with intelligent dataset discovery.
 
