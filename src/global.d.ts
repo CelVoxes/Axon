@@ -5,6 +5,7 @@ export interface ElectronAPI {
 	listDirectory: (
 		dirPath: string
 	) => Promise<Array<{ name: string; isDirectory: boolean; path: string }>>;
+	openFile: (filePath: string) => Promise<{ success: boolean; error?: string }>;
 
 	startJupyter: (
 		workingDir: string
@@ -12,13 +13,22 @@ export interface ElectronAPI {
 	stopJupyter: () => Promise<{ success: boolean }>;
 	checkJupyterStatus: () => Promise<boolean>;
 	executeJupyterCode: (
-		code: string
+		code: string,
+		workspacePath?: string
 	) => Promise<{ success: boolean; output?: string; error?: string }>;
 	createVirtualEnv: (workspacePath: string) => Promise<{
 		success: boolean;
 		venvPath?: string;
 		pythonPath?: string;
 		kernelName?: string;
+		error?: string;
+	}>;
+	installPackages: (
+		workspacePath: string,
+		packages: string[]
+	) => Promise<{
+		success: boolean;
+		packages?: string[];
 		error?: string;
 	}>;
 

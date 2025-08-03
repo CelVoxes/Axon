@@ -109,7 +109,7 @@ const Header: React.FC<LayoutHeaderProps> = ({ children }) => {
 
 const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 	const [leftPaneWidth, setLeftPaneWidth] = useState(240);
-	const [rightPaneWidth, setRightPaneWidth] = useState(380);
+	const [rightPaneWidth, setRightPaneWidth] = useState(400);
 	const [isResizingLeft, setIsResizingLeft] = useState(false);
 	const [isResizingRight, setIsResizingRight] = useState(false);
 

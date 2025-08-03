@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import styled from "styled-components";
 import {
 	FiPlus,
@@ -16,6 +16,18 @@ const NotebookContainer = styled.div`
 	flex-direction: column;
 	height: 100%;
 	background: #151515;
+
+	@keyframes pulse {
+		0% {
+			opacity: 1;
+		}
+		50% {
+			opacity: 0.5;
+		}
+		100% {
+			opacity: 1;
+		}
+	}
 `;
 
 const NotebookHeader = styled.div`
@@ -132,11 +144,16 @@ const VirtualEnvStatus = styled.div<{ $status?: string }>`
 		return "#74c0fc";
 	}};
 	margin-bottom: 8px;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 8px 12px;
+	background: rgba(0, 0, 0, 0.2);
+	border-radius: 4px;
+	border: 1px solid rgba(255, 255, 255, 0.1);
 `;
 
 const CodeWritingLog = styled.div`
-	max-height: 200px;
-	overflow-y: auto;
 	border-top: 1px solid #404040;
 	padding-top: 8px;
 `;
@@ -228,12 +245,23 @@ export const Notebook: React.FC<NotebookProps> = ({
 	const [analysisCellsCreated, setAnalysisCellsCreated] = useState(false);
 	const [analysisCheckAttempts, setAnalysisCheckAttempts] = useState(0);
 	const [codeWritingLog, setCodeWritingLog] = useState<
-		Array<{ code: string; timestamp: string }>
+		Array<{
+			code: string;
+			timestamp: string;
+			type?: "llm_generation" | "jupyter_execution";
+		}>
 	>([]);
 	const [virtualEnvStatus, setVirtualEnvStatus] = useState<string>("");
 	const [analysisSteps, setAnalysisSteps] = useState<AnalysisStep[]>([]);
 	const [currentStepIndex, setCurrentStepIndex] = useState(0);
 	const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
+	const [isGeneratingCode, setIsGeneratingCode] = useState(false);
+	const [showCodeLog, setShowCodeLog] = useState(false);
+	const [showVirtualEnvLog, setShowVirtualEnvLog] = useState(false);
+
+	// Add refs for autoscroll functionality
+	const cellsContainerRef = useRef<HTMLDivElement>(null);
+	const messagesEndRef = useRef<HTMLDivElement>(null);
 
 	// Check Jupyter status and start if needed
 	useEffect(() => {
@@ -313,15 +341,16 @@ export const Notebook: React.FC<NotebookProps> = ({
 		};
 	}, []);
 
-	// Listen for code being written to notebook
+	// Listen for code being written to notebook (Jupyter execution)
 	useEffect(() => {
 		const handleCodeWriting = (data: any) => {
-			console.log("Notebook: Code being written:", data);
+			console.log("Notebook: Jupyter code execution:", data);
 			setCodeWritingLog((prev) => [
 				...prev,
 				{
 					code: data.code,
 					timestamp: data.timestamp,
+					type: "jupyter_execution",
 				},
 			]);
 		};
@@ -329,6 +358,37 @@ export const Notebook: React.FC<NotebookProps> = ({
 		window.electronAPI.onJupyterCodeWriting(handleCodeWriting);
 		return () => {
 			window.electronAPI.removeAllListeners("jupyter-code-writing");
+		};
+	}, []);
+
+	// Listen for LLM code generation streaming
+	useEffect(() => {
+		const handleLLMCodeGeneration = (data: any) => {
+			console.log("Notebook: LLM code generation:", data);
+			setIsGeneratingCode(true);
+			setCodeWritingLog((prev) => [
+				...prev,
+				{
+					code: data.chunk || data.code,
+					timestamp: data.timestamp || new Date().toISOString(),
+					type: "llm_generation",
+				},
+			]);
+		};
+
+		const handleLLMCodeComplete = () => {
+			setIsGeneratingCode(false);
+		};
+
+		// Listen for LLM streaming events
+		window.addEventListener("llm-code-generation", handleLLMCodeGeneration);
+		window.addEventListener("llm-code-complete", handleLLMCodeComplete);
+		return () => {
+			window.removeEventListener(
+				"llm-code-generation",
+				handleLLMCodeGeneration
+			);
+			window.removeEventListener("llm-code-complete", handleLLMCodeComplete);
 		};
 	}, []);
 
@@ -368,6 +428,32 @@ export const Notebook: React.FC<NotebookProps> = ({
 						"Notebook: Files in workspace:",
 						files.map((f) => f.name)
 					);
+
+					// Look for data download notebook files
+					const dataDownloadNotebooks = files.filter(
+						(f) =>
+							f.name.startsWith("data_download_") && f.name.endsWith(".ipynb")
+					);
+
+					if (dataDownloadNotebooks.length > 0) {
+						console.log(
+							`Notebook: Found ${dataDownloadNotebooks.length} data download notebook(s)`
+						);
+						// Load the first data download notebook
+						const notebookPath = `${workspacePath}/${dataDownloadNotebooks[0].name}`;
+						const notebookContent = await window.electronAPI.readFile(
+							notebookPath
+						);
+						const notebook = JSON.parse(notebookContent);
+
+						// Create cells from the data download notebook
+						if (notebook.cells && Array.isArray(notebook.cells)) {
+							console.log(
+								`Notebook: Creating cells from data download notebook with ${notebook.cells.length} cells`
+							);
+							createCellsFromNotebook(notebook.cells);
+						}
+					}
 				} catch (dirError) {
 					console.log("Notebook: Error listing directory:", dirError);
 				}
@@ -440,11 +526,53 @@ export const Notebook: React.FC<NotebookProps> = ({
 			}
 
 			// If we still have no cells after checking, notebook will remain empty
-			if (cells.length === 0 && !analysisCellsCreated) {
+			if (cells && cells.length === 0 && !analysisCellsCreated) {
 				console.log(
 					"Notebook: No analysis cells found, waiting for analysis request"
 				);
 			}
+		};
+
+		const createCellsFromNotebook = (notebookCells: any[]) => {
+			console.log(
+				"Notebook: Creating cells from notebook:",
+				notebookCells.length
+			);
+			const newCells: Cell[] = [];
+
+			notebookCells.forEach((notebookCell, index) => {
+				if (notebookCell.cell_type === "code") {
+					const cell: Cell = {
+						id: `notebook-${index + 1}`,
+						code: Array.isArray(notebookCell.source)
+							? notebookCell.source.join("")
+							: notebookCell.source,
+						language: "python",
+						output: "",
+						hasError: false,
+						status: "pending",
+						title: `Data Download Step ${index + 1}`,
+					};
+					newCells.push(cell);
+				} else if (notebookCell.cell_type === "markdown") {
+					const cell: Cell = {
+						id: `markdown-${index + 1}`,
+						code: Array.isArray(notebookCell.source)
+							? notebookCell.source.join("")
+							: notebookCell.source,
+						language: "markdown",
+						output: "",
+						hasError: false,
+						status: "pending",
+						isMarkdown: true,
+						title: `Documentation ${index + 1}`,
+					};
+					newCells.push(cell);
+				}
+			});
+
+			setCells((prev) => [...prev, ...newCells]);
+			console.log("Notebook: Created", newCells.length, "cells from notebook");
 		};
 
 		// Check immediately when Jupyter becomes ready
@@ -485,15 +613,20 @@ export const Notebook: React.FC<NotebookProps> = ({
 			steps
 		);
 
-		const newCells: Cell[] = steps.map((step, index) => ({
-			id: step.id,
-			code: step.code,
-			language: "python" as const,
-			output: step.output || "",
-			hasError: step.status === "failed",
-			status: "pending", // Start as pending so user can run manually
-			title: `Step ${index + 1}: ${step.description}`,
-		}));
+		const newCells: Cell[] = steps.map((step, index) => {
+			const cell: Cell = {
+				id: step.id,
+				code: step.code,
+				language: "python" as const,
+				output: step.output || "",
+				hasError: step.status === "failed",
+				status: "pending", // Start as pending so user can run manually
+				title: `Step ${index + 1}: ${step.description}`,
+			};
+			console.log(`Created cell ${cell.id}: ${cell.title}`);
+			console.log(`Cell code:`, cell.code.substring(0, 200) + "...");
+			return cell;
+		});
 
 		console.log(
 			`Notebook: Created ${newCells.length} cell objects:`,
@@ -526,6 +659,10 @@ export const Notebook: React.FC<NotebookProps> = ({
 				// Auto-execute the new cells after a short delay
 				setTimeout(() => {
 					console.log("Notebook: Auto-executing new analysis cells...");
+					console.log(
+						"Cells to execute:",
+						uniqueNewCells.map((c) => ({ id: c.id, title: c.title }))
+					);
 					executeAnalysisPipeline(uniqueNewCells);
 				}, 1000);
 
@@ -538,10 +675,10 @@ export const Notebook: React.FC<NotebookProps> = ({
 		});
 	};
 
-	// New function to execute analysis cells one by one with dynamic generation
+	// Enhanced function to execute analysis cells one by one with output analysis and refactoring
 	const executeAnalysisPipeline = async (cellsToExecute: Cell[]) => {
 		console.log(
-			`Notebook: Starting analysis pipeline with ${cellsToExecute.length} initial cells...`
+			`Notebook: Starting enhanced analysis pipeline with ${cellsToExecute.length} initial cells...`
 		);
 		console.log(`Notebook: Current Jupyter status: ${jupyterStatus}`);
 
@@ -558,25 +695,280 @@ export const Notebook: React.FC<NotebookProps> = ({
 		}
 
 		console.log(
-			`Notebook: Starting analysis pipeline with ${cellsToExecute.length} cells...`
+			`Notebook: Starting enhanced analysis pipeline with ${cellsToExecute.length} cells...`
 		);
 		setJupyterStatus("running");
 		setIsAutoExecuting(true);
 
-		// Execute the first cell (data loading) - subsequent cells will be generated dynamically
-		const firstCell = cellsToExecute[0];
-		if (firstCell && firstCell.status === "pending" && !firstCell.isMarkdown) {
-			console.log(`Notebook: Executing first cell: ${firstCell.title}`);
+		// Execute cells one by one with output analysis
+		for (let i = 0; i < cellsToExecute.length; i++) {
+			const cell = cellsToExecute[i];
+			if (cell.status === "pending" && !cell.isMarkdown) {
+				console.log(
+					`Notebook: Executing cell ${i + 1}/${cellsToExecute.length}: ${
+						cell.title
+					}`
+				);
 
-			// Execute the first cell - next steps will be generated when it completes
-			await executeCell(firstCell.id, firstCell.code);
+				// Validate and lint the code before execution
+				const validationResult = await validateAndLintCode(cell.code);
+
+				if (!validationResult.isValid) {
+					console.log(
+						`Notebook: Code validation failed for cell: ${cell.title}`
+					);
+					console.log("Validation errors:", validationResult.errors);
+
+					// Try to fix validation errors
+					const fixedCode = await fixValidationErrors(
+						cell.code,
+						validationResult.errors
+					);
+
+					if (fixedCode !== cell.code) {
+						// Update the cell with fixed code
+						updateCell(cell.id, { code: fixedCode });
+						console.log(
+							`Notebook: Updated cell with fixed code: ${cell.title}`
+						);
+
+						// Execute the cell with fixed code
+						const executionResult = await executeCellWithAnalysis({
+							...cell,
+							code: fixedCode,
+						});
+
+						// If execution still failed, try to refactor and retry
+						if (
+							executionResult.status === "failed" &&
+							executionResult.shouldRetry
+						) {
+							console.log(
+								`Notebook: Fixed code still failed, attempting to refactor: ${cell.title}`
+							);
+
+							const refactoredCode = await generateRefactoredCode(
+								fixedCode,
+								executionResult.output || "",
+								cell.title || "",
+								workspacePath || ""
+							);
+
+							if (refactoredCode && refactoredCode !== fixedCode) {
+								updateCell(cell.id, { code: refactoredCode });
+								await executeCellWithAnalysis({
+									...cell,
+									code: refactoredCode,
+								});
+							}
+						}
+					} else {
+						// If we couldn't fix the code, execute with original and let it fail
+						await executeCellWithAnalysis(cell);
+					}
+				} else {
+					// Code is valid, execute normally
+					const executionResult = await executeCellWithAnalysis(cell);
+
+					// If execution failed, try to refactor and retry
+					if (
+						executionResult.status === "failed" &&
+						executionResult.shouldRetry
+					) {
+						console.log(
+							`Notebook: Cell failed, attempting to refactor and retry: ${cell.title}`
+						);
+
+						const refactoredCode = await generateRefactoredCode(
+							cell.code,
+							executionResult.output || "",
+							cell.title || "",
+							workspacePath || ""
+						);
+
+						if (refactoredCode && refactoredCode !== cell.code) {
+							updateCell(cell.id, { code: refactoredCode });
+							console.log(
+								`Notebook: Retrying cell with refactored code: ${cell.title}`
+							);
+							await executeCellWithAnalysis({ ...cell, code: refactoredCode });
+						}
+					}
+				}
+
+				// Force scroll to bottom after each cell
+				forceScrollToBottom();
+
+				// Wait a bit between cells
+				await new Promise((resolve) => setTimeout(resolve, 1000));
+			}
 		}
+
+		// After all initial cells are executed, start generating next steps
+		console.log(
+			"Notebook: All initial cells executed, starting dynamic step generation..."
+		);
+		await generateNextAnalysisSteps();
 
 		setJupyterStatus("ready");
 		setIsAutoExecuting(false);
-		console.log(
-			"Notebook: Initial cell execution completed - pipeline will continue automatically!"
-		);
+		console.log("Notebook: Enhanced analysis pipeline completed!");
+	};
+
+	// New function to execute a cell and analyze its output
+	const executeCellWithAnalysis = async (
+		cell: Cell
+	): Promise<{
+		status: "completed" | "failed";
+		output: string;
+		shouldRetry: boolean;
+		analysis?: any;
+	}> => {
+		console.log(`Notebook: Executing cell with analysis: ${cell.title}`);
+
+		// Update cell status to running
+		updateCell(cell.id, { status: "running" });
+
+		try {
+			// Execute the cell
+			let finalOutput = "";
+			let hasError = false;
+			let errorMessage = "";
+
+			await runNotebookStep(
+				cell.id,
+				cell.code,
+				(payload: { output: string | null; error: string | null }) => {
+					const newStatus = payload.error ? "failed" : "completed";
+					updateCell(cell.id, {
+						output: payload.output ?? undefined,
+						hasError: !!payload.error,
+						status: newStatus,
+					});
+
+					// Store the final output and error for analysis
+					if (payload.output) finalOutput = payload.output;
+					if (payload.error) {
+						hasError = true;
+						errorMessage = payload.error;
+					}
+				},
+				workspacePath
+			);
+
+			if (hasError) {
+				console.log(`Notebook: Cell execution failed: ${cell.title}`);
+				console.log(`Error output: ${errorMessage}`);
+
+				// Analyze the error to determine if we should retry
+				const shouldRetry = await analyzeErrorForRetry(errorMessage, cell.code);
+
+				return {
+					status: "failed",
+					output: errorMessage || "Execution failed",
+					shouldRetry,
+				};
+			} else {
+				console.log(`Notebook: Cell execution completed: ${cell.title}`);
+				console.log(`Output: ${finalOutput.substring(0, 200)}...`);
+
+				// Analyze the output to determine if it's successful
+				const outputAnalysis = await analyzeCellOutput(
+					finalOutput,
+					cell.title || ""
+				);
+
+				return {
+					status: "completed",
+					output: finalOutput,
+					shouldRetry: false,
+					analysis: outputAnalysis,
+				};
+			}
+		} catch (error) {
+			console.error(`Notebook: Error executing cell ${cell.title}:`, error);
+			return {
+				status: "failed",
+				output: error instanceof Error ? error.message : String(error),
+				shouldRetry: true, // Retry on unexpected errors
+			};
+		}
+	};
+
+	// Function to analyze error output and determine if retry is warranted
+	const analyzeErrorForRetry = async (
+		errorOutput: string,
+		originalCode: string
+	): Promise<boolean> => {
+		try {
+			// Common errors that can be fixed automatically
+			const retryableErrors = [
+				"ModuleNotFoundError",
+				"ImportError",
+				"NameError",
+				"AttributeError",
+				"SyntaxError",
+				"IndentationError",
+				"FileNotFoundError",
+			];
+
+			const shouldRetry = retryableErrors.some((errorType) =>
+				errorOutput.includes(errorType)
+			);
+
+			console.log(`Notebook: Error analysis - retryable: ${shouldRetry}`);
+			return shouldRetry;
+		} catch (error) {
+			console.error("Notebook: Error analyzing error output:", error);
+			return false;
+		}
+	};
+
+	// Function to analyze cell output for success indicators
+	const analyzeCellOutput = async (
+		output: string,
+		cellTitle: string
+	): Promise<any> => {
+		try {
+			// Look for success indicators in the output
+			const successIndicators = [
+				"successfully",
+				"completed",
+				"finished",
+				"saved",
+				"created",
+				"processed",
+				"analysis complete",
+				"results saved",
+			];
+
+			const errorIndicators = [
+				"error",
+				"failed",
+				"exception",
+				"traceback",
+				"not found",
+				"permission denied",
+			];
+
+			const hasSuccess = successIndicators.some((indicator) =>
+				output.toLowerCase().includes(indicator)
+			);
+
+			const hasError = errorIndicators.some((indicator) =>
+				output.toLowerCase().includes(indicator)
+			);
+
+			return {
+				success: hasSuccess && !hasError,
+				hasError,
+				outputLength: output.length,
+				containsResults: output.includes("results") || output.includes("data"),
+			};
+		} catch (error) {
+			console.error("Notebook: Error analyzing cell output:", error);
+			return { success: false, hasError: true };
+		}
 	};
 
 	// Helper function to get workspace files
@@ -591,10 +983,217 @@ export const Notebook: React.FC<NotebookProps> = ({
 		}
 	};
 
-	// Function to generate next analysis steps based on current data
+	// Function to validate and lint generated code
+	const validateAndLintCode = async (
+		code: string
+	): Promise<{
+		isValid: boolean;
+		lintedCode: string;
+		errors: string[];
+		warnings: string[];
+	}> => {
+		try {
+			console.log("Notebook: Validating and linting generated code...");
+
+			const response = await fetch(`http://localhost:8000/llm/validate-code`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					code: code,
+					language: "python",
+					strict_validation: true,
+					include_linting: true,
+				}),
+			});
+
+			if (response.ok) {
+				const result = await response.json();
+				console.log("Code validation result:", result);
+
+				return {
+					isValid: result.is_valid || false,
+					lintedCode: result.linted_code || code,
+					errors: result.errors || [],
+					warnings: result.warnings || [],
+				};
+			} else {
+				console.warn(
+					"Code validation API call failed, using fallback validation"
+				);
+				return {
+					isValid: true, // Assume valid if validation fails
+					lintedCode: code,
+					errors: [],
+					warnings: ["Code validation service unavailable"],
+				};
+			}
+		} catch (error) {
+			console.error("Notebook: Error validating code:", error);
+			return {
+				isValid: true, // Assume valid if validation fails
+				lintedCode: code,
+				errors: [],
+				warnings: ["Code validation failed"],
+			};
+		}
+	};
+
+	// Function to generate refactored code based on error analysis
+	const generateRefactoredCode = async (
+		originalCode: string,
+		errorOutput: string,
+		cellTitle: string,
+		workspacePath: string
+	): Promise<string> => {
+		console.log(`Notebook: Generating refactored code for: ${cellTitle}`);
+
+		try {
+			const response = await fetch(`http://localhost:8000/llm/code/stream`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					task_description: `Fix the following Python code that failed with error: ${errorOutput}`,
+					language: "python",
+					context: `Original code:\n${originalCode}\n\nError:\n${errorOutput}\n\nCell title: ${cellTitle}\nWorking directory: ${workspacePath}`,
+				}),
+			});
+
+			if (response.ok && response.body) {
+				const reader = response.body.getReader();
+				const decoder = new TextDecoder();
+				let fullCode = "";
+
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) break;
+
+					const chunk = decoder.decode(value);
+					const lines = chunk.split("\n");
+
+					for (const line of lines) {
+						if (line.startsWith("data: ")) {
+							try {
+								const data = JSON.parse(line.slice(6));
+								if (data.chunk) {
+									fullCode += data.chunk;
+
+									// Dispatch event for real-time streaming display
+									const event = new CustomEvent("llm-code-generation", {
+										detail: {
+											chunk: data.chunk,
+											timestamp: new Date().toISOString(),
+											type: "llm_generation",
+										},
+									});
+									window.dispatchEvent(event);
+								}
+							} catch (e) {
+								console.warn("Failed to parse streaming chunk:", e);
+							}
+						}
+					}
+				}
+
+				console.log("Refactored code generation completed:", fullCode);
+
+				// Validate and lint the refactored code
+				const validationResult = await validateAndLintCode(fullCode);
+
+				if (!validationResult.isValid) {
+					console.warn(
+						"Refactored code validation failed:",
+						validationResult.errors
+					);
+					// Try to fix validation errors
+					const fixedCode = await fixValidationErrors(
+						fullCode,
+						validationResult.errors
+					);
+					return fixedCode;
+				}
+
+				// Dispatch completion event
+				const completionEvent = new CustomEvent("llm-code-complete", {
+					detail: {
+						totalCode: validationResult.lintedCode,
+						timestamp: new Date().toISOString(),
+					},
+				});
+				window.dispatchEvent(completionEvent);
+
+				return validationResult.lintedCode;
+			}
+		} catch (error) {
+			console.error("Notebook: Error generating refactored code:", error);
+		}
+
+		return originalCode; // Return original code if refactoring fails
+	};
+
+	// Function to fix validation errors in code
+	const fixValidationErrors = async (
+		code: string,
+		errors: string[]
+	): Promise<string> => {
+		try {
+			console.log("Notebook: Fixing validation errors in code...");
+
+			const response = await fetch(`http://localhost:8000/llm/code/stream`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					task_description: `Fix the following Python code validation errors: ${errors.join(
+						", "
+					)}`,
+					language: "python",
+					context: `Code with validation errors:\n${code}\n\nErrors to fix:\n${errors.join(
+						"\n"
+					)}`,
+				}),
+			});
+
+			if (response.ok && response.body) {
+				const reader = response.body.getReader();
+				const decoder = new TextDecoder();
+				let fixedCode = "";
+
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) break;
+
+					const chunk = decoder.decode(value);
+					const lines = chunk.split("\n");
+
+					for (const line of lines) {
+						if (line.startsWith("data: ")) {
+							try {
+								const data = JSON.parse(line.slice(6));
+								if (data.chunk) {
+									fixedCode += data.chunk;
+								}
+							} catch (e) {
+								console.warn("Failed to parse streaming chunk:", e);
+							}
+						}
+					}
+				}
+
+				console.log("Code validation error fixing completed:", fixedCode);
+				return fixedCode || code;
+			}
+		} catch (error) {
+			console.error("Notebook: Error fixing validation errors:", error);
+		}
+
+		return code; // Return original code if fixing fails
+	};
+
+	// Enhanced function to generate next analysis steps based on current data and output
 	const generateNextAnalysisSteps = async () => {
 		try {
-			console.log("Notebook: Generating next analysis steps...");
+			console.log(
+				"Notebook: Generating next analysis steps with output analysis..."
+			);
 
 			// Get the current cells to see what's already been done
 			const currentCells = cells.filter((c) => c.status === "completed");
@@ -604,7 +1203,7 @@ export const Notebook: React.FC<NotebookProps> = ({
 				`Notebook: Completed ${completedSteps} steps, planning next step...`
 			);
 
-			// Get current state for planning
+			// Get current state for planning, including outputs
 			const currentState = {
 				completed_steps: completedSteps,
 				workspace_path: workspacePath || "",
@@ -613,6 +1212,12 @@ export const Notebook: React.FC<NotebookProps> = ({
 					currentCells.length > 0
 						? currentCells[currentCells.length - 1].output || ""
 						: "",
+				all_cell_outputs:
+					currentCells?.map((cell) => ({
+						title: cell.title || "",
+						output: cell.output || "",
+						hasError: cell.hasError || false,
+					})) || [],
 			};
 
 			// Generate plan for next steps using the general planning API
@@ -622,8 +1227,12 @@ export const Notebook: React.FC<NotebookProps> = ({
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify({
-					question: "What should be the next analysis step?",
-					context: `Currently analyzing datasets in workspace. Completed ${completedSteps} steps.`,
+					question:
+						"What should be the next analysis step based on the current outputs?",
+					context: `Currently analyzing datasets in workspace. Completed ${completedSteps} steps. Last output: ${currentState.last_cell_output.substring(
+						0,
+						500
+					)}...`,
 					current_state: currentState,
 					available_data: [],
 					task_type: "analysis_step",
@@ -662,9 +1271,41 @@ export const Notebook: React.FC<NotebookProps> = ({
 					// Add the new cell
 					setCells((prev) => [...prev, newCell]);
 
-					// Execute the new cell
-					setTimeout(() => {
-						executeCell(newCell.id, newCell.code);
+					// Execute the new cell with analysis
+					setTimeout(async () => {
+						const executionResult = await executeCellWithAnalysis(newCell);
+
+						// If execution failed, try to refactor and retry
+						if (
+							executionResult.status === "failed" &&
+							executionResult.shouldRetry
+						) {
+							console.log(
+								`Notebook: Next step failed, attempting to refactor: ${newCell.title}`
+							);
+
+							const refactoredCode = await generateRefactoredCode(
+								newCell.code,
+								executionResult.output || "",
+								newCell.title || "",
+								workspacePath || ""
+							);
+
+							if (refactoredCode && refactoredCode !== newCell.code) {
+								updateCell(newCell.id, { code: refactoredCode });
+								await executeCellWithAnalysis({
+									...newCell,
+									code: refactoredCode,
+								});
+							}
+						}
+
+						// Continue generating next steps if this one completed successfully
+						if (executionResult.status === "completed") {
+							setTimeout(() => {
+								generateNextAnalysisSteps();
+							}, 2000);
+						}
 					}, 1000);
 
 					console.log(
@@ -698,8 +1339,8 @@ export const Notebook: React.FC<NotebookProps> = ({
 				};
 
 				setCells((prev) => [...prev, newCell]);
-				setTimeout(() => {
-					executeCell(newCell.id, newCell.code);
+				setTimeout(async () => {
+					await executeCellWithAnalysis(newCell);
 				}, 1000);
 			}
 		} catch (error) {
@@ -724,9 +1365,9 @@ export const Notebook: React.FC<NotebookProps> = ({
 				body: JSON.stringify({
 					task_description: stepDescription,
 					language: "python",
-					context: `Original question: ${userQuestion}\nWorking directory: ${workingDir}\nAvailable datasets: ${datasets
-						.map((d) => d.id)
-						.join(", ")}`,
+					context: `Original question: ${userQuestion}\nWorking directory: ${workingDir}\nAvailable datasets: ${
+						datasets?.map((d) => d.id)?.join(", ") || "none"
+					}`,
 				}),
 			});
 
@@ -748,12 +1389,24 @@ export const Notebook: React.FC<NotebookProps> = ({
 								const data = JSON.parse(line.slice(6));
 								if (data.chunk) {
 									fullCode += data.chunk;
-									// Update the code writing log in real-time
+
+									// Dispatch event for real-time streaming display
+									const event = new CustomEvent("llm-code-generation", {
+										detail: {
+											chunk: data.chunk,
+											timestamp: new Date().toISOString(),
+											type: "llm_generation",
+										},
+									});
+									window.dispatchEvent(event);
+
+									// Also update the code writing log directly
 									setCodeWritingLog((prev) => [
 										...prev,
 										{
 											code: data.chunk,
 											timestamp: new Date().toISOString(),
+											type: "llm_generation",
 										},
 									]);
 								}
@@ -765,7 +1418,44 @@ export const Notebook: React.FC<NotebookProps> = ({
 				}
 
 				console.log("Streaming code generation completed:", fullCode);
-				return fullCode;
+
+				// Validate and lint the generated code
+				const validationResult = await validateAndLintCode(fullCode);
+
+				if (!validationResult.isValid) {
+					console.log(
+						"Generated code validation failed:",
+						validationResult.errors
+					);
+
+					// Try to fix validation errors
+					const fixedCode = await fixValidationErrors(
+						fullCode,
+						validationResult.errors
+					);
+
+					if (fixedCode !== fullCode) {
+						console.log("Code was fixed after validation errors");
+						fullCode = fixedCode;
+					}
+				}
+
+				// Dispatch completion event with validated code
+				const completionEvent = new CustomEvent("llm-code-complete", {
+					detail: {
+						totalCode: validationResult.isValid
+							? validationResult.lintedCode
+							: fullCode,
+						timestamp: new Date().toISOString(),
+						validationErrors: validationResult.errors || [],
+						validationWarnings: validationResult.warnings || [],
+					},
+				});
+				window.dispatchEvent(completionEvent);
+
+				return validationResult.isValid
+					? validationResult.lintedCode
+					: fullCode;
 			} else {
 				const errorText = await response.text();
 				console.warn(
@@ -814,12 +1504,19 @@ print("Code generation not available. Please implement manually.")`;
 	};
 
 	const executeCell = async (id: string, code: string) => {
+		console.log(`Executing cell ${id} with status: ${jupyterStatus}`);
 		if (jupyterStatus !== "ready") {
 			console.error("Jupyter not ready for execution");
 			return;
 		}
 		const cell = cells.find((c) => c.id === id);
-		if (!cell || cell.isMarkdown) return;
+		if (!cell || cell.isMarkdown) {
+			console.log(`Cell ${id} not found or is markdown`);
+			return;
+		}
+
+		console.log(`Starting execution of cell ${id}: ${cell.title}`);
+		console.log(`Code to execute:`, code.substring(0, 200) + "...");
 
 		// Update cell status to running
 		updateCell(id, { status: "running" });
@@ -854,17 +1551,18 @@ print("Code generation not available. Please implement manually.")`;
 						}, 2000);
 					}
 				}
-			}
+			},
+			workspacePath
 		);
 	};
 
 	const executeAllSteps = async () => {
-		if (jupyterStatus !== "ready" || cells.length === 0) return;
+		if (jupyterStatus !== "ready" || !cells || cells.length === 0) return;
 
 		setJupyterStatus("running");
 		console.log("Starting execution of all analysis steps...");
 
-		for (let i = 0; i < cells.length; i++) {
+		for (let i = 0; i < (cells || []).length; i++) {
 			const cell = cells[i];
 			if (cell.status === "pending" || cell.status === "failed") {
 				setCurrentStepIndex(i);
@@ -906,11 +1604,55 @@ print("Code generation not available. Please implement manually.")`;
 	};
 
 	const getProgressPercentage = () => {
-		if (cells.length === 0) return 0;
+		if (!cells || cells.length === 0) return 0;
 		const completed = cells.filter(
 			(cell) => cell.status === "completed"
 		).length;
 		return (completed / cells.length) * 100;
+	};
+
+	// Enhanced autoscroll effect for code generation
+	useEffect(() => {
+		if (isGeneratingCode && cellsContainerRef.current) {
+			setTimeout(() => {
+				if (cellsContainerRef.current) {
+					cellsContainerRef.current.scrollTop =
+						cellsContainerRef.current.scrollHeight;
+				}
+			}, 100);
+		}
+	}, [isGeneratingCode, codeWritingLog]);
+
+	// Enhanced autoscroll effect for new cells
+	useEffect(() => {
+		if (cellsContainerRef.current) {
+			setTimeout(() => {
+				if (cellsContainerRef.current) {
+					cellsContainerRef.current.scrollTop =
+						cellsContainerRef.current.scrollHeight;
+				}
+			}, 100);
+		}
+	}, [cells]);
+
+	// Enhanced autoscroll effect during cell execution
+	useEffect(() => {
+		if (isAutoExecuting && cellsContainerRef.current) {
+			setTimeout(() => {
+				if (cellsContainerRef.current) {
+					cellsContainerRef.current.scrollTop =
+						cellsContainerRef.current.scrollHeight;
+				}
+			}, 100);
+		}
+	}, [isAutoExecuting]);
+
+	// Force scroll to bottom when new content is added
+	const forceScrollToBottom = () => {
+		if (cellsContainerRef.current) {
+			cellsContainerRef.current.scrollTop =
+				cellsContainerRef.current.scrollHeight;
+		}
 	};
 
 	if (jupyterStatus === "starting" || isLoadingAnalysis) {
@@ -938,31 +1680,13 @@ print("Code generation not available. Please implement manually.")`;
 	return (
 		<NotebookContainer>
 			<NotebookHeader>
-				<NotebookTitle>Interactive Notebook</NotebookTitle>
+				<NotebookTitle>Interactive Notebook (Preview)</NotebookTitle>
 				<NotebookActions>
-					{isAutoExecuting && (
-						<div
-							style={{
-								background: "rgba(0, 122, 204, 0.1)",
-								border: "1px solid rgba(0, 122, 204, 0.3)",
-								borderRadius: "4px",
-								padding: "4px 8px",
-								color: "#007acc",
-								fontSize: "12px",
-								display: "flex",
-								alignItems: "center",
-								gap: "4px",
-							}}
-						>
-							<FiPlay size={12} />
-							Auto-executing...
-						</div>
-					)}
 					<StatusIndicator $status={jupyterStatus}>
 						<FiPlay size={14} />
 						{getStatusText()}
 					</StatusIndicator>
-					{cells.length > 0 && (
+					{cells && cells.length > 0 && (
 						<ActionButton
 							onClick={executeAllSteps}
 							disabled={jupyterStatus !== "ready"}
@@ -989,78 +1713,8 @@ print("Code generation not available. Please implement manually.")`;
 				</NotebookActions>
 			</NotebookHeader>
 
-			{/* Status Display */}
-			{(virtualEnvStatus || codeWritingLog.length > 0) && (
-				<StatusDisplay>
-					{virtualEnvStatus && (
-						<VirtualEnvStatus $status={virtualEnvStatus}>
-							🔧 {virtualEnvStatus}
-						</VirtualEnvStatus>
-					)}
-					{codeWritingLog.length > 0 && (
-						<CodeWritingLog>
-							<div
-								style={{
-									marginBottom: "8px",
-									color: "#007acc",
-									fontWeight: "600",
-								}}
-							>
-								📝 Code Generation Log:
-							</div>
-							{codeWritingLog.slice(-3).map((entry, index) => (
-								<CodeEntry key={index}>
-									<div
-										style={{
-											color: "#858585",
-											fontSize: "10px",
-											marginBottom: "4px",
-										}}
-									>
-										{new Date(entry.timestamp).toLocaleTimeString()}
-									</div>
-									<div style={{ whiteSpace: "pre-wrap" }}>
-										{entry.code.substring(0, 200)}
-										{entry.code.length > 200 ? "..." : ""}
-									</div>
-								</CodeEntry>
-							))}
-						</CodeWritingLog>
-					)}
-				</StatusDisplay>
-			)}
-
-			{cells.length > 0 && (
-				<div
-					style={{
-						padding: "0 20px",
-						background: "#1e1e1e",
-						borderBottom: "1px solid #404040",
-					}}
-				>
-					<div
-						style={{
-							display: "flex",
-							alignItems: "center",
-							gap: "12px",
-							padding: "8px 0",
-						}}
-					>
-						<span style={{ color: "#858585", fontSize: "12px" }}>
-							Progress:
-						</span>
-						<ProgressBar>
-							<ProgressFill $progress={getProgressPercentage()} />
-						</ProgressBar>
-						<span style={{ color: "#858585", fontSize: "12px" }}>
-							{Math.round(getProgressPercentage())}% Complete
-						</span>
-					</div>
-				</div>
-			)}
-
-			<CellsContainer>
-				{cells.length === 0 ? (
+			<CellsContainer ref={cellsContainerRef}>
+				{!cells || cells.length === 0 ? (
 					<div
 						style={{
 							display: "flex",
@@ -1081,7 +1735,7 @@ print("Code generation not available. Please implement manually.")`;
 								color: "#cccccc",
 							}}
 						>
-							Interactive Analysis Notebook
+							Interactive Notebook Preview
 						</div>
 						<div
 							style={{
@@ -1090,17 +1744,26 @@ print("Code generation not available. Please implement manually.")`;
 								maxWidth: "400px",
 							}}
 						>
-							Ask a question in the chat panel to generate analysis steps. The
-							notebook will automatically create and execute cells based on your
-							request.
+							This is a preview of the interactive notebook interface. You can
+							also:
+						</div>
+						<div
+							style={{ fontSize: "12px", color: "#666", marginBottom: "16px" }}
+						>
+							• Use the <strong>Explorer</strong> to browse and open actual
+							`.ipynb` files
+						</div>
+						<div
+							style={{ fontSize: "12px", color: "#666", marginBottom: "16px" }}
+						>
+							• Open files in your preferred editor (Jupyter, VS Code, etc.)
 						</div>
 						<div style={{ fontSize: "12px", color: "#666" }}>
-							Example: "Can you find me the different transcriptional subtypes
-							of B-ALL?"
+							• Ask questions in the chat panel to generate analysis workflows
 						</div>
 					</div>
 				) : (
-					cells.map((cell, index) => (
+					(cells || []).map((cell, index) => (
 						<div key={cell.id} style={{ marginBottom: "16px" }}>
 							{cell.title && !cell.isMarkdown && (
 								<div
@@ -1159,19 +1822,8 @@ print("Code generation not available. Please implement manually.")`;
 					))
 				)}
 
-				{cells.length > 0 && (
-					<>
-						<AddCellButton onClick={() => addCell("python")}>
-							<FiPlus size={16} />
-							Add Python Cell
-						</AddCellButton>
-
-						<AddCellButton onClick={() => addCell("r")}>
-							<FiPlus size={16} />
-							Add R Cell
-						</AddCellButton>
-					</>
-				)}
+				{/* Add ref for autoscroll */}
+				<div ref={messagesEndRef} />
 			</CellsContainer>
 		</NotebookContainer>
 	);

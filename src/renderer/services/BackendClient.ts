@@ -1,4 +1,5 @@
 import axios from "axios";
+import { SearchOrchestrator } from "./SearchOrchestrator";
 
 export interface GEODataset {
 	id: string;
@@ -6,6 +7,13 @@ export interface GEODataset {
 	description?: string;
 	organism?: string;
 	url?: string;
+	sample_count?: string;
+	platform?: string;
+	similarity_score?: number;
+	source?: string;
+	publication_date?: string;
+	samples?: number;
+	type?: string;
 }
 
 export interface SearchProgress {
@@ -18,26 +26,24 @@ export interface SearchProgress {
 
 export class BackendClient {
 	private baseUrl: string;
+	private searchOrchestrator: SearchOrchestrator;
 	private onProgress?: (progress: SearchProgress) => void;
 
 	constructor(baseUrl: string = "http://localhost:8000") {
 		this.baseUrl = baseUrl;
+		this.searchOrchestrator = new SearchOrchestrator(this);
 	}
 
 	setProgressCallback(callback: (progress: SearchProgress) => void) {
 		this.onProgress = callback;
+		this.searchOrchestrator.setProgressCallback(callback);
 	}
 
 	getBaseUrl(): string {
 		return this.baseUrl;
 	}
 
-	private updateProgress(progress: SearchProgress) {
-		if (this.onProgress) {
-			this.onProgress(progress);
-		}
-	}
-
+	// Direct API methods - no business logic
 	async searchDatasets(query: {
 		query: string;
 		limit?: number;
@@ -46,16 +52,264 @@ export class BackendClient {
 		try {
 			const response = await axios.post(`${this.baseUrl}/search`, {
 				query: query.query,
-				limit: query.limit || 10,
+				limit: query.limit || 50,
 				organism: query.organism,
 			});
 			return response.data;
 		} catch (error) {
-			console.error("Error searching datasets:", error);
+			console.error("BackendClient: Error searching datasets:", error);
 			throw error;
 		}
 	}
 
+	// Streaming search with real-time progress updates
+	async searchDatasetsStream(
+		query: {
+			query: string;
+			limit?: number;
+			organism?: string;
+		},
+		onProgress?: (progress: SearchProgress) => void,
+		onResults?: (datasets: GEODataset[]) => void,
+		onError?: (error: string) => void
+	): Promise<GEODataset[]> {
+		try {
+			const response = await fetch(`${this.baseUrl}/search/stream`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					query: query.query,
+					limit: query.limit || 50,
+					organism: query.organism,
+				}),
+			});
+
+			if (!response.ok) {
+				throw new Error(`HTTP error! status: ${response.status}`);
+			}
+
+			const reader = response.body?.getReader();
+			if (!reader) {
+				throw new Error("No response body");
+			}
+
+			const decoder = new TextDecoder();
+			let buffer = "";
+
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+
+				buffer += decoder.decode(value, { stream: true });
+				const lines = buffer.split("\n");
+				buffer = lines.pop() || "";
+
+				for (const line of lines) {
+					if (line.startsWith("data: ")) {
+						try {
+							const data = JSON.parse(line.slice(6));
+
+							switch (data.type) {
+								case "progress":
+									if (onProgress) {
+										onProgress({
+											message: data.message,
+											step: data.step,
+											progress: data.progress,
+											datasetsFound: data.datasetsFound,
+										});
+									}
+									break;
+
+								case "results":
+									if (onResults) {
+										onResults(data.datasets);
+									}
+									return data.datasets;
+
+								case "error":
+									if (onError) {
+										onError(data.message);
+									}
+									throw new Error(data.message);
+							}
+						} catch (error) {
+							console.error("Error parsing SSE data:", error);
+						}
+					}
+				}
+			}
+
+			throw new Error("Stream ended without results");
+		} catch (error) {
+			console.error("BackendClient: Error in streaming search:", error);
+			throw error;
+		}
+	}
+
+	async simplifyQuery(query: string): Promise<string> {
+		try {
+			const response = await axios.post(`${this.baseUrl}/llm/simplify`, {
+				query: query,
+			});
+			return response.data.simplified_query;
+		} catch (error) {
+			console.error("BackendClient: Error simplifying query:", error);
+			// Fallback to original query if simplification fails
+			return query;
+		}
+	}
+
+	async generateSearchTerms(
+		query: string,
+		attempt: number = 1,
+		isFirstAttempt: boolean = true
+	): Promise<string[]> {
+		try {
+			const response = await axios.post(`${this.baseUrl}/llm/search-terms`, {
+				query: query,
+				attempt: attempt,
+				is_first_attempt: isFirstAttempt,
+			});
+			return response.data.terms || [];
+		} catch (error) {
+			console.error("BackendClient: Error generating search terms:", error);
+			// Fallback to basic term extraction
+			return this.extractBasicTerms(query);
+		}
+	}
+
+	async generateAlternativeSearchTerms(
+		query: string,
+		attempt: number
+	): Promise<string[]> {
+		try {
+			const response = await axios.post(`${this.baseUrl}/llm/search-terms`, {
+				query: query,
+				attempt: attempt,
+				is_first_attempt: false,
+			});
+			return response.data.terms || [];
+		} catch (error) {
+			console.error(
+				"BackendClient: Error generating alternative search terms:",
+				error
+			);
+			return [];
+		}
+	}
+
+	async searchByGene(
+		gene: string,
+		organism?: string,
+		limit: number = 50
+	): Promise<GEODataset[]> {
+		try {
+			const url = organism
+				? `${this.baseUrl}/search/gene/${gene}?organism=${organism}&limit=${limit}`
+				: `${this.baseUrl}/search/gene/${gene}?limit=${limit}`;
+
+			const response = await axios.get(url);
+			return response.data;
+		} catch (error) {
+			console.error("BackendClient: Error searching by gene:", error);
+			throw error;
+		}
+	}
+
+	async searchByDisease(
+		disease: string,
+		limit: number = 50
+	): Promise<GEODataset[]> {
+		try {
+			const response = await axios.get(
+				`${this.baseUrl}/search/disease/${disease}?limit=${limit}`
+			);
+			return response.data;
+		} catch (error) {
+			console.error("BackendClient: Error searching by disease:", error);
+			throw error;
+		}
+	}
+
+	async generateCode(request: {
+		task_description: string;
+		language?: string;
+		context?: string;
+	}): Promise<string> {
+		try {
+			const response = await axios.post(`${this.baseUrl}/llm/code`, {
+				task_description: request.task_description,
+				language: request.language || "python",
+				context: request.context,
+			});
+			return response.data.code;
+		} catch (error) {
+			console.error("BackendClient: Error generating code:", error);
+			throw error;
+		}
+	}
+
+	async validateCode(code: string): Promise<{
+		is_valid: boolean;
+		linted_code: string;
+		errors: string[];
+		warnings: string[];
+	}> {
+		try {
+			const response = await axios.post(`${this.baseUrl}/llm/validate-code`, {
+				code: code,
+			});
+			return response.data;
+		} catch (error) {
+			console.error("BackendClient: Error validating code:", error);
+			throw error;
+		}
+	}
+
+	async analyzeQuery(query: string): Promise<{
+		intent: string;
+		entities: string[];
+		data_types: string[];
+		analysis_type: string;
+		complexity: string;
+	}> {
+		try {
+			const response = await axios.post(`${this.baseUrl}/llm/analyze`, {
+				query: query,
+			});
+			return response.data;
+		} catch (error) {
+			console.error("BackendClient: Error analyzing query:", error);
+			throw error;
+		}
+	}
+
+	async generatePlan(request: {
+		question: string;
+		context?: string;
+		current_state?: any;
+		available_data?: any[];
+		task_type?: string;
+	}): Promise<any> {
+		try {
+			const response = await axios.post(`${this.baseUrl}/llm/plan`, {
+				question: request.question,
+				context: request.context || "",
+				current_state: request.current_state || {},
+				available_data: request.available_data || [],
+				task_type: request.task_type || "general",
+			});
+			return response.data;
+		} catch (error) {
+			console.error("BackendClient: Error generating plan:", error);
+			throw error;
+		}
+	}
+
+	// Business logic methods
 	async discoverDatasets(
 		query: string,
 		options?: { organism?: string; limit?: number }
@@ -72,434 +326,40 @@ export class BackendClient {
 		queryTransformation?: string;
 		searchSteps?: string[];
 	}> {
-		try {
-			const searchSteps: string[] = [];
-			const usedSearchTerms: string[] = [];
-			const maxAttempts = 3;
-			let allDatasets: GEODataset[] = [];
-
-			// Initial progress update
-			this.updateProgress({
-				message: "Starting dataset search...",
-				step: "init",
-				progress: 0,
-			});
-
-			searchSteps.push(`Processing query: "${query}"`);
-
-			// Step 1: Simplify the query using LLM
-			this.updateProgress({
-				message: "Simplifying your query with AI...",
-				step: "simplify",
-				progress: 10,
-			});
-
-			searchSteps.push("Simplifying query with LLM...");
-			const simplifiedQuery = await this.simplifyQuery(query);
-			searchSteps.push(`Simplified query: "${simplifiedQuery}"`);
-
-			this.updateProgress({
-				message: `Query simplified to: "${simplifiedQuery}"`,
-				step: "simplified",
-				progress: 20,
-			});
-
-			// Step 2: Search with the simplified query
-			this.updateProgress({
-				message: "Searching databases with simplified query...",
-				step: "search",
-				progress: 30,
-				currentTerm: simplifiedQuery,
-			});
-
-			searchSteps.push("Searching with simplified query...");
-			let searchResponse = await this.searchDatasets({
-				query: simplifiedQuery,
-				limit: options?.limit || 10,
-				organism: options?.organism,
-			});
-
-			searchSteps.push(
-				`Found ${searchResponse.length} datasets for "${simplifiedQuery}"`
-			);
-			allDatasets.push(...searchResponse);
-			usedSearchTerms.push(simplifiedQuery);
-
-			this.updateProgress({
-				message: `Found ${searchResponse.length} datasets for "${simplifiedQuery}"`,
-				step: "initial_results",
-				progress: 50,
-				datasetsFound: searchResponse.length,
-			});
-
-			// Step 3: If we don't have enough results, try alternative search terms
-			if (searchResponse.length < (options?.limit || 10) && maxAttempts > 1) {
-				this.updateProgress({
-					message: "Need more results, generating alternative search terms...",
-					step: "fallback",
-					progress: 60,
-				});
-
-				searchSteps.push(
-					"Not enough results, trying alternative search terms..."
-				);
-
-				for (let attempt = 2; attempt <= maxAttempts; attempt++) {
-					searchSteps.push(
-						`Attempt ${attempt}: Generating alternative search terms...`
-					);
-
-					// Generate alternative search terms using LLM
-					const alternativeTerms = await this.generateAlternativeSearchTerms(
-						query,
-						attempt
-					);
-					searchSteps.push(`Generated terms: ${alternativeTerms.join(", ")}`);
-
-					// Try each alternative term
-					for (const term of alternativeTerms) {
-						if (allDatasets.length >= (options?.limit || 10)) {
-							break; // We have enough results
-						}
-
-						searchSteps.push(`Searching for: "${term}"`);
-
-						// Update progress for individual term search
-						this.updateProgress({
-							message: `Searching for: "${term}"`,
-							step: "search",
-							progress: 60 + (attempt - 2) * 10,
-							currentTerm: term,
-						});
-
-						try {
-							const termResults = await this.searchDatasets({
-								query: term,
-								limit: Math.ceil(
-									(options?.limit || 10) / alternativeTerms.length
-								),
-								organism: options?.organism,
-							});
-
-							if (termResults.length > 0) {
-								searchSteps.push(
-									`Found ${termResults.length} datasets for "${term}"`
-								);
-
-								// Update progress with results
-								this.updateProgress({
-									message: `Found ${termResults.length} datasets for "${term}"`,
-									step: "search_results",
-									progress: 60 + (attempt - 2) * 10 + 5,
-									currentTerm: term,
-									datasetsFound: termResults.length,
-								});
-
-								allDatasets.push(...termResults);
-								usedSearchTerms.push(term);
-							} else {
-								searchSteps.push(`No datasets found for "${term}"`);
-
-								// Update progress for no results
-								this.updateProgress({
-									message: `No datasets found for "${term}"`,
-									step: "search_no_results",
-									progress: 60 + (attempt - 2) * 10 + 5,
-									currentTerm: term,
-									datasetsFound: 0,
-								});
-							}
-						} catch (error) {
-							searchSteps.push(`Search failed for "${term}"`);
-
-							// Update progress for search error
-							this.updateProgress({
-								message: `Search failed for "${term}"`,
-								step: "search_error",
-								progress: 60 + (attempt - 2) * 10 + 5,
-								currentTerm: term,
-								datasetsFound: 0,
-							});
-						}
-					}
-
-					// If we found some results, we can be more selective about continuing
-					if (
-						allDatasets.length > 0 &&
-						allDatasets.length >= Math.ceil((options?.limit || 10) / 2)
-					) {
-						searchSteps.push("Found sufficient results, stopping search");
-						break;
-					}
-				}
-			}
-
-			// Remove duplicates and limit results
-			this.updateProgress({
-				message: "Removing duplicates and finalizing results...",
-				step: "deduplicate",
-				progress: 95,
-			});
-
-			const uniqueDatasets = allDatasets.filter(
-				(dataset, index, self) =>
-					index === self.findIndex((d) => d.id === dataset.id)
-			);
-
-			const limitedDatasets = uniqueDatasets.slice(0, options?.limit || 10);
-			searchSteps.push(
-				`Final result: ${limitedDatasets.length} unique datasets`
-			);
-
-			this.updateProgress({
-				message: `Search complete! Found ${limitedDatasets.length} unique datasets`,
-				step: "complete",
-				progress: 100,
-				datasetsFound: limitedDatasets.length,
-			});
-
-			return {
-				datasets: limitedDatasets,
-				query: query,
-				suggestions: [
-					"Try different keywords",
-					"Use more specific terms",
-					"Check spelling",
-				],
-				searchType: "simplified_search_with_fallback",
-				formattedQuery: simplifiedQuery,
-				extractedGenes: [],
-				extractedDiseases: [],
-				extractedIds: [],
-				searchTerms: usedSearchTerms,
-				queryTransformation: `Original: "${query}" → Simplified: "${simplifiedQuery}" → Additional terms: ${usedSearchTerms
-					.slice(1)
-					.join(", ")}`,
-				searchSteps: searchSteps,
-			};
-		} catch (error) {
-			console.error("Error searching datasets:", error);
-			this.updateProgress({
-				message: `Search failed: ${error}`,
-				step: "error",
-				progress: 100,
-			});
-			throw error;
-		}
-	}
-
-	async simplifyQuery(query: string): Promise<string> {
-		try {
-			const response = await axios.post(`${this.baseUrl}/llm/simplify`, {
-				query: query,
-			});
-			return response.data.simplified_query;
-		} catch (error) {
-			console.error("Error simplifying query:", error);
-			// Fallback to original query if simplification fails
-			return query;
-		}
-	}
-
-	async generateAlternativeSearchTerms(
-		query: string,
-		attempt: number
-	): Promise<string[]> {
-		try {
-			// Use the LLM search endpoint to generate alternative terms
-			const response = await axios.post(`${this.baseUrl}/search/llm`, {
-				query: query,
-				limit: 5,
-				max_attempts: 1,
-			});
-
-			// Extract search terms from the response
-			const searchTerms = response.data.search_terms || [];
-
-			// If no terms were generated, fallback to basic extraction
-			if (searchTerms.length === 0) {
-				return this.extractBasicTerms(query);
-			}
-
-			// Prioritize disease-specific terms over generic technical terms
-			const prioritizedTerms = this.prioritizeSearchTerms(searchTerms, query);
-			return prioritizedTerms.slice(0, 3); // Limit to 3 alternative terms
-		} catch (error) {
-			console.error("Error generating alternative search terms:", error);
-			// Fallback to basic term extraction
-			return this.extractBasicTerms(query);
-		}
-	}
-
-	private prioritizeSearchTerms(
-		terms: string[],
-		originalQuery: string
-	): string[] {
-		// Extract disease-like patterns from original query
-		const diseasePatterns = [
-			/\b[A-Z][A-Z-]+\b/g, // ALL, B-ALL, AML, etc.
-			/\b[A-Z][a-z]+ [A-Z][a-z]+\b/g, // Breast Cancer, etc.
-			/\bcancer\b/gi,
-			/\bleukemia\b/gi,
-			/\blymphoma\b/gi,
-			/\bdiabetes\b/gi,
-			/\bheart\b/gi,
-			/\blung\b/gi,
-			/\bbrain\b/gi,
-			/\bliver\b/gi,
-			/\bkidney\b/gi,
-		];
-
-		const originalDiseases = new Set<string>();
-		diseasePatterns.forEach((pattern) => {
-			const matches = originalQuery.match(pattern);
-			if (matches) {
-				matches.forEach((match) => originalDiseases.add(match.toLowerCase()));
-			}
+		const result = await this.searchOrchestrator.discoverDatasets({
+			query,
+			organism: options?.organism,
+			limit: options?.limit,
 		});
-
-		// Separate terms into disease-specific and generic
-		const diseaseSpecific: string[] = [];
-		const generic: string[] = [];
-
-		terms.forEach((term) => {
-			const termLower = term.toLowerCase();
-			const hasDisease = Array.from(originalDiseases).some(
-				(disease) => termLower.includes(disease) || disease.includes(termLower)
-			);
-
-			if (hasDisease) {
-				diseaseSpecific.push(term);
-			} else {
-				generic.push(term);
-			}
-		});
-
-		// Return disease-specific terms first, then generic terms
-		return [...diseaseSpecific, ...generic];
+		return result;
 	}
 
+	// Utility method for basic term extraction (fallback)
 	private extractBasicTerms(query: string): string[] {
-		// Simple fallback method to extract basic terms
-		const terms: string[] = [];
-
-		// Extract GEO IDs if present
-		const geoIds = query.match(/GSE\d+/g) || [];
-		terms.push(...geoIds);
-
-		// Extract disease-like terms (patterns that look like disease names)
-		const diseasePatterns = [
-			/\b[A-Z][A-Z-]+\b/g, // ALL, B-ALL, AML, etc.
-			/\b[A-Z][a-z]+ [A-Z][a-z]+\b/g, // Breast Cancer, etc.
-			/\bcancer\b/gi,
-			/\bleukemia\b/gi,
-			/\blymphoma\b/gi,
-			/\bdiabetes\b/gi,
-			/\bheart\b/gi,
-			/\blung\b/gi,
-			/\bbrain\b/gi,
-			/\bliver\b/gi,
-			/\bkidney\b/gi,
-		];
-
-		const diseaseTerms: string[] = [];
-		diseasePatterns.forEach((pattern) => {
-			const matches = query.match(pattern);
-			if (matches) {
-				diseaseTerms.push(...matches);
-			}
-		});
-
-		// Extract technical/biological terms
-		const technicalPatterns = [
-			/\btranscriptional\b/gi,
-			/\bexpression\b/gi,
-			/\bsubtypes\b/gi,
-			/\bclustering\b/gi,
-			/\bbiomarkers\b/gi,
-			/\bgenes\b/gi,
-			/\bRNA\b/gi,
-			/\bDNA\b/gi,
-			/\bprotein\b/gi,
-			/\bsequencing\b/gi,
-			/\bmicroarray\b/gi,
-			/\banalysis\b/gi,
-			/\bdata\b/gi,
-		];
-
-		const techTerms: string[] = [];
-		technicalPatterns.forEach((pattern) => {
-			const matches = query.match(pattern);
-			if (matches) {
-				techTerms.push(...matches);
-			}
-		});
-
-		// Extract meaningful words (4+ characters, not common words)
-		const commonWords = new Set([
-			"can",
-			"you",
-			"find",
-			"me",
-			"the",
-			"different",
-			"of",
-			"in",
-			"on",
-			"at",
-			"to",
-			"for",
-			"with",
-			"by",
-			"from",
-			"this",
-			"that",
-			"these",
-			"those",
-			"what",
-			"when",
-			"where",
-			"why",
-			"how",
-			"which",
-			"who",
-			"whose",
-			"whom",
-			"please",
-			"show",
-			"get",
-			"want",
-			"need",
-			"would",
-			"could",
-			"should",
-			"will",
-			"may",
-			"might",
-			"must",
-			"shall",
-		]);
-
-		const words = query
-			.replace(/[^\w\s]/g, " ")
+		// Simple fallback: extract key terms from query
+		const terms = query
+			.toLowerCase()
 			.split(/\s+/)
 			.filter(
-				(word) => word.length >= 4 && !commonWords.has(word.toLowerCase())
-			);
+				(term) =>
+					term.length > 2 &&
+					![
+						"the",
+						"and",
+						"or",
+						"for",
+						"with",
+						"in",
+						"on",
+						"at",
+						"to",
+						"of",
+						"a",
+						"an",
+					].includes(term)
+			)
+			.slice(0, 3);
 
-		// Prioritize disease terms, then technical terms, then other words
-		const result = [...geoIds, ...diseaseTerms, ...techTerms, ...words];
-
-		// Remove duplicates while preserving order
-		const seen = new Set<string>();
-		const uniqueResult: string[] = [];
-		for (const term of result) {
-			if (!seen.has(term.toLowerCase())) {
-				uniqueResult.push(term);
-				seen.add(term.toLowerCase());
-			}
-		}
-
-		return uniqueResult.slice(0, 5);
+		return terms.length > 0 ? terms : [query];
 	}
 }

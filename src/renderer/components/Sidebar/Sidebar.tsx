@@ -1,7 +1,13 @@
 import React, { useState, useEffect } from "react";
 import styled from "styled-components";
-import { FiFolder, FiFile, FiChevronRight } from "react-icons/fi";
-import { useAppContext } from "../../context/AppContext";
+import {
+	FiFolder,
+	FiFile,
+	FiChevronRight,
+	FiPlay,
+	FiEdit3,
+} from "react-icons/fi";
+import { useWorkspaceContext } from "../../context/WorkspaceContext";
 import { openFile } from "../../utils";
 
 interface SidebarProps {
@@ -73,6 +79,32 @@ const FileItem = styled.div<{ $isDirectory: boolean; $level: number }>`
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
+
+	.actions {
+		display: none;
+		align-items: center;
+		gap: 4px;
+		margin-left: 8px;
+	}
+
+	&:hover .actions {
+		display: flex;
+	}
+`;
+
+const ActionButton = styled.button`
+	background: none;
+	border: none;
+	color: #cccccc;
+	cursor: pointer;
+	padding: 2px;
+	border-radius: 2px;
+	font-size: 12px;
+
+	&:hover {
+		background-color: #3c3c3c;
+		color: #ffffff;
+	}
 `;
 
 const BreadcrumbNav = styled.div`
@@ -100,7 +132,7 @@ const BreadcrumbNav = styled.div`
 `;
 
 export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
-	const { state, dispatch } = useAppContext();
+	const { state, dispatch } = useWorkspaceContext();
 	const [currentPath, setCurrentPath] = useState<string>("");
 	const [currentFiles, setCurrentFiles] = useState<FileItem[]>([]);
 
@@ -140,6 +172,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		} catch (error) {
 			console.error("Error loading directory:", error);
 			setCurrentFiles([]);
+		}
+	};
+
+	const openInSystem = async (filePath: string) => {
+		try {
+			await window.electronAPI.openFile(filePath);
+		} catch (error) {
+			console.error("Error opening file in system:", error);
 		}
 	};
 
@@ -252,6 +292,30 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 									)}
 								</div>
 								<div className="name">{item.name}</div>
+								<div className="actions">
+									{!item.isDirectory && item.name.endsWith(".ipynb") && (
+										<ActionButton
+											onClick={(e) => {
+												e.stopPropagation();
+												openInSystem(item.path);
+											}}
+											title="Open in Jupyter/VS Code"
+										>
+											<FiPlay size={12} />
+										</ActionButton>
+									)}
+									{!item.isDirectory && (
+										<ActionButton
+											onClick={(e) => {
+												e.stopPropagation();
+												openFile(item.path, dispatch);
+											}}
+											title="Open in editor"
+										>
+											<FiEdit3 size={12} />
+										</ActionButton>
+									)}
+								</div>
 							</FileItem>
 						))}
 					</FileTree>

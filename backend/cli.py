@@ -12,7 +12,7 @@ app = typer.Typer(help="Minimal GEO Semantic Search CLI")
 @app.command()
 def search(
     query: str = typer.Argument(..., help="Search query"),
-    limit: int = typer.Option(10, help="Maximum number of results"),
+    limit: int = typer.Option(50, help="Maximum number of results"),  # Increased from 25 to 50
     organism: Optional[str] = typer.Option(None, help="Filter by organism")
 ):
     """Search for GEO datasets similar to the query."""
@@ -39,9 +39,15 @@ def search(
             typer.echo(f"{i}. {dataset['id']} - {dataset['title']}")
             typer.echo(f"   Organism: {dataset['organism']}")
             typer.echo(f"   Samples: {dataset['sample_count']}")
+            typer.echo(f"   Platform: {dataset['platform']}")
             typer.echo(f"   Similarity: {dataset['similarity_score']:.3f}")
+            if dataset.get('description'):
+                desc = dataset['description'][:100] + "..." if len(dataset['description']) > 100 else dataset['description']
+                typer.echo(f"   Description: {desc}")
             typer.echo(f"   URL: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc={dataset['id']}")
             typer.echo()
+        
+        await client.cleanup()
     
     asyncio.run(run_search())
 
@@ -50,7 +56,7 @@ def search(
 def gene(
     gene: str = typer.Argument(..., help="Gene name or symbol"),
     organism: Optional[str] = typer.Option(None, help="Filter by organism"),
-    limit: int = typer.Option(10, help="Maximum number of results")
+    limit: int = typer.Option(50, help="Maximum number of results")  # Increased from 25 to 50
 ):
     """Search for GEO datasets related to a specific gene."""
     async def run_gene_search():
@@ -86,7 +92,7 @@ def gene(
 @app.command()
 def disease(
     disease: str = typer.Argument(..., help="Disease name"),
-    limit: int = typer.Option(10, help="Maximum number of results")
+    limit: int = typer.Option(25, help="Maximum number of results")  # Increased from 10 to 25
 ):
     """Search for GEO datasets related to a specific disease."""
     async def run_disease_search():

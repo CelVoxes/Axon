@@ -98,13 +98,123 @@ const MessageText = styled.div<{ $messageType: string }>`
 			case "assistant":
 				return `
 					background: rgba(42, 42, 42, 0.6);
-					color: #ffffff;
-					padding: 16px;
-					border-radius: 4px 16px 16px 16px;
+					color: #e5e7eb;
+					padding: 12px 16px;
+					border-radius: 16px 16px 16px 4px;
 					font-size: 14px;
-					line-height: 1.6;
-					border: 1px solid rgba(75, 85, 99, 0.3);
+					line-height: 1.5;
 					word-wrap: break-word;
+					
+					/* Code block container styling */
+					.code-block-container {
+						margin: 12px 0;
+						border: 1px solid #333;
+						border-radius: 8px;
+						overflow: hidden;
+						background: #1e1e1e;
+					}
+					
+					.code-block-header {
+						display: flex;
+						justify-content: space-between;
+						align-items: center;
+						padding: 8px 12px;
+						background: #2d2d2d;
+						border-bottom: 1px solid #333;
+					}
+					
+					.code-language {
+						font-size: 11px;
+						color: #888;
+						text-transform: uppercase;
+						font-weight: 600;
+					}
+					
+					.copy-code-btn {
+						background: #007acc;
+						color: white;
+						border: none;
+						border-radius: 4px;
+						padding: 4px 8px;
+						font-size: 11px;
+						cursor: pointer;
+						transition: background 0.2s;
+						
+						&:hover {
+							background: #005a9e;
+						}
+						
+						&:active {
+							background: #004578;
+						}
+					}
+					
+					/* Code block styling */
+					.code-block {
+						background: #1e1e1e;
+						border: none;
+						border-radius: 0;
+						padding: 16px;
+						margin: 0;
+						overflow-x: auto;
+						max-height: 400px;
+						overflow-y: auto;
+						font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+						font-size: 13px;
+						line-height: 1.4;
+						position: relative;
+						
+						&::-webkit-scrollbar {
+							width: 8px;
+							height: 8px;
+						}
+						
+						&::-webkit-scrollbar-track {
+							background: #2d2d2d;
+							border-radius: 4px;
+						}
+						
+						&::-webkit-scrollbar-thumb {
+							background: #555;
+							border-radius: 4px;
+						}
+						
+						&::-webkit-scrollbar-thumb:hover {
+							background: #777;
+						}
+					}
+					
+					.code-block::before {
+						content: attr(data-language);
+						position: absolute;
+						top: 8px;
+						right: 12px;
+						font-size: 11px;
+						color: #888;
+						text-transform: uppercase;
+						font-weight: 600;
+					}
+					
+					.code-block code {
+						color: #d4d4d4;
+						background: none;
+						padding: 0;
+						border: none;
+						border-radius: 0;
+						font-family: inherit;
+						font-size: inherit;
+						line-height: inherit;
+					}
+					
+					.inline-code {
+						background: #2d2d2d;
+						color: #e5e7eb;
+						padding: 2px 6px;
+						border-radius: 4px;
+						font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+						font-size: 12px;
+						border: 1px solid #444;
+					}
 				`;
 			case "system":
 				return `
@@ -253,14 +363,32 @@ const formatContent = (content: string): string => {
 	// Bold text
 	formatted = formatted.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
 
-	// Code blocks
+	// Code blocks with syntax highlighting and copy button
 	formatted = formatted.replace(
 		/```(\w+)?\n([\s\S]*?)\n```/g,
-		"<pre><code>$2</code></pre>"
+		(match, language, code) => {
+			const lang = language || "text";
+			const escapedCode = code.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+			return `<div class="code-block-container">
+				<div class="code-block-header">
+					<span class="code-language">${lang}</span>
+					<button class="copy-code-btn" onclick="copyCodeToClipboard(this, \`${escapedCode.replace(
+						/`/g,
+						"\\`"
+					)}\`)">
+						📋 Copy
+					</button>
+				</div>
+				<pre class="code-block" data-language="${lang}"><code class="language-${lang}">${escapedCode}</code></pre>
+			</div>`;
+		}
 	);
 
 	// Inline code
-	formatted = formatted.replace(/`([^`]+)`/g, "<code>$1</code>");
+	formatted = formatted.replace(
+		/`([^`]+)`/g,
+		"<code class='inline-code'>$1</code>"
+	);
 
 	// Line breaks
 	formatted = formatted.replace(/\n/g, "<br />");
@@ -296,6 +424,34 @@ const formatTimestamp = (timestamp: Date): string => {
 };
 
 export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
+	// Add copy function to window for inline onclick handlers
+	React.useEffect(() => {
+		(window as any).copyCodeToClipboard = (
+			button: HTMLElement,
+			code: string
+		) => {
+			navigator.clipboard
+				.writeText(code)
+				.then(() => {
+					const originalText = button.textContent;
+					button.textContent = "✅ Copied!";
+					button.style.background = "#10b981";
+					setTimeout(() => {
+						button.textContent = originalText;
+						button.style.background = "#007acc";
+					}, 2000);
+				})
+				.catch(() => {
+					button.textContent = "❌ Failed";
+					button.style.background = "#ef4444";
+					setTimeout(() => {
+						button.textContent = "📋 Copy";
+						button.style.background = "#007acc";
+					}, 2000);
+				});
+		};
+	}, []);
+
 	// Determine message type from isUser and status
 	const getMessageType = () => {
 		if (message.isUser) return "user";

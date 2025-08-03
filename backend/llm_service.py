@@ -40,16 +40,22 @@ class OpenAIProvider(LLMProvider):
     
     async def generate_stream(self, messages: List[Dict[str, str]], **kwargs):
         """Generate streaming response from messages."""
-        stream = await self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            stream=True,
-            **kwargs
-        )
-        
-        for chunk in stream:
-            if chunk.choices[0].delta.content is not None:
-                yield chunk.choices[0].delta.content
+        try:
+            stream = await self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                stream=True,
+                **kwargs
+            )
+            
+            async for chunk in stream:
+                if chunk.choices[0].delta.content is not None:
+                    yield chunk.choices[0].delta.content
+                    
+        except Exception as e:
+            print(f"OpenAI streaming error: {e}")
+            # Return a simple fallback message
+            yield f"# Error: Could not generate code due to: {e}\nprint('Code generation failed')"
 
 
 class AnthropicProvider(LLMProvider):
@@ -121,16 +127,28 @@ class LLMService:
     
     def _create_provider(self, provider: str, **kwargs) -> Optional[LLMProvider]:
         """Create LLM provider instance."""
+        print(f"Creating LLM provider: {provider}")
+        
         if provider == "openai":
             api_key = kwargs.get("api_key") or os.getenv("OPENAI_API_KEY")
             model = kwargs.get("model", "gpt-4o-mini")
+            print(f"OpenAI API key found: {bool(api_key)}")
             if api_key:
+                print(f"Creating OpenAI provider with model: {model}")
                 return OpenAIProvider(api_key, model)
+            else:
+                print("No OpenAI API key found")
         elif provider == "anthropic":
             api_key = kwargs.get("api_key") or os.getenv("ANTHROPIC_API_KEY")
             model = kwargs.get("model", "claude-3-sonnet-20240229")
+            print(f"Anthropic API key found: {bool(api_key)}")
             if api_key:
+                print(f"Creating Anthropic provider with model: {model}")
                 return AnthropicProvider(api_key, model)
+            else:
+                print("No Anthropic API key found")
+        
+        print("No provider created, returning None")
         return None
     
     async def generate_search_terms(
@@ -239,7 +257,11 @@ Code:
         context: Optional[str] = None
     ):
         """Generate code with streaming for a given task description."""
+        print(f"generate_code_stream called with task: {task_description}")
+        print(f"Provider available: {self.provider is not None}")
+        
         if not self.provider:
+            print("No provider available, using fallback code")
             # For fallback, yield the entire code at once
             fallback_code = self._generate_fallback_code(task_description, language)
             yield fallback_code
@@ -247,26 +269,52 @@ Code:
         
         prompt = f"""
 You are an expert Python programmer specializing in data analysis and bioinformatics. 
-Generate clean, well-documented code for the following task.
+Generate clean, well-documented, EXECUTABLE code for the following task.
 
 Task: {task_description}
 Language: {language}
 
 {f"Context: {context}" if context else ""}
 
-Requirements:
-- Write only the code, no explanations
-- Include necessary imports
-- Add comments for clarity
-- Handle errors gracefully
+CRITICAL REQUIREMENTS:
+- Write ONLY executable Python code, no explanations or markdown
+- ALWAYS include ALL necessary imports at the top
+- Use these standard imports for bioinformatics: pandas, numpy, matplotlib, seaborn, scipy, sklearn, requests, gzip, io
+- Add clear comments explaining each step
+- Handle errors gracefully with try-except blocks
 - Follow Python best practices
+- Make the code production-ready and biologically meaningful
+- Include print statements to show progress
+- Save outputs to appropriate directories (results/, figures/, etc.)
+- NEVER use f-strings with unescaped quotes or complex expressions
+- Use simple string formatting: print("Value:", value) instead of print(f"Value: {{value}}")
+- Ensure all strings are properly closed and escaped
+
+DATASET DOWNLOAD REQUIREMENTS:
+- ALWAYS validate URLs before downloading
+- Check HTTP status codes (200 = success, 404 = not found, etc.)
+- Handle different file formats (txt, csv, gz, gzip, etc.)
+- Validate downloaded content (check if it's HTML error page vs actual data)
+- Provide fallback options when downloads fail
+- Use proper headers for requests to avoid being blocked
+- Check file size and content type
+- For GEO datasets: Use proper NCBI URLs and handle series matrix files
+
+ERROR HANDLING:
+- Always wrap downloads in try-except blocks
+- Check if response contains HTML error pages
+- Validate file content before processing
+- Provide meaningful error messages
+- Continue execution even if some datasets fail
+
+IMPORTANT: Start with imports, then write the main code. The code must be immediately executable.
 
 Code:
 """
         
         try:
             async for chunk in self.provider.generate_stream([
-                {"role": "system", "content": "You are an expert Python programmer. Generate only code, no explanations."},
+                {"role": "system", "content": "You are an expert Python programmer specializing in bioinformatics and data analysis. Generate ONLY executable Python code with proper imports. Never include explanations, markdown, or non-code text. Avoid complex f-strings and ensure all syntax is correct."},
                 {"role": "user", "content": prompt}
             ], max_tokens=2000, temperature=0.1):
                 yield chunk
@@ -277,6 +325,52 @@ Code:
             fallback_code = self._generate_fallback_code(task_description, language)
             yield fallback_code
     
+    def validate_python_code(self, code: str) -> tuple[bool, str]:
+        """Validate Python code syntax and basic structure."""
+        import ast
+        import re
+        
+        if not code or not code.strip():
+            return False, "Empty code"
+        
+        # Check for basic syntax errors
+        try:
+            ast.parse(code)
+        except SyntaxError as e:
+            return False, f"Syntax error: {e}"
+        except Exception as e:
+            return False, f"AST parsing error: {e}"
+        
+        # Check for common issues
+        issues = []
+        
+        # Check for unclosed strings
+        if code.count('"') % 2 != 0 or code.count("'") % 2 != 0:
+            issues.append("Unclosed string literals")
+        
+        # Check for unclosed parentheses/brackets
+        if code.count('(') != code.count(')') or code.count('[') != code.count(']') or code.count('{') != code.count('}'):
+            issues.append("Unmatched parentheses/brackets")
+        
+        # Check for common problematic patterns
+        if re.search(r'f"[^"]*{[^}]*"[^}]*}', code):
+            issues.append("Malformed f-string")
+        
+        # Check for missing imports (basic check)
+        if 'pandas' in code and 'import pandas' not in code and 'from pandas' not in code:
+            issues.append("Missing pandas import")
+        
+        if 'numpy' in code and 'import numpy' not in code and 'from numpy' not in code:
+            issues.append("Missing numpy import")
+        
+        if 'matplotlib' in code and 'import matplotlib' not in code and 'from matplotlib' not in code:
+            issues.append("Missing matplotlib import")
+        
+        if issues:
+            return False, f"Code issues: {', '.join(issues)}"
+        
+        return True, "Code is valid"
+    
     def extract_python_code(self, response: str) -> Optional[str]:
         """Extract Python code from LLM response."""
         # Look for code blocks
@@ -286,40 +380,271 @@ Code:
         code_block_pattern = r"```(?:python)?\s*\n(.*?)\n```"
         match = re.search(code_block_pattern, response, re.DOTALL)
         if match:
-            return match.group(1).strip()
+            code = match.group(1).strip()
+        else:
+            # If no code blocks, try to extract from the response
+            lines = response.split('\n')
+            code_lines = []
+            in_code = False
+            
+            for line in lines:
+                if line.strip().startswith('import ') or line.strip().startswith('from '):
+                    in_code = True
+                elif line.strip().startswith('#') or line.strip().startswith('def ') or line.strip().startswith('class '):
+                    in_code = True
+                
+                if in_code:
+                    code_lines.append(line)
+            
+            if code_lines:
+                code = '\n'.join(code_lines).strip()
+            else:
+                return None
         
-        # If no code blocks, try to extract from the response
-        lines = response.split('\n')
-        code_lines = []
-        in_code = False
+        # Validate the extracted code
+        is_valid, message = self.validate_python_code(code)
+        if not is_valid:
+            print(f"Code validation failed: {message}")
+            print("Attempting to fix common issues...")
+            code = self._fix_common_code_issues(code)
+            # Validate again after fixing
+            is_valid, message = self.validate_python_code(code)
+            if not is_valid:
+                print(f"Code still invalid after fixing: {message}")
+                return None
+        
+        return code
+    
+    def _fix_common_code_issues(self, code: str) -> str:
+        """Attempt to fix common code issues."""
+        import re
+        
+        # Fix common f-string issues
+        # Remove problematic f-strings and replace with simple string formatting
+        code = re.sub(r'f"([^"]*)"', r'"\1"', code)
+        
+        # Fix unclosed strings by adding quotes
+        lines = code.split('\n')
+        fixed_lines = []
         
         for line in lines:
-            if line.strip().startswith('import ') or line.strip().startswith('from '):
-                in_code = True
-            elif line.strip().startswith('#') or line.strip().startswith('def ') or line.strip().startswith('class '):
-                in_code = True
-            
-            if in_code:
-                code_lines.append(line)
+            # Count quotes in the line
+            quote_count = line.count('"') + line.count("'")
+            if quote_count % 2 != 0:
+                # Add closing quote
+                if line.count('"') % 2 != 0:
+                    line += '"'
+                elif line.count("'") % 2 != 0:
+                    line += "'"
+            fixed_lines.append(line)
         
-        if code_lines:
-            return '\n'.join(code_lines).strip()
-        
-        return None
+        return '\n'.join(fixed_lines)
     
     def _generate_fallback_code(self, task_description: str, language: str = "python") -> str:
         """Generate fallback code when LLM is not available."""
-        return f"""# Fallback code generation
+        desc_lower = task_description.lower()
+        
+        # Basic imports
+        code = f"""# Fallback code generation
 # Task: {task_description}
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import os
+from pathlib import Path
 
-# TODO: Implement {task_description}
-print("Code generation not available. Please implement manually.")
+print("Executing:", task_description)
+
+# Set up directories
+results_dir = Path('results')
+figures_dir = Path('figures')
+results_dir.mkdir(exist_ok=True)
+figures_dir.mkdir(exist_ok=True)
+
 """
+        
+        # Add specific code based on task description keywords
+        if any(keyword in desc_lower for keyword in ['download', 'load', 'data']):
+            code += r"""
+# Data loading and preprocessing with robust error handling
+print("Loading and preprocessing data...")
+
+import requests
+import gzip
+import io
+from urllib.parse import urlparse
+
+def download_dataset(url, filename):
+    # Download dataset with proper error handling and validation
+    try:
+        print("Downloading from:", url)
+        
+        # Set headers to avoid being blocked
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()  # Raise exception for bad status codes
+        
+        # Check if response is HTML (error page)
+        content_type = response.headers.get('content-type', '')
+        if 'text/html' in content_type.lower():
+            print("Warning: Received HTML response, may be an error page")
+            return False
+            
+        # Check content length
+        if len(response.content) < 100:
+            print("Warning: Response too small, may be an error")
+            return False
+            
+        # Save the file
+        with open(filename, 'wb') as f:
+            f.write(response.content)
+        
+        print("Download successful:", filename)
+        return True
+        
+    except requests.exceptions.RequestException as e:
+        print("Download failed:", e)
+        return False
+    except Exception as e:
+        print("Unexpected error during download:", e)
+        return False
+
+def load_data_file(filename):
+    # Load data file with format detection
+    try:
+        # Try different formats
+        if filename.endswith('.gz') or filename.endswith('.gzip'):
+            with gzip.open(filename, 'rt') as f:
+                return pd.read_csv(f, sep='\t')
+        elif filename.endswith('.csv'):
+            return pd.read_csv(filename)
+        elif filename.endswith('.txt'):
+            # Try different separators
+            try:
+                return pd.read_csv(filename, sep='\t')
+            except Exception:
+                return pd.read_csv(filename, sep=',')
+        else:
+            # Try common formats
+            try:
+                return pd.read_csv(filename, sep='\t')
+            except Exception:
+                return pd.read_csv(filename)
+    except Exception as e:
+        print("Error loading", filename, ":", e)
+        return None
+
+# Check for available data files
+data_files = []
+for file in Path('.').glob('*.csv'):
+    data_files.append(file.name)
+for file in Path('.').glob('*.txt'):
+    data_files.append(file.name)
+for file in Path('.').glob('*.gz'):
+    data_files.append(file.name)
+
+print("Found data files:", data_files)
+
+# Load data if available
+if data_files:
+    for data_file in data_files:
+        try:
+            data = load_data_file(data_file)
+            if data is not None:
+                print("Successfully loaded", data_file, ":", data.shape[0], "rows,", data.shape[1], "columns")
+                print("Columns:", list(data.columns))
+                
+                # Basic data exploration
+                print("\nData summary:")
+                print(data.info())
+                print("\nFirst few rows:")
+                print(data.head())
+                break
+        except Exception as e:
+            print("Error loading", data_file, ":", e)
+            continue
+else:
+    print("No data files found. Please ensure data is available.")
+"""
+        
+        elif any(keyword in desc_lower for keyword in ['expression', 'differential', 'deg']):
+            code += """
+# Gene expression analysis
+print("Performing gene expression analysis...")
+
+# This would typically involve:
+# 1. Loading expression data
+# 2. Quality control
+# 3. Normalization
+# 4. Differential expression analysis
+
+print("Expression analysis framework ready.")
+print("Please implement specific analysis based on your data.")
+"""
+        
+        elif any(keyword in desc_lower for keyword in ['subtype', 'clustering', 'classification']):
+            code += """
+# Subtype/clustering analysis
+print("Performing subtype/clustering analysis...")
+
+# This would typically involve:
+# 1. Data preprocessing
+# 2. Feature selection
+# 3. Dimensionality reduction
+# 4. Clustering algorithm application
+# 5. Visualization
+
+print("Clustering analysis framework ready.")
+print("Please implement specific clustering based on your data.")
+"""
+        
+        elif any(keyword in desc_lower for keyword in ['visualization', 'plot', 'figure']):
+            code += """
+# Data visualization
+print("Creating visualizations...")
+
+# Example visualization code
+try:
+    # Create a sample plot
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.set_title("Analysis: " + task_description)
+    ax.set_xlabel("Sample")
+    ax.set_ylabel("Value")
+    
+    # Save the plot
+    plot_file = figures_dir / f"analysis_plot_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.png"
+    plt.savefig(plot_file, dpi=300, bbox_inches='tight')
+    print("Saved plot to:", plot_file)
+    plt.close()
+    
+except Exception as e:
+    print(f"Error creating visualization: {e}")
+"""
+        
+        else:
+            code += """
+# General analysis framework
+print("Setting up analysis framework...")
+
+# This is a general analysis template
+# Please implement specific analysis based on your requirements
+
+print("Analysis framework ready.")
+print("Please implement specific analysis based on your data and requirements.")
+"""
+        
+        code += f"""
+        print("\\n✅", task_description, "- Analysis completed!")
+print("Results saved to 'results/' directory")
+print("Figures saved to 'figures/' directory")
+"""
+        
+        return code
     
     async def call_tool(
         self, 

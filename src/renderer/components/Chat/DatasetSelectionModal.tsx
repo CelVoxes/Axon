@@ -213,6 +213,47 @@ const Button = styled.button<{ $variant?: "primary" | "secondary" }>`
 	}
 `;
 
+const PaginationContainer = styled.div`
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	margin: 20px 0;
+	padding: 16px;
+	border-top: 1px solid #333;
+`;
+
+const PaginationButton = styled.button<{ $active?: boolean }>`
+	background: ${(props) => (props.$active ? "#007acc" : "transparent")};
+	border: 1px solid ${(props) => (props.$active ? "#007acc" : "#666")};
+	color: ${(props) => (props.$active ? "#fff" : "#aaa")};
+	padding: 8px 12px;
+	border-radius: 4px;
+	font-size: 12px;
+	cursor: pointer;
+	min-width: 32px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+
+	&:hover {
+		background: ${(props) =>
+			props.$active ? "#005a9e" : "rgba(255, 255, 255, 0.1)"};
+		color: #fff;
+	}
+
+	&:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+`;
+
+const PaginationInfo = styled.div`
+	color: #aaa;
+	font-size: 12px;
+	margin: 0 16px;
+`;
+
 interface Dataset {
 	id: string;
 	title: string;
@@ -243,25 +284,52 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 	onConfirm,
 	isLoading = false,
 }) => {
-	console.log(
-		`DatasetSelectionModal: isOpen=${isOpen}, datasets=${datasets.length}`
-	);
 	const [selectedDatasets, setSelectedDatasets] = useState<Set<string>>(
 		new Set()
 	);
 	const [wasOpen, setWasOpen] = useState(false);
+	const [currentPage, setCurrentPage] = useState(1);
+	const [datasetsPerPage] = useState(10); // Show 10 datasets per page
+
+	// Ensure datasets is always an array
+	const safeDatasets = Array.isArray(datasets) ? datasets : [];
 
 	useEffect(() => {
 		if (isOpen && !wasOpen) {
 			// Auto-select first 2 datasets only when modal is first opened
-			const initialSelection = new Set(datasets.slice(0, 2).map((d) => d.id));
+			const initialSelection = new Set(
+				safeDatasets.slice(0, 2).map((d) => d.id)
+			);
 			setSelectedDatasets(initialSelection);
 		}
 		setWasOpen(isOpen);
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [isOpen]);
+	}, [isOpen, wasOpen, safeDatasets]);
+
+	// Handle dataset changes while modal is open
+	useEffect(() => {
+		if (isOpen && safeDatasets.length > 0) {
+			// Remove any selected datasets that no longer exist in the current dataset list
+			const validDatasetIds = new Set(safeDatasets.map((d) => d.id));
+			const filteredSelection = new Set(
+				Array.from(selectedDatasets).filter((id) => validDatasetIds.has(id))
+			);
+
+			// If no valid selections remain, auto-select first 2 datasets
+			if (filteredSelection.size === 0) {
+				const initialSelection = new Set(
+					safeDatasets.slice(0, 2).map((d) => d.id)
+				);
+				setSelectedDatasets(initialSelection);
+			} else if (filteredSelection.size !== selectedDatasets.size) {
+				// Only update if the selection actually changed
+				setSelectedDatasets(filteredSelection);
+			}
+		}
+	}, [safeDatasets, isOpen, selectedDatasets]);
 
 	const toggleDataset = (datasetId: string) => {
+		if (!datasetId) return;
+
 		const newSelection = new Set(selectedDatasets);
 		if (newSelection.has(datasetId)) {
 			newSelection.delete(datasetId);
@@ -272,16 +340,55 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 	};
 
 	const handleConfirm = () => {
-		const selected = datasets.filter((d) => selectedDatasets.has(d.id));
+		if (!safeDatasets || safeDatasets.length === 0) {
+			console.warn("No datasets available for selection");
+			return;
+		}
+
+		const selected = safeDatasets.filter(
+			(d) => d && d.id && selectedDatasets.has(d.id)
+		);
 		onConfirm(selected);
 	};
 
 	const openDatasetUrl = (dataset: Dataset) => {
+		if (!dataset || !dataset.id) {
+			console.warn("Invalid dataset for URL opening");
+			return;
+		}
+
 		const url =
 			dataset.url ||
 			`https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=${dataset.id}`;
 		window.open(url, "_blank");
 	};
+
+	// Pagination logic
+	const totalPages = Math.ceil(safeDatasets.length / datasetsPerPage);
+	const startIndex = (currentPage - 1) * datasetsPerPage;
+	const endIndex = startIndex + datasetsPerPage;
+	const currentDatasets = safeDatasets.slice(startIndex, endIndex);
+
+	const goToPage = (page: number) => {
+		setCurrentPage(Math.max(1, Math.min(page, totalPages)));
+	};
+
+	const goToNextPage = () => {
+		if (currentPage < totalPages) {
+			setCurrentPage(currentPage + 1);
+		}
+	};
+
+	const goToPrevPage = () => {
+		if (currentPage > 1) {
+			setCurrentPage(currentPage - 1);
+		}
+	};
+
+	// Reset to first page when datasets change
+	useEffect(() => {
+		setCurrentPage(1);
+	}, [safeDatasets]);
 
 	if (!isOpen) return null;
 
@@ -296,66 +403,117 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 				</ModalHeader>
 
 				<ModalBody>
-					{datasets.length === 0 ? (
+					{safeDatasets.length === 0 ? (
 						<div
 							style={{ textAlign: "center", color: "#888", padding: "40px" }}
 						>
 							No datasets found for your query. Try refining your search terms.
 						</div>
 					) : (
-						datasets.map((dataset, index) => (
-							<DatasetCard
-								key={`${dataset.id}-${index}`}
-								selected={selectedDatasets.has(dataset.id)}
-								onClick={() => toggleDataset(dataset.id)}
-							>
-								<DatasetHeader>
-									<DatasetTitle>{dataset.title}</DatasetTitle>
-									<DatasetId>{dataset.id}</DatasetId>
-								</DatasetHeader>
+						<>
+							{currentDatasets.map((dataset, index) => (
+								<DatasetCard
+									key={dataset.id}
+									selected={selectedDatasets.has(dataset.id)}
+									onClick={() => toggleDataset(dataset.id)}
+								>
+									<DatasetHeader>
+										<DatasetTitle>
+											{dataset.title || `Dataset ${dataset.id}`}
+										</DatasetTitle>
+										<DatasetId>{dataset.id}</DatasetId>
+									</DatasetHeader>
 
-								<DatasetMeta>
-									<MetaItem>
-										<strong>Organism:</strong> {dataset.organism || "Unknown"}
-									</MetaItem>
-									<MetaItem>
-										<strong>Samples:</strong>{" "}
-										{dataset.sample_count || dataset.samples || "Unknown"}
-									</MetaItem>
-									<MetaItem>
-										<strong>Platform:</strong> {dataset.platform || "Unknown"}
-									</MetaItem>
-									{dataset.similarity_score && (
+									<DatasetMeta>
 										<MetaItem>
-											<strong>Similarity:</strong>{" "}
-											{(dataset.similarity_score * 100).toFixed(1)}%
+											<strong>Organism:</strong> {dataset.organism || "Unknown"}
 										</MetaItem>
-									)}
-									{dataset.publication_date && (
 										<MetaItem>
-											<strong>Date:</strong> {dataset.publication_date}
+											<strong>Samples:</strong>{" "}
+											{dataset.sample_count || dataset.samples || "Unknown"}
 										</MetaItem>
-									)}
-								</DatasetMeta>
+										<MetaItem>
+											<strong>Platform:</strong> {dataset.platform || "Unknown"}
+										</MetaItem>
+										{dataset.similarity_score && (
+											<MetaItem>
+												<strong>Similarity:</strong>{" "}
+												{(dataset.similarity_score * 100).toFixed(1)}%
+											</MetaItem>
+										)}
+										{dataset.publication_date && (
+											<MetaItem>
+												<strong>Date:</strong> {dataset.publication_date}
+											</MetaItem>
+										)}
+									</DatasetMeta>
 
-								<DatasetDescription>
-									{dataset.description || "No description available"}
-								</DatasetDescription>
+									<DatasetDescription>
+										{dataset.description || "No description available"}
+									</DatasetDescription>
 
-								<DatasetActions onClick={(e) => e.stopPropagation()}>
-									<InfoButton onClick={() => openDatasetUrl(dataset)}>
-										<FiExternalLink size={12} />
-										View on GEO
-									</InfoButton>
-								</DatasetActions>
-							</DatasetCard>
-						))
+									<DatasetActions onClick={(e) => e.stopPropagation()}>
+										<InfoButton onClick={() => openDatasetUrl(dataset)}>
+											<FiExternalLink size={12} />
+											View on GEO
+										</InfoButton>
+									</DatasetActions>
+								</DatasetCard>
+							))}
+
+							{/* Pagination */}
+							{totalPages > 1 && (
+								<PaginationContainer>
+									<PaginationButton
+										onClick={goToPrevPage}
+										disabled={currentPage === 1}
+									>
+										←
+									</PaginationButton>
+
+									{Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+										let pageNum;
+										if (totalPages <= 5) {
+											pageNum = i + 1;
+										} else if (currentPage <= 3) {
+											pageNum = i + 1;
+										} else if (currentPage >= totalPages - 2) {
+											pageNum = totalPages - 4 + i;
+										} else {
+											pageNum = currentPage - 2 + i;
+										}
+
+										return (
+											<PaginationButton
+												key={pageNum}
+												$active={currentPage === pageNum}
+												onClick={() => goToPage(pageNum)}
+											>
+												{pageNum}
+											</PaginationButton>
+										);
+									})}
+
+									<PaginationButton
+										onClick={goToNextPage}
+										disabled={currentPage === totalPages}
+									>
+										→
+									</PaginationButton>
+
+									<PaginationInfo>
+										Page {currentPage} of {totalPages} • {safeDatasets.length}{" "}
+										total datasets
+									</PaginationInfo>
+								</PaginationContainer>
+							)}
+						</>
 					)}
 				</ModalBody>
 
 				<ModalFooter>
 					<SelectionInfo>
-						{selectedDatasets.size} of {datasets.length} datasets selected
+						{selectedDatasets.size} of {safeDatasets.length} datasets selected
 					</SelectionInfo>
 
 					<ActionButtons>

@@ -1,0 +1,51 @@
+"""Centralized configuration for search settings."""
+
+# Search Limits
+DEFAULT_SEARCH_LIMIT = 20
+MAX_SEARCH_LIMIT = 100
+MIN_SEARCH_LIMIT = 5
+
+# Batch Processing
+DEFAULT_BATCH_SIZE = 2
+MAX_BATCH_SIZE = 5
+
+# API Rate Limiting
+DEFAULT_REQUEST_INTERVAL = 0.5  # seconds
+MIN_REQUEST_INTERVAL = 0.1  # seconds
+
+# Search Multipliers
+RETMAX_MULTIPLIER = 1  # retmax = limit * this
+
+# Progress Update Intervals
+PROGRESS_UPDATE_INTERVAL = 0.1  # seconds
+
+# Search Strategy
+MAX_SEARCH_ATTEMPTS = 2
+DEFAULT_ORGANISM = "Homo sapiens"
+
+class SearchConfig:
+    """Centralized search configuration."""
+    
+    @staticmethod
+    def get_search_limit(limit: int = None) -> int:
+        """Get the search limit, ensuring it's within bounds."""
+        if limit is None:
+            return DEFAULT_SEARCH_LIMIT
+        return max(MIN_SEARCH_LIMIT, min(limit, MAX_SEARCH_LIMIT))
+    
+    @staticmethod
+    def get_batch_size(batch_size: int = None) -> int:
+        """Get the batch size, ensuring it's within bounds."""
+        if batch_size is None:
+            return DEFAULT_BATCH_SIZE
+        return max(1, min(batch_size, MAX_BATCH_SIZE))
+    
+    @staticmethod
+    def get_retmax(limit: int) -> int:
+        """Calculate retmax based on limit."""
+        return limit * RETMAX_MULTIPLIER
+    
+    @staticmethod
+    def get_request_interval() -> float:
+        """Get the request interval for rate limiting."""
+        return DEFAULT_REQUEST_INTERVAL 

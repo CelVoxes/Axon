@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from "react";
 import styled from "styled-components";
 import { FiFolder, FiMessageSquare } from "react-icons/fi";
-import { useAppContext } from "../../context/AppContext";
+import { useWorkspaceContext } from "../../context/WorkspaceContext";
+import { useUIContext } from "../../context/UIContext";
 import { FileEditor } from "./FileEditor";
-import { Notebook } from "./Notebook";
 import { openWorkspace } from "../../utils";
 // @ts-ignore
 import axonLogo from "../../../png/axon-no-background.png";
@@ -15,6 +15,9 @@ const MainContainer = styled.div`
 	background-color: #151515;
 	overflow: hidden;
 	height: 100%;
+	margin: 8px;
+	border-radius: 8px;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 `;
 
 const TabBar = styled.div`
@@ -110,12 +113,6 @@ const StatusIndicator = styled.div<{
 			return `color: #ff0000;`;
 		}
 	}}
-`;
-
-const ContentArea = styled.div`
-	flex: 1;
-	overflow: hidden;
-	position: relative;
 `;
 
 const EmptyState = styled.div`
@@ -247,7 +244,9 @@ const RecentProjects = styled.div`
 export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 	props
 ) => {
-	const { state, dispatch } = useAppContext();
+	const { state: workspaceState, dispatch: workspaceDispatch } =
+		useWorkspaceContext();
+	const { state: uiState, dispatch: uiDispatch } = useUIContext();
 	const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>([]);
 
 	useEffect(() => {
@@ -267,30 +266,50 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 	}, []);
 
 	const handleOpenWorkspace = (path: string) => {
-		openWorkspace(path, dispatch, setRecentWorkspaces);
+		openWorkspace(path, workspaceDispatch, setRecentWorkspaces);
 	};
 
 	const handleTabClose = (e: React.MouseEvent, filePath: string) => {
 		e.stopPropagation();
-		dispatch({ type: "CLOSE_FILE", payload: filePath });
+		workspaceDispatch({ type: "CLOSE_FILE", payload: filePath });
+	};
+
+	const toggleChat = () => {
+		if (!uiState.showChatPanel) {
+			// If chat panel is not shown, show it
+			uiDispatch({
+				type: "SET_SHOW_CHAT_PANEL",
+				payload: true,
+			});
+			uiDispatch({
+				type: "SET_CHAT_COLLAPSED",
+				payload: false,
+			});
+		} else {
+			// If chat panel is shown, toggle collapsed state
+			uiDispatch({
+				type: "SET_CHAT_COLLAPSED",
+				payload: !uiState.chatCollapsed,
+			});
+		}
 	};
 
 	const renderTabBar = () => {
-		if (state.openFiles.length === 0 && !state.currentWorkspace) return null;
+		if (workspaceState.openFiles.length === 0) return null;
 
-		const tabs = [];
+		const tabs: React.ReactNode[] = [];
 
 		// File tabs
-		state.openFiles.forEach((filePath) => {
+		workspaceState.openFiles.forEach((filePath: string) => {
 			const fileName = filePath.split("/").pop() || filePath;
-			const isActive = state.activeFile === filePath;
+			const isActive = workspaceState.activeFile === filePath;
 
 			tabs.push(
 				<Tab
 					key={filePath}
 					$isActive={isActive}
 					onClick={() =>
-						dispatch({ type: "SET_ACTIVE_FILE", payload: filePath })
+						workspaceDispatch({ type: "SET_ACTIVE_FILE", payload: filePath })
 					}
 				>
 					{fileName}
@@ -301,37 +320,33 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 			);
 		});
 
-		// Notebook tab (only show when workspace is open)
-		if (state.currentWorkspace) {
-			tabs.push(
-				<Tab
-					key="notebook"
-					$isActive={state.showNotebook}
-					onClick={() => {
-						dispatch({ type: "SET_ACTIVE_FILE", payload: null });
-						dispatch({ type: "SET_SHOW_NOTEBOOK", payload: true });
-					}}
-				>
-					Interactive Notebook
-				</Tab>
-			);
-		}
-
 		return tabs;
 	};
 
 	const renderContent = () => {
-		// Show notebook if it's active
-		if (state.showNotebook) {
-			return <Notebook workspacePath={state.currentWorkspace || undefined} />;
+		// If workspace is open, show file editor or empty state
+		if (workspaceState.currentWorkspace) {
+			// Show file editor if a file is selected and open
+			if (
+				workspaceState.activeFile &&
+				workspaceState.openFiles.includes(workspaceState.activeFile)
+			) {
+				return <FileEditor filePath={workspaceState.activeFile} />;
+			}
+
+			// Show empty state if no file is active
+			return (
+				<EmptyState>
+					<div className="title">Workspace Open</div>
+					<div className="subtitle">
+						Use the Explorer to browse and open files, or start analysis in the
+						chat panel.
+					</div>
+				</EmptyState>
+			);
 		}
 
-		// Show file editor if a file is selected and open
-		if (state.activeFile && state.openFiles.includes(state.activeFile)) {
-			return <FileEditor filePath={state.activeFile} />;
-		}
-
-		// Show welcome screen when no workspace is open or no files are active
+		// Show welcome screen when no workspace is open
 		return (
 			<EmptyState>
 				<img src={axonLogo} alt="Axon" className="app-logo" />
@@ -397,36 +412,55 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 	};
 
 	return (
-		<MainContainer {...props}>
+		<MainContainer>
 			{(() => {
 				const tabs = renderTabBar();
 				return tabs && tabs.length > 0 ? <TabBar>{tabs}</TabBar> : null;
 			})()}
 
-			{state.currentWorkspace && (
+			{workspaceState.currentWorkspace && (
 				<ControlBar>
 					<ControlLeft>
 						<StatusIndicator $status="running">Workspace Open</StatusIndicator>
 					</ControlLeft>
 					<ControlRight>
-						{state.chatCollapsed && (
-							<ChatToggleButton
-								onClick={() =>
-									dispatch({
-										type: "SET_CHAT_COLLAPSED",
-										payload: false,
-									})
-								}
-								title="Open Chat"
-							>
+						{(!uiState.showChatPanel || uiState.chatCollapsed) && (
+							<ChatToggleButton onClick={toggleChat} title="Open Chat">
 								<FiMessageSquare size={14} color="white" />
+								Chat
 							</ChatToggleButton>
 						)}
 					</ControlRight>
 				</ControlBar>
 			)}
 
-			<ContentArea>{renderContent()}</ContentArea>
+			{renderContent()}
+
+			{/* Floating chat toggle button when chat is not shown or collapsed */}
+			{workspaceState.currentWorkspace &&
+				(!uiState.showChatPanel || uiState.chatCollapsed) && (
+					<ChatToggleButton
+						onClick={toggleChat}
+						title="Open Chat"
+						style={{
+							position: "fixed",
+							top: "50%",
+							right: "20px",
+							transform: "translateY(-50%)",
+							zIndex: 1000,
+							borderRadius: "50%",
+							width: "48px",
+							height: "48px",
+							padding: "0",
+							display: "flex",
+							alignItems: "center",
+							justifyContent: "center",
+							boxShadow: "0 4px 12px rgba(0, 0, 0, 0.3)",
+						}}
+					>
+						<FiMessageSquare size={20} />
+					</ChatToggleButton>
+				)}
 		</MainContainer>
 	);
 };

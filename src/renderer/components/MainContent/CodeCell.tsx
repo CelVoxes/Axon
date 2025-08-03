@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import styled from "styled-components";
-import { FiPlay, FiCopy, FiCheck, FiX } from "react-icons/fi";
+import { FiPlay, FiCopy, FiCheck, FiX, FiTrash2 } from "react-icons/fi";
 
 const CellContainer = styled.div`
 	margin: 16px 0;
@@ -23,6 +23,16 @@ const CellType = styled.div`
 	font-size: 12px;
 	color: #858585;
 	font-weight: 500;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+`;
+
+const ExecutionIndicator = styled.div<{ $hasOutput: boolean }>`
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: ${(props) => (props.$hasOutput ? "#28a745" : "#6c757d")};
 `;
 
 const CellActions = styled.div`
@@ -124,19 +134,25 @@ const SuccessOutput = styled(OutputContent)`
 
 interface CodeCellProps {
 	initialCode?: string;
+	initialOutput?: string;
 	language?: "python" | "r" | "markdown";
 	workspacePath?: string;
 	onExecute?: (code: string, output: string) => void;
+	onCodeChange?: (code: string) => void;
+	onDelete?: () => void;
 }
 
 export const CodeCell: React.FC<CodeCellProps> = ({
 	initialCode = "",
+	initialOutput = "",
 	language = "python",
 	workspacePath,
 	onExecute,
+	onCodeChange,
+	onDelete,
 }) => {
 	const [code, setCode] = useState(initialCode);
-	const [output, setOutput] = useState<string>("");
+	const [output, setOutput] = useState<string>(initialOutput);
 	const [isExecuting, setIsExecuting] = useState(false);
 	const [hasError, setHasError] = useState(false);
 	const [copied, setCopied] = useState(false);
@@ -151,7 +167,10 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 
 		try {
 			console.log("Executing code in CodeCell:", code);
-			const result = await window.electronAPI.executeJupyterCode(code);
+			const result = await window.electronAPI.executeJupyterCode(
+				code,
+				workspacePath
+			);
 
 			if (result.success) {
 				setOutput(result.output || "Code executed successfully");
@@ -172,6 +191,12 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		} finally {
 			setIsExecuting(false);
 		}
+	};
+
+	const handleCodeChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+		const newCode = e.target.value;
+		setCode(newCode);
+		onCodeChange?.(newCode);
 	};
 
 	const copyCode = async () => {
@@ -200,23 +225,34 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 	return (
 		<CellContainer>
 			<CellHeader>
-				<CellType>{language.toUpperCase()}</CellType>
-				{language !== "markdown" && (
-					<CellActions>
-						<ActionButton onClick={copyCode} $variant="secondary">
-							{copied ? <FiCheck size={12} /> : <FiCopy size={12} />}
-							{copied ? "Copied" : "Copy"}
+				<CellType>
+					<ExecutionIndicator $hasOutput={!!output} />
+					{language.toUpperCase()}
+				</CellType>
+				<CellActions>
+					{language !== "markdown" && (
+						<>
+							<ActionButton onClick={copyCode} $variant="secondary">
+								{copied ? <FiCheck size={12} /> : <FiCopy size={12} />}
+								{copied ? "Copied" : "Copy"}
+							</ActionButton>
+							<ActionButton
+								onClick={executeCode}
+								$variant="primary"
+								disabled={isExecuting || !code.trim()}
+							>
+								<FiPlay size={12} />
+								{isExecuting ? "Running..." : "Run"}
+							</ActionButton>
+						</>
+					)}
+					{onDelete && (
+						<ActionButton onClick={onDelete} $variant="danger">
+							<FiTrash2 size={12} />
+							Delete
 						</ActionButton>
-						<ActionButton
-							onClick={executeCode}
-							$variant="primary"
-							disabled={isExecuting || !code.trim()}
-						>
-							<FiPlay size={12} />
-							{isExecuting ? "Running..." : "Run"}
-						</ActionButton>
-					</CellActions>
-				)}
+					)}
+				</CellActions>
 			</CellHeader>
 
 			{language === "markdown" ? (
@@ -236,7 +272,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 					<CodeInput
 						ref={textareaRef}
 						value={code}
-						onChange={(e) => setCode(e.target.value)}
+						onChange={handleCodeChange}
 						placeholder={`Enter your ${language} code here...`}
 					/>
 

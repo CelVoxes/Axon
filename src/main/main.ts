@@ -396,6 +396,15 @@ export class AxonApp {
 		}
 	}
 
+	private generateKernelName(workspacePath: string): string {
+		const workspaceName = path.basename(workspacePath);
+		// Create a shorter, sanitized kernel name
+		const sanitizedName = workspaceName
+			.replace(/[^a-zA-Z0-9_-]/g, "_") // Replace invalid chars with underscore
+			.substring(0, 15); // Limit length to 15 chars
+		return `axon-${sanitizedName}`;
+	}
+
 	private async findPythonPath(): Promise<string> {
 		const { execFile } = require("child_process");
 		const { promisify } = require("util");
@@ -425,6 +434,155 @@ export class AxonApp {
 		const storedPath = store.get("pythonPath", "python3") as string;
 		console.log(`Using fallback Python path: ${storedPath}`);
 		return storedPath;
+	}
+
+	private async startJupyterIfNeeded(
+		workspacePath: string
+	): Promise<{ success: boolean; error?: string }> {
+		try {
+			// Check if Jupyter is already running
+			if (this.jupyterProcess) {
+				console.log("Jupyter is already running");
+				return { success: true };
+			}
+
+			console.log("Starting Jupyter server...");
+
+			// Find Python path
+			const pythonPath = await this.findPythonPath();
+
+			// Create virtual environment if it doesn't exist
+			const venvPath = path.join(workspacePath, "venv");
+			if (!fs.existsSync(venvPath)) {
+				console.log("Creating virtual environment...");
+				await new Promise<void>((resolve, reject) => {
+					const createVenvProcess = spawn(pythonPath, ["-m", "venv", venvPath]);
+
+					createVenvProcess.on("error", (error: Error) => {
+						console.error("Error creating virtual environment:", error);
+						reject(error);
+					});
+
+					createVenvProcess.on("close", (code) => {
+						if (code === 0) {
+							console.log("Virtual environment created successfully");
+							resolve();
+						} else {
+							reject(
+								new Error(
+									`Failed to create virtual environment, exit code: ${code}`
+								)
+							);
+						}
+					});
+				});
+			}
+
+			// Determine pip and python paths for the virtual environment
+			const isWindows = process.platform === "win32";
+			const pipPath = isWindows
+				? path.join(venvPath, "Scripts", "pip.exe")
+				: path.join(venvPath, "bin", "pip");
+			const pythonVenvPath = isWindows
+				? path.join(venvPath, "Scripts", "python.exe")
+				: path.join(venvPath, "bin", "python");
+
+			// Verify virtual environment executables exist
+			if (!fs.existsSync(pipPath)) {
+				throw new Error(`Virtual environment pip not found at: ${pipPath}`);
+			}
+			if (!fs.existsSync(pythonVenvPath)) {
+				throw new Error(
+					`Virtual environment python not found at: ${pythonVenvPath}`
+				);
+			}
+
+			// Install Jupyter if not already installed
+			console.log("Installing Jupyter...");
+			await new Promise<void>((resolve, reject) => {
+				const installProcess = spawn(pipPath, [
+					"install",
+					"jupyter",
+					"notebook",
+					"ipykernel",
+				]);
+
+				installProcess.on("error", (error: Error) => {
+					console.error("Error installing Jupyter:", error);
+					reject(error);
+				});
+
+				installProcess.on("close", (code) => {
+					if (code === 0) {
+						console.log("Jupyter installed successfully");
+						resolve();
+					} else {
+						reject(new Error(`Failed to install Jupyter, exit code: ${code}`));
+					}
+				});
+			});
+
+			// Start Jupyter server
+			console.log("Starting Jupyter server...");
+			this.jupyterProcess = spawn(
+				pythonVenvPath,
+				[
+					"-m",
+					"jupyter",
+					"notebook",
+					"--no-browser",
+					`--port=${this.jupyterPort}`,
+					"--ip=127.0.0.1",
+					"--allow-root",
+					"--NotebookApp.token=''",
+					"--NotebookApp.password=''",
+				],
+				{
+					cwd: workspacePath,
+					stdio: ["pipe", "pipe", "pipe"],
+				}
+			);
+
+			this.jupyterProcess.on("error", (error: Error) => {
+				console.error("Jupyter process error:", error);
+			});
+
+			this.jupyterProcess.on("close", (code: number, reason: string) => {
+				console.log(`Jupyter process closed with code: ${code}`);
+				this.jupyterProcess = null;
+			});
+
+			// Wait for Jupyter to start
+			await new Promise<void>((resolve, reject) => {
+				const timeout = setTimeout(() => {
+					reject(new Error("Jupyter startup timeout"));
+				}, 30000);
+
+				const checkInterval = setInterval(async () => {
+					try {
+						const response = await fetch(
+							`http://127.0.0.1:${this.jupyterPort}/api/status`
+						);
+						if (response.ok) {
+							clearTimeout(timeout);
+							clearInterval(checkInterval);
+							console.log("Jupyter server is ready");
+							resolve();
+						}
+					} catch (error) {
+						// Server not ready yet, continue waiting
+					}
+				}, 1000);
+			});
+
+			return { success: true };
+		} catch (error) {
+			console.error("Error starting Jupyter:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
 	}
 
 	private async cleanupExistingBioRAGProcesses(): Promise<void> {
@@ -558,10 +716,10 @@ export class AxonApp {
 				const pythonPath = await this.findPythonPath();
 				console.log(`Found Python at: ${pythonPath}`);
 
-				// Check if Jupyter Lab is available
+				// Check if Jupyter Notebook is available
 				const checkJupyter = spawn(
 					pythonPath,
-					["-m", "jupyterlab", "--version"],
+					["-m", "notebook", "--version"],
 					{
 						cwd: workingDir,
 					}
@@ -570,33 +728,29 @@ export class AxonApp {
 				await new Promise((resolve, reject) => {
 					checkJupyter.on("close", (code) => {
 						if (code === 0) {
-							console.log("Found Jupyter Lab via python -m jupyterlab");
+							console.log("Found Jupyter Notebook via python -m notebook");
 							resolve(null);
 						} else {
-							reject(new Error("Jupyter Lab not found"));
+							reject(new Error("Jupyter Notebook not found"));
 						}
 					});
 				});
 
-				// Start Jupyter Lab
+				// Start Jupyter Notebook server
 				this.jupyterProcess = spawn(
 					pythonPath,
 					[
 						"-m",
-						"jupyterlab",
+						"notebook",
 						"--no-browser",
 						"--allow-root",
 						"--ip=127.0.0.1",
 						"--NotebookApp.token=",
 						"--NotebookApp.password=",
-						"--ServerApp.token=",
-						"--ServerApp.password=",
 						"--port-retries=50",
 						"--NotebookApp.disable_check_xsrf=True",
-						"--ServerApp.disable_check_xsrf=True",
-						"--ServerApp.allow_origin='*'",
-						"--ServerApp.allow_credentials=True",
-						"--LabApp.default_url='/lab'",
+						"--NotebookApp.allow_origin='*'",
+						"--NotebookApp.allow_credentials=True",
 					],
 					{
 						cwd: workingDir,
@@ -624,7 +778,7 @@ export class AxonApp {
 
 						// Check if Jupyter is ready
 						if (
-							output.includes("Jupyter Server") &&
+							output.includes("Jupyter Notebook") &&
 							output.includes("running at")
 						) {
 							const urlMatch = output.match(/http:\/\/[^\s]+/);
@@ -635,7 +789,7 @@ export class AxonApp {
 						}
 
 						if (
-							output.includes("Jupyter Server") &&
+							output.includes("Jupyter Notebook") &&
 							output.includes("running at") &&
 							!resolved
 						) {
@@ -654,7 +808,6 @@ export class AxonApp {
 											},
 											body: JSON.stringify({
 												name: "python3",
-												path: ".",
 											}),
 										}
 									);
@@ -770,37 +923,31 @@ export class AxonApp {
 					timestamp: new Date().toISOString(),
 				});
 
-				// Install required packages
-				const requiredPackages = [
-					"pandas",
-					"numpy",
-					"matplotlib",
-					"seaborn",
-					"scikit-learn",
-					"requests",
-					"beautifulsoup4",
-					"jupyter",
-					"notebook",
-					"ipykernel",
-				];
+				// Only install basic Jupyter infrastructure - packages will be installed dynamically
+				const basicPackages = ["jupyter", "notebook", "ipykernel"];
 
-				const installProcess = spawn(
-					pipPath,
-					["install", ...requiredPackages],
-					{
-						cwd: workspacePath,
-						stdio: "pipe",
-					}
-				);
+				// Notify about basic infrastructure installation
+				this.mainWindow?.webContents.send("virtual-env-status", {
+					status: "installing",
+					message: "Setting up Jupyter infrastructure...",
+					timestamp: new Date().toISOString(),
+				});
+
+				const installProcess = spawn(pipPath, ["install", ...basicPackages], {
+					cwd: workspacePath,
+					stdio: "pipe",
+				});
 
 				await new Promise<void>((resolve, reject) => {
 					installProcess.on("close", (code) => {
 						if (code === 0) {
-							console.log("Packages installed successfully");
+							console.log("Jupyter infrastructure installed successfully");
 							resolve();
 						} else {
 							reject(
-								new Error(`Failed to install packages, exit code: ${code}`)
+								new Error(
+									`Failed to install Jupyter infrastructure, exit code: ${code}`
+								)
 							);
 						}
 					});
@@ -808,6 +955,8 @@ export class AxonApp {
 				});
 
 				// Register the virtual environment kernel with Jupyter
+				const kernelName = this.generateKernelName(workspacePath);
+				console.log(`Registering kernel with name: ${kernelName}`);
 				const registerProcess = spawn(
 					pythonVenvPath,
 					[
@@ -816,7 +965,7 @@ export class AxonApp {
 						"install",
 						"--user",
 						"--name",
-						`axon-${path.basename(workspacePath)}`,
+						kernelName,
 						"--display-name",
 						`Axon Analysis (${path.basename(workspacePath)})`,
 					],
@@ -825,6 +974,32 @@ export class AxonApp {
 						stdio: "pipe",
 					}
 				);
+
+				// Also install ipykernel in the virtual environment if not already installed
+				const installIpykernelProcess = spawn(
+					pipPath,
+					["install", "ipykernel"],
+					{
+						cwd: workspacePath,
+						stdio: "pipe",
+					}
+				);
+
+				await new Promise<void>((resolve, reject) => {
+					installIpykernelProcess.on("close", (code) => {
+						if (code === 0) {
+							console.log("ipykernel installed successfully");
+							resolve();
+						} else {
+							console.warn("Failed to install ipykernel, proceeding anyway");
+							resolve();
+						}
+					});
+					installIpykernelProcess.on("error", () => {
+						console.warn("Error installing ipykernel, proceeding anyway");
+						resolve();
+					});
+				});
 
 				await new Promise<void>((resolve, reject) => {
 					registerProcess.on("close", (code) => {
@@ -853,7 +1028,7 @@ export class AxonApp {
 					success: true,
 					venvPath: venvPath,
 					pythonPath: pythonVenvPath,
-					kernelName: `axon-${path.basename(workspacePath)}`,
+					kernelName: kernelName,
 				};
 			} catch (error) {
 				console.error("Failed to create virtual environment:", error);
@@ -922,146 +1097,229 @@ export class AxonApp {
 			}
 		});
 
-		ipcMain.handle("jupyter-execute", async (_, code: string) => {
-			try {
-				console.log(
-					`Executing code in Jupyter: \n${code.substring(0, 100)}...`
-				);
-
-				// Notify renderer that code is being written (for streaming)
-				this.mainWindow?.webContents.send("jupyter-code-writing", {
-					code: code,
-					timestamp: new Date().toISOString(),
-					type: "full_code",
-				});
-
-				const WebSocket = require("ws");
-				const { v4: uuidv4 } = require("uuid");
-
-				// 1. Find the running kernel or create one
-				let response = await fetch(
-					`http://127.0.0.1:${this.jupyterPort}/api/kernels`
-				);
-				let kernels = await response.json();
-
-				let kernelId: string;
-				if (!kernels || kernels.length === 0) {
-					// Create a new kernel
-					console.log("No kernel found, creating new kernel...");
-					const createResponse = await fetch(
-						`http://127.0.0.1:${this.jupyterPort}/api/kernels`,
-						{
-							method: "POST",
-							headers: {
-								"Content-Type": "application/json",
-							},
-							body: JSON.stringify({
-								name: "python3",
-								path: ".",
-							}),
-						}
+		ipcMain.handle(
+			"jupyter-execute",
+			async (_, code: string, workspacePath?: string) => {
+				try {
+					console.log(
+						`Executing code in Jupyter: \n${code.substring(0, 100)}...`
 					);
 
-					if (!createResponse.ok) {
-						throw new Error("Failed to create Jupyter kernel");
+					// Check if Jupyter is running, start it if not
+					if (!this.jupyterProcess) {
+						console.log("Jupyter not running, starting it...");
+						const startResult = await this.startJupyterIfNeeded(
+							workspacePath || process.cwd()
+						);
+						if (!startResult.success) {
+							return {
+								success: false,
+								error: "Failed to start Jupyter server",
+							};
+						}
 					}
 
-					const newKernel = await createResponse.json();
-					kernelId = newKernel.id;
-					console.log("Created new kernel:", kernelId);
-				} else {
-					kernelId = kernels[0].id;
-					console.log("Using existing kernel:", kernelId);
-				}
-
-				const wsUrl = `ws://127.0.0.1:${this.jupyterPort}/api/kernels/${kernelId}/channels`;
-
-				// 2. Open a WebSocket connection
-				const ws = new WebSocket(wsUrl);
-
-				return new Promise((resolve) => {
-					let output = "";
-					let errorOutput = "";
-
-					ws.on("open", () => {
-						console.log("Jupyter WebSocket connection opened.");
-
-						// 3. Send an execute_request message
-						const msgId = uuidv4();
-						const executeRequest = {
-							header: {
-								msg_id: msgId,
-								username: "user",
-								session: uuidv4(),
-								msg_type: "execute_request",
-								version: "5.3",
-							},
-							parent_header: {},
-							metadata: {},
-							content: {
-								code: code,
-								silent: false,
-								store_history: true,
-								user_expressions: {},
-								allow_stdin: false,
-								stop_on_error: true,
-							},
-							channel: "shell",
-						};
-						ws.send(JSON.stringify(executeRequest));
+					// Notify renderer that code is being written (for streaming)
+					this.mainWindow?.webContents.send("jupyter-code-writing", {
+						code: code,
+						timestamp: new Date().toISOString(),
+						type: "full_code",
 					});
 
-					ws.on("message", (data: any) => {
-						const msg = JSON.parse(data.toString());
+					const WebSocket = require("ws");
+					const { v4: uuidv4 } = require("uuid");
 
-						// 4. Listen for execute_reply and stream messages
-						if (msg.parent_header && msg.header.msg_type === "stream") {
-							output += msg.content.text;
-							// Notify renderer about streamed output
-							this.mainWindow?.webContents.send("jupyter-code-writing", {
-								code: output, // Send the current accumulated output
-								timestamp: new Date().toISOString(),
-								type: "stream",
-							});
-						} else if (
-							msg.parent_header &&
-							msg.header.msg_type === "execute_reply"
-						) {
-							if (msg.content.status === "ok") {
-								resolve({ success: true, output });
-							} else {
-								errorOutput += msg.content.evalue;
-								resolve({ success: false, error: errorOutput });
+					// Determine the kernel name based on workspace path
+					let kernelName = "python3"; // Use default kernel for now
+					console.log(`Using kernel: ${kernelName}`);
+
+					// 1. Find the running kernel or create one
+					let response = await fetch(
+						`http://127.0.0.1:${this.jupyterPort}/api/kernels`
+					);
+					let kernels = await response.json();
+					console.log(`Available kernels:`, kernels);
+
+					let kernelId: string;
+					if (!kernels || kernels.length === 0) {
+						// Create a new kernel
+						console.log(
+							`No kernel found, creating new kernel with name: ${kernelName}`
+						);
+						const createResponse = await fetch(
+							`http://127.0.0.1:${this.jupyterPort}/api/kernels`,
+							{
+								method: "POST",
+								headers: {
+									"Content-Type": "application/json",
+								},
+								body: JSON.stringify({
+									name: kernelName,
+								}),
 							}
+						);
+
+						console.log(
+							`Kernel creation response status: ${createResponse.status}`
+						);
+						if (!createResponse.ok) {
+							const errorText = await createResponse.text();
+							console.error(`Failed to create Jupyter kernel: ${errorText}`);
+							console.error(`Kernel name: ${kernelName}`);
+							console.error(`Workspace path: ${workspacePath}`);
+							throw new Error(`Failed to create Jupyter kernel: ${errorText}`);
+						}
+
+						const newKernel = await createResponse.json();
+						kernelId = newKernel.id;
+						console.log("Created new kernel:", kernelId);
+					} else {
+						// Try to find a kernel with the correct name
+						const matchingKernel = kernels.find(
+							(k: any) => k.name === kernelName
+						);
+						if (matchingKernel) {
+							kernelId = matchingKernel.id;
+							console.log(
+								`Using existing kernel with name ${kernelName}:`,
+								kernelId
+							);
+						} else {
+							// Use the first available kernel
+							kernelId = kernels[0].id;
+							console.log("Using first available kernel:", kernelId);
+						}
+					}
+
+					const wsUrl = `ws://127.0.0.1:${this.jupyterPort}/api/kernels/${kernelId}/channels`;
+					console.log(`Connecting to WebSocket: ${wsUrl}`);
+
+					// 2. Open a WebSocket connection
+					console.log(`Attempting to connect to WebSocket: ${wsUrl}`);
+					const ws = new WebSocket(wsUrl);
+
+					return new Promise((resolve) => {
+						let output = "";
+						let errorOutput = "";
+						let executionTimeoutId: NodeJS.Timeout;
+
+						// Add connection timeout
+						const connectionTimeout = setTimeout(() => {
+							console.error("WebSocket connection timeout");
 							ws.close();
-						} else if (msg.parent_header && msg.header.msg_type === "error") {
-							errorOutput += msg.content.evalue;
-						}
-					});
+							resolve({
+								success: false,
+								error: "WebSocket connection timeout",
+							});
+						}, 10000);
 
-					ws.on("close", () => {
-						console.log("Jupyter WebSocket connection closed.");
-						if (!output && errorOutput) {
-							resolve({ success: false, error: errorOutput });
-						}
-					});
+						// Set a timeout for the execution
+						executionTimeoutId = setTimeout(() => {
+							console.log("Jupyter execution timeout");
+							ws.close();
+							resolve({ success: false, error: "Execution timeout" });
+						}, 30000); // 30 second timeout
 
-					ws.on("error", (error: any) => {
-						console.error("Jupyter WebSocket error:", error);
-						resolve({
-							success: false,
-							error: `WebSocket error: ${error.message}`,
+						ws.on("open", () => {
+							console.log("Jupyter WebSocket connection opened.");
+							clearTimeout(connectionTimeout); // Clear connection timeout
+
+							// 3. Send an execute_request message
+							const msgId = uuidv4();
+							const executeRequest = {
+								header: {
+									msg_id: msgId,
+									username: "user",
+									session: uuidv4(),
+									msg_type: "execute_request",
+									version: "5.3",
+								},
+								parent_header: {},
+								metadata: {},
+								content: {
+									code: code,
+									silent: false,
+									store_history: true,
+									user_expressions: {},
+									allow_stdin: false,
+									stop_on_error: true,
+								},
+								channel: "shell",
+							};
+							ws.send(JSON.stringify(executeRequest));
 						});
+
+						ws.on("error", (error: any) => {
+							console.error("WebSocket error:", error);
+							clearTimeout(executionTimeoutId);
+							resolve({
+								success: false,
+								error: `WebSocket error: ${error.message}`,
+							});
+						});
+
+						ws.on("close", (code: any, reason: any) => {
+							console.log(`WebSocket closed: ${code} - ${reason}`);
+							if (!output && !errorOutput) {
+								clearTimeout(executionTimeoutId);
+								resolve({
+									success: false,
+									error: `WebSocket closed unexpectedly: ${reason}`,
+								});
+							}
+						});
+
+						ws.on("message", (data: any) => {
+							const msg = JSON.parse(data.toString());
+							console.log(`Jupyter WebSocket message:`, {
+								msg_type: msg.header.msg_type,
+								parent_header: !!msg.parent_header,
+								content: msg.content,
+							});
+
+							// 4. Listen for execute_reply and stream messages
+							if (msg.parent_header && msg.header.msg_type === "stream") {
+								output += msg.content.text;
+								console.log(`Stream output: ${msg.content.text}`);
+								// Notify renderer about streamed output
+								this.mainWindow?.webContents.send("jupyter-code-writing", {
+									code: output, // Send the current accumulated output
+									timestamp: new Date().toISOString(),
+									type: "stream",
+								});
+							} else if (
+								msg.parent_header &&
+								msg.header.msg_type === "execute_reply"
+							) {
+								console.log(`Execute reply:`, msg.content);
+								if (msg.content.status === "ok") {
+									console.log(`Execution successful, output: ${output}`);
+									clearTimeout(executionTimeoutId);
+									resolve({ success: true, output });
+								} else {
+									errorOutput += msg.content.evalue;
+									console.log(`Execution failed, error: ${errorOutput}`);
+									clearTimeout(executionTimeoutId);
+									resolve({ success: false, error: errorOutput });
+								}
+								ws.close();
+							} else if (msg.parent_header && msg.header.msg_type === "error") {
+								errorOutput += msg.content.evalue;
+								console.log(`Execution error: ${msg.content.evalue}`);
+							}
+						});
+
+						// Note: error and close handlers are already defined above
 					});
-				});
-			} catch (error) {
-				console.error("Jupyter execution error:", error);
-				return {
-					success: false,
-					error: error instanceof Error ? error.message : String(error),
-				};
+				} catch (error) {
+					console.error("Jupyter execution error:", error);
+					return {
+						success: false,
+						error: error instanceof Error ? error.message : String(error),
+					};
+				}
 			}
-		});
+		);
 
 		ipcMain.handle("show-save-dialog", async (_, options) => {
 			const result = await dialog.showSaveDialog(this.mainWindow!, options);
@@ -1208,10 +1466,93 @@ export class AxonApp {
 			}
 		});
 
+		ipcMain.handle("open-file", async (_, filePath: string) => {
+			try {
+				const { shell } = require("electron");
+				await shell.openPath(filePath);
+				return { success: true };
+			} catch (error) {
+				return {
+					success: false,
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+		});
+
 		ipcMain.handle("on-jupyter-ready", (_, callback: (data: any) => void) => {
 			// This is handled by the renderer process
 			return true;
 		});
+
+		// Dynamic package installation based on analysis requirements
+		ipcMain.handle(
+			"install-packages",
+			async (_, workspacePath: string, packages: string[]) => {
+				try {
+					console.log(`Installing packages in workspace: ${workspacePath}`);
+					console.log(`Packages to install: ${packages.join(", ")}`);
+
+					// Notify renderer about package installation
+					this.mainWindow?.webContents.send("virtual-env-status", {
+						status: "installing_packages",
+						message: `Installing ${packages.length} required packages...`,
+						packages: packages,
+						timestamp: new Date().toISOString(),
+					});
+
+					const venvPath = path.join(workspacePath, "venv");
+					const pipPath = path.join(venvPath, "bin", "pip");
+
+					// Notify about each package being installed
+					for (const pkg of packages) {
+						this.mainWindow?.webContents.send("virtual-env-status", {
+							status: "installing_package",
+							message: `Installing ${pkg}...`,
+							package: pkg,
+							timestamp: new Date().toISOString(),
+						});
+					}
+
+					const installProcess = spawn(pipPath, ["install", ...packages], {
+						cwd: workspacePath,
+						stdio: "pipe",
+					});
+
+					await new Promise<void>((resolve, reject) => {
+						installProcess.on("close", (code) => {
+							if (code === 0) {
+								console.log("Packages installed successfully");
+								resolve();
+							} else {
+								reject(
+									new Error(`Failed to install packages, exit code: ${code}`)
+								);
+							}
+						});
+						installProcess.on("error", reject);
+					});
+
+					// Notify renderer about completion
+					this.mainWindow?.webContents.send("virtual-env-status", {
+						status: "packages_installed",
+						message: "All required packages installed successfully!",
+						packages: packages,
+						timestamp: new Date().toISOString(),
+					});
+
+					return {
+						success: true,
+						packages: packages,
+					};
+				} catch (error) {
+					console.error("Error installing packages:", error);
+					return {
+						success: false,
+						error: error instanceof Error ? error.message : String(error),
+					};
+				}
+			}
+		);
 	}
 
 	private cleanup() {

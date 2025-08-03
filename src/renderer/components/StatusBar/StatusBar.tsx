@@ -1,6 +1,6 @@
 import React from "react";
 import styled from "styled-components";
-import { useAppContext } from "../../context/AppContext";
+import { useWorkspaceContext } from "../../context/WorkspaceContext";
 
 const StatusBarContainer = styled.div`
 	height: 24px;
@@ -44,7 +44,7 @@ const StatusItem = styled.div`
 `;
 
 export const StatusBar: React.FC = () => {
-	const { state } = useAppContext();
+	const { state } = useWorkspaceContext();
 
 	return (
 		<StatusBarContainer>
