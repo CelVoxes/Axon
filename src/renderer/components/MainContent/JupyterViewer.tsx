@@ -1,5 +1,7 @@
 import React from "react";
 import styled from "styled-components";
+import { ActionButton, LoadingMessage } from "../shared/StyledComponents";
+import { typography } from "../../styles/design-system";
 
 const JupyterContainer = styled.div`
 	width: 100%;
@@ -21,7 +23,7 @@ const JupyterHeader = styled.div`
 const JupyterTitle = styled.h3`
 	color: #ffffff;
 	margin: 0;
-	font-size: 16px;
+	font-size: ${typography.lg};
 	font-weight: 600;
 `;
 
@@ -30,7 +32,7 @@ const JupyterStatus = styled.div`
 	align-items: center;
 	gap: 8px;
 	color: #4caf50;
-	font-size: 14px;
+	font-size: ${typography.base};
 `;
 
 const StatusDot = styled.div`
@@ -52,37 +54,9 @@ const ActionButtons = styled.div`
 	gap: 12px;
 `;
 
-const ActionButton = styled.button`
-	background-color: #007acc;
-	color: white;
-	border: none;
-	padding: 8px 16px;
-	border-radius: 4px;
-	cursor: pointer;
-	font-size: 14px;
+// Using shared ActionButton component
 
-	&:hover {
-		background-color: #005a9e;
-	}
-
-	&.secondary {
-		background-color: #404040;
-		&:hover {
-			background-color: #505050;
-		}
-	}
-`;
-
-const LoadingMessage = styled.div`
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	justify-content: center;
-	height: 100%;
-	color: #888;
-	font-size: 14px;
-	text-align: center;
-`;
+// Using shared LoadingMessage component
 
 const LoadingSpinner = styled.div`
 	width: 40px;
@@ -148,10 +122,12 @@ export const JupyterViewer: React.FC<JupyterViewerProps> = ({ url }) => {
 					</JupyterStatus>
 				</div>
 				<ActionButtons>
-					<ActionButton className="secondary" onClick={refreshJupyter}>
+					<ActionButton $variant="secondary" onClick={refreshJupyter}>
 						Refresh
 					</ActionButton>
-					<ActionButton onClick={openInBrowser}>Open in Browser</ActionButton>
+					<ActionButton $variant="primary" onClick={openInBrowser}>
+						Open in Browser
+					</ActionButton>
 				</ActionButtons>
 			</JupyterHeader>
 
@@ -168,7 +144,9 @@ export const JupyterViewer: React.FC<JupyterViewerProps> = ({ url }) => {
 			{error && (
 				<LoadingMessage>
 					<div style={{ color: "#ff6b6b", marginBottom: "16px" }}>{error}</div>
-					<ActionButton onClick={openInBrowser}>Open in Browser</ActionButton>
+					<ActionButton $variant="primary" onClick={openInBrowser}>
+						Open in Browser
+					</ActionButton>
 				</LoadingMessage>
 			)}
 

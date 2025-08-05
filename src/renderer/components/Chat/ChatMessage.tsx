@@ -1,6 +1,8 @@
 import React from "react";
 import styled, { keyframes } from "styled-components";
-import { FiUser, FiCpu, FiSettings } from "react-icons/fi";
+import ReactMarkdown from "react-markdown";
+import { FiCopy, FiChevronDown, FiChevronUp } from "react-icons/fi";
+import { typography } from "../../styles/design-system";
 
 interface ChatMessageProps {
 	message: {
@@ -10,6 +12,7 @@ interface ChatMessageProps {
 		timestamp: Date;
 		status?: "pending" | "completed" | "failed";
 		analysisResult?: any;
+		isStreaming?: boolean;
 	};
 }
 
@@ -20,9 +23,7 @@ const pulse = keyframes`
 `;
 
 const MessageContainer = styled.div<{ $messageType: string }>`
-	display: flex;
-	align-items: flex-start;
-	gap: 12px;
+	display: block;
 	margin-bottom: ${(props) =>
 		props.$messageType === "system" ? "8px" : "16px"};
 	animation: ${(props) =>
@@ -40,41 +41,6 @@ const MessageContainer = styled.div<{ $messageType: string }>`
 	}
 `;
 
-const Avatar = styled.div<{ $messageType: string }>`
-	width: 32px;
-	height: 32px;
-	border-radius: 8px;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	flex-shrink: 0;
-	font-size: 14px;
-
-	${(props) => {
-		switch (props.$messageType) {
-			case "user":
-				return `
-					background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-					color: #ffffff;
-				`;
-			case "assistant":
-				return `
-					background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
-					color: #ffffff;
-				`;
-			case "system":
-				return `
-					background: rgba(75, 85, 99, 0.8);
-					color: #d1d5db;
-				`;
-			default:
-				return `
-					background: #374151;
-					color: #d1d5db;
-				`;
-		}
-	}}
-`;
 
 const MessageContent = styled.div<{ $messageType: string }>`
 	flex: 1;
@@ -90,23 +56,22 @@ const MessageText = styled.div<{ $messageType: string }>`
 					color: #ffffff;
 					padding: 12px 16px;
 					border-radius: 16px 16px 4px 16px;
-					font-size: 14px;
+					font-size: ${typography.base};
 					line-height: 1.5;
 					word-wrap: break-word;
 					box-shadow: 0 2px 8px rgba(99, 102, 241, 0.2);
 				`;
 			case "assistant":
 				return `
-					background: rgba(42, 42, 42, 0.6);
+					background: transparent;
 					color: #e5e7eb;
-					padding: 12px 16px;
-					border-radius: 16px 16px 16px 4px;
-					font-size: 14px;
+					padding: 0;
+					border-radius: 0;
+					font-size: ${typography.base};
 					line-height: 1.5;
 					word-wrap: break-word;
 					
-					/* Code block container styling */
-					.code-block-container {
+					.expandable-code-block {
 						margin: 12px 0;
 						border: 1px solid #333;
 						border-radius: 8px;
@@ -114,43 +79,39 @@ const MessageText = styled.div<{ $messageType: string }>`
 						background: #1e1e1e;
 					}
 					
-					.code-block-header {
+					.code-header {
 						display: flex;
 						justify-content: space-between;
 						align-items: center;
 						padding: 8px 12px;
 						background: #2d2d2d;
 						border-bottom: 1px solid #333;
+						cursor: pointer;
 					}
 					
 					.code-language {
-						font-size: 11px;
+						font-size: ${typography.xs};
 						color: #888;
 						text-transform: uppercase;
 						font-weight: 600;
 					}
 					
-					.copy-code-btn {
+					.copy-button {
 						background: #007acc;
 						color: white;
 						border: none;
 						border-radius: 4px;
 						padding: 4px 8px;
-						font-size: 11px;
+						font-size: ${typography.xs};
 						cursor: pointer;
 						transition: background 0.2s;
 						
 						&:hover {
 							background: #005a9e;
 						}
-						
-						&:active {
-							background: #004578;
-						}
 					}
 					
-					/* Code block styling */
-					.code-block {
+					.code-content {
 						background: #1e1e1e;
 						border: none;
 						border-radius: 0;
@@ -160,50 +121,8 @@ const MessageText = styled.div<{ $messageType: string }>`
 						max-height: 400px;
 						overflow-y: auto;
 						font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-						font-size: 13px;
+						font-size: ${typography.base};
 						line-height: 1.4;
-						position: relative;
-						
-						&::-webkit-scrollbar {
-							width: 8px;
-							height: 8px;
-						}
-						
-						&::-webkit-scrollbar-track {
-							background: #2d2d2d;
-							border-radius: 4px;
-						}
-						
-						&::-webkit-scrollbar-thumb {
-							background: #555;
-							border-radius: 4px;
-						}
-						
-						&::-webkit-scrollbar-thumb:hover {
-							background: #777;
-						}
-					}
-					
-					.code-block::before {
-						content: attr(data-language);
-						position: absolute;
-						top: 8px;
-						right: 12px;
-						font-size: 11px;
-						color: #888;
-						text-transform: uppercase;
-						font-weight: 600;
-					}
-					
-					.code-block code {
-						color: #d4d4d4;
-						background: none;
-						padding: 0;
-						border: none;
-						border-radius: 0;
-						font-family: inherit;
-						font-size: inherit;
-						line-height: inherit;
 					}
 					
 					.inline-code {
@@ -212,7 +131,7 @@ const MessageText = styled.div<{ $messageType: string }>`
 						padding: 2px 6px;
 						border-radius: 4px;
 						font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-						font-size: 12px;
+						font-size: ${typography.sm};
 						border: 1px solid #444;
 					}
 				`;
@@ -222,7 +141,7 @@ const MessageText = styled.div<{ $messageType: string }>`
 					color: #93c5fd;
 					padding: 8px 12px;
 					border-radius: 8px;
-					font-size: 13px;
+					font-size: ${typography.base};
 					line-height: 1.4;
 					border-left: 3px solid #3b82f6;
 					word-wrap: break-word;
@@ -233,7 +152,7 @@ const MessageText = styled.div<{ $messageType: string }>`
 					color: #d1d5db;
 					padding: 12px 16px;
 					border-radius: 12px;
-					font-size: 14px;
+					font-size: ${typography.base};
 					line-height: 1.5;
 				`;
 		}
@@ -247,21 +166,8 @@ const MessageText = styled.div<{ $messageType: string }>`
 		margin: 8px 0;
 		font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas,
 			"Courier New", monospace;
-		font-size: 13px;
+		font-size: ${typography.base};
 		border: 1px solid rgba(75, 85, 99, 0.3);
-
-		&::-webkit-scrollbar {
-			height: 6px;
-		}
-
-		&::-webkit-scrollbar-track {
-			background: transparent;
-		}
-
-		&::-webkit-scrollbar-thumb {
-			background: rgba(255, 255, 255, 0.2);
-			border-radius: 3px;
-		}
 	}
 
 	code {
@@ -270,7 +176,7 @@ const MessageText = styled.div<{ $messageType: string }>`
 		border-radius: 4px;
 		font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas,
 			"Courier New", monospace;
-		font-size: 12px;
+		font-size: ${typography.sm};
 		border: 1px solid rgba(75, 85, 99, 0.2);
 	}
 
@@ -315,7 +221,7 @@ const ThinkingContainer = styled.div`
 	background: rgba(42, 42, 42, 0.6);
 	border-radius: 4px 16px 16px 16px;
 	border: 1px solid rgba(75, 85, 99, 0.3);
-	font-size: 14px;
+	font-size: ${typography.base};
 	color: #94a3b8;
 `;
 
@@ -334,7 +240,7 @@ const Dot = styled.div<{ delay: number }>`
 `;
 
 const MessageTimestamp = styled.div`
-	font-size: 11px;
+	font-size: ${typography.xs};
 	color: #6b7280;
 	margin-top: 4px;
 	opacity: 0;
@@ -356,58 +262,6 @@ const ThinkingComponent: React.FC = () => (
 	</ThinkingContainer>
 );
 
-const formatContent = (content: string): string => {
-	// Convert markdown-like formatting to HTML
-	let formatted = content;
-
-	// Bold text
-	formatted = formatted.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-
-	// Code blocks with syntax highlighting and copy button
-	formatted = formatted.replace(
-		/```(\w+)?\n([\s\S]*?)\n```/g,
-		(match, language, code) => {
-			const lang = language || "text";
-			const escapedCode = code.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-			return `<div class="code-block-container">
-				<div class="code-block-header">
-					<span class="code-language">${lang}</span>
-					<button class="copy-code-btn" onclick="copyCodeToClipboard(this, \`${escapedCode.replace(
-						/`/g,
-						"\\`"
-					)}\`)">
-						📋 Copy
-					</button>
-				</div>
-				<pre class="code-block" data-language="${lang}"><code class="language-${lang}">${escapedCode}</code></pre>
-			</div>`;
-		}
-	);
-
-	// Inline code
-	formatted = formatted.replace(
-		/`([^`]+)`/g,
-		"<code class='inline-code'>$1</code>"
-	);
-
-	// Line breaks
-	formatted = formatted.replace(/\n/g, "<br />");
-
-	return formatted;
-};
-
-const getMessageIcon = (type: string) => {
-	switch (type) {
-		case "user":
-			return <FiUser />;
-		case "assistant":
-			return <FiCpu />;
-		case "system":
-			return <FiSettings />;
-		default:
-			return <FiCpu />;
-	}
-};
 
 const formatTimestamp = (timestamp: Date): string => {
 	const now = new Date();
@@ -423,34 +277,224 @@ const formatTimestamp = (timestamp: Date): string => {
 	return timestamp.toLocaleDateString();
 };
 
-export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
-	// Add copy function to window for inline onclick handlers
+// Expandable Code Block Component for ReactMarkdown
+interface ExpandableCodeProps {
+	language?: string;
+	children?: React.ReactNode;
+	messageId: string;
+	blockIndex: number;
+	isStreaming?: boolean;
+}
+
+const ExpandableCodeBlock: React.FC<ExpandableCodeProps> = ({
+	language = "text",
+	children,
+	messageId,
+	blockIndex,
+	isStreaming = false,
+}) => {
+	const [isExpanded, setIsExpanded] = React.useState(false);
+	const [copied, setCopied] = React.useState(false);
+	const code = String(children || "").replace(/\n$/, "");
+	const blockId = `${messageId}-code-${blockIndex}`;
+
+	const copyToClipboard = async () => {
+		try {
+			await navigator.clipboard.writeText(code);
+			setCopied(true);
+			setTimeout(() => setCopied(false), 2000);
+		} catch (error) {
+			console.error("Failed to copy code:", error);
+		}
+	};
+
+	const isLongCode = code.length > 500;
+	const shouldAutoExpand = code.length <= 200 || isStreaming;
+
 	React.useEffect(() => {
-		(window as any).copyCodeToClipboard = (
-			button: HTMLElement,
-			code: string
-		) => {
-			navigator.clipboard
-				.writeText(code)
-				.then(() => {
-					const originalText = button.textContent;
-					button.textContent = "✅ Copied!";
-					button.style.background = "#10b981";
-					setTimeout(() => {
-						button.textContent = originalText;
-						button.style.background = "#007acc";
-					}, 2000);
-				})
-				.catch(() => {
-					button.textContent = "❌ Failed";
-					button.style.background = "#ef4444";
-					setTimeout(() => {
-						button.textContent = "📋 Copy";
-						button.style.background = "#007acc";
-					}, 2000);
-				});
-		};
+		setIsExpanded(shouldAutoExpand);
+	}, [shouldAutoExpand, isStreaming]);
+
+	return (
+		<div className="expandable-code-block" style={{ margin: "12px 0" }}>
+			<div 
+				className="code-header" 
+				onClick={() => setIsExpanded(!isExpanded)}
+				style={{ cursor: "pointer" }}
+			>
+				<div className="code-header-left">
+					<span className="code-title">Code</span>
+					<span className="code-language">
+						{language}
+						{isStreaming && <span style={{ color: "#0ea5e9", marginLeft: 4 }}>●</span>}
+					</span>
+					<span className="code-size-indicator">{code.length} chars</span>
+				</div>
+				<div className="code-header-right">
+					<button
+						className="copy-button"
+						onClick={(e) => {
+							e.stopPropagation();
+							copyToClipboard();
+						}}
+						title="Copy code"
+					>
+						<FiCopy size={14} />
+						{copied && <span style={{ marginLeft: 4, fontSize: 12 }}>✅</span>}
+					</button>
+					{isExpanded ? <FiChevronUp size={16} /> : <FiChevronDown size={16} />}
+				</div>
+			</div>
+			{isExpanded && (
+				<div className="code-content">
+					<pre style={{ 
+						margin: 0,
+						padding: "16px",
+						background: "#1e1e1e",
+						fontSize: typography.sm,
+						lineHeight: "1.4",
+						overflow: "auto",
+						fontFamily: "'Monaco', 'Menlo', 'Ubuntu Mono', monospace",
+						whiteSpace: "pre-wrap",
+						wordWrap: "break-word"
+					}}>
+						<code className={`language-${language}`} style={{ 
+							background: "transparent",
+							color: "#e5e7eb",
+							fontSize: "inherit",
+							fontFamily: "inherit"
+						}}>
+							{code}
+						</code>
+					</pre>
+				</div>
+			)}
+		</div>
+	);
+};
+
+export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
+	const [expandedBlocks, setExpandedBlocks] = React.useState<Set<string>>(
+		new Set()
+	);
+	const [copiedBlocks, setCopiedBlocks] = React.useState<Set<string>>(
+		new Set()
+	);
+	let codeBlockCounter = 0;
+
+	const copyToClipboard = React.useCallback(
+		async (code: string, blockId: string) => {
+			try {
+				await navigator.clipboard.writeText(code);
+				setCopiedBlocks((prev) => new Set(prev).add(blockId));
+				setTimeout(() => {
+					setCopiedBlocks((prev) => {
+						const newSet = new Set(prev);
+						newSet.delete(blockId);
+						return newSet;
+					});
+				}, 2000);
+			} catch (error) {
+				console.error("Failed to copy code:", error);
+			}
+		},
+		[]
+	);
+
+	const toggleCodeBlock = React.useCallback((blockId: string) => {
+		setExpandedBlocks((prev) => {
+			const newSet = new Set(prev);
+			if (newSet.has(blockId)) {
+				newSet.delete(blockId);
+			} else {
+				newSet.add(blockId);
+			}
+			return newSet;
+		});
 	}, []);
+
+	const formatContent = React.useCallback(
+		(content: string): string => {
+			// Convert markdown-like formatting to HTML
+			let formatted = content;
+
+			// Bold text
+			formatted = formatted.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+
+			// Code blocks - remove inline handlers, will be handled by React
+			formatted = formatted.replace(
+				/```(\w+)?\n([\s\S]*?)\n```/g,
+				(match, language, code, offset) => {
+					const lang = language || "text";
+					const escapedCode = code.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+					const codeId = `${message.id}-code-${offset}`;
+					const isExpanded = expandedBlocks.has(codeId);
+					const isCopied = copiedBlocks.has(codeId);
+
+					return `<div class="code-header" data-code-id="${codeId}" data-code="${escapedCode.replace(
+						/"/g,
+						"&quot;"
+					)}">
+					<div class="code-header-left">
+						<span class="code-title">Code</span>
+						<span class="code-language">${lang}</span>
+					</div>
+					<div class="code-header-right">
+						<button class="copy-button">${isCopied ? "✅ Copied!" : "📋 Copy"}</button>
+						<span class="toggle-icon">${isExpanded ? "▼" : "▶"}</span>
+					</div>
+				</div>
+				<div class="code-content" style="display: ${isExpanded ? "block" : "none"};">
+					<pre><code class="language-${lang}">${escapedCode}</code></pre>
+				</div>`;
+				}
+			);
+
+			// Inline code
+			formatted = formatted.replace(
+				/`([^`]+)`/g,
+				"<code class='inline-code'>$1</code>"
+			);
+
+			// Line breaks
+			formatted = formatted.replace(/\n/g, "<br />");
+
+			return formatted;
+		},
+		[expandedBlocks, copiedBlocks]
+	);
+
+	// Handle click events for code blocks
+	const handleClick = React.useCallback(
+		(e: React.MouseEvent) => {
+			const target = e.target as HTMLElement;
+			const codeHeader = target.closest(".code-header");
+
+			if (codeHeader) {
+				const codeId = codeHeader.getAttribute("data-code-id");
+				const code = codeHeader.getAttribute("data-code");
+
+				if (target.classList.contains("copy-button") && codeId && code) {
+					e.stopPropagation();
+					copyToClipboard(
+						code
+							.replace(/&quot;/g, '"')
+							.replace(/&lt;/g, "<")
+							.replace(/&gt;/g, ">"),
+						codeId
+					);
+				} else if (
+					target.classList.contains("code-header") ||
+					target.closest(".code-header")
+				) {
+					if (codeId) {
+						toggleCodeBlock(codeId);
+					}
+				}
+			}
+		},
+		[copyToClipboard, toggleCodeBlock]
+	);
 
 	// Determine message type from isUser and status
 	const getMessageType = () => {
@@ -467,18 +511,57 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
 
 	return (
 		<MessageContainer $messageType={messageType}>
-			<Avatar $messageType={messageType}>{getMessageIcon(messageType)}</Avatar>
 			<MessageContent $messageType={messageType}>
 				{isThinking && !message.isUser ? (
 					<ThinkingComponent />
 				) : (
 					<>
-						<MessageText
-							$messageType={messageType}
-							dangerouslySetInnerHTML={{
-								__html: formatContent(message.content),
-							}}
-						/>
+						{messageType === "assistant" ? (
+							<MessageText $messageType={messageType} onClick={handleClick}>
+								<ReactMarkdown
+									components={{
+										code: ({ node, inline, className, children, ...props }) => {
+											const match = /language-(\w+)/.exec(className || '');
+											const language = match ? match[1] : 'text';
+											
+											if (inline) {
+												return (
+													<code className="inline-code" {...props}>
+														{children}
+													</code>
+												);
+											}
+											
+											const currentIndex = codeBlockCounter++;
+											return (
+												<ExpandableCodeBlock
+													language={language}
+													messageId={message.id}
+													blockIndex={currentIndex}
+													isStreaming={message.isStreaming || message.status === "pending"}
+												>
+													{children}
+												</ExpandableCodeBlock>
+											);
+										},
+										pre: ({ children }) => {
+											// Don't render the default pre tag, let our ExpandableCodeBlock handle it
+											return <>{children}</>;
+										}
+									}}
+								>
+									{message.content}
+								</ReactMarkdown>
+							</MessageText>
+						) : (
+							<MessageText
+								$messageType={messageType}
+								onClick={handleClick}
+								dangerouslySetInnerHTML={{
+									__html: formatContent(message.content),
+								}}
+							/>
+						)}
 						<MessageTimestamp>
 							{formatTimestamp(message.timestamp)}
 						</MessageTimestamp>

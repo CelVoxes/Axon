@@ -1,9 +1,13 @@
+import { BackendClient } from "./BackendClient";
+import { CodeValidationService } from "./CodeValidationService";
+
 export interface CodeGenerationRequest {
 	stepDescription: string;
 	originalQuestion: string;
 	datasets: any[];
 	workingDir: string;
 	stepIndex: number;
+	previousCode?: string; // Add previously generated code as context
 }
 
 export interface CodeGenerationResult {
@@ -13,200 +17,225 @@ export interface CodeGenerationResult {
 }
 
 export class CodeGenerationService {
-	private backendClient: any;
+	private backendClient: BackendClient;
 	private selectedModel: string;
+	private codeValidationService: CodeValidationService;
+	private codeGenerationCallback?: (code: string, step: string) => void;
+	private streamingCodeCallback?: (chunk: string, step: string) => void;
 
-	constructor(backendClient: any, selectedModel: string = "gpt-4o-mini") {
+	constructor(
+		backendClient: BackendClient,
+		selectedModel: string = "gpt-4o-mini"
+	) {
 		this.backendClient = backendClient;
 		this.selectedModel = selectedModel;
+		this.codeValidationService = new CodeValidationService(backendClient);
 	}
 
 	setModel(model: string) {
 		this.selectedModel = model;
 	}
 
+	setCodeGenerationCallback(callback: (code: string, step: string) => void) {
+		this.codeGenerationCallback = callback;
+	}
+
+	setStreamingCodeCallback(callback: (chunk: string, step: string) => void) {
+		this.streamingCodeCallback = callback;
+	}
+
 	async generateDataDrivenStepCode(
 		request: CodeGenerationRequest
 	): Promise<CodeGenerationResult> {
-		try {
-			const response = await fetch(
-				`${this.backendClient.getBaseUrl()}/llm/code/stream`,
-				{
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
-						task_description: request.stepDescription,
-						language: "python",
-						context: `Original question: ${
-							request.originalQuestion
-						}\nWorking directory: ${
-							request.workingDir
-						}\nAvailable datasets: ${request.datasets
-							.map((d) => d.id)
-							.join(", ")}`,
-					}),
+		console.log(
+			"CodeGenerationService: generateDataDrivenStepCode called for:",
+			request.stepDescription
+		);
+
+		// Use the streaming method internally to provide real-time updates
+		const result = await this.generateDataDrivenStepCodeStream(
+			request,
+			(chunk: string) => {
+				// Trigger streaming callback if available
+				if (this.streamingCodeCallback) {
+					this.streamingCodeCallback(chunk, request.stepDescription);
 				}
-			);
-
-			if (response.ok && response.body) {
-				const reader = response.body.getReader();
-				const decoder = new TextDecoder();
-				let fullCode = "";
-
-				while (true) {
-					const { done, value } = await reader.read();
-					if (done) break;
-
-					const chunk = decoder.decode(value);
-					const lines = chunk.split("\n");
-
-					for (const line of lines) {
-						if (line.startsWith("data: ")) {
-							try {
-								const data = JSON.parse(line.slice(6));
-								if (data.chunk) {
-									fullCode += data.chunk;
-								}
-							} catch (e) {
-								console.warn(
-									"CodeGenerationService: Failed to parse streaming chunk:",
-									e
-								);
-							}
-						}
-					}
-				}
-
-				console.log(
-					"CodeGenerationService: Streaming code generation completed:",
-					fullCode
-				);
-				return {
-					code:
-						fullCode ||
-						this.generateBasicStepCode(
-							request.stepDescription,
-							request.stepIndex
-						),
-					success: true,
-				};
-			} else {
-				const errorText = await response.text();
-				console.error(
-					"CodeGenerationService: Code generation failed:",
-					errorText
-				);
-				return {
-					code: this.generateBasicStepCode(
-						request.stepDescription,
-						request.stepIndex
-					),
-					success: false,
-					error: errorText,
-				};
 			}
-		} catch (error) {
-			console.error("CodeGenerationService: Error generating code:", error);
-			return {
-				code: this.generateBasicStepCode(
-					request.stepDescription,
-					request.stepIndex
-				),
-				success: false,
-				error: error instanceof Error ? error.message : String(error),
-			};
-		}
+		);
+		return result;
 	}
+
+	private buildEnhancedContext(request: CodeGenerationRequest): string {
+		const datasetInfo = request.datasets
+			.map(
+				(d) =>
+					`- ${d.id}: ${d.title || "Unknown"} (${
+						d.organism || "Unknown organism"
+					})`
+			)
+			.join("\n");
+
+		let context = `Original question: ${request.originalQuestion}
+Working directory: ${request.workingDir}
+Step index: ${request.stepIndex}
+
+Available datasets:
+${datasetInfo}
+
+Requirements:
+- Use proper error handling with try-except blocks
+- Include all necessary imports
+- Add progress print statements
+- Save outputs to appropriate directories (results/, figures/)
+- Handle missing or corrupted data gracefully
+- Use robust data validation
+- Follow Python best practices`;
+
+		// Add previously generated code as context if available
+		if (request.previousCode) {
+			context += `\n\nPreviously generated code (DO NOT REPEAT IMPORTS OR SETUP):
+\`\`\`python
+${request.previousCode}
+\`\`\`
+
+IMPORTANT: Do not repeat imports or setup code that was already generated. Focus only on the new functionality for this step.`;
+		}
+
+		return context;
+	}
+
+	// Note: Code cleaning and validation is now handled by CodeValidationService
 
 	async generateDataDrivenStepCodeStream(
 		request: CodeGenerationRequest,
 		onChunk: (chunk: string) => void
 	): Promise<CodeGenerationResult> {
 		try {
-			const response = await fetch(
-				`${this.backendClient.getBaseUrl()}/llm/code/stream`,
+			console.log(
+				"CodeGenerationService: Starting streaming for step:",
+				request.stepDescription
+			);
+
+			// Prepare enhanced context with more detailed information
+			const enhancedContext = this.buildEnhancedContext(request);
+
+			console.log(
+				"CodeGenerationService: Making streaming API call to:",
+				`${this.backendClient.getBaseUrl()}/llm/code/stream`
+			);
+
+			let generatedCode = "";
+			const result = await this.backendClient.generateCodeStream(
 				{
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
-						task_description: request.stepDescription,
-						language: "python",
-						context: `Original question: ${
-							request.originalQuestion
-						}\nWorking directory: ${
-							request.workingDir
-						}\nAvailable datasets: ${request.datasets
-							.map((d) => d.id)
-							.join(", ")}`,
-					}),
+					task_description: request.stepDescription,
+					language: "python",
+					context: enhancedContext,
+				},
+				(chunk: string) => {
+					generatedCode += chunk;
+					onChunk(chunk);
 				}
 			);
 
-			if (response.ok && response.body) {
-				const reader = response.body.getReader();
-				const decoder = new TextDecoder();
-				let fullCode = "";
+			console.log(
+				"CodeGenerationService: Streaming completed, final code length:",
+				generatedCode.length
+			);
 
-				while (true) {
-					const { done, value } = await reader.read();
-					if (done) break;
+			// Streaming code generation completed
 
-					const chunk = decoder.decode(value);
-					const lines = chunk.split("\n");
-
-					for (const line of lines) {
-						if (line.startsWith("data: ")) {
-							try {
-								const data = JSON.parse(line.slice(6));
-								if (data.chunk) {
-									fullCode += data.chunk;
-									onChunk(data.chunk);
-								}
-							} catch (e) {
-								console.warn(
-									"CodeGenerationService: Failed to parse streaming chunk:",
-									e
-								);
-							}
-						}
-					}
+			// Validate and clean the generated code
+			const cleanedCode = this.codeValidationService.cleanAndPrepareCode(
+				generatedCode,
+				{
+					addImports: true,
+					addErrorHandling: true,
+					addDirectoryCreation: true,
+					stepDescription: request.stepDescription,
 				}
+			);
 
-				console.log(
-					"CodeGenerationService: Streaming code generation completed:",
-					fullCode
-				);
-				return {
-					code:
-						fullCode ||
-						this.generateBasicStepCode(
-							request.stepDescription,
-							request.stepIndex
-						),
-					success: true,
-				};
-			} else {
-				const errorText = await response.text();
-				console.error(
-					"CodeGenerationService: Code generation failed:",
-					errorText
-				);
-				return {
-					code: this.generateBasicStepCode(
-						request.stepDescription,
-						request.stepIndex
-					),
-					success: false,
-					error: errorText,
-				};
-			}
-		} catch (error) {
-			console.error("CodeGenerationService: Error generating code:", error);
-			return {
-				code: this.generateBasicStepCode(
+			const finalCode =
+				cleanedCode ||
+				this.generateDataAwareBasicStepCode(
 					request.stepDescription,
+					request.datasets,
 					request.stepIndex
-				),
+				);
+
+			// Trigger callback if available
+			if (this.codeGenerationCallback) {
+				console.log(
+					"CodeGenerationService: Calling final code generation callback"
+				);
+				this.codeGenerationCallback(finalCode, request.stepDescription);
+			}
+
+			// Dispatch completion event for chat panel
+			const completeEvent = new CustomEvent("llm-code-complete", {
+				detail: { 
+					code: finalCode, 
+					step: request.stepDescription 
+				}
+			});
+			window.dispatchEvent(completeEvent);
+
+			return {
+				code: finalCode,
+				success: true,
+			};
+		} catch (error) {
+			console.error("CodeGenerationService: Error in streaming method:", error);
+			// Fallback to non-streaming method
+			return this.generateDataDrivenStepCodeFallback(request);
+		}
+	}
+
+	/**
+	 * Fallback method when streaming fails
+	 */
+	private async generateDataDrivenStepCodeFallback(
+		request: CodeGenerationRequest
+	): Promise<CodeGenerationResult> {
+		console.log(
+			"CodeGenerationService: Using fallback method for step:",
+			request.stepDescription
+		);
+
+		try {
+			const result = await this.backendClient.generateCodeFix({
+				prompt: request.stepDescription,
+				model: this.selectedModel,
+				max_tokens: 2000,
+				temperature: 0.1,
+			});
+
+			const code = result.code || result.response || "";
+
+			// Trigger callback if available
+			if (this.codeGenerationCallback) {
+				this.codeGenerationCallback(code, request.stepDescription);
+			}
+
+			return {
+				code,
+				success: true,
+			};
+		} catch (error) {
+			console.error("CodeGenerationService: Error in fallback method:", error);
+			const fallbackCode = this.generateDataAwareBasicStepCode(
+				request.stepDescription,
+				request.datasets,
+				request.stepIndex
+			);
+
+			// Trigger callback if available
+			if (this.codeGenerationCallback) {
+				this.codeGenerationCallback(fallbackCode, request.stepDescription);
+			}
+
+			return {
+				code: fallbackCode,
 				success: false,
 				error: error instanceof Error ? error.message : String(error),
 			};

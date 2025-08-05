@@ -1,6 +1,7 @@
 import React from "react";
 import styled from "styled-components";
-import { useWorkspaceContext } from "../../context/WorkspaceContext";
+import { useWorkspaceContext } from "../../context/AppContext";
+import { typography } from "../../styles/design-system";
 
 const StatusBarContainer = styled.div`
 	height: 24px;
@@ -9,7 +10,7 @@ const StatusBarContainer = styled.div`
 	align-items: center;
 	justify-content: space-between;
 	padding: 0 12px;
-	font-size: 12px;
+	font-size: ${typography.sm};
 	color: white;
 	flex-shrink: 0;
 	border-top: 1px solid #005a9e;
@@ -35,12 +36,7 @@ const StatusItem = styled.div`
 	border-radius: 2px;
 	background: rgba(255, 255, 255, 0.1);
 	font-weight: 500;
-	cursor: pointer;
 	transition: background-color 0.2s;
-
-	&:hover {
-		background: rgba(255, 255, 255, 0.2);
-	}
 `;
 
 export const StatusBar: React.FC = () => {

@@ -21,16 +21,18 @@ else:
     print(f"No .env file found at {env_path}")
 
 from .geo_search import SimpleGEOClient
+from .broad_search import SimpleBroadClient
 from .llm_service import get_llm_service
 
 app = FastAPI(
-    title="Minimal GEO Semantic Search",
-    description="Simple API for finding similar GEO datasets using semantic search",
+    title="GEO and Broad Single Cell Semantic Search",
+    description="Simple API for finding similar datasets using semantic search across GEO and Broad Institute Single Cell Portal",
     version="1.0.0"
 )
 
-# Initialize the simple client lazily
+# Initialize the simple clients lazily
 geo_client = None
+broad_client = None
 
 def get_geo_client():
     """Get or create the GEO client."""
@@ -38,6 +40,13 @@ def get_geo_client():
     if geo_client is None:
         geo_client = SimpleGEOClient()
     return geo_client
+
+def get_broad_client():
+    """Get or create the Broad client."""
+    global broad_client
+    if broad_client is None:
+        broad_client = SimpleBroadClient()
+    return broad_client
 
 
 class SearchRequest(BaseModel):
@@ -124,7 +133,21 @@ class SearchTermsRequest(BaseModel):
 
 
 class SearchTermsResponse(BaseModel):
-    terms: List[str]
+	terms: List[str]
+
+
+class DataTypeSuggestionsRequest(BaseModel):
+	data_types: List[str]
+	user_question: str
+	available_datasets: List[Dict[str, Any]]
+	current_context: str = ""
+
+
+class DataTypeSuggestionsResponse(BaseModel):
+	suggestions: List[Dict[str, Any]]
+	recommended_approaches: List[Dict[str, Any]]
+	data_insights: List[Dict[str, Any]]
+	next_steps: List[str]
 
 
 @app.get("/")
@@ -420,18 +443,28 @@ async def generate_code_stream(request: dict):
         language = request.get("language", "python")
         context = request.get("context", "")
         
+        print(f"Code generation request: task='{task_description}', language='{language}'")
+        print(f"Context: {context[:200]}..." if len(context) > 200 else f"Context: {context}")
+        
         if not task_description:
             return {"error": "Task description is required"}
         
         from fastapi.responses import StreamingResponse
         
         async def generate():
-            async for chunk in llm_service.generate_code_stream(
-                task_description=task_description,
-                language=language,
-                context=context
-            ):
-                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+            try:
+                async for chunk in llm_service.generate_code_stream(
+                    task_description=task_description,
+                    language=language,
+                    context=context
+                ):
+                    if chunk:  # Only yield non-empty chunks
+                        yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+            except Exception as e:
+                print(f"Error in streaming generation: {e}")
+                # Yield error message as a chunk
+                error_msg = f"# Error generating code: {str(e)}\nprint('Code generation failed due to error')"
+                yield f"data: {json.dumps({'chunk': error_msg})}\n\n"
         
         return StreamingResponse(
             generate(),
@@ -445,6 +478,8 @@ async def generate_code_stream(request: dict):
         
     except Exception as e:
         print(f"Error generating streaming code: {e}")
+        import traceback
+        traceback.print_exc()
         return {"error": str(e)}
 
 
@@ -582,6 +617,22 @@ async def generate_search_terms(request: SearchTermsRequest):
         raise HTTPException(status_code=500, detail=f"Failed to generate search terms: {str(e)}")
 
 
+@app.post("/llm/suggestions", response_model=DataTypeSuggestionsResponse)
+async def generate_data_type_suggestions(request: DataTypeSuggestionsRequest):
+    """Generate analysis suggestions based on data types and user question."""
+    try:
+        llm_service = get_llm_service()
+        suggestions = await llm_service.generate_data_type_suggestions(
+            request.data_types,
+            request.user_question,
+            request.available_datasets,
+            request.current_context
+        )
+        return DataTypeSuggestionsResponse(**suggestions)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating suggestions: {str(e)}")
+
+
 @app.get("/search/gene/{gene}")
 async def search_by_gene(
     gene: str,
@@ -648,6 +699,333 @@ async def search_by_disease(
         raise HTTPException(status_code=500, detail=f"Disease search failed: {str(e)}")
 
 
+# Broad Single Cell Portal endpoints
+@app.post("/broad/search", response_model=List[DatasetResponse])
+async def search_broad_studies(request: SearchRequest):
+    """Search for single-cell studies in Broad Institute Single Cell Portal.
+    
+    Args:
+        request: Search request with query and parameters
+        
+    Returns:
+        List of matching studies
+    """
+    try:
+        client = get_broad_client()
+        studies = await client.find_similar_studies(
+            query=request.query,
+            limit=request.limit,
+            organism=request.organism
+        )
+        
+        # Convert to DatasetResponse format
+        datasets = []
+        for study in studies:
+            datasets.append(DatasetResponse(
+                id=study.get('id', ''),
+                title=study.get('title', ''),
+                description=study.get('description', ''),
+                organism=study.get('organism', ''),
+                sample_count=study.get('sample_count', ''),
+                platform=study.get('platform', ''),
+                similarity_score=study.get('similarity_score', 0.0),
+                source='Broad Single Cell Portal'
+            ))
+        
+        return datasets
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Broad search failed: {str(e)}")
+
+
+@app.get("/broad/search/disease/{disease}")
+async def search_broad_by_disease(
+    disease: str,
+    limit: int = SearchConfig.get_search_limit()
+):
+    """Find Broad single-cell studies related to a specific disease.
+    
+    Args:
+        disease: Disease name
+        limit: Maximum results
+        
+    Returns:
+        Disease-related studies
+    """
+    try:
+        client = get_broad_client()
+        studies = await client.search_by_disease(
+            disease=disease,
+            limit=limit
+        )
+        
+        return {
+            "disease": disease,
+            "studies": studies,
+            "count": len(studies)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Broad disease search failed: {str(e)}")
+
+
+@app.get("/broad/search/organism/{organism}")
+async def search_broad_by_organism(
+    organism: str,
+    limit: int = SearchConfig.get_search_limit()
+):
+    """Find Broad single-cell studies for a specific organism.
+    
+    Args:
+        organism: Organism name
+        limit: Maximum results
+        
+    Returns:
+        Organism-related studies
+    """
+    try:
+        client = get_broad_client()
+        studies = await client.search_by_organism(
+            organism=organism,
+            limit=limit
+        )
+        
+        return {
+            "organism": organism,
+            "studies": studies,
+            "count": len(studies)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Broad organism search failed: {str(e)}")
+
+
+@app.get("/broad/search/tissue/{tissue}")
+async def search_broad_by_tissue(
+    tissue: str,
+    limit: int = SearchConfig.get_search_limit()
+):
+    """Find Broad single-cell studies for a specific tissue type.
+    
+    Args:
+        tissue: Tissue name
+        limit: Maximum results
+        
+    Returns:
+        Tissue-related studies
+    """
+    try:
+        client = get_broad_client()
+        studies = await client.search_by_tissue(
+            tissue=tissue,
+            limit=limit
+        )
+        
+        return {
+            "tissue": tissue,
+            "studies": studies,
+            "count": len(studies)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Broad tissue search failed: {str(e)}")
+
+
+@app.get("/broad/search/technology/{technology}")
+async def search_broad_by_technology(
+    technology: str,
+    limit: int = SearchConfig.get_search_limit()
+):
+    """Find Broad single-cell studies using a specific technology.
+    
+    Args:
+        technology: Technology name
+        limit: Maximum results
+        
+    Returns:
+        Technology-related studies
+    """
+    try:
+        client = get_broad_client()
+        studies = await client.search_by_technology(
+            technology=technology,
+            limit=limit
+        )
+        
+        return {
+            "technology": technology,
+            "studies": studies,
+            "count": len(studies)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Broad technology search failed: {str(e)}")
+
+
+@app.get("/broad/facets")
+async def get_broad_facets():
+    """Get available search facets for Broad Single Cell Portal.
+    
+    Returns:
+        Available facets and their options
+    """
+    try:
+        client = get_broad_client()
+        facets = await client.get_available_facets()
+        return facets
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get Broad facets: {str(e)}")
+
+
+@app.get("/broad/tos/check")
+async def check_broad_tos_acceptance():
+    """Check if user has accepted current Terra Terms of Service.
+    
+    Returns:
+        TOS acceptance status
+    """
+    try:
+        client = get_broad_client()
+        accepted = await client.check_terra_tos_acceptance()
+        
+        return {
+            "tos_accepted": accepted,
+            "message": "User has accepted Terra Terms of Service" if accepted else "User needs to accept Terra Terms of Service",
+            "tos_url": "https://singlecell.broadinstitute.org/single_cell/terms"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to check TOS acceptance: {str(e)}")
+
+
+# Download endpoints
+@app.get("/broad/studies/{study_accession}/files")
+async def get_broad_study_files(study_accession: str):
+    """Get list of files available for a Broad study."""
+    try:
+        client = get_broad_client()
+        files = await client.get_study_files(study_accession)
+        
+        return {
+            "study_accession": study_accession,
+            "files": files,
+            "count": len(files)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get study files: {str(e)}")
+
+
+@app.post("/broad/studies/{study_accession}/download")
+async def download_broad_study_file(
+    study_accession: str,
+    file_id: str,
+    output_path: str
+):
+    """Download a specific file from a Broad study."""
+    try:
+        client = get_broad_client()
+        success = await client.download_study_file(
+            study_accession=study_accession,
+            file_id=file_id,
+            output_path=output_path
+        )
+        
+        if success:
+            return {
+                "status": "success",
+                "message": f"File {file_id} downloaded to {output_path}",
+                "study_accession": study_accession,
+                "file_id": file_id,
+                "output_path": output_path
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Download failed")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+
+
+@app.get("/broad/studies/{study_accession}/manifest")
+async def get_broad_study_manifest(study_accession: str):
+    """Get study manifest for a Broad study."""
+    try:
+        client = get_broad_client()
+        manifest = await client.get_study_manifest(study_accession)
+        
+        if manifest:
+            return {
+                "study_accession": study_accession,
+                "manifest": manifest
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Manifest not found")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get manifest: {str(e)}")
+
+
+@app.post("/broad/bulk-download/auth")
+async def create_broad_bulk_download_auth(study_accessions: List[str]):
+    """Create one-time auth code for bulk downloads."""
+    try:
+        client = get_broad_client()
+        auth_code = await client.create_bulk_download_auth(study_accessions)
+        
+        if auth_code:
+            return {
+                "status": "success",
+                "auth_code": auth_code,
+                "study_accessions": study_accessions
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to create auth code")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create auth code: {str(e)}")
+
+
+@app.get("/broad/bulk-download/summary/{auth_code}")
+async def get_broad_bulk_download_summary(auth_code: str):
+    """Get summary information for bulk download."""
+    try:
+        client = get_broad_client()
+        summary = await client.get_bulk_download_summary(auth_code)
+        
+        if summary:
+            return {
+                "auth_code": auth_code,
+                "summary": summary
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Summary not found")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get summary: {str(e)}")
+
+
+@app.post("/broad/bulk-download/curl-config")
+async def generate_broad_curl_config(auth_code: str, output_path: str):
+    """Generate curl command file for bulk download."""
+    try:
+        client = get_broad_client()
+        success = await client.generate_curl_config(auth_code, output_path)
+        
+        if success:
+            return {
+                "status": "success",
+                "message": f"Curl config generated at {output_path}",
+                "auth_code": auth_code,
+                "output_path": output_path
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to generate curl config")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate curl config: {str(e)}")
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
@@ -661,7 +1039,7 @@ async def health_check():
     
     return {
         "status": "healthy", 
-        "service": "GEO Semantic Search",
+        "service": "GEO and Broad Single Cell Semantic Search",
         "llm_service": llm_status,
         "openai_key_configured": openai_key_set,
         "anthropic_key_configured": anthropic_key_set

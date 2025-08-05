@@ -3,24 +3,25 @@
 import os
 import asyncio
 import json
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, Sequence
 from abc import ABC, abstractmethod
 import openai
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionMessageParam
 
 
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
     
     @abstractmethod
-    async def generate(self, messages: List[Dict[str, str]], **kwargs) -> str:
+    async def generate(self, messages: Sequence[ChatCompletionMessageParam], **kwargs) -> str:
         """Generate response from messages."""
         pass
     
     @abstractmethod
-    async def generate_stream(self, messages: List[Dict[str, str]], **kwargs):
+    async def generate_stream(self, messages: Sequence[ChatCompletionMessageParam], **kwargs):
         """Generate streaming response from messages."""
-        pass
+        yield ""
 
 
 class OpenAIProvider(LLMProvider):
@@ -30,20 +31,20 @@ class OpenAIProvider(LLMProvider):
         self.client = AsyncOpenAI(api_key=api_key)
         self.model = model
     
-    async def generate(self, messages: List[Dict[str, str]], **kwargs) -> str:
+    async def generate(self, messages: Sequence[ChatCompletionMessageParam], **kwargs) -> str:
         response = await self.client.chat.completions.create(
             model=self.model,
-            messages=messages,
+            messages=list(messages),
             **kwargs
         )
         return response.choices[0].message.content.strip()
     
-    async def generate_stream(self, messages: List[Dict[str, str]], **kwargs):
+    async def generate_stream(self, messages: Sequence[ChatCompletionMessageParam], **kwargs):
         """Generate streaming response from messages."""
         try:
             stream = await self.client.chat.completions.create(
                 model=self.model,
-                messages=messages,
+                messages=list(messages),
                 stream=True,
                 **kwargs
             )
@@ -62,9 +63,12 @@ class AnthropicProvider(LLMProvider):
     """Anthropic provider implementation."""
     
     def __init__(self, api_key: str, model: str = "claude-3-sonnet-20240229"):
-        import anthropic
-        self.client = anthropic.AsyncAnthropic(api_key=api_key)
-        self.model = model
+        try:
+            import anthropic
+            self.client = anthropic.AsyncAnthropic(api_key=api_key)
+            self.model = model
+        except ImportError:
+            raise ImportError("anthropic package not installed. Run: pip install anthropic")
     
     async def generate(self, messages: List[Dict[str, str]], **kwargs) -> str:
         # Convert OpenAI format to Anthropic format
@@ -257,40 +261,37 @@ Code:
         context: Optional[str] = None
     ):
         """Generate code with streaming for a given task description."""
-        print(f"generate_code_stream called with task: {task_description}")
-        print(f"Provider available: {self.provider is not None}")
         
         if not self.provider:
-            print("No provider available, using fallback code")
             # For fallback, yield the entire code at once
             fallback_code = self._generate_fallback_code(task_description, language)
             yield fallback_code
             return
         
+        # Enhanced prompt with better structure and examples
         prompt = f"""
 You are an expert Python programmer specializing in data analysis and bioinformatics. 
 Generate clean, well-documented, EXECUTABLE code for the following task.
 
-Task: {task_description}
-Language: {language}
+TASK: {task_description}
+LANGUAGE: {language}
 
-{f"Context: {context}" if context else ""}
+{f"CONTEXT: {context}" if context else ""}
 
 CRITICAL REQUIREMENTS:
-- Write ONLY executable Python code, no explanations or markdown
-- ALWAYS include ALL necessary imports at the top
-- Use these standard imports for bioinformatics: pandas, numpy, matplotlib, seaborn, scipy, sklearn, requests, gzip, io
-- Add clear comments explaining each step
-- Handle errors gracefully with try-except blocks
-- Follow Python best practices
-- Make the code production-ready and biologically meaningful
-- Include print statements to show progress
-- Save outputs to appropriate directories (results/, figures/, etc.)
-- NEVER use f-strings with unescaped quotes or complex expressions
-- Use simple string formatting: print("Value:", value) instead of print(f"Value: {{value}}")
-- Ensure all strings are properly closed and escaped
+1. Write ONLY executable Python code - NO explanations, markdown, or non-code text
+2. ALWAYS include ALL necessary imports at the top
+3. Use these standard imports: pandas, numpy, matplotlib, seaborn, scipy, sklearn, requests, gzip, io, os, pathlib
+4. Add clear comments explaining each step
+5. Handle errors gracefully with try-except blocks
+6. Follow Python best practices
+7. Make the code production-ready and biologically meaningful
+8. Include print statements to show progress
+9. Save outputs to appropriate directories (results/, figures/, etc.)
+10. Use simple string formatting: print("Value:", value) instead of complex f-strings
+11. Ensure all strings are properly closed and escaped
 
-DATASET DOWNLOAD REQUIREMENTS:
+DATASET HANDLING REQUIREMENTS:
 - ALWAYS validate URLs before downloading
 - Check HTTP status codes (200 = success, 404 = not found, etc.)
 - Handle different file formats (txt, csv, gz, gzip, etc.)
@@ -307,16 +308,46 @@ ERROR HANDLING:
 - Provide meaningful error messages
 - Continue execution even if some datasets fail
 
-IMPORTANT: Start with imports, then write the main code. The code must be immediately executable.
+CODE STRUCTURE:
+1. Start with imports
+2. Create output directories
+3. Define helper functions
+4. Main execution code with error handling
+5. Save results and create visualizations
 
-Code:
+EXAMPLE STRUCTURE:
+```python
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os
+from pathlib import Path
+
+# Create output directories
+results_dir = Path('results')
+figures_dir = Path('figures')
+results_dir.mkdir(exist_ok=True)
+figures_dir.mkdir(exist_ok=True)
+
+print("Starting analysis...")
+
+try:
+    # Your code here
+    print("Analysis completed successfully!")
+except Exception as e:
+    print(f"Error: {{e}}")
+    raise
+```
+
+Generate the code now:
 """
         
         try:
             async for chunk in self.provider.generate_stream([
-                {"role": "system", "content": "You are an expert Python programmer specializing in bioinformatics and data analysis. Generate ONLY executable Python code with proper imports. Never include explanations, markdown, or non-code text. Avoid complex f-strings and ensure all syntax is correct."},
+                {"role": "system", "content": "You are an expert Python programmer specializing in bioinformatics and data analysis. Generate ONLY executable Python code with proper imports. Never include explanations, markdown, or non-code text. Avoid complex f-strings and ensure all syntax is correct. Always include error handling and proper directory structure."},
                 {"role": "user", "content": prompt}
-            ], max_tokens=2000, temperature=0.1):
+            ], max_tokens=3000, temperature=0.1):
                 yield chunk
                 
         except Exception as e:
@@ -639,10 +670,10 @@ print("Please implement specific analysis based on your data and requirements.")
 """
         
         code += f"""
-        print("\\n✅", task_description, "- Analysis completed!")
-print("Results saved to 'results/' directory")
-print("Figures saved to 'figures/' directory")
-"""
+        print("\\n✅ {task_description} - Analysis completed!")
+        print("Results saved to 'results/' directory")
+        print("Figures saved to 'figures/' directory")
+        """
         
         return code
     
@@ -727,8 +758,8 @@ JSON response:"""
         self, 
         question: str, 
         context: str = "", 
-        current_state: dict = None,
-        available_data: list = None,
+        current_state: Optional[dict] = None,
+        available_data: Optional[list] = None,
         task_type: str = "general"
     ) -> dict:
         """
@@ -779,6 +810,9 @@ Return your response as a JSON object with the following structure:
 Make the steps specific, actionable, and appropriate for the current context and available data.
 """
 
+        if not self.provider:
+            return self._generate_fallback_plan(question, task_type)
+            
         try:
             response = await self.provider.generate([
                 {"role": "system", "content": "You are an expert AI assistant that can plan and execute various tasks. Create specific, actionable plans based on the given context."},
@@ -854,6 +888,199 @@ Make the steps specific, actionable, and appropriate for the current context and
             "estimated_time": "variable",
             "dependencies": [],
             "success_criteria": ["Task completed", "Results documented"]
+        }
+    
+    async def generate_data_type_suggestions(
+        self,
+        data_types: List[str],
+        user_question: str,
+        available_datasets: List[Dict[str, Any]],
+        current_context: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Generate dynamic analysis suggestions based on the selected data types.
+        This provides contextual recommendations for what the user can analyze.
+        """
+        if not data_types:
+            return {
+                "suggestions": [],
+                "recommended_analyses": [],
+                "data_insights": []
+            }
+            
+        prompt = f"""
+You are an expert bioinformatics and data science assistant. Based on the selected data types and user question, provide dynamic analysis suggestions.
+
+User Question: {user_question}
+
+Selected Data Types: {', '.join(data_types)}
+
+Available Datasets: {json.dumps(available_datasets, indent=2)}
+
+Current Context: {current_context}
+
+Please provide:
+
+1. **Specific Analysis Suggestions**: List 3-5 specific analyses that would be valuable for this data type and question
+2. **Recommended Approaches**: Suggest the best analytical approaches for this data
+3. **Data Insights**: What interesting patterns or insights could be discovered
+4. **Next Steps**: What should the user do next to get the most value from this data
+
+For each data type, provide tailored suggestions:
+
+- **Single-cell expression data**: Clustering, trajectory analysis, differential expression, cell type annotation
+- **Expression matrix data**: Differential expression, pathway analysis, correlation analysis, visualization
+- **Clinical data**: Statistical analysis, survival analysis, correlation with molecular data
+- **Sequence data**: Quality control, alignment, variant calling, annotation
+- **Variant data**: Frequency analysis, functional impact, association studies
+- **Metadata**: Quality assessment, integration with other data types
+
+Return your response as a JSON object with this structure:
+{{
+    "suggestions": [
+        {{
+            "title": "Analysis Title",
+            "description": "What this analysis will reveal",
+            "data_types": ["data_type1", "data_type2"],
+            "complexity": "easy|medium|hard",
+            "estimated_time": "time estimate",
+            "expected_insights": ["insight1", "insight2"]
+        }}
+    ],
+    "recommended_approaches": [
+        {{
+            "approach": "Approach name",
+            "description": "Why this approach is suitable",
+            "tools": ["tool1", "tool2"],
+            "data_types": ["data_type1"]
+        }}
+    ],
+    "data_insights": [
+        {{
+            "insight": "Potential insight",
+            "data_type": "data_type",
+            "confidence": "high|medium|low"
+        }}
+    ],
+    "next_steps": [
+        "Step 1: Description",
+        "Step 2: Description"
+    ]
+}}
+
+Make suggestions specific, actionable, and tailored to the user's question and data types.
+"""
+
+        if not self.provider:
+            return self._generate_fallback_suggestions(data_types, user_question)
+            
+        try:
+            response = await self.provider.generate([
+                {"role": "system", "content": "You are an expert bioinformatics assistant that provides specific, actionable analysis suggestions based on data types and research questions."},
+                {"role": "user", "content": prompt}
+            ], max_tokens=1500, temperature=0.3)
+            
+            # Try to parse JSON from the response
+            try:
+                json_start = response.find('{')
+                json_end = response.rfind('}') + 1
+                if json_start != -1 and json_end != 0:
+                    json_str = response[json_start:json_end]
+                    suggestions = json.loads(json_str)
+                    return suggestions
+                else:
+                    raise ValueError("No JSON found in response")
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"Failed to parse JSON from suggestions response: {e}")
+                return self._generate_fallback_suggestions(data_types, user_question)
+                
+        except Exception as e:
+            print(f"Error generating data type suggestions: {e}")
+            return self._generate_fallback_suggestions(data_types, user_question)
+
+    def _generate_fallback_suggestions(self, data_types: List[str], user_question: str) -> Dict[str, Any]:
+        """
+        Generate fallback suggestions when LLM fails.
+        """
+        suggestions = []
+        
+        for data_type in data_types:
+            if data_type == "single_cell_expression":
+                suggestions.append({
+                    "title": "Single-cell Clustering Analysis",
+                    "description": "Identify distinct cell populations and their gene expression patterns",
+                    "data_types": ["single_cell_expression"],
+                    "complexity": "medium",
+                    "estimated_time": "30-60 minutes",
+                    "expected_insights": ["Cell type identification", "Gene expression patterns", "Cell population heterogeneity"]
+                })
+                suggestions.append({
+                    "title": "Differential Expression Analysis",
+                    "description": "Find genes that are differentially expressed between cell types or conditions",
+                    "data_types": ["single_cell_expression"],
+                    "complexity": "medium",
+                    "estimated_time": "20-40 minutes",
+                    "expected_insights": ["Marker genes", "Pathway enrichment", "Functional differences"]
+                })
+            elif data_type == "expression_matrix":
+                suggestions.append({
+                    "title": "Expression Pattern Analysis",
+                    "description": "Analyze gene expression patterns across samples or conditions",
+                    "data_types": ["expression_matrix"],
+                    "complexity": "easy",
+                    "estimated_time": "15-30 minutes",
+                    "expected_insights": ["Expression trends", "Sample clustering", "Gene correlations"]
+                })
+            elif data_type == "clinical_data":
+                suggestions.append({
+                    "title": "Clinical Data Summary",
+                    "description": "Generate comprehensive summary statistics and visualizations",
+                    "data_types": ["clinical_data"],
+                    "complexity": "easy",
+                    "estimated_time": "10-20 minutes",
+                    "expected_insights": ["Patient demographics", "Clinical correlations", "Risk factors"]
+                })
+            elif data_type == "sequence_data":
+                suggestions.append({
+                    "title": "Sequence Quality Assessment",
+                    "description": "Evaluate sequence data quality and perform basic analysis",
+                    "data_types": ["sequence_data"],
+                    "complexity": "medium",
+                    "estimated_time": "20-40 minutes",
+                    "expected_insights": ["Quality metrics", "Sequence characteristics", "Potential issues"]
+                })
+            elif data_type == "variant_data":
+                suggestions.append({
+                    "title": "Variant Analysis",
+                    "description": "Analyze genetic variants and their potential impact",
+                    "data_types": ["variant_data"],
+                    "complexity": "medium",
+                    "estimated_time": "25-45 minutes",
+                    "expected_insights": ["Variant frequency", "Functional impact", "Disease associations"]
+                })
+        
+        return {
+            "suggestions": suggestions,
+            "recommended_approaches": [
+                {
+                    "approach": "Exploratory Data Analysis",
+                    "description": "Start with basic exploration to understand your data",
+                    "tools": ["pandas", "matplotlib", "seaborn"],
+                    "data_types": data_types
+                }
+            ],
+            "data_insights": [
+                {
+                    "insight": "Data quality assessment",
+                    "data_type": "general",
+                    "confidence": "high"
+                }
+            ],
+            "next_steps": [
+                "Load and examine your data",
+                "Perform quality control checks",
+                "Choose an analysis approach from the suggestions above"
+            ]
         }
     
     def _build_search_prompt(

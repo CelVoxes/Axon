@@ -1,12 +1,16 @@
 import React, { useState, useEffect } from "react";
 import styled from "styled-components";
 import { FiFolder, FiMessageSquare } from "react-icons/fi";
-import { useWorkspaceContext } from "../../context/WorkspaceContext";
-import { useUIContext } from "../../context/UIContext";
+import { useWorkspaceContext, useUIContext } from "../../context/AppContext";
 import { FileEditor } from "./FileEditor";
-import { openWorkspace } from "../../utils";
-// @ts-ignore
-import axonLogo from "../../../png/axon-no-background.png";
+import { WelcomeScreen } from "./WelcomeScreen";
+import {
+	ActionButton,
+	StatusIndicator,
+	EmptyState,
+} from "../shared/StyledComponents";
+import { electronAPI } from "../../utils/electronAPI";
+import { typography } from "../../styles/design-system";
 
 const MainContainer = styled.div`
 	flex: 1;
@@ -31,7 +35,7 @@ const TabBar = styled.div`
 
 const Tab = styled.div<{ $isActive: boolean }>`
 	padding: 8px 16px;
-	font-size: 13px;
+	font-size: ${typography.base};
 	cursor: pointer;
 	border-right: 1px solid #3e3e42;
 	background-color: ${(props) => (props.$isActive ? "#1e1e1e" : "transparent")};
@@ -75,171 +79,13 @@ const ControlRight = styled.div`
 	gap: 8px;
 `;
 
-const ChatToggleButton = styled.button`
-	background: #007acc;
-	border: none;
-	border-radius: 4px;
-	color: #ffffff;
-	padding: 6px 12px;
-	font-size: 12px;
-	cursor: pointer;
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	transition: all 0.2s ease;
+// Using shared ActionButton component
 
-	&:hover {
-		background: #005a9e;
-	}
+// Using shared StatusIndicator component
 
-	&:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-`;
+// Using shared EmptyState component
 
-const StatusIndicator = styled.div<{
-	$status: "running" | "stopped" | "starting";
-}>`
-	font-size: 12px;
-	color: #858585;
-
-	${(props) => {
-		if (props.$status === "running") {
-			return `color: #00ff00;`;
-		} else if (props.$status === "starting") {
-			return `color: #ffff00;`;
-		} else {
-			return `color: #ff0000;`;
-		}
-	}}
-`;
-
-const EmptyState = styled.div`
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	justify-content: center;
-	height: 100%;
-	color: #858585;
-	font-size: 14px;
-	padding: 40px;
-
-	.app-logo {
-		margin-bottom: 20px;
-		width: 120px;
-		height: auto;
-	}
-
-	.title {
-		font-size: 24px;
-		margin-bottom: 8px;
-		color: #cccccc;
-		font-weight: 600;
-	}
-
-	.subtitle {
-		margin-bottom: 32px;
-		color: #858585;
-		text-align: center;
-		line-height: 1.5;
-	}
-`;
-
-const WelcomeActions = styled.div`
-	display: flex;
-	gap: 16px;
-	margin-bottom: 40px;
-	flex-wrap: wrap;
-	justify-content: center;
-`;
-
-const ActionCard = styled.button`
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	justify-content: center;
-	padding: 24px;
-	min-width: 140px;
-	height: 120px;
-	background-color: #2d2d2d;
-	border: 1px solid #404040;
-	border-radius: 8px;
-	color: #cccccc;
-	font-size: 14px;
-	cursor: pointer;
-	transition: all 0.2s ease;
-
-	&:hover {
-		background-color: #383838;
-		border-color: #007acc;
-	}
-
-	&:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
-	.icon {
-		margin-bottom: 12px;
-		font-size: 24px;
-	}
-
-	.label {
-		font-weight: 500;
-	}
-
-	.description {
-		font-size: 12px;
-		color: #858585;
-		margin-top: 4px;
-		text-align: center;
-	}
-`;
-
-const RecentProjects = styled.div`
-	margin-top: 32px;
-	width: 100%;
-	max-width: 600px;
-
-	.section-title {
-		font-size: 16px;
-		color: #cccccc;
-		margin-bottom: 16px;
-		font-weight: 600;
-	}
-
-	.project-item {
-		display: flex;
-		align-items: center;
-		padding: 12px;
-		background-color: #2d2d2d;
-		border-radius: 6px;
-		margin-bottom: 8px;
-		cursor: pointer;
-		transition: background-color 0.2s ease;
-
-		&:hover {
-			background-color: #383838;
-		}
-
-		.project-name {
-			font-weight: 500;
-			color: #cccccc;
-			margin-right: 8px;
-		}
-
-		.project-path {
-			color: #858585;
-			font-size: 12px;
-			margin-left: auto;
-			max-width: 120px;
-			overflow: hidden;
-			text-overflow: ellipsis;
-			white-space: nowrap;
-		}
-	}
-`;
+// Welcome screen styling moved to WelcomeScreen component
 
 export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 	props
@@ -252,26 +98,180 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 	useEffect(() => {
 		async function syncRecentWorkspaces() {
 			try {
-				const recent = await window.electronAPI.storeGet("recentWorkspaces");
-				setRecentWorkspaces(
-					(recent || [])
+				const result = await electronAPI.storeGet("recentWorkspaces");
+
+				if (result.success && result.data) {
+					const filtered = (result.data || [])
 						.filter((w: any) => typeof w === "string" && w.length > 0)
-						.slice(0, 3)
-				);
+						.slice(0, 3);
+
+					setRecentWorkspaces(filtered);
+				} else if (!result.success) {
+					console.warn("Failed to load recent workspaces:", result.error);
+				}
 			} catch (e) {
 				console.error("Error loading recent workspaces:", e);
 			}
 		}
-		syncRecentWorkspaces();
+
+		// Add a small delay to ensure electronAPI is available
+		const timer = setTimeout(() => {
+			syncRecentWorkspaces();
+		}, 100);
+
+		return () => clearTimeout(timer);
 	}, []);
 
-	const handleOpenWorkspace = (path: string) => {
-		openWorkspace(path, workspaceDispatch, setRecentWorkspaces);
+	// Recent workspaces state changes
+	useEffect(() => {
+		// State updated
+	}, [recentWorkspaces]);
+
+	// Listen for notebook events from AutonomousAgent
+	useEffect(() => {
+		const handleOpenWorkspaceFile = (event: CustomEvent) => {
+			const { filePath } = event.detail;
+
+			// Open the file in the workspace
+			if (!workspaceState.openFiles.includes(filePath)) {
+				workspaceDispatch({ type: "OPEN_FILE", payload: filePath });
+			}
+			workspaceDispatch({ type: "SET_ACTIVE_FILE", payload: filePath });
+		};
+
+		const handleAddNotebookCell = (event: CustomEvent) => {
+			// This will be handled by the Notebook component
+			// The event is dispatched for the Notebook component to listen to
+		};
+
+		const handleUpdateNotebookCell = (event: CustomEvent) => {
+			// This will be handled by the Notebook component
+			// The event is dispatched for the Notebook component to listen to
+		};
+
+		const handleUpdateNotebookCellCode = (event: CustomEvent) => {
+			// This will be handled by the FileEditor component
+			// The event is dispatched for the FileEditor component to listen to
+		};
+
+		// Add event listeners
+		window.addEventListener(
+			"open-workspace-file",
+			handleOpenWorkspaceFile as EventListener
+		);
+		window.addEventListener(
+			"add-notebook-cell",
+			handleAddNotebookCell as EventListener
+		);
+		window.addEventListener(
+			"update-notebook-cell",
+			handleUpdateNotebookCell as EventListener
+		);
+		window.addEventListener(
+			"update-notebook-cell-code",
+			handleUpdateNotebookCellCode as EventListener
+		);
+
+		// Cleanup
+		return () => {
+			window.removeEventListener(
+				"open-workspace-file",
+				handleOpenWorkspaceFile as EventListener
+			);
+			window.removeEventListener(
+				"add-notebook-cell",
+				handleAddNotebookCell as EventListener
+			);
+			window.removeEventListener(
+				"update-notebook-cell",
+				handleUpdateNotebookCell as EventListener
+			);
+			window.removeEventListener(
+				"update-notebook-cell-code",
+				handleUpdateNotebookCellCode as EventListener
+			);
+		};
+	}, [workspaceState.openFiles, workspaceDispatch]);
+
+	// Add keyboard shortcuts for file operations
+	useEffect(() => {
+		const handleKeyDown = (e: KeyboardEvent) => {
+			// Ctrl+W or Cmd+W to close current file
+			if ((e.ctrlKey || e.metaKey) && e.key === "w") {
+				e.preventDefault();
+				if (workspaceState.activeFile) {
+					console.log("Keyboard shortcut: Closing active file");
+					handleTabClose(e as any, workspaceState.activeFile);
+				}
+			}
+		};
+
+		document.addEventListener("keydown", handleKeyDown);
+		return () => document.removeEventListener("keydown", handleKeyDown);
+	}, [workspaceState.activeFile]);
+
+	const handleOpenWorkspace = async (path: string) => {
+		// If path is empty, open file dialog
+		if (!path) {
+			try {
+				const result = await electronAPI.showOpenDialog({
+					properties: ["openDirectory"],
+					title: "Select Project Folder",
+				});
+
+				if (
+					result.success &&
+					result.data &&
+					!result.data.canceled &&
+					result.data.filePaths.length > 0
+				) {
+					path = result.data.filePaths[0];
+				} else if (!result.success) {
+					console.error("Failed to open file dialog:", result.error);
+					return;
+				} else {
+					return; // User cancelled
+				}
+			} catch (error) {
+				console.error("Error opening file dialog:", error);
+				return;
+			}
+		}
+		workspaceDispatch({ type: "SET_WORKSPACE", payload: path });
+		setRecentWorkspaces((prev: string[]) => {
+			const updated = [path, ...prev.filter((w: string) => w !== path)].slice(
+				0,
+				3
+			);
+
+			// Store using safe API
+			electronAPI.storeSet("recentWorkspaces", updated).catch((error) => {
+				console.warn("Failed to store recent workspaces:", error);
+			});
+
+			return updated;
+		});
+		workspaceDispatch({ type: "SET_ACTIVE_FILE", payload: null });
 	};
 
 	const handleTabClose = (e: React.MouseEvent, filePath: string) => {
 		e.stopPropagation();
-		workspaceDispatch({ type: "CLOSE_FILE", payload: filePath });
+
+		// If it's a notebook file, we might need to clean up Jupyter connections
+		if (filePath.endsWith(".ipynb")) {
+			// Dispatch a custom event to notify notebook components to cleanup
+			const cleanupEvent = new CustomEvent("notebook-cleanup", {
+				detail: { filePath },
+			});
+			window.dispatchEvent(cleanupEvent);
+
+			// Add a small delay to allow cleanup, then close
+			setTimeout(() => {
+				workspaceDispatch({ type: "CLOSE_FILE", payload: filePath });
+			}, 100);
+		} else {
+			workspaceDispatch({ type: "CLOSE_FILE", payload: filePath });
+		}
 	};
 
 	const toggleChat = () => {
@@ -348,66 +348,10 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 
 		// Show welcome screen when no workspace is open
 		return (
-			<EmptyState>
-				<img src={axonLogo} alt="Axon" className="app-logo" />
-				<div className="title">Welcome to Axon</div>
-				<div className="subtitle">
-					AI-powered biological data analysis platform
-					<br />
-					Open a workspace and start analyzing biological data with intelligent
-					assistance
-				</div>
-
-				<WelcomeActions>
-					<ActionCard onClick={() => handleOpenWorkspace("")}>
-						<div className="icon">
-							<FiFolder size={24} />
-						</div>
-						<div className="label">Open project</div>
-						<div className="description">Open an existing folder</div>
-					</ActionCard>
-
-					<ActionCard
-						onClick={() => {
-							console.log("Clone repo clicked");
-						}}
-					>
-						<div className="icon">⌘</div>
-						<div className="label">Clone repo</div>
-						<div className="description">Clone from Git repository</div>
-					</ActionCard>
-				</WelcomeActions>
-
-				<RecentProjects>
-					<div className="section-title">
-						Recent projects ({recentWorkspaces.length})
-					</div>
-					{recentWorkspaces.length > 0 ? (
-						recentWorkspaces.map((workspacePath, index) => (
-							<div
-								key={workspacePath}
-								className="project-item"
-								onClick={() => handleOpenWorkspace(workspacePath)}
-							>
-								<div className="project-name">
-									{workspacePath.split("/").pop()}
-								</div>
-								<div className="project-path">
-									{workspacePath.split("/").slice(0, -1).join("/")}
-								</div>
-							</div>
-						))
-					) : (
-						<div
-							className="project-item"
-							style={{ opacity: 0.6, cursor: "default" }}
-						>
-							<div className="project-name">No recent projects</div>
-							<div className="project-path">Open a project to see it here</div>
-						</div>
-					)}
-				</RecentProjects>
-			</EmptyState>
+			<WelcomeScreen
+				recentWorkspaces={recentWorkspaces}
+				onOpenWorkspace={handleOpenWorkspace}
+			/>
 		);
 	};
 
@@ -425,10 +369,14 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 					</ControlLeft>
 					<ControlRight>
 						{(!uiState.showChatPanel || uiState.chatCollapsed) && (
-							<ChatToggleButton onClick={toggleChat} title="Open Chat">
+							<ActionButton
+								$variant="primary"
+								onClick={toggleChat}
+								title="Open Chat"
+							>
 								<FiMessageSquare size={14} color="white" />
 								Chat
-							</ChatToggleButton>
+							</ActionButton>
 						)}
 					</ControlRight>
 				</ControlBar>
@@ -439,7 +387,8 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 			{/* Floating chat toggle button when chat is not shown or collapsed */}
 			{workspaceState.currentWorkspace &&
 				(!uiState.showChatPanel || uiState.chatCollapsed) && (
-					<ChatToggleButton
+					<ActionButton
+						$variant="primary"
 						onClick={toggleChat}
 						title="Open Chat"
 						style={{
@@ -459,7 +408,7 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 						}}
 					>
 						<FiMessageSquare size={20} />
-					</ChatToggleButton>
+					</ActionButton>
 				)}
 		</MainContainer>
 	);

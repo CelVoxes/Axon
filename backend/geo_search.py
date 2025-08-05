@@ -9,7 +9,10 @@ from bs4 import BeautifulSoup
 import re
 import time
 from functools import lru_cache
-from .config import SearchConfig
+try:
+    from .config import SearchConfig
+except ImportError:
+    from config import SearchConfig
 
 
 class PerformanceMonitor:
@@ -176,7 +179,7 @@ class MinimalGEOSearch:
     async def search_datasets(
         self, 
         query: str, 
-        limit: int = None,
+        limit: Optional[int] = None,
         organism: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         # Use centralized configuration
@@ -275,9 +278,6 @@ class MinimalGEOSearch:
             valid_results = []
             for j, result in enumerate(batch_results):
                 if isinstance(result, dict) and result is not None:
-                    # Assign a similarity score based on position (higher for earlier results)
-                    similarity_score = 1.0 - ((i + j) / len(candidate_datasets)) * 0.5  # Range from 1.0 to 0.5
-                    result['similarity_score'] = similarity_score
                     valid_results.append(result)
                 elif isinstance(result, Exception):
                     print(f"❌ Exception in batch {i//batch_size + 1}, item {j}: {result}")
@@ -289,6 +289,33 @@ class MinimalGEOSearch:
             await asyncio.sleep(SearchConfig.get_request_interval())
         
         print(f"✅ Found {len(all_datasets)} valid datasets with details")
+        
+        # Step 3: Calculate semantic similarity scores
+        if all_datasets:
+            await self._send_progress_update({
+                'step': 'similarity',
+                'progress': 95,
+                'message': 'Calculating semantic similarity scores...',
+                'datasetsFound': len(all_datasets)
+            })
+            
+            # Create text representations for all datasets
+            dataset_texts = []
+            for dataset in all_datasets:
+                text = self._create_dataset_text(dataset)
+                dataset_texts.append(text)
+            
+            # Encode query and dataset texts
+            query_embedding = await self._encode_text(query)
+            dataset_embeddings = await self._encode_texts_batch(dataset_texts)
+            
+            # Calculate similarity scores
+            for i, dataset in enumerate(all_datasets):
+                similarity_score = self._cosine_similarity(query_embedding, dataset_embeddings[i])
+                dataset['similarity_score'] = similarity_score
+            
+            # Sort by similarity score (highest first)
+            all_datasets.sort(key=lambda x: x.get('similarity_score', 0), reverse=True)
         
         # Final progress update
         if hasattr(self, 'progress_callback') and self.progress_callback:
@@ -307,9 +334,9 @@ class MinimalGEOSearch:
     async def _search_geo_datasets(
         self, 
         query: str, 
-        limit: int = None,
+        limit: Optional[int] = None,
         organism: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> List[str]:
         # Use centralized configuration
         limit = SearchConfig.get_search_limit(limit)
         """Search GEO database for datasets.
@@ -426,14 +453,11 @@ class MinimalGEOSearch:
             # Get detailed information for each dataset
             print(f"🔍 Fetching details for {len(candidate_datasets)} candidate datasets...")
             
-            # Create dataset objects with similarity scores
+            # Create dataset objects
             dataset_objects = []
             for i, gds_id in enumerate(candidate_datasets):
-                # Assign a similarity score based on position (higher for earlier results)
-                similarity_score = 1.0 - (i / len(candidate_datasets)) * 0.5  # Range from 1.0 to 0.5
                 dataset_objects.append({
-                    'id': gds_id,
-                    'similarity_score': similarity_score
+                    'id': gds_id
                 })
             
             print(f"🔍 Created {len(dataset_objects)} dataset objects")
@@ -471,9 +495,6 @@ class MinimalGEOSearch:
             print(f"🔍 First dataset: {all_datasets[0] if all_datasets else 'None'}")
             valid_datasets = await self._filter_valid_datasets(all_datasets)
             print(f"✅ Found {len(valid_datasets)} valid datasets")
-            
-            # Sort by similarity score and return top results
-            valid_datasets.sort(key=lambda x: x.get('similarity_score', 0), reverse=True)
             
             return valid_datasets[:limit]
                     
@@ -825,7 +846,7 @@ class SimpleGEOClient:
     async def find_similar_datasets(
         self, 
         query: str, 
-        limit: int = None,
+        limit: Optional[int] = None,
         organism: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         # Use centralized configuration

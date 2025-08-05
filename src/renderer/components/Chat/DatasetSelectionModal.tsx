@@ -7,6 +7,7 @@ import {
 	FiX,
 	FiExternalLink,
 } from "react-icons/fi";
+import { typography } from "../../styles/design-system";
 
 const ModalOverlay = styled.div`
 	position: fixed;
@@ -42,7 +43,7 @@ const ModalHeader = styled.div`
 const ModalTitle = styled.h2`
 	color: #fff;
 	margin: 0;
-	font-size: 18px;
+	font-size: ${typography.xl};
 	font-weight: 600;
 `;
 
@@ -106,7 +107,7 @@ const DatasetHeader = styled.div`
 const DatasetTitle = styled.h3`
 	color: #fff;
 	margin: 0;
-	font-size: 16px;
+	font-size: ${typography.lg};
 	font-weight: 600;
 	flex: 1;
 	margin-right: 12px;
@@ -117,7 +118,7 @@ const DatasetId = styled.span`
 	color: #fff;
 	padding: 4px 8px;
 	border-radius: 4px;
-	font-size: 12px;
+	font-size: ${typography.sm};
 	font-weight: 600;
 `;
 
@@ -130,13 +131,13 @@ const DatasetMeta = styled.div`
 
 const MetaItem = styled.div`
 	color: #aaa;
-	font-size: 13px;
+	font-size: ${typography.base};
 `;
 
 const DatasetDescription = styled.p`
 	color: #ccc;
 	margin: 0;
-	font-size: 14px;
+	font-size: ${typography.base};
 	line-height: 1.4;
 	display: -webkit-box;
 	-webkit-line-clamp: 2;
@@ -157,7 +158,7 @@ const InfoButton = styled.button`
 	color: #aaa;
 	padding: 6px 12px;
 	border-radius: 4px;
-	font-size: 12px;
+	font-size: ${typography.sm};
 	cursor: pointer;
 	display: flex;
 	align-items: center;
@@ -179,7 +180,7 @@ const ModalFooter = styled.div`
 
 const SelectionInfo = styled.div`
 	color: #aaa;
-	font-size: 14px;
+	font-size: ${typography.base};
 `;
 
 const ActionButtons = styled.div`
@@ -195,7 +196,7 @@ const Button = styled.button<{ $variant?: "primary" | "secondary" }>`
 	color: #fff;
 	padding: 10px 20px;
 	border-radius: 6px;
-	font-size: 14px;
+	font-size: ${typography.base};
 	font-weight: 500;
 	cursor: pointer;
 	display: flex;
@@ -229,7 +230,7 @@ const PaginationButton = styled.button<{ $active?: boolean }>`
 	color: ${(props) => (props.$active ? "#fff" : "#aaa")};
 	padding: 8px 12px;
 	border-radius: 4px;
-	font-size: 12px;
+	font-size: ${typography.sm};
 	cursor: pointer;
 	min-width: 32px;
 	display: flex;
@@ -250,7 +251,7 @@ const PaginationButton = styled.button<{ $active?: boolean }>`
 
 const PaginationInfo = styled.div`
 	color: #aaa;
-	font-size: 12px;
+	font-size: ${typography.sm};
 	margin: 0 16px;
 `;
 
@@ -295,7 +296,7 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 	const safeDatasets = Array.isArray(datasets) ? datasets : [];
 
 	useEffect(() => {
-		if (isOpen && !wasOpen) {
+		if (isOpen && !wasOpen && safeDatasets.length > 0) {
 			// Auto-select first 2 datasets only when modal is first opened
 			const initialSelection = new Set(
 				safeDatasets.slice(0, 2).map((d) => d.id)
@@ -305,27 +306,29 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 		setWasOpen(isOpen);
 	}, [isOpen, wasOpen, safeDatasets]);
 
-	// Handle dataset changes while modal is open
+	// Handle dataset changes while modal is open - optimize to prevent infinite re-renders
 	useEffect(() => {
-		if (isOpen && safeDatasets.length > 0) {
-			// Remove any selected datasets that no longer exist in the current dataset list
-			const validDatasetIds = new Set(safeDatasets.map((d) => d.id));
-			const filteredSelection = new Set(
-				Array.from(selectedDatasets).filter((id) => validDatasetIds.has(id))
-			);
-
-			// If no valid selections remain, auto-select first 2 datasets
-			if (filteredSelection.size === 0) {
+		if (!isOpen || safeDatasets.length === 0) return;
+		
+		// Remove any selected datasets that no longer exist in the current dataset list
+		const validDatasetIds = new Set(safeDatasets.map((d) => d.id));
+		const currentSelectionArray = Array.from(selectedDatasets);
+		const filteredSelectionArray = currentSelectionArray.filter((id) => validDatasetIds.has(id));
+		
+		// Only update if there's a meaningful change
+		if (filteredSelectionArray.length !== currentSelectionArray.length) {
+			if (filteredSelectionArray.length === 0) {
+				// If no valid selections remain, auto-select first 2 datasets
 				const initialSelection = new Set(
 					safeDatasets.slice(0, 2).map((d) => d.id)
 				);
 				setSelectedDatasets(initialSelection);
-			} else if (filteredSelection.size !== selectedDatasets.size) {
-				// Only update if the selection actually changed
-				setSelectedDatasets(filteredSelection);
+			} else {
+				// Update with filtered selection
+				setSelectedDatasets(new Set(filteredSelectionArray));
 			}
 		}
-	}, [safeDatasets, isOpen, selectedDatasets]);
+	}, [safeDatasets, isOpen]); // Remove selectedDatasets from deps to prevent infinite loop
 
 	const toggleDataset = (datasetId: string) => {
 		if (!datasetId) return;

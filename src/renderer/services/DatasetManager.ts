@@ -1,4 +1,5 @@
 import { Dataset } from "./AnalysisPlanner";
+import { StatusManager } from "./StatusManager";
 
 export interface DataTypeAnalysis {
 	dataTypes: string[];
@@ -12,18 +13,41 @@ export interface FileAnalysis {
 }
 
 export class DatasetManager {
-	private statusCallback?: (status: string) => void;
+	private statusManager: StatusManager;
 
-	constructor() {}
+	constructor() {
+		this.statusManager = StatusManager.getInstance();
+	}
 
 	setStatusCallback(callback: (status: string) => void) {
-		this.statusCallback = callback;
+		// Convert string callback to StatusUpdate callback
+		this.statusManager.setStatusCallback((statusUpdate) => {
+			callback(statusUpdate.message);
+		});
+	}
+
+	/**
+	 * Simple method to extract data types from datasets
+	 */
+	async analyzeDataTypes(datasets: Dataset[]): Promise<string[]> {
+		const dataTypes: string[] = [];
+		
+		for (const dataset of datasets) {
+			if (dataset.dataType) {
+				dataTypes.push(dataset.dataType);
+			} else {
+				// Infer from metadata
+				const inferredType = this.inferDataTypeFromMetadata(dataset);
+				dataTypes.push(inferredType);
+			}
+		}
+		
+		// Remove duplicates
+		return Array.from(new Set(dataTypes));
 	}
 
 	private updateStatus(message: string) {
-		if (this.statusCallback) {
-			this.statusCallback(message);
-		}
+		this.statusManager.updateStatus(message);
 	}
 
 	async analyzeDataTypesAndSelectTools(
@@ -337,103 +361,39 @@ export class DatasetManager {
 		userQuestion: string,
 		dataAnalysis: DataTypeAnalysis,
 		datasets: Dataset[]
-	): Promise<{
-		steps: Array<{ description: string; prerequisites?: string[] }>;
-	}> {
-		const steps: Array<{ description: string; prerequisites?: string[] }> = [];
+	): Promise<{ steps: { description: string; prerequisites?: string[] }[] }> {
+		const steps: { description: string; prerequisites?: string[] }[] = [];
 
-		// Add data loading step
-		steps.push({
-			description:
-				"Load and preprocess datasets with data type-specific handling",
-		});
+		// Generate steps based on the primary data type
+		const primaryDataType = dataAnalysis.dataTypes[0] || "unknown";
 
-		// Add data type specific steps
-		for (const dataType of dataAnalysis.dataTypes) {
-			switch (dataType) {
-				case "single_cell_expression":
-					steps.push(
-						{
-							description: "Load single-cell data and perform quality control",
-						},
-						{ description: "Normalize and scale single-cell expression data" },
-						{
-							description:
-								"Perform feature selection and dimensionality reduction",
-						},
-						{ description: "Cluster cells and identify cell types" },
-						{
-							description:
-								"Perform differential expression analysis between clusters",
-						},
-						{
-							description:
-								"Create single-cell visualizations (UMAP, t-SNE, heatmaps)",
-						},
-						{
-							description:
-								"Annotate cell types and perform trajectory analysis",
-						}
-					);
-					break;
+		switch (primaryDataType) {
+			case "single_cell_expression":
+				steps.push({ description: "Perform quality control and filtering" });
+				steps.push({ description: "Normalize and scale the data" });
+				steps.push({ description: "Identify highly variable genes" });
+				steps.push({
+					description: "Perform dimensionality reduction (PCA and UMAP)",
+				});
+				steps.push({ description: "Cluster cells to identify populations" });
+				steps.push({
+					description: "Find marker genes for each cluster",
+				});
+				break;
 
-				case "expression_matrix":
-					steps.push(
-						{ description: "Perform quality control on expression data" },
-						{ description: "Normalize expression data" },
-						{ description: "Perform differential expression analysis" },
-						{ description: "Create expression heatmaps and visualizations" }
-					);
-					break;
+			case "expression_matrix":
+				steps.push({ description: "Perform quality control" });
+				steps.push({ description: "Normalize the data" });
+				steps.push({ description: "Perform differential expression analysis" });
+				steps.push({ description: "Visualize results with heatmaps and volcano plots" });
+				break;
 
-				case "clinical_data":
-					steps.push(
-						{ description: "Clean and validate clinical data" },
-						{
-							description: "Perform statistical analysis on clinical variables",
-						},
-						{ description: "Create clinical data visualizations" }
-					);
-					break;
-
-				case "sequence_data":
-					steps.push(
-						{ description: "Perform sequence quality control" },
-						{ description: "Analyze sequence characteristics" },
-						{ description: "Create sequence analysis visualizations" }
-					);
-					break;
-
-				case "variant_data":
-					steps.push(
-						{ description: "Load and validate variant data" },
-						{ description: "Perform variant frequency analysis" },
-						{ description: "Create variant annotation and visualization" }
-					);
-					break;
-
-				case "metadata":
-					steps.push(
-						{ description: "Analyze metadata quality and completeness" },
-						{ description: "Create metadata summary and visualizations" }
-					);
-					break;
-			}
+			default:
+				steps.push({ description: "Load and explore the data" });
+				steps.push({ description: "Perform basic statistical analysis" });
+				steps.push({ description: "Generate visualizations" });
+				break;
 		}
-
-		// Add integration steps if multiple data types
-		if (dataAnalysis.dataTypes.length > 1) {
-			steps.push({
-				description: "Integrate and correlate multiple data types",
-				prerequisites: ["step_1", "step_2"], // Depends on previous steps
-			});
-		}
-
-		// Add final analysis step
-		steps.push({
-			description: "Generate comprehensive analysis report and insights",
-			prerequisites: steps.map((_, i) => `step_${i + 1}`),
-		});
 
 		return { steps };
 	}

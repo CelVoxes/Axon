@@ -1,5 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useContext } from "react";
 import styled from "styled-components";
+import { throttle } from "../shared/utils";
+import { useUIContext } from "../../context/AppContext";
 
 interface LayoutProps {
 	children: React.ReactNode;
@@ -49,12 +51,14 @@ const LayoutBodyContainer = styled.div`
 	display: flex;
 	overflow: hidden;
 	position: relative;
+	align-items: stretch;
 `;
 
 const ResizablePane = styled.div<{
 	width: number;
 	$minWidth: number;
 	$maxWidth: number;
+	$isRightPane?: boolean;
 }>`
 	width: ${(props) => props.width}px;
 	min-width: ${(props) => props.$minWidth}px;
@@ -69,21 +73,26 @@ const MainPane = styled.div`
 	overflow: hidden;
 	background: #151515;
 	position: relative;
+	min-width: 0;
 `;
 
-const Resizer = styled.div`
+const Resizer = styled.div<{ $isDisabled?: boolean }>`
 	width: 4px;
-	background: transparent;
-	cursor: col-resize;
+	background: ${(props) => (props.$isDisabled ? "transparent" : "#404040")};
+	cursor: ${(props) => (props.$isDisabled ? "default" : "col-resize")};
 	position: relative;
 	transition: background-color 0.2s ease;
+	z-index: 1000;
+	display: flex;
+	align-items: center;
+	justify-content: center;
 
 	&:hover {
-		background: #0ea5e9;
+		background: ${(props) => (props.$isDisabled ? "transparent" : "#0ea5e9")};
 	}
 
 	&:active {
-		background: #0284c7;
+		background: ${(props) => (props.$isDisabled ? "transparent" : "#0284c7")};
 	}
 
 	&::before {
@@ -94,6 +103,15 @@ const Resizer = styled.div`
 		right: -2px;
 		bottom: 0;
 		z-index: 10;
+	}
+
+	&::after {
+		content: "⋮";
+		color: ${(props) => (props.$isDisabled ? "transparent" : "#666")};
+		font-size: 12px;
+		line-height: 1;
+		z-index: 20;
+		position: relative;
 	}
 `;
 
@@ -108,6 +126,7 @@ const Header: React.FC<LayoutHeaderProps> = ({ children }) => {
 };
 
 const Body: React.FC<LayoutBodyProps> = ({ children }) => {
+	const { state: uiState } = useUIContext();
 	const [leftPaneWidth, setLeftPaneWidth] = useState(240);
 	const [rightPaneWidth, setRightPaneWidth] = useState(400);
 	const [isResizingLeft, setIsResizingLeft] = useState(false);
@@ -117,24 +136,31 @@ const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 		e.preventDefault();
 		if (side === "left") {
 			setIsResizingLeft(true);
-		} else {
+		} else if (side === "right" && !uiState.chatCollapsed) {
 			setIsResizingRight(true);
 		}
 	};
 
 	React.useEffect(() => {
-		const handleMouseMove = (e: MouseEvent) => {
-			if (isResizingLeft) {
-				const newWidth = Math.max(200, Math.min(500, e.clientX));
-				setLeftPaneWidth(newWidth);
-			} else if (isResizingRight) {
-				const newWidth = Math.max(
-					300,
-					Math.min(600, window.innerWidth - e.clientX)
-				);
-				setRightPaneWidth(newWidth);
-			}
-		};
+		let animationFrameId: number;
+
+		const handleMouseMove = throttle((e: MouseEvent) => {
+			// Use requestAnimationFrame for better performance
+			cancelAnimationFrame(animationFrameId);
+			animationFrameId = requestAnimationFrame(() => {
+				if (isResizingLeft) {
+					const newWidth = Math.max(200, Math.min(500, e.clientX));
+					setLeftPaneWidth(newWidth);
+				} else if (isResizingRight) {
+					// Calculate width from the right edge of the window
+					const newWidth = Math.max(
+						300,
+						Math.min(600, window.innerWidth - e.clientX)
+					);
+					setRightPaneWidth(newWidth);
+				}
+			});
+		}, 16); // ~60fps
 
 		const handleMouseUp = () => {
 			setIsResizingLeft(false);
@@ -153,8 +179,9 @@ const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 			document.removeEventListener("mouseup", handleMouseUp);
 			document.body.style.cursor = "";
 			document.body.style.userSelect = "";
+			cancelAnimationFrame(animationFrameId);
 		};
-	}, [isResizingLeft, isResizingRight]);
+	}, [isResizingLeft, isResizingRight, leftPaneWidth]);
 
 	const childrenArray = React.Children.toArray(children);
 	const leftPane = childrenArray.find(
@@ -169,6 +196,7 @@ const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 
 	return (
 		<LayoutBodyContainer>
+			{/* Left section with sidebar */}
 			{leftPane && (
 				<>
 					<ResizablePane width={leftPaneWidth} $minWidth={200} $maxWidth={500}>
@@ -178,12 +206,21 @@ const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 				</>
 			)}
 
+			{/* Main content area */}
 			<MainPane>{mainPane}</MainPane>
 
+			{/* Right section with chat */}
 			{rightPane && (
 				<>
-					<Resizer onMouseDown={handleMouseDown("right")} />
-					<ResizablePane width={rightPaneWidth} $minWidth={300} $maxWidth={600}>
+					<Resizer
+						onMouseDown={handleMouseDown("right")}
+						$isDisabled={uiState.chatCollapsed}
+					/>
+					<ResizablePane
+						width={uiState.chatCollapsed ? 40 : rightPaneWidth}
+						$minWidth={uiState.chatCollapsed ? 40 : 300}
+						$maxWidth={uiState.chatCollapsed ? 40 : 600}
+					>
 						{rightPane}
 					</ResizablePane>
 				</>

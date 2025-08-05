@@ -4,9 +4,7 @@ import { Sidebar } from "./components/Sidebar/Sidebar";
 import { ChatPanel } from "./components/Chat/ChatPanel";
 import { MainContent } from "./components/MainContent/MainContent";
 import { StatusBar } from "./components/StatusBar/StatusBar";
-import { AppProvider } from "./context/AppContext";
-import { useWorkspaceContext } from "./context/WorkspaceContext";
-import { useUIContext } from "./context/UIContext";
+import { AppProvider, useWorkspaceContext, useUIContext } from "./context/AppContext";
 
 const AppContent: React.FC = () => {
 	const { state: workspaceState } = useWorkspaceContext();
@@ -33,6 +31,7 @@ const AppContent: React.FC = () => {
 				{/* Only show ChatPanel when a workspace is open and showChatPanel is true */}
 				{workspaceState.currentWorkspace && uiState.showChatPanel && (
 					<ChatPanel
+						key="chat-panel"
 						data-layout-role="chat"
 						className={uiState.chatCollapsed ? "chat-collapsed" : ""}
 					/>

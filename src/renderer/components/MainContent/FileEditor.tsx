@@ -1,8 +1,12 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import styled from "styled-components";
 import Editor from "@monaco-editor/react";
 import { CodeCell } from "./CodeCell";
 import { FiPlus, FiTrash2 } from "react-icons/fi";
+import { ActionButton } from "../shared/StyledComponents";
+import { useWorkspaceContext } from "../../context/AppContext";
+import { typography } from "../../styles/design-system";
+import { EventManager } from "../../utils/EventManager";
 
 const EditorContainer = styled.div`
 	width: 100%;
@@ -18,7 +22,7 @@ const EditorHeader = styled.div`
 	display: flex;
 	align-items: center;
 	padding: 0 12px;
-	font-size: 12px;
+	font-size: ${typography.sm};
 	color: #cccccc;
 `;
 
@@ -53,13 +57,13 @@ const NotebookHeader = styled.div`
 const NotebookTitle = styled.h1`
 	margin: 0 0 8px 0;
 	color: #ffffff;
-	font-size: 20px;
+	font-size: ${typography["2xl"]};
 	font-weight: 600;
 `;
 
 const NotebookMetadata = styled.div`
 	color: #858585;
-	font-size: 12px;
+	font-size: ${typography.sm};
 	line-height: 1.4;
 `;
 
@@ -69,29 +73,7 @@ const NotebookActions = styled.div`
 	margin-top: 12px;
 `;
 
-const ActionButton = styled.button<{ $variant?: "primary" | "secondary" }>`
-	background: ${(props) =>
-		props.$variant === "primary" ? "#007acc" : "#404040"};
-	border: none;
-	border-radius: 4px;
-	color: #ffffff;
-	padding: 6px 12px;
-	font-size: 12px;
-	cursor: pointer;
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	transition: all 0.2s ease;
-
-	&:hover {
-		opacity: 0.8;
-	}
-
-	&:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-`;
+// Using shared ActionButton component
 
 interface FileEditorProps {
 	filePath: string;
@@ -125,19 +107,405 @@ interface NotebookData {
 export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	const [content, setContent] = useState<string>("");
 	const [notebookData, setNotebookData] = useState<NotebookData | null>(null);
-	const [isLoading, setIsLoading] = useState(true);
-	const [hasChanges, setHasChanges] = useState(false);
-	const [cellStates, setCellStates] = useState<{
-		[key: number]: { code: string; output: string };
-	}>({});
+	const [isLoading, setIsLoading] = useState<boolean>(false);
+	const [hasChanges, setHasChanges] = useState<boolean>(false);
+	const [cellStates, setCellStates] = useState<
+		Array<{ code: string; output: string }>
+	>([]);
+
+	// Use a ref to track the current notebook data to avoid closure issues in event handlers
+	const notebookDataRef = useRef<NotebookData | null>(null);
+	const isReadyRef = useRef<boolean>(false);
+
+	// Update the ref whenever notebookData changes
+	useEffect(() => {
+		notebookDataRef.current = notebookData;
+		isReadyRef.current = !!notebookData;
+	}, [notebookData]);
+
+	// Get workspace context at the top level to avoid React hooks warning
+	const { state: workspaceState } = useWorkspaceContext();
+	const workspacePath =
+		workspaceState.currentWorkspace ||
+		filePath.substring(0, filePath.lastIndexOf("/"));
+
+	// Queue for events that arrive before notebookData is loaded
+	const [pendingEvents, setPendingEvents] = useState<
+		Array<{
+			type: string;
+			detail: any;
+			timestamp: number;
+		}>
+	>([]);
 
 	useEffect(() => {
 		loadFile();
+		// Clear pending events when file path changes
+		if (pendingEvents.length > 0) {
+			console.log(
+				`FileEditor: Clearing ${pendingEvents.length} pending events due to file path change to ${filePath}`
+			);
+		}
+		setPendingEvents([]);
+	}, [filePath]);
+
+	// Function to process pending events
+	const processPendingEvents = () => {
+		const currentNotebookData = notebookDataRef.current;
+		if (currentNotebookData && pendingEvents.length > 0) {
+			console.log(
+				`FileEditor: Processing ${pendingEvents.length} pending events for ${filePath}`
+			);
+
+			pendingEvents.forEach((pendingEvent) => {
+				console.log(
+					`FileEditor: Processing pending event: ${pendingEvent.type}`
+				);
+				// Re-dispatch the event to be handled by the current handlers
+				const event = new CustomEvent(pendingEvent.type, {
+					detail: pendingEvent.detail,
+				});
+				window.dispatchEvent(event);
+			});
+
+			setPendingEvents([]);
+		}
+	};
+
+	// Function to save notebook to file
+	const saveNotebookToFile = async (notebook: NotebookData) => {
+		try {
+			if (!window.electronAPI || !window.electronAPI.writeFile) {
+				console.error("Electron API not available for writing files");
+				return;
+			}
+
+			await window.electronAPI.writeFile(
+				filePath,
+				JSON.stringify(notebook, null, 2)
+			);
+			console.log("FileEditor: Notebook auto-saved successfully");
+		} catch (error) {
+			console.error("FileEditor: Error auto-saving notebook:", error);
+		}
+	};
+
+	// Add event listeners for notebook cell events
+	useEffect(() => {
+		const handleAddNotebookCell = async (event: CustomEvent) => {
+			const {
+				filePath: eventFilePath,
+				cellType,
+				content: cellContent,
+			} = event.detail;
+
+			// Only handle events for the current notebook file
+			if (eventFilePath === filePath && filePath.endsWith(".ipynb")) {
+				console.log(
+					"FileEditor: Received add-notebook-cell event for current file:",
+					{
+						filePath: eventFilePath,
+						cellType,
+						contentLength: cellContent?.length || 0,
+					}
+				);
+
+				// Use the ref to get the current notebook data
+				const currentNotebookData = notebookDataRef.current;
+				const isReady = isReadyRef.current;
+
+				if (currentNotebookData && isReady) {
+					// Create new cell in Jupyter notebook format
+					const newCell: NotebookCell = {
+						cell_type: cellType,
+						source: [cellContent],
+						metadata: {},
+						execution_count: null,
+						outputs: [],
+					};
+
+					// Add cell to notebook data
+					const updatedNotebook = {
+						...currentNotebookData,
+						cells: [...currentNotebookData.cells, newCell],
+					};
+
+					setNotebookData(updatedNotebook);
+					setHasChanges(true);
+
+					// Auto-save the notebook and dispatch success event after completion
+					try {
+						await saveNotebookToFile(updatedNotebook);
+						EventManager.dispatchEvent("notebook-cell-added", {
+							filePath: eventFilePath,
+							cellType,
+							success: true,
+						});
+					} catch (error) {
+						console.error("FileEditor: Failed to save notebook after adding cell:", error);
+						EventManager.dispatchEvent("notebook-cell-added", {
+							filePath: eventFilePath,
+							cellType,
+							success: false,
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
+				} else {
+					// Queue the event for later processing
+					console.log(
+						`FileEditor: Queuing add-notebook-cell event (notebookData not ready: ${!currentNotebookData}, isReady: ${isReady}) for ${filePath}`
+					);
+					setPendingEvents((prev) => [
+						...prev,
+						{
+							type: "add-notebook-cell",
+							detail: event.detail,
+							timestamp: Date.now(),
+						},
+					]);
+				}
+			}
+		};
+
+		const handleUpdateNotebookCell = async (event: CustomEvent) => {
+			const { filePath: eventFilePath, cellIndex, output } = event.detail;
+
+			// Only handle events for the current notebook file
+			if (eventFilePath === filePath && filePath.endsWith(".ipynb")) {
+				console.log(
+					"FileEditor: Received update-notebook-cell event for current file:",
+					{
+						filePath: eventFilePath,
+						cellIndex,
+						outputLength: output?.length || 0,
+					}
+				);
+
+				// Use the ref to get the current notebook data
+				const currentNotebookData = notebookDataRef.current;
+				const isReady = isReadyRef.current;
+
+				// Handle -1 index for last cell
+				let actualCellIndex = cellIndex;
+				if (cellIndex === -1 && currentNotebookData) {
+					actualCellIndex = currentNotebookData.cells.length - 1;
+				}
+
+				if (
+					currentNotebookData &&
+					isReady &&
+					actualCellIndex >= 0 &&
+					actualCellIndex < currentNotebookData.cells.length
+				) {
+					// Update cell output
+					const updatedCells = [...currentNotebookData.cells];
+					updatedCells[actualCellIndex] = {
+						...updatedCells[actualCellIndex],
+						outputs: output
+							? [
+									{
+										output_type: "stream",
+										name: "stdout",
+										text: [output],
+									},
+							  ]
+							: [],
+					};
+
+					const updatedNotebook = {
+						...currentNotebookData,
+						cells: updatedCells,
+					};
+
+					setNotebookData(updatedNotebook);
+					setHasChanges(true);
+
+					// Auto-save the notebook and dispatch success event after completion
+					try {
+						await saveNotebookToFile(updatedNotebook);
+						EventManager.dispatchEvent("notebook-cell-updated", {
+							filePath: eventFilePath,
+							cellIndex: actualCellIndex,
+							success: true,
+						});
+					} catch (error) {
+						console.error("FileEditor: Failed to save notebook after updating cell output:", error);
+						EventManager.dispatchEvent("notebook-cell-updated", {
+							filePath: eventFilePath,
+							cellIndex: actualCellIndex,
+							success: false,
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
+				} else if (!currentNotebookData || !isReady) {
+					// Queue the event for later processing
+					console.log(
+						`FileEditor: Queuing update-notebook-cell event (notebookData not ready: ${!currentNotebookData}, isReady: ${isReady}) for ${filePath}`
+					);
+					setPendingEvents((prev) => [
+						...prev,
+						{
+							type: "update-notebook-cell",
+							detail: event.detail,
+							timestamp: Date.now(),
+						},
+					]);
+				}
+			}
+		};
+
+		const handleUpdateNotebookCellCode = async (event: CustomEvent) => {
+			const { filePath: eventFilePath, cellIndex, code } = event.detail;
+
+			// Only handle events for the current notebook file
+			if (eventFilePath === filePath && filePath.endsWith(".ipynb")) {
+				console.log(
+					"FileEditor: Received update-notebook-cell-code event for current file:",
+					{
+						filePath: eventFilePath,
+						cellIndex,
+						codeLength: code?.length || 0,
+					}
+				);
+
+				// Use the ref to get the current notebook data
+				const currentNotebookData = notebookDataRef.current;
+				const isReady = isReadyRef.current;
+
+				// Handle -1 index for last cell
+				let actualCellIndex = cellIndex;
+				if (cellIndex === -1 && currentNotebookData) {
+					actualCellIndex = currentNotebookData.cells.length - 1;
+				}
+
+				if (
+					currentNotebookData &&
+					isReady &&
+					actualCellIndex >= 0 &&
+					actualCellIndex < currentNotebookData.cells.length
+				) {
+					// Update cell code
+					const updatedCells = [...currentNotebookData.cells];
+					updatedCells[actualCellIndex] = {
+						...updatedCells[actualCellIndex],
+						source: [code],
+						outputs: [], // Clear outputs when code changes
+						execution_count: null, // Reset execution count
+					};
+
+					const updatedNotebook = {
+						...currentNotebookData,
+						cells: updatedCells,
+					};
+
+					setNotebookData(updatedNotebook);
+					setHasChanges(true);
+
+					// Auto-save the notebook and dispatch success event after completion
+					try {
+						await saveNotebookToFile(updatedNotebook);
+						EventManager.dispatchEvent("notebook-cell-updated", {
+							filePath: eventFilePath,
+							cellIndex: actualCellIndex,
+							success: true,
+						});
+					} catch (error) {
+						console.error("FileEditor: Failed to save notebook after updating cell code:", error);
+						EventManager.dispatchEvent("notebook-cell-updated", {
+							filePath: eventFilePath,
+							cellIndex: actualCellIndex,
+							success: false,
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
+				} else if (!currentNotebookData || !isReady) {
+					// Queue the event for later processing
+					console.log(
+						`FileEditor: Queuing update-notebook-cell-code event (notebookData not ready: ${!currentNotebookData}, isReady: ${isReady}) for ${filePath}`
+					);
+					setPendingEvents((prev) => [
+						...prev,
+						{
+							type: "update-notebook-cell-code",
+							detail: event.detail,
+							timestamp: Date.now(),
+						},
+					]);
+				}
+			}
+		};
+
+		// Add event listeners
+		window.addEventListener(
+			"add-notebook-cell",
+			handleAddNotebookCell as unknown as EventListener
+		);
+		window.addEventListener(
+			"update-notebook-cell",
+			handleUpdateNotebookCell as unknown as EventListener
+		);
+		window.addEventListener(
+			"update-notebook-cell-code",
+			handleUpdateNotebookCellCode as unknown as EventListener
+		);
+
+		// Cleanup
+		return () => {
+			window.removeEventListener(
+				"add-notebook-cell",
+				handleAddNotebookCell as unknown as EventListener
+			);
+			window.removeEventListener(
+				"update-notebook-cell",
+				handleUpdateNotebookCell as unknown as EventListener
+			);
+			window.removeEventListener(
+				"update-notebook-cell-code",
+				handleUpdateNotebookCellCode as unknown as EventListener
+			);
+		};
+	}, [filePath]); // Remove notebookData dependency to prevent listener recreation
+
+	// Process pending events when notebookData becomes available
+	useEffect(() => {
+		const currentNotebookData = notebookDataRef.current;
+		if (currentNotebookData) {
+			console.log(
+				`FileEditor: notebookData ready for ${filePath}, processing pending events`
+			);
+			processPendingEvents();
+		}
+	}, [notebookData, filePath]); // Add filePath dependency to ensure proper processing
+
+	// Clean up old pending events periodically
+	useEffect(() => {
+		const cleanupInterval = setInterval(() => {
+			const now = Date.now();
+			setPendingEvents((prev) => {
+				const filtered = prev.filter((event) => now - event.timestamp < 15000); // Reduced from 30s to 15s
+				if (filtered.length !== prev.length) {
+					console.log(
+						`FileEditor: Cleaned up ${
+							prev.length - filtered.length
+						} old pending events for ${filePath}`
+					);
+				}
+				return filtered;
+			});
+		}, 5000); // Clean up every 5 seconds instead of 10
+
+		return () => clearInterval(cleanupInterval);
 	}, [filePath]);
 
 	const loadFile = async () => {
 		try {
 			setIsLoading(true);
+
+			// Check if electronAPI is available
+			if (!window.electronAPI || !window.electronAPI.readFile) {
+				throw new Error("Electron API not available for reading files");
+			}
+
 			const fileContent = await window.electronAPI.readFile(filePath);
 
 			// Check if it's a .ipynb file
@@ -146,6 +514,19 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					const notebook = JSON.parse(fileContent);
 					setNotebookData(notebook);
 					setContent(""); // Clear content for notebook view
+
+					console.log(`FileEditor: Notebook data loaded for ${filePath}`);
+
+					// Dispatch notebook-ready event after a short delay to ensure component is fully mounted
+					setTimeout((): void => {
+						console.log(
+							`FileEditor: Dispatching notebook-ready event for ${filePath}`
+						);
+						const notebookReadyEvent = new CustomEvent("notebook-ready", {
+							detail: { filePath },
+						});
+						window.dispatchEvent(notebookReadyEvent);
+					}, 500); // Increased delay to ensure component is ready
 				} catch (parseError) {
 					console.error("Error parsing notebook:", parseError);
 					setContent(
@@ -178,6 +559,11 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 	const saveFile = async () => {
 		try {
+			// Check if electronAPI is available
+			if (!window.electronAPI || !window.electronAPI.writeFile) {
+				throw new Error("Electron API not available for writing files");
+			}
+
 			if (filePath.endsWith(".ipynb") && notebookData) {
 				// Reconstruct the notebook with updated cell states
 				const updatedNotebook = {
@@ -202,10 +588,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 						return cell;
 					}),
 				};
-				await window.electronAPI.writeFile(
-					filePath,
-					JSON.stringify(updatedNotebook, null, 2)
-				);
+				await saveNotebookToFile(updatedNotebook);
 			} else {
 				await window.electronAPI.writeFile(filePath, content);
 			}
@@ -233,6 +616,9 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 		setNotebookData(updatedNotebook);
 		setHasChanges(true);
+
+		// Auto-save the notebook
+		saveNotebookToFile(updatedNotebook);
 	};
 
 	const deleteCell = (index: number) => {
@@ -264,6 +650,9 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		setNotebookData(updatedNotebook);
 		setCellStates(updatedCellStates);
 		setHasChanges(true);
+
+		// Auto-save the notebook
+		saveNotebookToFile(updatedNotebook);
 	};
 
 	const updateCellCode = (index: number, code: string) => {
@@ -272,6 +661,23 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			[index]: { ...prev[index], code },
 		}));
 		setHasChanges(true);
+
+		// Auto-save the notebook when cell code is updated
+		if (notebookData) {
+			const updatedNotebook = {
+				...notebookData,
+				cells: notebookData.cells.map((cell, i) => {
+					if (i === index) {
+						return {
+							...cell,
+							source: [code],
+						};
+					}
+					return cell;
+				}),
+			};
+			saveNotebookToFile(updatedNotebook);
+		}
 	};
 
 	const updateCellOutput = (index: number, output: string) => {
@@ -280,6 +686,31 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			[index]: { ...prev[index], output },
 		}));
 		setHasChanges(true);
+
+		// Auto-save the notebook when cell output is updated
+		if (notebookData) {
+			const updatedNotebook = {
+				...notebookData,
+				cells: notebookData.cells.map((cell, i) => {
+					if (i === index) {
+						return {
+							...cell,
+							outputs: output
+								? [
+										{
+											output_type: "stream",
+											name: "stdout",
+											text: [output],
+										},
+								  ]
+								: [],
+						};
+					}
+					return cell;
+				}),
+			};
+			saveNotebookToFile(updatedNotebook);
+		}
 	};
 
 	const handleEditorChange = (value: string | undefined) => {
@@ -319,7 +750,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	const renderNotebook = () => {
 		if (!notebookData) return null;
 
-		const workspacePath = filePath.substring(0, filePath.lastIndexOf("/"));
+		// Rendering notebook with workspace path
 
 		return (
 			<NotebookContainer>
@@ -377,7 +808,6 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 							language={cell.cell_type === "markdown" ? "markdown" : "python"}
 							workspacePath={workspacePath}
 							onExecute={(code, output) => {
-								console.log(`Cell ${index} executed:`, { code, output });
 								updateCellCode(index, code);
 								updateCellOutput(index, output);
 							}}
@@ -469,7 +899,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 						onChange={handleEditorChange}
 						options={{
 							minimap: { enabled: false },
-							fontSize: 13,
+							fontSize: 14, // Match typography.base for consistency
 							lineNumbers: "on",
 							wordWrap: "on",
 							automaticLayout: true,

@@ -74,12 +74,10 @@ export class AxonApp {
 				? path.join(__dirname, "..", "png", "axon-very-rounded-150.icns")
 				: path.join(__dirname, "..", "png", "axon-very-rounded-150.png");
 
-		console.log("Icon path:", iconPath);
-		console.log("Icon exists:", fs.existsSync(iconPath));
-		console.log("Current directory (__dirname):", __dirname);
-		console.log("App path:", app.getAppPath());
-		console.log("Platform:", process.platform);
-		console.log("Development mode:", isDevelopment);
+		// Reduced logging for cleaner output
+		if (!fs.existsSync(iconPath)) {
+			console.log("Default icon not found, searching alternatives...");
+		}
 
 		// Try alternative icon paths if the first one doesn't exist
 		let finalIconPath = iconPath;
@@ -110,7 +108,6 @@ export class AxonApp {
 			];
 
 			for (const altPath of alternativePaths) {
-				console.log("Trying alternative path:", altPath);
 				if (fs.existsSync(altPath)) {
 					finalIconPath = altPath;
 					console.log("Found icon at:", finalIconPath);
@@ -119,7 +116,10 @@ export class AxonApp {
 			}
 		}
 
-		console.log("Final icon path being used:", finalIconPath);
+		// Only log icon path if there were issues finding it
+		if (finalIconPath !== iconPath) {
+			console.log("Using alternative icon path:", finalIconPath);
+		}
 
 		this.mainWindow = new BrowserWindow({
 			width: 1400,
@@ -398,11 +398,132 @@ export class AxonApp {
 
 	private generateKernelName(workspacePath: string): string {
 		const workspaceName = path.basename(workspacePath);
-		// Create a shorter, sanitized kernel name
+		// Create a shorter, sanitized kernel name with timestamp for uniqueness
 		const sanitizedName = workspaceName
 			.replace(/[^a-zA-Z0-9_-]/g, "_") // Replace invalid chars with underscore
-			.substring(0, 15); // Limit length to 15 chars
-		return `axon-${sanitizedName}`;
+			.toLowerCase() // Normalize to lowercase
+			.substring(0, 10); // Limit length to 10 chars to leave room for timestamp
+		const timestamp = Date.now().toString().slice(-5); // Last 5 digits of timestamp
+		return `axon-${sanitizedName}-${timestamp}`;
+	}
+
+	/**
+	 * Get workspace metadata including the kernel name
+	 */
+	private async getWorkspaceMetadata(workspacePath: string): Promise<any> {
+		try {
+			const metadataPath = path.join(workspacePath, ".axon-metadata.json");
+			if (fs.existsSync(metadataPath)) {
+				const metadataContent = fs.readFileSync(metadataPath, "utf8");
+				return JSON.parse(metadataContent);
+			}
+		} catch (error) {
+			console.warn("Failed to read workspace metadata:", error);
+		}
+		return null;
+	}
+
+	private async findCompatibleKernel(): Promise<string | null> {
+		try {
+			const response = await fetch(`http://127.0.0.1:${this.jupyterPort}/api/kernelspecs`);
+			if (response.ok) {
+				const kernelSpecs = await response.json();
+				const axonKernels = Object.keys(kernelSpecs.kernelspecs || {})
+					.filter(name => name.startsWith('axon-'));
+				
+				// Try to validate the first available kernel by attempting to create a test instance
+				for (const kernelName of axonKernels) {
+					const isValid = await this.validateKernelSpec(kernelName);
+					if (isValid) {
+						console.log(`Found valid compatible kernel: ${kernelName}`);
+						return kernelName;
+					} else {
+						console.warn(`Kernel spec ${kernelName} is invalid, trying next...`);
+					}
+				}
+			}
+		} catch (error) {
+			console.warn("Could not check for compatible kernels:", error);
+		}
+		return null;
+	}
+
+	private async validateKernelSpec(kernelName: string): Promise<boolean> {
+		try {
+			// Try to create a test kernel instance to validate the kernel spec
+			const response = await fetch(`http://127.0.0.1:${this.jupyterPort}/api/kernels`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: kernelName })
+			});
+			
+			if (response.ok) {
+				const kernel = await response.json();
+				// Immediately delete the test kernel
+				try {
+					await fetch(`http://127.0.0.1:${this.jupyterPort}/api/kernels/${kernel.id}`, {
+						method: 'DELETE'
+					});
+				} catch (deleteError) {
+					console.warn("Failed to cleanup test kernel:", deleteError);
+				}
+				return true;
+			}
+			return false;
+		} catch (error) {
+			console.warn(`Failed to validate kernel spec ${kernelName}:`, error);
+			return false;
+		}
+	}
+
+	private async attemptKernelRegistration(workspacePath: string, kernelName: string): Promise<boolean> {
+		try {
+			const venvPath = path.join(workspacePath, "venv");
+			const pythonVenvPath = process.platform === "win32"
+				? path.join(venvPath, "Scripts", "python.exe")
+				: path.join(venvPath, "bin", "python");
+				
+			if (!fs.existsSync(pythonVenvPath)) {
+				console.warn(`Virtual environment Python not found at ${pythonVenvPath}`);
+				return false;
+			}
+
+			console.log(`Attempting to register kernel ${kernelName} with Python at: ${pythonVenvPath}`);
+			
+			const registerProcess = spawn(
+				pythonVenvPath,
+				[
+					"-m",
+					"ipykernel",
+					"install",
+					"--user",
+					"--name",
+					kernelName,
+					"--display-name",
+					`Axon Analysis (${path.basename(workspacePath)})`,
+				],
+				{ stdio: "pipe" }
+			);
+			
+			return new Promise<boolean>((resolve) => {
+				registerProcess.on("close", (code) => {
+					if (code === 0) {
+						console.log(`Kernel ${kernelName} registered successfully`);
+						resolve(true);
+					} else {
+						console.warn(`Failed to register kernel ${kernelName}, exit code: ${code}`);
+						resolve(false);
+					}
+				});
+				registerProcess.on("error", (error) => {
+					console.warn(`Error registering kernel ${kernelName}:`, error);
+					resolve(false);
+				});
+			});
+		} catch (error) {
+			console.warn(`Exception during kernel registration for ${kernelName}:`, error);
+			return false;
+		}
 	}
 
 	private async findPythonPath(): Promise<string> {
@@ -440,10 +561,35 @@ export class AxonApp {
 		workspacePath: string
 	): Promise<{ success: boolean; error?: string }> {
 		try {
-			// Check if Jupyter is already running
+			// Check if Jupyter is already running and healthy
 			if (this.jupyterProcess) {
-				console.log("Jupyter is already running");
-				return { success: true };
+				try {
+					const controller = new AbortController();
+					const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+					const response = await fetch(
+						`http://127.0.0.1:${this.jupyterPort}/api/status`,
+						{
+							signal: controller.signal,
+							headers: { Accept: "application/json" },
+						}
+					);
+
+					clearTimeout(timeoutId);
+
+					if (response.ok) {
+						console.log("Jupyter is already running and healthy");
+						return { success: true };
+					}
+				} catch (error) {
+					console.log("Jupyter health check failed, will restart");
+				}
+
+				console.log("Jupyter is running but not healthy, restarting...");
+				this.jupyterProcess.kill();
+				this.jupyterProcess = null;
+				// Wait a moment for the process to fully stop
+				await new Promise((resolve) => setTimeout(resolve, 2000));
 			}
 
 			console.log("Starting Jupyter server...");
@@ -480,9 +626,30 @@ export class AxonApp {
 
 			// Determine pip and python paths for the virtual environment
 			const isWindows = process.platform === "win32";
-			const pipPath = isWindows
-				? path.join(venvPath, "Scripts", "pip.exe")
-				: path.join(venvPath, "bin", "pip");
+			const isMac = process.platform === "darwin";
+
+			let pipPath: string;
+			if (isWindows) {
+				pipPath = path.join(venvPath, "Scripts", "pip.exe");
+			} else if (isMac) {
+				// On macOS, try pip3 first, then fall back to pip
+				const pip3Path = path.join(venvPath, "bin", "pip3");
+				const pipPathUnix = path.join(venvPath, "bin", "pip");
+
+				if (fs.existsSync(pip3Path)) {
+					pipPath = pip3Path;
+				} else if (fs.existsSync(pipPathUnix)) {
+					pipPath = pipPathUnix;
+				} else {
+					throw new Error(
+						`No pip executable found in virtual environment. Tried: ${pip3Path} and ${pipPathUnix}`
+					);
+				}
+			} else {
+				// Linux and other Unix systems
+				pipPath = path.join(venvPath, "bin", "pip");
+			}
+
 			const pythonVenvPath = isWindows
 				? path.join(venvPath, "Scripts", "python.exe")
 				: path.join(venvPath, "bin", "python");
@@ -522,8 +689,11 @@ export class AxonApp {
 				});
 			});
 
-			// Start Jupyter server
-			console.log("Starting Jupyter server...");
+			// Start Jupyter server with workspace kernels
+			console.log(`Starting Jupyter server for workspace: ${workspacePath}`);
+			const workspaceKernelsPath = path.join(workspacePath, "kernels");
+			console.log(`Using workspace kernels from: ${workspaceKernelsPath}`);
+			
 			this.jupyterProcess = spawn(
 				pythonVenvPath,
 				[
@@ -536,6 +706,9 @@ export class AxonApp {
 					"--allow-root",
 					"--NotebookApp.token=''",
 					"--NotebookApp.password=''",
+					`--KernelSpecManager.kernel_spec_path=${workspaceKernelsPath}`,
+					"--NotebookApp.disable_check_xsrf=True",
+					`--notebook-dir=${workspacePath}`,
 				],
 				{
 					cwd: workspacePath,
@@ -751,6 +924,9 @@ export class AxonApp {
 						"--NotebookApp.disable_check_xsrf=True",
 						"--NotebookApp.allow_origin='*'",
 						"--NotebookApp.allow_credentials=True",
+						"--NotebookApp.allow_remote_access=True",
+						"--NotebookApp.open_browser=False",
+						"--NotebookApp.trust_xheaders=True",
 					],
 					{
 						cwd: workingDir,
@@ -799,13 +975,36 @@ export class AxonApp {
 							// Create a kernel for the notebook
 							setTimeout(async () => {
 								try {
+									// Get CSRF token first
+									let csrfToken = "";
+									try {
+										const csrfResponse = await fetch(
+											`http://127.0.0.1:${this.jupyterPort}/api/security/csrf`
+										);
+										if (csrfResponse.ok) {
+											const csrfData = await csrfResponse.json();
+											csrfToken = csrfData.token;
+										}
+									} catch (error) {
+										console.warn(
+											"Failed to get CSRF token for initial kernel:",
+											error
+										);
+									}
+
+									const headers: any = {
+										"Content-Type": "application/json",
+									};
+
+									if (csrfToken) {
+										headers["X-XSRFToken"] = csrfToken;
+									}
+
 									const response = await fetch(
 										`http://127.0.0.1:${this.jupyterPort}/api/kernels`,
 										{
 											method: "POST",
-											headers: {
-												"Content-Type": "application/json",
-											},
+											headers,
 											body: JSON.stringify({
 												name: "python3",
 											}),
@@ -815,6 +1014,11 @@ export class AxonApp {
 									if (response.ok) {
 										const kernel = await response.json();
 										console.log("Created initial kernel:", kernel.id);
+									} else {
+										console.error(
+											"Failed to create initial kernel, status:",
+											response.status
+										);
 									}
 								} catch (error) {
 									console.error("Failed to create initial kernel:", error);
@@ -923,8 +1127,8 @@ export class AxonApp {
 					timestamp: new Date().toISOString(),
 				});
 
-				// Only install basic Jupyter infrastructure - packages will be installed dynamically
-				const basicPackages = ["jupyter", "notebook", "ipykernel"];
+				// Install basic Jupyter infrastructure and commonly needed packages
+				const basicPackages = ["jupyter", "notebook", "ipykernel", "pandas", "numpy", "matplotlib", "seaborn"];
 
 				// Notify about basic infrastructure installation
 				this.mainWindow?.webContents.send("virtual-env-status", {
@@ -954,28 +1158,7 @@ export class AxonApp {
 					installProcess.on("error", reject);
 				});
 
-				// Register the virtual environment kernel with Jupyter
-				const kernelName = this.generateKernelName(workspacePath);
-				console.log(`Registering kernel with name: ${kernelName}`);
-				const registerProcess = spawn(
-					pythonVenvPath,
-					[
-						"-m",
-						"ipykernel",
-						"install",
-						"--user",
-						"--name",
-						kernelName,
-						"--display-name",
-						`Axon Analysis (${path.basename(workspacePath)})`,
-					],
-					{
-						cwd: workspacePath,
-						stdio: "pipe",
-					}
-				);
-
-				// Also install ipykernel in the virtual environment if not already installed
+				// First, install ipykernel in the virtual environment
 				const installIpykernelProcess = spawn(
 					pipPath,
 					["install", "ipykernel"],
@@ -1001,19 +1184,43 @@ export class AxonApp {
 					});
 				});
 
-				await new Promise<void>((resolve, reject) => {
-					registerProcess.on("close", (code) => {
-						if (code === 0) {
-							console.log("Kernel registered successfully");
-							resolve();
-						} else {
-							reject(
-								new Error(`Failed to register kernel, exit code: ${code}`)
-							);
-						}
-					});
-					registerProcess.on("error", reject);
-				});
+				// Create workspace-local kernel spec
+				const kernelName = this.generateKernelName(workspacePath);
+				console.log(`Creating workspace-local kernel: ${kernelName}`);
+				
+				// Create kernel spec directory in workspace
+				const kernelsDir = path.join(workspacePath, "kernels");
+				const kernelDir = path.join(kernelsDir, kernelName);
+				
+				if (!fs.existsSync(kernelsDir)) {
+					fs.mkdirSync(kernelsDir, { recursive: true });
+				}
+				if (!fs.existsSync(kernelDir)) {
+					fs.mkdirSync(kernelDir, { recursive: true });
+				}
+				
+				// Create kernel.json that points to workspace venv Python
+				const kernelSpec = {
+					argv: [
+						pythonVenvPath,  // Use the workspace venv Python
+						"-m",
+						"ipykernel_launcher",
+						"-f",
+						"{connection_file}"
+					],
+					display_name: `Axon Workspace (${path.basename(workspacePath)})`,
+					language: "python",
+					metadata: {
+						debugger: true
+					}
+				};
+				
+				fs.writeFileSync(
+					path.join(kernelDir, "kernel.json"),
+					JSON.stringify(kernelSpec, null, 2)
+				);
+				
+				console.log(`Workspace kernel created: ${kernelDir}/kernel.json`);
 
 				// Notify renderer about completion
 				this.mainWindow?.webContents.send("virtual-env-status", {
@@ -1102,21 +1309,24 @@ export class AxonApp {
 			async (_, code: string, workspacePath?: string) => {
 				try {
 					console.log(
-						`Executing code in Jupyter: \n${code.substring(0, 100)}...`
+						`Executing code in Jupyter for workspace: ${workspacePath}\n${code.substring(
+							0,
+							100
+						)}...`
 					);
 
-					// Check if Jupyter is running, start it if not
-					if (!this.jupyterProcess) {
-						console.log("Jupyter not running, starting it...");
-						const startResult = await this.startJupyterIfNeeded(
-							workspacePath || process.cwd()
-						);
-						if (!startResult.success) {
-							return {
-								success: false,
-								error: "Failed to start Jupyter server",
-							};
-						}
+					// Always ensure Jupyter is running for the correct workspace
+					console.log(
+						"Ensuring Jupyter is running for the correct workspace..."
+					);
+					const startResult = await this.startJupyterIfNeeded(
+						workspacePath || process.cwd()
+					);
+					if (!startResult.success) {
+						return {
+							success: false,
+							error: "Failed to start Jupyter server",
+						};
 					}
 
 					// Notify renderer that code is being written (for streaming)
@@ -1129,9 +1339,59 @@ export class AxonApp {
 					const WebSocket = require("ws");
 					const { v4: uuidv4 } = require("uuid");
 
-					// Determine the kernel name based on workspace path
-					let kernelName = "python3"; // Use default kernel for now
-					console.log(`Using kernel: ${kernelName}`);
+					// Use the workspace-specific kernel that was created
+					let kernelName = "python3";
+					if (workspacePath) {
+						const metadata = await this.getWorkspaceMetadata(workspacePath);
+						if (metadata?.kernelName) {
+							kernelName = metadata.kernelName;
+							console.log(`Found workspace kernel in metadata: ${kernelName}`);
+						} else {
+							// Fallback to generating a new kernel name
+							kernelName = this.generateKernelName(workspacePath);
+							console.log(`No metadata found, generated kernel name: ${kernelName}`);
+						}
+					}
+					
+					console.log(`Looking for workspace kernel: ${kernelName}`);
+					
+					console.log(
+						`Using kernel: ${kernelName} for workspace: ${workspacePath}`
+					);
+
+					// Get CSRF token first
+					let csrfToken = "";
+					try {
+						const csrfResponse = await fetch(
+							`http://127.0.0.1:${this.jupyterPort}/api/security/csrf`
+						);
+						if (csrfResponse.ok) {
+							const csrfData = await csrfResponse.json();
+							csrfToken = csrfData.token;
+							console.log("Got CSRF token:", csrfToken);
+						}
+					} catch (error) {
+						console.warn("Failed to get CSRF token:", error);
+						// Try alternative approach - get token from cookies
+						try {
+							const cookieResponse = await fetch(
+								`http://127.0.0.1:${this.jupyterPort}/`
+							);
+							const cookies = cookieResponse.headers.get("set-cookie");
+							if (cookies) {
+								const xsrfMatch = cookies.match(/_xsrf=([^;]+)/);
+								if (xsrfMatch) {
+									csrfToken = xsrfMatch[1];
+									console.log("Got CSRF token from cookies:", csrfToken);
+								}
+							}
+						} catch (cookieError) {
+							console.warn(
+								"Failed to get CSRF token from cookies:",
+								cookieError
+							);
+						}
+					}
 
 					// 1. Find the running kernel or create one
 					let response = await fetch(
@@ -1142,37 +1402,170 @@ export class AxonApp {
 
 					let kernelId: string;
 					if (!kernels || kernels.length === 0) {
-						// Create a new kernel
+						// Create a new kernel with retry mechanism
 						console.log(
 							`No kernel found, creating new kernel with name: ${kernelName}`
 						);
-						const createResponse = await fetch(
-							`http://127.0.0.1:${this.jupyterPort}/api/kernels`,
-							{
-								method: "POST",
-								headers: {
-									"Content-Type": "application/json",
-								},
-								body: JSON.stringify({
-									name: kernelName,
-								}),
-							}
-						);
 
-						console.log(
-							`Kernel creation response status: ${createResponse.status}`
-						);
-						if (!createResponse.ok) {
-							const errorText = await createResponse.text();
-							console.error(`Failed to create Jupyter kernel: ${errorText}`);
-							console.error(`Kernel name: ${kernelName}`);
-							console.error(`Workspace path: ${workspacePath}`);
-							throw new Error(`Failed to create Jupyter kernel: ${errorText}`);
+						// Add a small delay to ensure Jupyter is fully ready
+						await new Promise((resolve) => setTimeout(resolve, 1000));
+
+						let createResponse: Response | undefined;
+						let retries = 3;
+
+						while (retries > 0) {
+							try {
+								const headers: any = {
+									"Content-Type": "application/json",
+								};
+
+								// Add CSRF token if available
+								if (csrfToken) {
+									headers["X-XSRFToken"] = csrfToken;
+								} else {
+									// Fallback: try without CSRF token (for local development)
+									console.warn(
+										"No CSRF token available, attempting request without it"
+									);
+								}
+
+								// First check if the kernel spec exists, if not try to register it
+								try {
+									const kernelSpecsResponse = await fetch(
+										`http://127.0.0.1:${this.jupyterPort}/api/kernelspecs`
+									);
+									
+									if (kernelSpecsResponse.ok) {
+										const kernelSpecs = await kernelSpecsResponse.json();
+										console.log("Available kernel specs:", Object.keys(kernelSpecs.kernelspecs || {}));
+										
+										// If our custom kernel doesn't exist, try to register it
+										if (!kernelSpecs.kernelspecs || !kernelSpecs.kernelspecs[kernelName]) {
+											console.warn(`Kernel spec '${kernelName}' not found, attempting to register it`);
+											
+											if (workspacePath) {
+												const success = await this.attemptKernelRegistration(workspacePath, kernelName);
+												if (!success) {
+													console.warn(`Failed to register kernel '${kernelName}', falling back to 'python3'`);
+													kernelName = 'python3';
+												}
+											} else {
+												console.warn("No workspace path provided, falling back to python3");
+												kernelName = 'python3';
+											}
+										}
+									}
+								} catch (specError) {
+									console.warn("Could not check kernel specs, proceeding with original kernel name:", specError);
+								}
+
+								createResponse = await fetch(
+									`http://127.0.0.1:${this.jupyterPort}/api/kernels`,
+									{
+										method: "POST",
+										headers,
+										body: JSON.stringify({
+											name: kernelName,
+										}),
+									}
+								);
+
+								console.log(
+									`Kernel creation response status: ${createResponse.status}`
+								);
+
+								if (createResponse.ok) {
+									break;
+								} else {
+									const errorText = await createResponse.text();
+									console.warn(
+										`Kernel creation attempt ${
+											4 - retries
+										} failed: ${errorText}`
+									);
+
+									if (retries > 1) {
+										await new Promise((resolve) => setTimeout(resolve, 2000));
+									}
+								}
+							} catch (error) {
+								console.warn(
+									`Kernel creation attempt ${4 - retries} failed with error:`,
+									error
+								);
+								if (retries > 1) {
+									await new Promise((resolve) => setTimeout(resolve, 2000));
+								}
+							}
+							retries--;
 						}
 
-						const newKernel = await createResponse.json();
-						kernelId = newKernel.id;
-						console.log("Created new kernel:", kernelId);
+						if (!createResponse || !createResponse.ok) {
+							const errorText = createResponse
+								? await createResponse.text()
+								: "No response";
+							console.error(
+								`Failed to create Jupyter kernel after retries: ${errorText}`
+							);
+							console.error(`Kernel name: ${kernelName}`);
+							console.error(`Workspace path: ${workspacePath}`);
+
+							// Try to create a basic python3 kernel as fallback
+							console.log("Attempting to create fallback python3 kernel...");
+							try {
+								const fallbackHeaders: any = {
+									"Content-Type": "application/json",
+								};
+
+								// Add CSRF token if available
+								if (csrfToken) {
+									fallbackHeaders["X-XSRFToken"] = csrfToken;
+								} else {
+									// Fallback: try without CSRF token (for local development)
+									console.warn(
+										"No CSRF token available for fallback, attempting request without it"
+									);
+								}
+
+								const fallbackResponse = await fetch(
+									`http://127.0.0.1:${this.jupyterPort}/api/kernels`,
+									{
+										method: "POST",
+										headers: fallbackHeaders,
+										body: JSON.stringify({
+											name: "python3",
+										}),
+									}
+								);
+
+								if (fallbackResponse.ok) {
+									const fallbackKernel = await fallbackResponse.json();
+									kernelId = fallbackKernel.id;
+									console.log("Created fallback python3 kernel:", kernelId);
+								} else {
+									throw new Error(
+										`Failed to create Jupyter kernel: ${errorText}`
+									);
+								}
+							} catch (fallbackError) {
+								console.error(
+									"Fallback kernel creation also failed:",
+									fallbackError
+								);
+								throw new Error(
+									`Failed to create Jupyter kernel: ${errorText}`
+								);
+							}
+						}
+
+						// At this point, createResponse should be defined and ok
+						if (createResponse) {
+							const newKernel = await createResponse.json();
+							kernelId = newKernel.id;
+							console.log("Created new kernel:", kernelId);
+						} else {
+							throw new Error("Failed to create kernel: No response received");
+						}
 					} else {
 						// Try to find a kernel with the correct name
 						const matchingKernel = kernels.find(
@@ -1271,11 +1664,14 @@ export class AxonApp {
 
 						ws.on("message", (data: any) => {
 							const msg = JSON.parse(data.toString());
-							console.log(`Jupyter WebSocket message:`, {
-								msg_type: msg.header.msg_type,
-								parent_header: !!msg.parent_header,
-								content: msg.content,
-							});
+							// Only log important WebSocket messages
+							if (msg.header?.msg_type && !['status', 'comm_open'].includes(msg.header.msg_type)) {
+								console.log(`Jupyter WebSocket message:`, {
+									msg_type: msg.header.msg_type,
+									parent_header: !!msg.parent_header,
+									content: msg.content,
+								});
+							}
 
 							// 4. Listen for execute_reply and stream messages
 							if (msg.parent_header && msg.header.msg_type === "stream") {
@@ -1479,6 +1875,7 @@ export class AxonApp {
 			}
 		});
 
+
 		ipcMain.handle("on-jupyter-ready", (_, callback: (data: any) => void) => {
 			// This is handled by the renderer process
 			return true;
@@ -1501,7 +1898,48 @@ export class AxonApp {
 					});
 
 					const venvPath = path.join(workspacePath, "venv");
-					const pipPath = path.join(venvPath, "bin", "pip");
+
+					// Check if virtual environment exists
+					if (!fs.existsSync(venvPath)) {
+						throw new Error(
+							`Virtual environment not found at: ${venvPath}. Please ensure Jupyter is started first.`
+						);
+					}
+
+					// Determine pip path based on platform
+					const isWindows = process.platform === "win32";
+					const isMac = process.platform === "darwin";
+
+					let pipPath: string;
+					if (isWindows) {
+						pipPath = path.join(venvPath, "Scripts", "pip.exe");
+					} else if (isMac) {
+						// On macOS, try pip3 first, then fall back to pip
+						const pip3Path = path.join(venvPath, "bin", "pip3");
+						const pipPathUnix = path.join(venvPath, "bin", "pip");
+
+						if (fs.existsSync(pip3Path)) {
+							pipPath = pip3Path;
+						} else if (fs.existsSync(pipPathUnix)) {
+							pipPath = pipPathUnix;
+						} else {
+							throw new Error(
+								`No pip executable found in virtual environment. Tried: ${pip3Path} and ${pipPathUnix}`
+							);
+						}
+					} else {
+						// Linux and other Unix systems
+						pipPath = path.join(venvPath, "bin", "pip");
+					}
+
+					// Verify pip executable exists
+					if (!fs.existsSync(pipPath)) {
+						throw new Error(
+							`Virtual environment pip not found at: ${pipPath}. Virtual environment may be corrupted.`
+						);
+					}
+
+					console.log(`Using pip at: ${pipPath}`);
 
 					// Notify about each package being installed
 					for (const pkg of packages) {
@@ -1518,18 +1956,82 @@ export class AxonApp {
 						stdio: "pipe",
 					});
 
+					let stdout = "";
+					let stderr = "";
+
+					installProcess.stdout?.on("data", (data) => {
+						const output = data.toString();
+						stdout += output;
+						// Only log pip errors and warnings, not verbose output
+						if (output.includes('ERROR') || output.includes('WARNING')) {
+							console.log(`[pip stdout]: ${output}`);
+						}
+					});
+
+					installProcess.stderr?.on("data", (data) => {
+						const output = data.toString();
+						stderr += output;
+						// Only log pip stderr if it contains actual errors
+						if (output.includes('ERROR') || output.includes('FAILED')) {
+							console.log(`[pip stderr]: ${output}`);
+						}
+					});
+
 					await new Promise<void>((resolve, reject) => {
 						installProcess.on("close", (code) => {
+							console.log(`Pip process completed with code: ${code}`);
+							// Only log stdout/stderr if there were errors
+							if (code !== 0) {
+								console.log(`Full stdout: ${stdout}`);
+								console.log(`Full stderr: ${stderr}`);
+							}
+							
 							if (code === 0) {
 								console.log("Packages installed successfully");
 								resolve();
 							} else {
 								reject(
-									new Error(`Failed to install packages, exit code: ${code}`)
+									new Error(`Failed to install packages, exit code: ${code}. stderr: ${stderr}`)
 								);
 							}
 						});
-						installProcess.on("error", reject);
+						installProcess.on("error", (error) => {
+							console.error(`Pip process error: ${error}`);
+							reject(error);
+						});
+					});
+
+					// Verify packages were actually installed
+					console.log("Verifying package installation...");
+					const verifyProcess = spawn(pipPath, ["list"], {
+						cwd: workspacePath,
+						stdio: "pipe",
+					});
+
+					let verifyOutput = "";
+					verifyProcess.stdout?.on("data", (data) => {
+						verifyOutput += data.toString();
+					});
+
+					await new Promise<void>((resolve) => {
+						verifyProcess.on("close", () => {
+							// Don't log the full package list to reduce noise
+							console.log("Verifying package installation...");
+							
+							// Check if each package is in the list
+							for (const pkg of packages) {
+								const isInstalled = verifyOutput.toLowerCase().includes(pkg.toLowerCase());
+								// Only log missing packages
+								if (!isInstalled) {
+									console.log(`Package ${pkg}: NOT FOUND`);
+								}
+							}
+							resolve();
+						});
+						verifyProcess.on("error", (error) => {
+							console.error(`Verification error: ${error}`);
+							resolve();
+						});
 					});
 
 					// Notify renderer about completion
@@ -1555,8 +2057,44 @@ export class AxonApp {
 		);
 	}
 
+	private async cleanupOldKernels(): Promise<void> {
+		try {
+			const { exec } = require("child_process");
+			const { promisify } = require("util");
+			const execAsync = promisify(exec);
+
+			console.log("Cleaning up old Axon kernels...");
+
+			// List all kernels and remove old Axon ones
+			const result = await execAsync("jupyter kernelspec list").catch(() => null);
+			if (result && result.stdout) {
+				const lines = result.stdout.split('\n');
+				for (const line of lines) {
+					if (line.includes('axon-') && !line.includes('Available kernels:')) {
+						const kernelName = line.trim().split(/\s+/)[0];
+						if (kernelName.startsWith('axon-')) {
+							try {
+								await execAsync(`jupyter kernelspec remove -f ${kernelName}`);
+								console.log(`Removed old kernel: ${kernelName}`);
+							} catch (error) {
+								console.warn(`Failed to remove kernel ${kernelName}:`, error);
+							}
+						}
+					}
+				}
+			}
+		} catch (error) {
+			console.warn("Error during kernel cleanup:", error);
+		}
+	}
+
 	private cleanup() {
 		console.log("Cleaning up processes...");
+
+		// Clean up old kernels first
+		this.cleanupOldKernels().catch(error => {
+			console.warn("Error during kernel cleanup:", error);
+		});
 
 		if (this.bioragServer) {
 			try {

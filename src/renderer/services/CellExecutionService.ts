@@ -1,4 +1,35 @@
-import { runNotebookStep } from "../utils";
+// Centralized notebook step execution logic
+import { ErrorUtils } from "../utils/ErrorUtils";
+async function runNotebookStep(
+	stepId: string,
+	code: string,
+	update: (payload: { output: string | null; error: string | null }) => void,
+	workspacePath?: string
+) {
+	try {
+		console.log(
+			`Executing notebook step ${stepId} with code:`,
+			code.substring(0, 100) + "..."
+		);
+
+		// @ts-ignore
+		const result = await window.electronAPI.executeJupyterCode(
+			code,
+			workspacePath
+		);
+
+		console.log(`Jupyter execution result:`, result);
+
+		if (result.success) {
+			update({ output: result.output || null, error: null });
+		} else {
+			update({ output: null, error: result.error || "Execution failed" });
+		}
+	} catch (error: unknown) {
+		const errMsg = ErrorUtils.handleError(`Error executing notebook step ${stepId}`, error);
+		update({ output: null, error: errMsg });
+	}
+}
 
 export interface Cell {
 	id: string;
@@ -23,6 +54,11 @@ export class CellExecutionService {
 
 	constructor(workspacePath: string) {
 		this.workspacePath = workspacePath;
+	}
+
+	updateWorkspacePath(newWorkspacePath: string) {
+		console.log(`CellExecutionService: Updating workspace path from ${this.workspacePath} to ${newWorkspacePath}`);
+		this.workspacePath = newWorkspacePath;
 	}
 
 	async executeCellWithAnalysis(
@@ -67,7 +103,6 @@ export class CellExecutionService {
 				console.log(
 					`CellExecutionService: Cell execution failed: ${cell.title}`
 				);
-				console.log(`Error output: ${errorMessage}`);
 
 				// Analyze the error to determine if we should retry
 				const shouldRetry = await this.analyzeErrorForRetry(
@@ -84,7 +119,6 @@ export class CellExecutionService {
 				console.log(
 					`CellExecutionService: Cell execution completed: ${cell.title}`
 				);
-				console.log(`Output: ${finalOutput.substring(0, 200)}...`);
 
 				// Analyze the output to determine if it's successful
 				const outputAnalysis = await this.analyzeCellOutput(
@@ -106,7 +140,7 @@ export class CellExecutionService {
 			);
 			return {
 				status: "failed",
-				output: error instanceof Error ? error.message : String(error),
+				output: ErrorUtils.getErrorMessage(error),
 				shouldRetry: true, // Retry on unexpected errors
 			};
 		}
@@ -133,10 +167,7 @@ export class CellExecutionService {
 		);
 
 		console.log(
-			`CellExecutionService: Error analysis - Retryable: ${isRetryable}, Error: ${errorOutput.substring(
-				0,
-				100
-			)}...`
+			`CellExecutionService: Error analysis - Retryable: ${isRetryable}`
 		);
 
 		return isRetryable;
@@ -157,8 +188,7 @@ export class CellExecutionService {
 		};
 
 		console.log(
-			`CellExecutionService: Output analysis for ${cellTitle}:`,
-			analysis
+			`CellExecutionService: Output analysis completed for ${cellTitle}`
 		);
 		return analysis;
 	}

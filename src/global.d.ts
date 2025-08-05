@@ -2,10 +2,17 @@ export interface ElectronAPI {
 	readFile: (filePath: string) => Promise<string>;
 	writeFile: (filePath: string, content: string) => Promise<boolean>;
 	createDirectory: (dirPath: string) => Promise<boolean>;
+	directoryExists: (dirPath: string) => Promise<boolean>;
 	listDirectory: (
 		dirPath: string
 	) => Promise<Array<{ name: string; isDirectory: boolean; path: string }>>;
 	openFile: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+	deleteFile: (
+		filePath: string
+	) => Promise<{ success: boolean; error?: string }>;
+	deleteDirectory: (
+		dirPath: string
+	) => Promise<{ success: boolean; error?: string }>;
 
 	startJupyter: (
 		workingDir: string
@@ -39,6 +46,8 @@ export interface ElectronAPI {
 	storeSet: (key: string, value: any) => Promise<boolean>;
 
 	bioragQuery: (query: any) => Promise<any>;
+	getBioragPort: () => Promise<number>;
+	getBioragUrl: () => Promise<string>;
 
 	onBioRAGLog: (callback: (data: string) => void) => void;
 	onBioRAGError: (callback: (data: string) => void) => void;

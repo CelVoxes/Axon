@@ -1,4 +1,6 @@
 import { BackendClient } from "./BackendClient";
+import { DataTypeAnalysis } from "./DatasetManager";
+import { StatusManager } from "./StatusManager";
 
 export interface Dataset {
 	id: string;
@@ -34,20 +36,22 @@ export interface AnalysisPlan {
 
 export class AnalysisPlanner {
 	private backendClient: BackendClient;
-	private statusCallback?: (status: string) => void;
+	private statusManager: StatusManager;
 
 	constructor(backendClient: BackendClient) {
 		this.backendClient = backendClient;
+		this.statusManager = StatusManager.getInstance();
 	}
 
 	setStatusCallback(callback: (status: string) => void) {
-		this.statusCallback = callback;
+		// Convert string callback to StatusUpdate callback
+		this.statusManager.setStatusCallback((statusUpdate) => {
+			callback(statusUpdate.message);
+		});
 	}
 
 	private updateStatus(message: string) {
-		if (this.statusCallback) {
-			this.statusCallback(message);
-		}
+		this.statusManager.updateStatus(message);
 	}
 
 	async createAnalysisPlan(
@@ -63,9 +67,9 @@ export class AnalysisPlanner {
 		this.updateStatus("Identifying required data...");
 		const foundDatasets = await this.findRequiredData(understanding);
 
-		// Step 3: Create workspace
+		// Step 3: Create workspace with virtual environment
 		this.updateStatus("Setting up workspace...");
-		const workingDirectory = await this.createWorkspace(query);
+		const workingDirectory = await this.createAnalysisWorkspace(query);
 
 		this.updateStatus("Analysis plan created successfully!");
 
@@ -78,9 +82,15 @@ export class AnalysisPlanner {
 
 	async createAnalysisPlanWithData(
 		query: string,
-		downloadedDatasets: Dataset[]
+		downloadedDatasets: Dataset[],
+		currentWorkspace?: string
 	): Promise<AnalysisPlan> {
 		this.updateStatus("Analyzing your research question...");
+
+		console.log(
+			"AnalysisPlanner: createAnalysisPlanWithData called with currentWorkspace =",
+			currentWorkspace
+		);
 
 		// Step 1: Analyze the user question with existing data
 		const understanding = await this.analyzeUserQuestion(
@@ -88,8 +98,11 @@ export class AnalysisPlanner {
 			downloadedDatasets
 		);
 
-		// Step 2: Create workspace
-		const workingDirectory = await this.createWorkspace(query);
+		// Step 2: Create workspace with virtual environment (use current workspace if provided)
+		const workingDirectory = await this.createAnalysisWorkspace(
+			query,
+			currentWorkspace
+		);
 
 		this.updateStatus("Analysis plan created successfully!");
 
@@ -108,58 +121,31 @@ export class AnalysisPlanner {
 
 		try {
 			// Call the backend LLM API to generate a plan
-			const response = await fetch(
-				`${this.backendClient.getBaseUrl()}/llm/plan`,
-				{
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-					},
-					body: JSON.stringify({
-						question: question,
-						context: `Research question: ${question}`,
-						current_state: {
-							datasets_available: datasets?.length || 0,
-							datasets:
-								datasets?.map((d) => ({ id: d.id, title: d.title })) || [],
-						},
-						available_data:
-							datasets?.map((d) => ({
-								id: d.id,
-								title: d.title,
-								description: d.description,
-								samples: d.samples,
-								platform: d.platform,
-							})) || [],
-						task_type: "analysis",
-					}),
-				}
-			);
+			const result = await this.backendClient.generatePlan({
+				question: question,
+				context: `Research question: ${question}`,
+				current_state: {
+					datasets_available: datasets?.length || 0,
+					datasets: datasets?.map((d) => ({ id: d.id, title: d.title })) || [],
+				},
+			});
 
-			if (response.ok) {
-				const result = await response.json();
-				console.log("LLM plan result:", result);
-				return {
-					userQuestion: question,
-					requiredSteps: result.next_steps || [],
-					dataNeeded: result.data_needed || [
-						"Biological datasets relevant to the question",
-					],
-					expectedOutputs: result.expected_outputs || [
-						"Analysis results",
-						"Visualizations",
-					],
-					analysisType: result.task_type || "analysis",
-					priority: result.priority || "medium",
-					estimatedTime: result.estimated_time || "unknown",
-					datasets: datasets,
-				};
-			} else {
-				const errorText = await response.text();
-				console.warn(
-					`LLM plan API call failed. Status: ${response.status}, Error: ${errorText}`
-				);
-			}
+			console.log("LLM plan result:", result);
+			return {
+				userQuestion: question,
+				requiredSteps: result.next_steps || [],
+				dataNeeded: result.data_needed || [
+					"Biological datasets relevant to the question",
+				],
+				expectedOutputs: result.expected_outputs || [
+					"Analysis results",
+					"Visualizations",
+				],
+				analysisType: result.task_type || "analysis",
+				priority: result.priority || "medium",
+				estimatedTime: result.estimated_time || "unknown",
+				datasets: datasets,
+			};
 		} catch (apiError) {
 			console.warn(`LLM plan API error:`, apiError);
 		}
@@ -354,53 +340,187 @@ export class AnalysisPlanner {
 		return datasets;
 	}
 
+	async generateDataTypeSpecificPlan(
+		userQuestion: string,
+		dataAnalysis: DataTypeAnalysis,
+		datasets: Dataset[]
+	): Promise<{
+		steps: Array<{ description: string; prerequisites?: string[] }>;
+	}> {
+		const steps: Array<{ description: string; prerequisites?: string[] }> = [];
+
+		// Add data loading step
+		steps.push({
+			description:
+				"Load and preprocess datasets with data type-specific handling",
+		});
+
+		// Add data type specific steps
+		for (const dataType of dataAnalysis.dataTypes) {
+			switch (dataType) {
+				case "single_cell_expression":
+					steps.push(
+						{
+							description: "Load single-cell data and perform quality control",
+						},
+						{ description: "Normalize and scale single-cell expression data" },
+						{
+							description:
+								"Perform feature selection and dimensionality reduction",
+						},
+						{ description: "Cluster cells and identify cell types" },
+						{
+							description:
+								"Perform differential expression analysis between clusters",
+						},
+						{
+							description:
+								"Create single-cell visualizations (UMAP, t-SNE, heatmaps)",
+						},
+						{
+							description:
+								"Annotate cell types and perform trajectory analysis",
+						}
+					);
+					break;
+
+				case "expression_matrix":
+					steps.push(
+						{ description: "Perform quality control on expression data" },
+						{ description: "Normalize expression data" },
+						{ description: "Perform differential expression analysis" },
+						{ description: "Create expression heatmaps and visualizations" }
+					);
+					break;
+
+				case "clinical_data":
+					steps.push(
+						{ description: "Clean and validate clinical data" },
+						{
+							description: "Perform statistical analysis on clinical variables",
+						},
+						{ description: "Create clinical data visualizations" }
+					);
+					break;
+
+				case "sequence_data":
+					steps.push(
+						{ description: "Perform sequence quality control" },
+						{ description: "Analyze sequence characteristics" },
+						{ description: "Create sequence analysis visualizations" }
+					);
+					break;
+
+				case "variant_data":
+					steps.push(
+						{ description: "Load and validate variant data" },
+						{ description: "Perform variant frequency analysis" },
+						{ description: "Create variant annotation and visualization" }
+					);
+					break;
+
+				case "metadata":
+					steps.push(
+						{ description: "Analyze metadata quality and completeness" },
+						{ description: "Create metadata summary and visualizations" }
+					);
+					break;
+			}
+		}
+
+		// Add integration steps if multiple data types
+		if (dataAnalysis.dataTypes.length > 1) {
+			steps.push({
+				description: "Integrate and correlate multiple data types",
+				prerequisites: ["step_1", "step_2"], // Depends on previous steps
+			});
+		}
+
+		// Add final analysis step
+		steps.push({
+			description: "Generate comprehensive analysis report and insights",
+			prerequisites: steps.map((_, i) => `step_${i + 1}`),
+		});
+
+		return { steps };
+	}
+
 	private async createWorkspace(
 		query: string,
 		currentWorkspace?: string
 	): Promise<string> {
-		const timestamp = new Date()
-			.toISOString()
-			.slice(0, 19)
-			.replace(/[:-]/g, "");
-		const safeName = query
-			.replace(/[^a-zA-Z0-9\s]/g, "")
-			.replace(/\s+/g, "_")
-			.substring(0, 30);
-		const dirName = `${safeName}_${timestamp}`;
-		// Use the provided workspace path or fallback to /tmp
-		const workspacePath = currentWorkspace || "/tmp";
-		const fullPath = `${workspacePath}/workspaces/${dirName}`;
+		console.log(
+			"AnalysisPlanner: createWorkspace called with currentWorkspace =",
+			currentWorkspace
+		);
 
-		console.log("AnalysisPlanner: Creating workspace:", {
-			dirName,
-			fullPath,
-		});
+		// If currentWorkspace is provided, create a question-specific folder within it
+		if (currentWorkspace) {
+			// Create a safe folder name from the query
+			const timestamp = new Date()
+				.toISOString()
+				.slice(0, 19)
+				.replace(/[:-]/g, "");
+			const safeName = query
+				.replace(/[^a-zA-Z0-9\s]/g, "")
+				.replace(/\s+/g, "_")
+				.substring(0, 30);
+			const questionFolderName = `${safeName}_${timestamp}`;
+			const questionFolderPath = `${currentWorkspace}/${questionFolderName}`;
 
-		const directories = [
-			fullPath,
-			`${fullPath}/data`,
-			`${fullPath}/results`,
-			`${fullPath}/figures`,
-		];
+			console.log(
+				"AnalysisPlanner: Creating question folder:",
+				questionFolderPath
+			);
 
-		for (const dir of directories) {
-			try {
-				await window.electronAPI.createDirectory(dir);
-				console.log("AnalysisPlanner: Created directory:", dir);
-			} catch (error) {
-				console.warn(`Could not create directory ${dir}:`, error);
+			// Create the question-specific folder and its subdirectories
+			const directories = [
+				questionFolderPath,
+				`${questionFolderPath}/data`,
+				`${questionFolderPath}/results`,
+				`${questionFolderPath}/figures`,
+			];
+
+			for (const dir of directories) {
+				try {
+					await window.electronAPI.createDirectory(dir);
+					console.log("AnalysisPlanner: Created directory:", dir);
+				} catch (error) {
+					console.error(`Failed to create directory ${dir}:`, error);
+					throw new Error(`Failed to create workspace directory: ${dir}`);
+				}
 			}
+
+			console.log(
+				"AnalysisPlanner: Question folder created:",
+				questionFolderPath
+			);
+			return questionFolderPath;
 		}
 
-		console.log("AnalysisPlanner: Workspace created successfully:", fullPath);
-		return fullPath;
+		// This should never happen if users are required to select a workspace
+		throw new Error("No workspace is currently open. Please select a workspace first.");
 	}
 
 	async createAnalysisWorkspace(
 		query: string,
 		currentWorkspace?: string
 	): Promise<string> {
+		// Validate current workspace if provided
+		if (currentWorkspace) {
+			const workspaceExists = await window.electronAPI.directoryExists(currentWorkspace);
+			if (!workspaceExists) {
+				throw new Error(`Workspace directory does not exist: ${currentWorkspace}`);
+			}
+		}
+
 		const workspaceDir = await this.createWorkspace(query, currentWorkspace);
+
+		// Validate that the workspace was created successfully
+		const workspaceDirExists = await window.electronAPI.directoryExists(workspaceDir);
+		if (!workspaceDirExists) {
+			throw new Error(`Failed to create workspace directory: ${workspaceDir}`);
+		}
 
 		// Create virtual environment in the workspace
 		this.updateStatus("Setting up virtual environment...");
@@ -411,6 +531,16 @@ export class AnalysisPlanner {
 			if (venvResult.success) {
 				console.log("Virtual environment created successfully:", venvResult);
 				this.updateStatus("Virtual environment ready!");
+				
+				// Store kernel name in workspace metadata
+				if (venvResult.kernelName) {
+					await this.storeWorkspaceMetadata(workspaceDir, {
+						kernelName: venvResult.kernelName,
+						pythonPath: venvResult.pythonPath,
+						venvPath: venvResult.venvPath,
+						createdAt: new Date().toISOString()
+					});
+				}
 			} else {
 				console.warn("Failed to create virtual environment:", venvResult.error);
 				this.updateStatus(
@@ -425,5 +555,32 @@ export class AnalysisPlanner {
 		}
 
 		return workspaceDir;
+	}
+
+	/**
+	 * Store workspace metadata like kernel name
+	 */
+	private async storeWorkspaceMetadata(workspaceDir: string, metadata: any): Promise<void> {
+		try {
+			const metadataPath = `${workspaceDir}/.axon-metadata.json`;
+			await window.electronAPI.writeFile(metadataPath, JSON.stringify(metadata, null, 2));
+			console.log("Workspace metadata stored:", metadata);
+		} catch (error) {
+			console.warn("Failed to store workspace metadata:", error);
+		}
+	}
+
+	/**
+	 * Get workspace metadata like kernel name
+	 */
+	static async getWorkspaceMetadata(workspaceDir: string): Promise<any> {
+		try {
+			const metadataPath = `${workspaceDir}/.axon-metadata.json`;
+			const metadataContent = await window.electronAPI.readFile(metadataPath);
+			return JSON.parse(metadataContent);
+		} catch (error) {
+			console.warn("Failed to read workspace metadata:", error);
+			return null;
+		}
 	}
 }

@@ -1,6 +1,20 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import styled from "styled-components";
-import { FiPlay, FiCopy, FiCheck, FiX, FiTrash2 } from "react-icons/fi";
+import {
+	FiPlay,
+	FiCopy,
+	FiCheck,
+	FiX,
+	FiTrash2,
+	FiChevronDown,
+	FiChevronUp,
+	FiDownload,
+	FiEye,
+	FiEyeOff,
+} from "react-icons/fi";
+import { CellExecutionService } from "../../services/CellExecutionService";
+import { ActionButton } from "../shared/StyledComponents";
+import { typography } from "../../styles/design-system";
 
 const CellContainer = styled.div`
 	margin: 16px 0;
@@ -20,7 +34,7 @@ const CellHeader = styled.div`
 `;
 
 const CellType = styled.div`
-	font-size: 12px;
+	font-size: ${typography.sm};
 	color: #858585;
 	font-weight: 500;
 	display: flex;
@@ -41,41 +55,7 @@ const CellActions = styled.div`
 	align-items: center;
 `;
 
-const ActionButton = styled.button<{
-	$variant?: "primary" | "secondary" | "success" | "danger";
-}>`
-	background: ${(props) => {
-		switch (props.$variant) {
-			case "primary":
-				return "#007acc";
-			case "success":
-				return "#28a745";
-			case "danger":
-				return "#dc3545";
-			default:
-				return "#404040";
-		}
-	}};
-	border: none;
-	border-radius: 4px;
-	color: #ffffff;
-	padding: 4px 8px;
-	font-size: 12px;
-	cursor: pointer;
-	display: flex;
-	align-items: center;
-	gap: 4px;
-	transition: all 0.2s ease;
-
-	&:hover {
-		opacity: 0.8;
-	}
-
-	&:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-`;
+// Using shared ActionButton component
 
 const CodeInput = styled.textarea`
 	width: 100%;
@@ -84,7 +64,7 @@ const CodeInput = styled.textarea`
 	border: none;
 	color: #d4d4d4;
 	font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
-	font-size: 14px;
+	font-size: ${typography.sm};
 	line-height: 1.4;
 	padding: 16px;
 	resize: vertical;
@@ -105,31 +85,205 @@ const OutputHeader = styled.div`
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	margin-bottom: 8px;
+	margin-bottom: 12px;
 `;
 
 const OutputTitle = styled.div`
-	font-size: 12px;
+	font-size: ${typography.sm};
 	color: #858585;
 	font-weight: 500;
+	display: flex;
+	align-items: center;
+	gap: 8px;
 `;
 
-const OutputContent = styled.pre`
+const OutputActions = styled.div`
+	display: flex;
+	gap: 8px;
+	align-items: center;
+`;
+
+const OutputContent = styled.div`
 	margin: 0;
 	font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
-	font-size: 13px;
+	font-size: ${typography.base};
 	line-height: 1.4;
 	color: #d4d4d4;
-	white-space: pre-wrap;
-	word-break: break-word;
 `;
 
 const ErrorOutput = styled(OutputContent)`
 	color: #ff6b6b;
+	background: rgba(255, 107, 107, 0.1);
+	border: 1px solid rgba(255, 107, 107, 0.3);
+	border-radius: 6px;
+	padding: 12px;
 `;
 
 const SuccessOutput = styled(OutputContent)`
 	color: #51cf66;
+`;
+
+const DataTable = styled.div`
+	overflow-x: auto;
+	margin: 8px 0;
+	border: 1px solid #404040;
+	border-radius: 6px;
+	background: #1e1e1e;
+`;
+
+const TableHeader = styled.div`
+	display: flex;
+	background: #2d2d30;
+	border-bottom: 1px solid #404040;
+	font-weight: 600;
+	color: #ffffff;
+`;
+
+const TableRow = styled.div`
+	display: flex;
+	border-bottom: 1px solid #404040;
+
+	&:last-child {
+		border-bottom: none;
+	}
+
+	&:hover {
+		background: rgba(255, 255, 255, 0.05);
+	}
+`;
+
+const TableCell = styled.div<{ $isHeader?: boolean }>`
+	padding: 8px 12px;
+	border-right: 1px solid #404040;
+	min-width: 120px;
+	max-width: 200px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: ${typography.sm};
+	color: ${(props) => (props.$isHeader ? "#ffffff" : "#d4d4d4")};
+
+	&:last-child {
+		border-right: none;
+	}
+`;
+
+const ImageOutput = styled.div`
+	margin: 8px 0;
+	text-align: center;
+
+	img {
+		max-width: 100%;
+		max-height: 400px;
+		border-radius: 6px;
+		border: 1px solid #404040;
+	}
+`;
+
+const ChartContainer = styled.div`
+	margin: 8px 0;
+	padding: 16px;
+	background: #1e1e1e;
+	border: 1px solid #404040;
+	border-radius: 6px;
+	text-align: center;
+`;
+
+const CollapsibleOutput = styled.div<{ $isCollapsed: boolean }>`
+	max-height: ${(props) => (props.$isCollapsed ? "200px" : "none")};
+	overflow: hidden;
+	position: relative;
+
+	${(props) =>
+		props.$isCollapsed &&
+		`
+		&::after {
+			content: '';
+			position: absolute;
+			bottom: 0;
+			left: 0;
+			right: 0;
+			height: 40px;
+			background: linear-gradient(transparent, #18181a);
+			pointer-events: none;
+		}
+	`}
+`;
+
+const ExpandButton = styled.button`
+	background: none;
+	border: none;
+	color: #007acc;
+	cursor: pointer;
+	padding: 4px 8px;
+	font-size: ${typography.sm};
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	margin-top: 8px;
+
+	&:hover {
+		background: rgba(0, 122, 204, 0.1);
+		border-radius: 4px;
+	}
+`;
+
+const RichTextOutput = styled.div`
+	color: #d4d4d4;
+	line-height: 1.6;
+
+	h1,
+	h2,
+	h3,
+	h4,
+	h5,
+	h6 {
+		color: #ffffff;
+		margin: 16px 0 8px 0;
+	}
+
+	p {
+		margin: 8px 0;
+	}
+
+	code {
+		background: rgba(255, 255, 255, 0.1);
+		padding: 2px 4px;
+		border-radius: 3px;
+		font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+	}
+
+	pre {
+		background: #1e1e1e;
+		padding: 12px;
+		border-radius: 6px;
+		overflow-x: auto;
+		margin: 8px 0;
+	}
+
+	ul,
+	ol {
+		margin: 8px 0;
+		padding-left: 20px;
+	}
+
+	li {
+		margin: 4px 0;
+	}
+`;
+
+const OutputStats = styled.div`
+	display: flex;
+	gap: 16px;
+	margin-bottom: 8px;
+	font-size: ${typography.xs};
+	color: #858585;
+`;
+
+const StatItem = styled.div`
+	display: flex;
+	align-items: center;
+	gap: 4px;
 `;
 
 interface CodeCellProps {
@@ -158,8 +312,14 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 	const [copied, setCopied] = useState(false);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+	// Initialize CellExecutionService
+	const cellExecutionService = useMemo(() => {
+		return workspacePath ? new CellExecutionService(workspacePath) : null;
+	}, [workspacePath]);
+
 	const executeCode = async () => {
-		if (!code.trim() || language === "markdown") return;
+		if (!code.trim() || language === "markdown" || !cellExecutionService)
+			return;
 
 		setIsExecuting(true);
 		setOutput("");
@@ -167,19 +327,31 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 
 		try {
 			console.log("Executing code in CodeCell:", code);
-			const result = await window.electronAPI.executeJupyterCode(
+
+			// Use CellExecutionService instead of direct API call
+			const result = await cellExecutionService.executeCell(
+				`codecell-${Date.now()}`, // Generate a unique ID
 				code,
-				workspacePath
+				(updates) => {
+					// Handle real-time updates if needed
+					if (updates.output !== undefined) {
+						setOutput(updates.output || "");
+					}
+					if (updates.hasError !== undefined) {
+						setHasError(updates.hasError);
+					}
+				}
 			);
 
-			if (result.success) {
+			// Set final result
+			if (result.status === "completed") {
 				setOutput(result.output || "Code executed successfully");
 				setHasError(false);
 				onExecute?.(code, result.output || "");
 			} else {
-				setOutput(result.error || "Execution failed");
+				setOutput(result.output || "Execution failed");
 				setHasError(true);
-				onExecute?.(code, result.error || "");
+				onExecute?.(code, result.output || "");
 			}
 		} catch (error) {
 			console.error("Error executing code:", error);
@@ -276,33 +448,235 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 						placeholder={`Enter your ${language} code here...`}
 					/>
 
-					{output && (
-						<OutputContainer>
-							<OutputHeader>
-								<span style={{ color: hasError ? "#ff6b6b" : "#4ecdc4" }}>
-									{hasError ? "Error" : "Output"}
-								</span>
-								<ActionButton onClick={clearOutput} $variant="secondary">
-									<FiX size={12} />
-									Clear
-								</ActionButton>
-							</OutputHeader>
-							<pre
-								style={{
-									margin: 0,
-									whiteSpace: "pre-wrap",
-									wordBreak: "break-word",
-									color: hasError ? "#ff6b6b" : "#ffffff",
-									fontSize: "13px",
-									lineHeight: "1.4",
-								}}
-							>
-								{output}
-							</pre>
-						</OutputContainer>
-					)}
+					{output && <OutputRenderer output={output} hasError={hasError} />}
 				</>
 			)}
 		</CellContainer>
+	);
+};
+
+// Enhanced output parsing and rendering
+const parseOutput = (output: string) => {
+	try {
+		// Try to parse as JSON first
+		const parsed = JSON.parse(output);
+		return { type: "json", data: parsed };
+	} catch {
+		// Check for common output patterns
+		if (output.includes("DataFrame") || output.includes("pandas")) {
+			return { type: "dataframe", data: output };
+		}
+		if (
+			output.includes("matplotlib") ||
+			output.includes("plot") ||
+			output.includes("chart")
+		) {
+			return { type: "chart", data: output };
+		}
+		if (output.includes("data:image") || output.includes("base64")) {
+			return { type: "image", data: output };
+		}
+		if (
+			output.includes("```") ||
+			output.includes("**") ||
+			output.includes("#")
+		) {
+			return { type: "markdown", data: output };
+		}
+		return { type: "text", data: output };
+	}
+};
+
+const renderDataFrame = (data: string) => {
+	// Extract table data from DataFrame output
+	const lines = data.split("\n");
+	const tableData: string[][] = [];
+
+	lines.forEach((line) => {
+		if (line.trim() && !line.includes("DataFrame") && !line.includes("dtype")) {
+			const cells = line.split(/\s+/).filter((cell) => cell.trim());
+			if (cells.length > 1) {
+				tableData.push(cells);
+			}
+		}
+	});
+
+	if (tableData.length === 0) return null;
+
+	const headers = tableData[0];
+	const rows = tableData.slice(1);
+
+	return (
+		<DataTable>
+			<TableHeader>
+				{headers.map((header, index) => (
+					<TableCell key={index} $isHeader>
+						{header}
+					</TableCell>
+				))}
+			</TableHeader>
+			{rows.map((row, rowIndex) => (
+				<TableRow key={rowIndex}>
+					{row.map((cell, cellIndex) => (
+						<TableCell key={cellIndex}>{cell}</TableCell>
+					))}
+				</TableRow>
+			))}
+		</DataTable>
+	);
+};
+
+const renderImage = (data: string) => {
+	// Extract base64 image data
+	const match = data.match(/data:image\/[^;]+;base64,([^"]+)/);
+	if (match) {
+		return (
+			<ImageOutput>
+				<img src={match[0]} alt="Generated plot" />
+			</ImageOutput>
+		);
+	}
+	return null;
+};
+
+const renderMarkdown = (data: string) => {
+	// Simple markdown to HTML conversion
+	const html = data
+		.replace(/```(\w+)?\n([\s\S]*?)```/g, "<pre><code>$2</code></pre>")
+		.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+		.replace(/\*(.*?)\*/g, "<em>$1</em>")
+		.replace(/^### (.*$)/gm, "<h3>$1</h3>")
+		.replace(/^## (.*$)/gm, "<h2>$1</h2>")
+		.replace(/^# (.*$)/gm, "<h1>$1</h1>")
+		.replace(/`([^`]+)`/g, "<code>$1</code>")
+		.replace(/\n/g, "<br/>");
+
+	return <RichTextOutput dangerouslySetInnerHTML={{ __html: html }} />;
+};
+
+const OutputRenderer: React.FC<{ output: string; hasError: boolean }> = ({
+	output,
+	hasError,
+}) => {
+	const [isCollapsed, setIsCollapsed] = useState(false);
+	const [showRaw, setShowRaw] = useState(false);
+
+	const parsed = parseOutput(output);
+	const outputLength = output.length;
+	const lineCount = output.split("\n").length;
+
+	const shouldCollapse = outputLength > 1000 || lineCount > 50;
+
+	const copyOutput = async () => {
+		try {
+			await navigator.clipboard.writeText(output);
+		} catch (error) {
+			console.error("Failed to copy output:", error);
+		}
+	};
+
+	const downloadOutput = () => {
+		const blob = new Blob([output], { type: "text/plain" });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement("a");
+		a.href = url;
+		a.download = `output-${Date.now()}.txt`;
+		a.click();
+		URL.revokeObjectURL(url);
+	};
+
+	if (hasError) {
+		return (
+			<ErrorOutput>
+				<OutputStats>
+					<StatItem>Error Output</StatItem>
+					<StatItem>{outputLength} characters</StatItem>
+					<StatItem>{lineCount} lines</StatItem>
+				</OutputStats>
+				<pre>{output}</pre>
+			</ErrorOutput>
+		);
+	}
+
+	return (
+		<OutputContainer>
+			<OutputHeader>
+				<OutputTitle>
+					{parsed.type === "dataframe" && "📊 Data Table"}
+					{parsed.type === "chart" && "📈 Chart"}
+					{parsed.type === "image" && "🖼️ Image"}
+					{parsed.type === "markdown" && "📝 Rich Text"}
+					{parsed.type === "json" && "🔧 JSON"}
+					{parsed.type === "text" && "📄 Output"}
+				</OutputTitle>
+				<OutputActions>
+					<ActionButton onClick={copyOutput} $variant="secondary">
+						<FiCopy size={12} />
+						Copy
+					</ActionButton>
+					{shouldCollapse && (
+						<ActionButton
+							onClick={() => setIsCollapsed(!isCollapsed)}
+							$variant="secondary"
+						>
+							{isCollapsed ? (
+								<FiChevronDown size={12} />
+							) : (
+								<FiChevronUp size={12} />
+							)}
+							{isCollapsed ? "Expand" : "Collapse"}
+						</ActionButton>
+					)}
+					<ActionButton
+						onClick={() => setShowRaw(!showRaw)}
+						$variant="secondary"
+					>
+						{showRaw ? <FiEyeOff size={12} /> : <FiEye size={12} />}
+						{showRaw ? "Hide Raw" : "Show Raw"}
+					</ActionButton>
+					<ActionButton onClick={downloadOutput} $variant="secondary">
+						<FiDownload size={12} />
+						Download
+					</ActionButton>
+				</OutputActions>
+			</OutputHeader>
+
+			<OutputStats>
+				<StatItem>{outputLength} characters</StatItem>
+				<StatItem>{lineCount} lines</StatItem>
+				<StatItem>{parsed.type} format</StatItem>
+			</OutputStats>
+
+			<CollapsibleOutput $isCollapsed={isCollapsed && !showRaw}>
+				{showRaw ? (
+					<pre>{output}</pre>
+				) : (
+					<>
+						{parsed.type === "dataframe" && renderDataFrame(parsed.data)}
+						{parsed.type === "image" && renderImage(parsed.data)}
+						{parsed.type === "markdown" && renderMarkdown(parsed.data)}
+						{parsed.type === "json" && (
+							<pre
+								style={{
+									background: "#1e1e1e",
+									padding: "12px",
+									borderRadius: "6px",
+								}}
+							>
+								{JSON.stringify(parsed.data, null, 2)}
+							</pre>
+						)}
+						{parsed.type === "text" && <pre>{parsed.data}</pre>}
+					</>
+				)}
+			</CollapsibleOutput>
+
+			{shouldCollapse && isCollapsed && !showRaw && (
+				<ExpandButton onClick={() => setIsCollapsed(false)}>
+					<FiChevronDown size={14} />
+					Show more ({outputLength - 1000} more characters)
+				</ExpandButton>
+			)}
+		</OutputContainer>
 	);
 };
