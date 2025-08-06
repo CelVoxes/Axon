@@ -242,7 +242,10 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 							success: true,
 						});
 					} catch (error) {
-						console.error("FileEditor: Failed to save notebook after adding cell:", error);
+						console.error(
+							"FileEditor: Failed to save notebook after adding cell:",
+							error
+						);
 						EventManager.dispatchEvent("notebook-cell-added", {
 							filePath: eventFilePath,
 							cellType,
@@ -329,7 +332,10 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 							success: true,
 						});
 					} catch (error) {
-						console.error("FileEditor: Failed to save notebook after updating cell output:", error);
+						console.error(
+							"FileEditor: Failed to save notebook after updating cell output:",
+							error
+						);
 						EventManager.dispatchEvent("notebook-cell-updated", {
 							filePath: eventFilePath,
 							cellIndex: actualCellIndex,
@@ -410,7 +416,10 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 							success: true,
 						});
 					} catch (error) {
-						console.error("FileEditor: Failed to save notebook after updating cell code:", error);
+						console.error(
+							"FileEditor: Failed to save notebook after updating cell code:",
+							error
+						);
 						EventManager.dispatchEvent("notebook-cell-updated", {
 							filePath: eventFilePath,
 							cellIndex: actualCellIndex,
@@ -517,7 +526,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 					console.log(`FileEditor: Notebook data loaded for ${filePath}`);
 
-					// Dispatch notebook-ready event after a short delay to ensure component is fully mounted
+					// Dispatch notebook-ready event after a delay to ensure component is fully mounted
 					setTimeout((): void => {
 						console.log(
 							`FileEditor: Dispatching notebook-ready event for ${filePath}`
@@ -526,7 +535,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 							detail: { filePath },
 						});
 						window.dispatchEvent(notebookReadyEvent);
-					}, 500); // Increased delay to ensure component is ready
+					}, 1000); // Increased delay to ensure component is fully ready
 				} catch (parseError) {
 					console.error("Error parsing notebook:", parseError);
 					setContent(

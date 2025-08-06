@@ -17,13 +17,21 @@ import {
 	FiCopy,
 } from "react-icons/fi";
 import { AutonomousAgent } from "../../services/AutonomousAgent";
-import { AnalysisPlanner } from "../../services/AnalysisPlanner";
+
 import {
-	AnalysisSuggestionsService,
+	AnalysisOrchestrationService,
 	DataTypeSuggestions,
 	AnalysisSuggestion,
-} from "../../services/AnalysisSuggestionsService";
+} from "../../services/AnalysisOrchestrationService";
 import { AnalysisSuggestionsComponent } from "./AnalysisSuggestionsComponent";
+import { EventManager } from "../../utils/EventManager";
+import {
+	CodeGenerationStartedEvent,
+	CodeGenerationChunkEvent,
+	CodeGenerationCompletedEvent,
+	CodeGenerationFailedEvent,
+	CodeValidationErrorEvent,
+} from "../../services/types";
 
 // Expandable Code Block Component
 interface ExpandableCodeBlockProps {
@@ -123,7 +131,10 @@ interface MessageContentProps {
 	isStreaming?: boolean;
 }
 
-const MessageContent: React.FC<MessageContentProps> = ({ content, isStreaming = false }) => {
+const MessageContent: React.FC<MessageContentProps> = ({
+	content,
+	isStreaming = false,
+}) => {
 	const [expandedBlocks, setExpandedBlocks] = useState<Set<string>>(new Set());
 	const [copiedBlocks, setCopiedBlocks] = useState<Set<string>>(new Set());
 
@@ -155,93 +166,103 @@ const MessageContent: React.FC<MessageContentProps> = ({ content, isStreaming = 
 		});
 	}, []);
 
-	const formatContent = useCallback((content: string): React.ReactNode => {
-		// Split content by code blocks
-		const codeBlockRegex = /```(\w+)?\n([\s\S]*?)\n```/g;
-		const parts: React.ReactNode[] = [];
-		let lastIndex = 0;
-		let match;
-		let blockIndex = 0;
+	const formatContent = useCallback(
+		(content: string): React.ReactNode => {
+			// Split content by code blocks
+			const codeBlockRegex = /```(\w+)?\n([\s\S]*?)\n```/g;
+			const parts: React.ReactNode[] = [];
+			let lastIndex = 0;
+			let match;
+			let blockIndex = 0;
 
-		while ((match = codeBlockRegex.exec(content)) !== null) {
-			// Add text before code block
-			if (match.index > lastIndex) {
-				const textContent = content.slice(lastIndex, match.index);
+			while ((match = codeBlockRegex.exec(content)) !== null) {
+				// Add text before code block
+				if (match.index > lastIndex) {
+					const textContent = content.slice(lastIndex, match.index);
+					if (textContent.trim()) {
+						parts.push(
+							<div
+								key={`text-${blockIndex}`}
+								className="message-text"
+								dangerouslySetInnerHTML={{
+									__html: textContent
+										.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+										.replace(
+											/`([^`]+)`/g,
+											"<code class='inline-code'>$1</code>"
+										)
+										.replace(/\n/g, "<br />"),
+								}}
+							/>
+						);
+					}
+				}
+
+				// Add code block
+				const language = match[1] || "text";
+				const code = match[2];
+				const blockId = `code-${blockIndex}-${Math.random()
+					.toString(36)
+					.substr(2, 9)}`;
+				const isExpanded = expandedBlocks.has(blockId) || isStreaming;
+				const isCopied = copiedBlocks.has(blockId);
+
+				parts.push(
+					<ExpandableCodeBlock
+						key={blockId}
+						code={code}
+						language={language}
+						title="Code"
+						isStreaming={isStreaming}
+					/>
+				);
+
+				lastIndex = match.index + match[0].length;
+				blockIndex++;
+			}
+
+			// Add remaining text
+			if (lastIndex < content.length) {
+				const textContent = content.slice(lastIndex);
 				if (textContent.trim()) {
 					parts.push(
-						<div 
+						<div
 							key={`text-${blockIndex}`}
 							className="message-text"
 							dangerouslySetInnerHTML={{
 								__html: textContent
 									.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
 									.replace(/`([^`]+)`/g, "<code class='inline-code'>$1</code>")
-									.replace(/\n/g, "<br />")
+									.replace(/\n/g, "<br />"),
 							}}
 						/>
 					);
 				}
 			}
 
-			// Add code block
-			const language = match[1] || "text";
-			const code = match[2];
-			const blockId = `code-${blockIndex}-${Math.random().toString(36).substr(2, 9)}`;
-			const isExpanded = expandedBlocks.has(blockId) || isStreaming;
-			const isCopied = copiedBlocks.has(blockId);
-
-			parts.push(
-				<ExpandableCodeBlock
-					key={blockId}
-					code={code}
-					language={language}
-					title="Code"
-					isStreaming={isStreaming}
-				/>
-			);
-
-			lastIndex = match.index + match[0].length;
-			blockIndex++;
-		}
-
-		// Add remaining text
-		if (lastIndex < content.length) {
-			const textContent = content.slice(lastIndex);
-			if (textContent.trim()) {
-				parts.push(
-					<div 
-						key={`text-${blockIndex}`}
+			// If no code blocks found, render as regular text
+			if (parts.length === 0) {
+				return (
+					<div
 						className="message-text"
 						dangerouslySetInnerHTML={{
-							__html: textContent
+							__html: content
 								.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
 								.replace(/`([^`]+)`/g, "<code class='inline-code'>$1</code>")
-								.replace(/\n/g, "<br />")
+								.replace(/\n/g, "<br />"),
 						}}
 					/>
 				);
 			}
-		}
 
-		// If no code blocks found, render as regular text
-		if (parts.length === 0) {
-			return (
-				<div 
-					className="message-text"
-					dangerouslySetInnerHTML={{
-						__html: content
-							.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-							.replace(/`([^`]+)`/g, "<code class='inline-code'>$1</code>")
-							.replace(/\n/g, "<br />")
-					}}
-				/>
-			);
-		}
+			return parts;
+		},
+		[expandedBlocks, copiedBlocks, isStreaming]
+	);
 
-		return parts;
-	}, [expandedBlocks, copiedBlocks, isStreaming]);
-
-	return <div className="message-content-wrapper">{formatContent(content)}</div>;
+	return (
+		<div className="message-content-wrapper">{formatContent(content)}</div>
+	);
 };
 
 // Using Message interface from AnalysisContext
@@ -264,35 +285,27 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [showSearchDetails, setShowSearchDetails] = useState(false);
 	const [validationErrors, setValidationErrors] = useState<string[]>([]);
 	const [validationWarnings, setValidationWarnings] = useState<string[]>([]);
-	const [codeGenerationLog, setCodeGenerationLog] = useState<
-		Array<{ code: string; step: string; timestamp: string }>
-	>([]);
 	const [availableDatasets, setAvailableDatasets] = useState<any[]>([]);
-	const [isGeneratingCode, setIsGeneratingCode] = useState(false);
-	const [currentCodeGeneration, setCurrentCodeGeneration] = useState("");
-	const [isCodeGenerationComplete, setIsCodeGenerationComplete] =
-		useState(false);
 	const [virtualEnvStatus, setVirtualEnvStatus] = useState("");
 	const [recentMessages, setRecentMessages] = useState<string[]>([]);
 	const [processedEvents, setProcessedEvents] = useState<Set<string>>(
 		new Set()
 	);
-	const [lastCodeCallback, setLastCodeCallback] = useState<string>("");
 	const [agentInstance, setAgentInstance] = useState<any>(null);
-	const [processedCodeSignatures, setProcessedCodeSignatures] = useState<
-		Set<string>
-	>(new Set());
 	const [showDatasetModal, setShowDatasetModal] = useState(false);
-	const [searchLog, setSearchLog] = useState<string[]>([]);
-	const [codeWritingLog, setCodeWritingLog] = useState<any[]>([]);
 	const [showVirtualEnvLog, setShowVirtualEnvLog] = useState(false);
-	const [showCodeLog, setShowCodeLog] = useState(false);
 	const [isAutoExecuting, setIsAutoExecuting] = useState(false);
 	const [selectedDatasets, setSelectedDatasets] = useState<any[]>([]);
 	const [currentSuggestions, setCurrentSuggestions] =
 		useState<DataTypeSuggestions | null>(null);
 	const messagesEndRef = useRef<HTMLDivElement>(null);
-	const [backendClient, setBackendClient] = useState<BackendClient | null>(null);
+	// Simplified: using event system instead of complex message refs
+	const activeStreams = useRef<
+		Map<string, { messageId: string; accumulatedCode: string }>
+	>(new Map());
+	const [backendClient, setBackendClient] = useState<BackendClient | null>(
+		null
+	);
 
 	useEffect(() => {
 		// Get the correct backend URL from main process
@@ -307,7 +320,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				console.error("Failed to get backend URL, using default:", error);
 				const client = new BackendClient("http://localhost:8000");
 				setBackendClient(client);
-				console.log("⚠️ BackendClient initialized with default URL: http://localhost:8000");
+				console.log(
+					"⚠️ BackendClient initialized with default URL: http://localhost:8000"
+				);
 			}
 		};
 		initBackendClient();
@@ -316,7 +331,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	// Analysis suggestions service
 	const suggestionsService = React.useMemo(() => {
 		if (!backendClient) return null;
-		return new AnalysisSuggestionsService(backendClient);
+		return new AnalysisOrchestrationService(backendClient);
 	}, [backendClient]);
 
 	// Add welcome message on first load
@@ -340,13 +355,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			if (!isMounted) return;
 			setVirtualEnvStatus(data.status || data.message || "");
 			if (data.status === "installing_package" && data.package) {
-				addMessage(`📦 **Installing: ${data.package}**`, false);
+				addMessage(`Installing: ${data.package}`, false);
 			} else if (data.status === "packages_installed") {
-				addMessage(`✅ **${data.message}**`, false);
+				addMessage(`${data.message}`, false);
 			} else if (data.status === "completed") {
-				addMessage(`🔧 **${data.message}**`, false);
+				addMessage(`${data.message}`, false);
 			} else if (data.status === "error") {
-				addMessage(`❌ **${data.message}**`, false);
+				addMessage(`${data.message}`, false);
 			}
 		};
 
@@ -354,11 +369,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		const handleJupyterReady = (data: any) => {
 			if (!isMounted) return;
 			if (data.status === "ready") {
-				addMessage(`✅ **Jupyter environment ready!**`, false);
+				addMessage(`Jupyter environment ready!`, false);
 			} else if (data.status === "error") {
-				addMessage(`❌ **Jupyter setup failed: ${data.message}**`, false);
+				addMessage(`Jupyter setup failed: ${data.message}`, false);
 			} else if (data.status === "starting") {
-				addMessage(`🔄 **Starting Jupyter server...**`, false);
+				addMessage(`Starting Jupyter server...`, false);
 			}
 		};
 
@@ -385,6 +400,158 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			);
 		};
 	}, []);
+
+	// Set up code generation event listeners
+	useEffect(() => {
+		let isMounted = true;
+
+		const handleCodeGenerationStarted = (event: Event) => {
+			if (!isMounted) return;
+			const customEvent = event as CustomEvent<CodeGenerationStartedEvent>;
+			const { stepId, stepDescription } = customEvent.detail;
+
+			// Create new streaming message
+			const messageId = `streaming-${stepId}`;
+			activeStreams.current.set(stepId, { messageId, accumulatedCode: "" });
+
+			analysisDispatch({
+				type: "ADD_MESSAGE",
+				payload: {
+					id: messageId,
+					content: `Generating code for: ${stepDescription}\n\n\`\`\`python\n`,
+					isUser: false,
+					isStreaming: true,
+				},
+			});
+		};
+
+		const handleCodeGenerationChunk = (event: Event) => {
+			if (!isMounted) return;
+			const customEvent = event as CustomEvent<CodeGenerationChunkEvent>;
+			const { stepId, chunk } = customEvent.detail;
+
+			const stream = activeStreams.current.get(stepId);
+			if (!stream) return;
+
+			// Update accumulated code
+			stream.accumulatedCode += chunk;
+
+			// Update the message content
+			analysisDispatch({
+				type: "UPDATE_MESSAGE",
+				payload: {
+					id: stream.messageId,
+					updates: {
+						content: `Generating code for: ${customEvent.detail.stepDescription}\n\n\`\`\`python\n${stream.accumulatedCode}`,
+					},
+				},
+			});
+		};
+
+		const handleCodeGenerationCompleted = (event: Event) => {
+			if (!isMounted) return;
+			const customEvent = event as CustomEvent<CodeGenerationCompletedEvent>;
+			const { stepId, stepDescription, finalCode, success } =
+				customEvent.detail;
+
+			const stream = activeStreams.current.get(stepId);
+			if (stream) {
+				// Close the streaming message
+				analysisDispatch({
+					type: "UPDATE_MESSAGE",
+					payload: {
+						id: stream.messageId,
+						updates: {
+							content: `Generated code for: ${stepDescription}\n\n\`\`\`python\n${finalCode}\n\`\`\``,
+							isStreaming: false,
+							status: success ? "completed" : ("failed" as any),
+						},
+					},
+				});
+
+				// Clean up
+				activeStreams.current.delete(stepId);
+			}
+		};
+
+		const handleCodeGenerationFailed = (event: Event) => {
+			if (!isMounted) return;
+			const customEvent = event as CustomEvent<CodeGenerationFailedEvent>;
+			const { stepId, stepDescription, error } = customEvent.detail;
+
+			const stream = activeStreams.current.get(stepId);
+			if (stream) {
+				analysisDispatch({
+					type: "UPDATE_MESSAGE",
+					payload: {
+						id: stream.messageId,
+						updates: {
+							content: `Code generation failed for: ${stepDescription}\n\nError: ${error}`,
+							isStreaming: false,
+							status: "failed" as any,
+						},
+					},
+				});
+				activeStreams.current.delete(stepId);
+			}
+		};
+
+		const handleValidationError = (event: Event) => {
+			if (!isMounted) return;
+			const customEvent = event as CustomEvent<CodeValidationErrorEvent>;
+			const { errors, warnings } = customEvent.detail;
+
+			// Set validation errors for display (UI will show them)
+			setValidationErrors(errors);
+			setValidationWarnings(warnings);
+		};
+
+		// Add event listeners
+		EventManager.addEventListener(
+			"code-generation-started",
+			handleCodeGenerationStarted
+		);
+		EventManager.addEventListener(
+			"code-generation-chunk",
+			handleCodeGenerationChunk
+		);
+		EventManager.addEventListener(
+			"code-generation-completed",
+			handleCodeGenerationCompleted
+		);
+		EventManager.addEventListener(
+			"code-generation-failed",
+			handleCodeGenerationFailed
+		);
+		EventManager.addEventListener(
+			"code-validation-error",
+			handleValidationError
+		);
+
+		return () => {
+			isMounted = false;
+			EventManager.removeEventListener(
+				"code-generation-started",
+				handleCodeGenerationStarted
+			);
+			EventManager.removeEventListener(
+				"code-generation-chunk",
+				handleCodeGenerationChunk
+			);
+			EventManager.removeEventListener(
+				"code-generation-completed",
+				handleCodeGenerationCompleted
+			);
+			EventManager.removeEventListener(
+				"code-generation-failed",
+				handleCodeGenerationFailed
+			);
+			EventManager.removeEventListener(
+				"code-validation-error",
+				handleValidationError
+			);
+		};
+	}, [analysisDispatch]); // Remove addMessage from deps since it's defined after this useEffect
 
 	// Auto-scroll to bottom when new messages are added
 	useEffect(() => {
@@ -556,7 +723,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				// Check if backendClient is available
 				if (!backendClient) {
 					if (isMounted) {
-						addMessage("❌ Backend client not initialized. Please wait a moment and try again.", false);
+						addMessage(
+							"❌ Backend client not initialized. Please wait a moment and try again.",
+							false
+						);
 					}
 					return;
 				}
@@ -580,11 +750,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 				console.log("🔍 Starting search with query:", userMessage);
 				console.log("🔍 BackendClient baseUrl:", backendClient.getBaseUrl());
-				
+
 				const response = await backendClient.discoverDatasets(userMessage, {
 					limit: SearchConfig.getSearchLimit(),
 				});
-				
+
 				console.log("🔍 Search response:", response);
 
 				if (isMounted && response.datasets && response.datasets.length > 0) {
@@ -623,7 +793,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				} else {
 					console.log("❌ No datasets found. Response:", response);
 					console.log("❌ Response.datasets:", response.datasets);
-					console.log("❌ Response.datasets.length:", response.datasets?.length);
+					console.log(
+						"❌ Response.datasets.length:",
+						response.datasets?.length
+					);
 					addMessage(
 						"❌ No datasets found matching your search. Try different keywords or be more specific.",
 						false
@@ -676,21 +849,21 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				if (isAnalysisRequest) {
 					// This is an analysis request, but no datasets are selected yet
 					addMessage(
-						`🔬 **Analysis Request Detected!**\n\n` +
-							`I can help you with: **${userMessage}**\n\n` +
+						`Analysis Request Detected!\n\n` +
+							`I can help you with: ${userMessage}\n\n` +
 							`However, I need to find relevant datasets first. Let me search for datasets related to your analysis:\n\n` +
-							`**Searching for:** ${userMessage}`,
+							`Searching for: ${userMessage}`,
 						false
 					);
 
 					// Automatically search for relevant datasets
-					setProgressMessage("🔍 Searching for relevant datasets...");
+					setProgressMessage("Searching for relevant datasets...");
 					setShowSearchDetails(true);
 
 					// Check if backendClient is available
 					if (!backendClient) {
 						addMessage(
-							"❌ Backend client not initialized. Please wait a moment and try again.",
+							"Backend client not initialized. Please wait a moment and try again.",
 							false
 						);
 						return;
@@ -717,7 +890,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						setAvailableDatasets(response.datasets);
 						setShowDatasetModal(true);
 
-						let responseContent = `## 🔍 Found ${response.datasets.length} Relevant Datasets\n\n`;
+						let responseContent = `## Found ${response.datasets.length} Relevant Datasets\n\n`;
 						responseContent += `I found ${response.datasets.length} datasets that could be used for your analysis. Please select the ones you'd like to work with:\n\n`;
 
 						response.datasets
@@ -748,7 +921,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						addMessage(responseContent, false);
 					} else {
 						addMessage(
-							"❌ No datasets found for your analysis request. Try being more specific about the disease, tissue, or organism you're interested in.",
+							"No datasets found for your analysis request. Try being more specific about the disease, tissue, or organism you're interested in.",
 							false
 						);
 					}
@@ -777,13 +950,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				stack: error instanceof Error ? error.stack : undefined,
 				userMessage,
 				backendClientExists: !!backendClient,
-				backendClientUrl: backendClient?.getBaseUrl()
+				backendClientUrl: backendClient?.getBaseUrl(),
 			});
 			if (isMounted) {
-				addMessage(
-					"❌ Sorry, I encountered an error. Please try again.",
-					false
-				);
+				addMessage("Sorry, I encountered an error. Please try again.", false);
 			}
 		} finally {
 			if (isMounted) {
@@ -792,10 +962,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				setProgressMessage("");
 			}
 		}
-
-		return () => {
-			isMounted = false;
-		};
 	}, [
 		inputValue,
 		isLoading,
@@ -807,60 +973,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		scrollToBottomImmediate,
 	]);
 
-	// Listen for live LLM code generation events
-	useEffect(() => {
-		let isMounted = true;
-
-		const handleLLMCodeGeneration = (event: CustomEvent) => {
-			if (!isMounted) return;
-			const { chunk, step } = event.detail;
-
-			if (chunk && step) {
-				// If this is the first chunk of a new generation, reset the code
-				if (!isGeneratingCode && !isCodeGenerationComplete) {
-					setCurrentCodeGeneration(chunk);
-				} else {
-					setCurrentCodeGeneration((prev) => prev + chunk);
-				}
-				setIsGeneratingCode(true);
-				setIsCodeGenerationComplete(false);
-			}
-		};
-
-		const handleLLMCodeComplete = (event: CustomEvent) => {
-			if (!isMounted) return;
-			const { code, step } = event.detail;
-
-			if (code && step) {
-				setCurrentCodeGeneration(code);
-				setIsGeneratingCode(false);
-				setIsCodeGenerationComplete(true);
-			}
-		};
-
-		// Add event listeners
-		window.addEventListener(
-			"llm-code-generation",
-			handleLLMCodeGeneration as EventListener
-		);
-		window.addEventListener(
-			"llm-code-complete",
-			handleLLMCodeComplete as EventListener
-		);
-
-		// Cleanup
-		return () => {
-			isMounted = false;
-			window.removeEventListener(
-				"llm-code-generation",
-				handleLLMCodeGeneration as EventListener
-			);
-			window.removeEventListener(
-				"llm-code-complete",
-				handleLLMCodeComplete as EventListener
-			);
-		};
-	}, [isGeneratingCode, isCodeGenerationComplete]);
+	// Removed redundant LLM event system - streaming handled by callbacks now
 
 	const handleDatasetSelection = useCallback(
 		async (selectedDatasets: any[]) => {
@@ -871,7 +984,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				setSelectedDatasets(selectedDatasets);
 
 				// Show initial selection message
-				let responseContent = `## ✅ Selected ${selectedDatasets.length} Datasets\n\n`;
+				let responseContent = `## Selected ${selectedDatasets.length} Datasets\n\n`;
 
 				selectedDatasets.forEach((dataset, index) => {
 					responseContent += `### ${index + 1}. ${dataset.title}\n`;
@@ -885,14 +998,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					responseContent += `\n`;
 				});
 
-				responseContent += `**🚀 Ready to Analyze!**\n\n`;
+				responseContent += `Ready to Analyze!\n\n`;
 				responseContent += `Now tell me what analysis you'd like to perform on these datasets.\n\n`;
 				responseContent += `**Examples:**\n`;
 				responseContent += `• "Perform differential expression analysis between conditions"\n`;
 				responseContent += `• "Find cell type markers and create UMAP visualization"\n`;
 				responseContent += `• "Analyze gene expression patterns and identify clusters"\n`;
 				responseContent += `• "Compare expression profiles across different time points"\n\n`;
-				responseContent += `**💡 Tip:** Be specific about what you want to analyze and what outputs you expect.`;
+				responseContent += `Tip: Be specific about what you want to analyze and what outputs you expect.`;
 
 				addMessage(responseContent, false);
 			}
@@ -975,21 +1088,21 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						addMessage("", false, undefined, undefined, undefined, suggestions);
 					} else {
 						addMessage(
-							"💡 **General Analysis Suggestions:**\n\n" +
+							"General Analysis Suggestions:\n\n" +
 								"Since I don't have specific data type information, here are some general analyses you can perform:\n\n" +
 								"• **Exploratory Data Analysis**: Load and examine your data structure\n" +
 								"• **Quality Control**: Check data quality and identify potential issues\n" +
 								"• **Statistical Analysis**: Perform basic statistical tests\n" +
 								"• **Visualization**: Create plots and charts to understand patterns\n" +
 								"• **Differential Analysis**: Compare conditions or groups\n\n" +
-								"**💡 Tip**: Be specific about what you want to analyze, and I'll provide more targeted suggestions!",
+								"Tip: Be specific about what you want to analyze, and I'll provide more targeted suggestions!",
 							false
 						);
 					}
 				} else {
 					// No datasets selected, provide general suggestions
 					addMessage(
-						"💡 **Getting Started Suggestions:**\n\n" +
+						"Getting Started Suggestions:\n\n" +
 							"Here are some ways you can get started with bioinformatics analysis:\n\n" +
 							"### **1. Search for Datasets**\n" +
 							'• "Search for single-cell RNA-seq data from cancer samples"\n' +
@@ -1004,14 +1117,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							'• "Find datasets about breast cancer and perform differential expression analysis"\n' +
 							'• "Search for single-cell data from brain tissue and identify cell types"\n' +
 							'• "Analyze clinical data with gene expression profiles"\n\n' +
-							"**💡 Tip**: Start by searching for datasets related to your research question, then I'll provide specific analysis suggestions!",
+							"Tip: Start by searching for datasets related to your research question, then I'll provide specific analysis suggestions!",
 						false
 					);
 				}
 			} catch (error) {
 				console.error("Error generating suggestions:", error);
 				addMessage(
-					"❌ Sorry, I encountered an error generating suggestions. Please try again.",
+					"Sorry, I encountered an error generating suggestions. Please try again.",
 					false
 				);
 			}
@@ -1028,17 +1141,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const handleAnalysisRequest = useCallback(
 		async (analysisRequest: string) => {
 			if (selectedDatasets.length === 0) {
-				addMessage("❌ No datasets selected for analysis.", false);
+				addMessage("No datasets selected for analysis.", false);
 				return;
 			}
 
 			try {
 				setIsLoading(true);
-				setProgressMessage("🚀 Starting analysis process...");
+				setProgressMessage("Starting analysis process...");
 
-				// Reset agent instance and processed signatures for new analysis
+				// Reset agent instance for new analysis
 				setAgentInstance(null);
-				setProcessedCodeSignatures(new Set());
 
 				// Convert selected datasets to the format expected by AutonomousAgent
 				const datasets = selectedDatasets.map((dataset) => ({
@@ -1062,21 +1174,29 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				// Use the current workspace directory
 				if (!workspaceState.currentWorkspace) {
 					addMessage(
-						"❌ No workspace is currently open. Please open a workspace first.",
+						"No workspace is currently open. Please open a workspace first.",
 						false
 					);
 					return;
 				}
 				const workspaceDir = workspaceState.currentWorkspace;
-				
+
 				// Check if backendClient is available
 				if (!backendClient) {
-					addMessage("❌ Backend client not initialized. Please wait a moment and try again.", false);
+					addMessage(
+						"Backend client not initialized. Please wait a moment and try again.",
+						false
+					);
 					return;
 				}
-				
+
 				// Create AutonomousAgent instance (kernel name will be set after workspace is created)
-				const agent = new AutonomousAgent(backendClient, workspaceDir, undefined, undefined);
+				const agent = new AutonomousAgent(
+					backendClient,
+					workspaceDir,
+					undefined,
+					undefined
+				);
 				agent.setStatusCallback((status) => {
 					setProgressMessage(status);
 					analysisDispatch({ type: "SET_ANALYSIS_STATUS", payload: status });
@@ -1088,111 +1208,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						status.includes("⚠️") ||
 						status.includes("fallback")
 					) {
-						addMessage(`🔄 **${status}**`, false);
+						addMessage(`${status}`, false);
 					}
 				});
 
-				// Set up validation error callback
-				agent.setValidationErrorCallback((errors, warnings) => {
-					setValidationErrors(errors);
-					setValidationWarnings(warnings);
+				// Note: Validation errors now handled via events - see useEffect above
 
-					// Add validation errors to chat
-					if (errors.length > 0) {
-						let errorMessage = `⚠️ **Code Validation Errors Found:**\n\n`;
-						errors.forEach((error, index) => {
-							errorMessage += `${index + 1}. ${error}\n`;
-						});
-						addMessage(errorMessage, false);
-					}
-
-					// Add validation warnings to chat
-					if (warnings.length > 0) {
-						let warningMessage = `⚠️ **Code Validation Warnings:**\n\n`;
-						warnings.forEach((warning, index) => {
-							warningMessage += `${index + 1}. ${warning}\n`;
-						});
-						addMessage(warningMessage, false);
-					}
-				});
-
-				// Set up code generation callbacks IMMEDIATELY (before any code generation happens)
-				console.log(
-					"Setting up code generation callbacks for new agent instance"
-				);
+				// Store agent instance for reference (callbacks now handled via events)
 				setAgentInstance(agent);
 
-				// Track the last message ID for each step to update it
-				const stepMessageIds = new Map<string, string>();
-				const streamingSteps = new Set<string>();
-
-				// Streaming is now handled via DOM events only
-				// This avoids conflicts between multiple streaming systems
-
-				// Set up final code callback to close the streaming message
-				agent.setCodeGenerationCallback((code, step) => {
-					console.log(
-						"ChatPanel: Final code generation callback received for step:",
-						step,
-						"code length:",
-						code.length
-					);
-					// Mark this step as completed
-					streamingSteps.add(step + "_completed");
-
-					// Find the streaming message and close it
-					const currentMessages = analysisState.messages;
-					const messageIndex = currentMessages.findIndex(
-						(m) => m.content.includes("```python") && !m.content.endsWith("```")
-					);
-
-					if (messageIndex !== -1) {
-						console.log("ChatPanel: Closing streaming message for step:", step);
-						// Close the streaming message with the final code
-						analysisDispatch({
-							type: "UPDATE_MESSAGE",
-							payload: {
-								id: currentMessages[messageIndex].id,
-								updates: {
-									content: `\`\`\`python\n${code}\n\`\`\``,
-								},
-							},
-						});
-
-						// Store for future updates
-						stepMessageIds.set(step, currentMessages[messageIndex].id);
-					} else {
-						console.log(
-							"ChatPanel: No streaming message found, creating new message for step:",
-							step
-						);
-						// Fallback: create a new message if no streaming message exists
-						analysisDispatch({
-							type: "ADD_MESSAGE",
-							payload: {
-								content: `\`\`\`python\n${code}\n\`\`\``,
-								isUser: false,
-							},
-						});
-					}
-				});
-
-				// Set up LLM fix callback
-				agent.setLLMFixCallback((originalCode, fixedCode, problem) => {
-					// Add a message about the fix being applied
-					addMessage(
-						`🔧 **LLM Auto-Fix Applied**\n\n` +
-							`**Problem detected:** ${problem.substring(0, 200)}...\n\n` +
-							`**Original code has been automatically fixed and re-executed.**`,
-						false
-					);
-
-					// Show the fixed code
-					addMessage("", false, fixedCode, "python", "🔧 Fixed Code");
-				});
-
-				// Generate analysis steps with user-specific request (code generation callbacks are now set up)
-				setProgressMessage("🔬 Generating analysis steps...");
+				// Generate analysis steps with user-specific request (events will handle UI updates)
+				setProgressMessage("Generating analysis steps...");
 				const analysisResult = await agent.executeAnalysisRequestWithData(
 					analysisRequest, // Use the user's specific analysis request
 					datasets
@@ -1203,31 +1229,40 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					"steps"
 				);
 				addMessage(
-					`✅ **Generated ${analysisResult.steps.length} analysis steps!**`,
+					`Generated ${analysisResult.steps.length} analysis steps!`,
 					false
 				);
 
 				// Step 1: Create the initial notebook (empty)
-				setProgressMessage("📓 Creating initial notebook...");
+				setProgressMessage("Creating initial notebook...");
 				const notebookPath = await agent.generateUnifiedNotebook(
 					originalQuery,
 					datasets,
 					analysisResult.steps,
 					analysisResult.workingDirectory // Use the question-specific workspace
 				);
+
+				if (!notebookPath) {
+					console.error("Failed to create notebook");
+					addMessage("Failed to create notebook", false);
+					setProgressMessage("");
+					setIsProcessing(false);
+					return;
+				}
+
 				console.log("Initial notebook created:", notebookPath);
 				addMessage(
-					`📓 **Initial notebook created: ${notebookPath.split("/").pop()}**`,
+					`Initial notebook created: ${notebookPath.split("/").pop()}`,
 					false
 				);
 
 				// Step 2: Open the notebook in the editor (wait for it to be ready)
-				setProgressMessage("🔓 Opening notebook in editor...");
-				addMessage("🔓 **Notebook opened in editor**", false);
+				setProgressMessage("Opening notebook in editor...");
+				addMessage("Notebook opened in editor", false);
 
 				// Step 3: Now start code generation and streaming to chat
-				setProgressMessage("🤖 Starting AI code generation...");
-				await agent.startNotebookCodeGeneration(
+				setProgressMessage("Starting AI code generation...");
+				const codeGenSuccess = await agent.startNotebookCodeGeneration(
 					notebookPath,
 					originalQuery,
 					datasets,
@@ -1235,9 +1270,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					analysisResult.workingDirectory
 				);
 
+				if (!codeGenSuccess) {
+					console.warn("Code generation completed with issues");
+					addMessage(
+						"Code generation completed with some issues. Check the notebook for details.",
+						false
+					);
+				}
+
 				// Step 4: Notify user that cells are ready for manual execution
 				addMessage(
-					`🚀 **Notebook Ready!**\n\n` +
+					`Notebook Ready!\n\n` +
 						`The notebook has been created and opened with all cells added.\n\n` +
 						`**What's ready:**\n` +
 						`• All analysis cells have been added to the notebook\n` +
@@ -1252,9 +1295,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				);
 
 				// Analysis workspace created
-				addMessage("💾 **Analysis workspace ready!**", false);
+				addMessage("Analysis workspace ready!", false);
 				addMessage(
-					"📁 **Notebook created and populated** with:\n" +
+					"Notebook created and populated with:\n" +
 						"• Package installation cell\n" +
 						"• Data download and loading cell\n" +
 						"• Complete analysis pipeline cells\n" +
@@ -1268,14 +1311,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						analysisResult.workingDirectory
 					);
 					// Files in analysis workspace
-					addMessage(`📁 **Workspace contains ${files.length} files**`, false);
+					addMessage(`Workspace contains ${files.length} files`, false);
 				} catch (error) {
 					console.error("Error listing workspace files:", error);
 				}
 
-				addMessage("🎯 **Analysis workspace created successfully!**", false);
+				addMessage("Analysis workspace created successfully!", false);
 				addMessage(
-					"💡 **Ready to analyze:**\n" +
+					"Ready to analyze:\n" +
 						"• Notebook is open with all cells added\n" +
 						"• All cells are ready for manual execution\n" +
 						"• Use notebook controls to run cells when ready",
@@ -1283,11 +1326,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				);
 			} catch (error) {
 				console.error("Error starting analysis:", error);
-				let errorMessage = `## ❌ Analysis Setup Failed\n\n`;
-				errorMessage += `**Error:** ${
+				let errorMessage = `## Analysis Setup Failed\n\n`;
+				errorMessage += `Error: ${
 					error instanceof Error ? error.message : String(error)
 				}\n\n`;
-				errorMessage += `**Troubleshooting:**\n`;
+				errorMessage += `Troubleshooting:\n`;
 				errorMessage += `- Check that Jupyter Lab is properly installed\n`;
 				errorMessage += `- Ensure you have write permissions to the workspace\n`;
 				errorMessage += `- Try restarting the application\n`;
@@ -1334,7 +1377,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		setIsLoading(false);
 		setIsProcessing(false);
 		setProgressMessage("");
-		addMessage("⏹️ **Processing stopped by user.**", false);
+		addMessage("Processing stopped by user.", false);
 	};
 
 	const handleSuggestionSelect = useCallback(
@@ -1345,14 +1388,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			if (selectedDatasets.length > 0) {
 				try {
 					setIsLoading(true);
-					setProgressMessage(`🔄 Starting ${suggestion.title}...`);
+					setProgressMessage(`Starting ${suggestion.title}...`);
 
 					// Use the suggestion title as the analysis request
 					await handleAnalysisRequest(suggestion.title);
 				} catch (error) {
 					console.error("Error executing selected suggestion:", error);
 					addMessage(
-						"❌ Sorry, I encountered an error starting the analysis. Please try again.",
+						"Sorry, I encountered an error starting the analysis. Please try again.",
 						false
 					);
 				} finally {
@@ -1361,7 +1404,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				}
 			} else {
 				addMessage(
-					"❌ Please select datasets first before starting the analysis.",
+					"Please select datasets first before starting the analysis.",
 					false
 				);
 			}
@@ -1377,7 +1420,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const handleCustomAnalysis = useCallback(() => {
 		addMessage("I'd like to create a custom analysis", true);
 		addMessage(
-			'🎯 **Custom Analysis Mode**\n\nPlease describe what specific analysis you\'d like to perform with your selected datasets. For example:\n\n• "Find differentially expressed genes between conditions"\n• "Perform clustering analysis to identify cell types"\n• "Analyze pathway enrichment in my data"\n• "Create visualizations comparing samples"\n\nJust describe your analysis goal and I\'ll help you create a custom workflow!',
+			'Custom Analysis Mode\n\nPlease describe what specific analysis you\'d like to perform with your selected datasets. For example:\n\n• "Find differentially expressed genes between conditions"\n• "Perform clustering analysis to identify cell types"\n• "Analyze pathway enrichment in my data"\n• "Create visualizations comparing samples"\n\nJust describe your analysis goal and I\'ll help you create a custom workflow!',
 			false
 		);
 	}, [analysisDispatch, scrollToBottomImmediate]);
@@ -1400,7 +1443,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					<div key={message.id}>
 						<ChatMessage message={message} />
 						{message.code && (
-							<div style={{ marginTop: '8px', marginLeft: '44px' }}>
+							<div style={{ marginTop: "8px", marginLeft: "44px" }}>
 								<ExpandableCodeBlock
 									code={message.code}
 									language={message.codeLanguage || "python"}
@@ -1410,7 +1453,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							</div>
 						)}
 						{message.suggestions && (
-							<div style={{ marginTop: '8px', marginLeft: '44px' }}>
+							<div style={{ marginTop: "8px", marginLeft: "44px" }}>
 								<AnalysisSuggestionsComponent
 									suggestions={message.suggestions}
 									onSuggestionSelect={handleSuggestionSelect}
@@ -1444,7 +1487,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					<div className="validation-errors-indicator">
 						<div className="validation-errors-header">
 							<div className="validation-errors-title">
-								<span>⚠️ Code Validation Errors</span>
+								<span>Code Validation Errors</span>
 								<div className="error-dot"></div>
 							</div>
 						</div>
@@ -1453,43 +1496,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								<div key={index} className="validation-error-item">
 									<span className="error-number">{index + 1}.</span>
 									<span className="error-message">{error}</span>
-								</div>
-							))}
-						</div>
-					</div>
-				)}
-
-				{/* Live Code Generation - Cursor-like */}
-				{currentCodeGeneration && (
-					<div className="message-bubble assistant">
-						<ExpandableCodeBlock
-							code={currentCodeGeneration}
-							language="python"
-							title=""
-							isStreaming={isGeneratingCode}
-						/>
-					</div>
-				)}
-
-				{/* Code Generation Progress */}
-				{codeGenerationLog.length > 0 && (
-					<div className="code-generation-indicator">
-						<div className="code-generation-header">
-							<div className="code-generation-title">
-								<span>🤖 Code Generation Progress</span>
-								<div className="pulse-dot"></div>
-							</div>
-						</div>
-						<div className="code-generation-details">
-							{codeGenerationLog.slice(-3).map((entry, index) => (
-								<div key={index} className="code-generation-item">
-									<div className="code-step-title">{entry.step}</div>
-									<div className="code-preview">
-										<code>{entry.code.substring(0, 200)}...</code>
-									</div>
-									<div className="code-timestamp">
-										{new Date(entry.timestamp).toLocaleTimeString()}
-									</div>
 								</div>
 							))}
 						</div>
@@ -1516,7 +1522,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								marginBottom: "8px",
 							}}
 						>
-							<span style={{ fontWeight: "bold" }}>🔍 Search Progress</span>
+							<span style={{ fontWeight: "bold" }}>Search Progress</span>
 							<span style={{ color: "#007acc" }}>
 								{searchProgress.progress}%
 							</span>
@@ -1564,7 +1570,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				)}
 
 				{/* Status display for analysis progress */}
-				{(virtualEnvStatus || codeWritingLog.length > 0 || isAutoExecuting) && (
+				{(virtualEnvStatus || isAutoExecuting) && (
 					<div className="status-display">
 						{/* Virtual Environment Status */}
 						{virtualEnvStatus && (
@@ -1574,7 +1580,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 									onClick={() => setShowVirtualEnvLog(!showVirtualEnvLog)}
 									style={{ cursor: "pointer" }}
 								>
-									<span>🔧 Virtual Environment</span>
+									<span>Virtual Environment</span>
 									<div className="pulse-dot"></div>
 									<span className="expand-arrow">
 										{showVirtualEnvLog ? "▼" : "▶"}
@@ -1594,7 +1600,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						{isAutoExecuting && (
 							<div className="status-item auto-execution-status">
 								<div className="status-header">
-									<span>⚡ Auto-Execution Pipeline</span>
+									<span>Auto-Execution Pipeline</span>
 									<div className="pulse-dot"></div>
 								</div>
 								<div className="status-details">
@@ -1606,88 +1612,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								</div>
 							</div>
 						)}
-
-						{/* Code Writing Log */}
-						{(codeWritingLog && codeWritingLog.length > 0) ||
-							(isGeneratingCode && (
-								<div className="status-item code-writing-log">
-									<div
-										className="status-header"
-										onClick={() => setShowCodeLog(!showCodeLog)}
-										style={{ cursor: "pointer" }}
-									>
-										<span>🤖 AI Code Generation (Live)</span>
-										<div className="pulse-dot"></div>
-										<span className="expand-arrow">
-											{showCodeLog ? "▼" : "▶"}
-										</span>
-									</div>
-									{showCodeLog && (
-										<div className="status-details">
-											<div className="status-log">
-												{(codeWritingLog || [])
-													.slice(-10)
-													.map((entry, index) => (
-														<div key={index} className="log-entry">
-															<div className="log-entry-header">
-																<span>
-																	⏱️{" "}
-																	{new Date(
-																		entry.timestamp
-																	).toLocaleTimeString()}
-																</span>
-																<span>•</span>
-																<span>{entry.code?.length || 0} chars</span>
-																<span>•</span>
-																<span
-																	className={`log-type ${
-																		entry.type === "llm_generation"
-																			? "ai-generation"
-																			: "execution"
-																	}`}
-																>
-																	{entry.type === "llm_generation"
-																		? "🤖 AI Generation"
-																		: "⚡ Execution"}
-																</span>
-															</div>
-															<div className="log-entry-content">
-																{entry.code || ""}
-															</div>
-														</div>
-													))}
-
-												{/* Show current streaming or completed code */}
-												{(isGeneratingCode || isCodeGenerationComplete) &&
-													currentCodeGeneration && (
-														<div className="log-entry streaming">
-															<div className="log-entry-header">
-																<span>
-																	⏱️ {new Date().toLocaleTimeString()}
-																</span>
-																<span>•</span>
-																<span>
-																	{currentCodeGeneration.length} chars
-																</span>
-																<span>•</span>
-																<span className="log-type ai-generation">
-																	{isGeneratingCode
-																		? "🤖 AI Generation (Streaming...)"
-																		: "🤖 AI Generation (Complete)"}
-																</span>
-															</div>
-															<div className="log-entry-content">
-																<pre className="streaming-code">
-																	{currentCodeGeneration}
-																</pre>
-															</div>
-														</div>
-													)}
-											</div>
-										</div>
-									)}
-								</div>
-							))}
 					</div>
 				)}
 
@@ -1732,7 +1656,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						<span
 							style={{ fontSize: "10px", fontWeight: "900", color: "#2d2d30" }}
 						>
-							↵
+							▶
 						</span>
 					)}
 				</button>

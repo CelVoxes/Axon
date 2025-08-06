@@ -65,9 +65,12 @@ export class BackendClient {
 		organism?: string;
 	}): Promise<GEODataset[]> {
 		try {
-			console.log("🔍 BackendClient.searchDatasetsWithLLM called with:", JSON.stringify(query));
+			console.log(
+				"🔍 BackendClient.searchDatasetsWithLLM called with:",
+				JSON.stringify(query)
+			);
 			console.log("🔍 Making POST request to:", `${this.baseUrl}/search/llm`);
-			
+
 			// Simulate progress updates for UI feedback
 			if (this.onProgress) {
 				this.onProgress({
@@ -76,19 +79,19 @@ export class BackendClient {
 					progress: 20,
 				});
 			}
-			
+
 			const requestPayload: any = {
 				query: query.query,
 				limit: query.limit || 50,
 			};
-			
+
 			// Only include organism if it's defined
 			if (query.organism !== undefined && query.organism !== null) {
 				requestPayload.organism = query.organism;
 			}
-			
+
 			console.log("🔍 Final request payload:", JSON.stringify(requestPayload));
-			
+
 			if (this.onProgress) {
 				this.onProgress({
 					message: "Searching databases with AI-generated terms...",
@@ -96,15 +99,14 @@ export class BackendClient {
 					progress: 60,
 				});
 			}
-			
+
 			const response = await axios.post(`${this.baseUrl}/search/llm`, {
 				...requestPayload,
-				max_attempts: 2  // Add max_attempts for LLM search
+				max_attempts: 2, // Add max_attempts for LLM search
 			});
-			
-			console.log("🔍 BackendClient.searchDatasetsWithLLM response:", JSON.stringify(response.data));
+
 			console.log("🔍 Response status:", response.status);
-			
+
 			if (this.onProgress) {
 				this.onProgress({
 					message: "Processing search results...",
@@ -112,14 +114,17 @@ export class BackendClient {
 					progress: 90,
 				});
 			}
-			
+
 			// LLM search returns {datasets: [...], search_terms: [...], search_steps: [...]}
 			const llmResponse = response.data;
 			if (llmResponse && llmResponse.datasets) {
-				console.log("🔍 LLM search found datasets:", llmResponse.datasets.length);
+				console.log(
+					"🔍 LLM search found datasets:",
+					llmResponse.datasets.length
+				);
 				console.log("🔍 Search terms used:", llmResponse.search_terms);
 				console.log("🔍 Search steps:", llmResponse.search_steps);
-				
+
 				if (this.onProgress) {
 					this.onProgress({
 						message: `Found ${llmResponse.datasets.length} datasets`,
@@ -128,11 +133,11 @@ export class BackendClient {
 						datasetsFound: llmResponse.datasets.length,
 					});
 				}
-				
+
 				return llmResponse.datasets;
 			} else {
 				console.log("🔍 No datasets in LLM response");
-				
+
 				if (this.onProgress) {
 					this.onProgress({
 						message: "No datasets found matching the search criteria",
@@ -141,7 +146,7 @@ export class BackendClient {
 						datasetsFound: 0,
 					});
 				}
-				
+
 				return [];
 			}
 		} catch (error) {
@@ -149,9 +154,9 @@ export class BackendClient {
 			console.error("BackendClient: Error details:", {
 				url: `${this.baseUrl}/search/llm`,
 				query: query,
-				error: error
+				error: error,
 			});
-			
+
 			if (this.onProgress) {
 				this.onProgress({
 					message: "Search failed - please try again",
@@ -160,7 +165,7 @@ export class BackendClient {
 					datasetsFound: 0,
 				});
 			}
-			
+
 			throw error;
 		}
 	}
@@ -177,7 +182,10 @@ export class BackendClient {
 			});
 			return { datasets };
 		} catch (error) {
-			console.error(`BackendClient: Error discovering datasets for query: ${query}`, error);
+			console.error(
+				`BackendClient: Error discovering datasets for query: ${query}`,
+				error
+			);
 			throw error;
 		}
 	}
@@ -372,7 +380,7 @@ export class BackendClient {
 		}
 	}
 
-	// Note: Code validation is now handled by CodeValidationService
+	// Note: Code validation is now handled by CodeQualityService
 
 	async analyzeQuery(query: string): Promise<{
 		intent: string;
@@ -457,21 +465,18 @@ export class BackendClient {
 		contextInfo?: string;
 	}): Promise<any> {
 		try {
-			const response = await fetch(
-				`${this.baseUrl}/llm/suggestions`,
-				{
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-					},
-					body: JSON.stringify({
-						data_types: request.dataTypes,
-						user_question: request.query,
-						available_datasets: request.selectedDatasets,
-						current_context: request.contextInfo || "",
-					}),
-				}
-			);
+			const response = await fetch(`${this.baseUrl}/llm/suggestions`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					data_types: request.dataTypes,
+					user_question: request.query,
+					available_datasets: request.selectedDatasets,
+					current_context: request.contextInfo || "",
+				}),
+			});
 
 			if (response.ok) {
 				return await response.json();
@@ -493,16 +498,13 @@ export class BackendClient {
 		context?: string;
 	}): Promise<any> {
 		try {
-			const response = await fetch(
-				`${this.baseUrl}/llm/validate-code`,
-				{
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-					},
-					body: JSON.stringify(request),
-				}
-			);
+			const response = await fetch(`${this.baseUrl}/llm/validate-code`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(request),
+			});
 
 			if (response.ok) {
 				return await response.json();
@@ -522,55 +524,95 @@ export class BackendClient {
 		request: any,
 		onChunk: (chunk: string) => void
 	): Promise<any> {
+		console.log("🚀 BackendClient.generateCodeStream: Starting stream request");
+		console.log("🚀 Request payload:", JSON.stringify(request, null, 2));
+		console.log("🚀 Streaming endpoint:", `${this.baseUrl}/llm/code/stream`);
+
 		try {
-			const response = await fetch(
-				`${this.baseUrl}/llm/code/stream`,
-				{
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-					},
-					body: JSON.stringify(request),
-				}
-			);
+			const response = await fetch(`${this.baseUrl}/llm/code/stream`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(request),
+			});
+
+			console.log("🚀 Response status:", response.status);
+			console.log("🚀 Response headers:", response.headers);
 
 			if (!response.ok) {
-				throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+				const errorText = await response.text();
+				console.error("🚀 HTTP Error response body:", errorText);
+				throw new Error(
+					`HTTP ${response.status}: ${response.statusText} - ${errorText}`
+				);
 			}
 
 			const reader = response.body?.getReader();
 			if (!reader) {
+				console.error("🚀 No readable response body");
 				throw new Error("Response body is not readable");
 			}
 
+			console.log("🚀 Starting to read stream...");
 			const decoder = new TextDecoder();
 			let result = "";
+			let chunkCount = 0;
 
 			while (true) {
 				const { done, value } = await reader.read();
-				if (done) break;
+				if (done) {
+					console.log("🚀 Stream reading completed");
+					break;
+				}
 
-				const chunk = decoder.decode(value);
-				const lines = chunk.split('\n');
+				chunkCount++;
+				const rawChunk = decoder.decode(value);
+				console.log(`🚀 Raw chunk ${chunkCount}:`, rawChunk);
+
+				const lines = rawChunk.split("\n");
 
 				for (const line of lines) {
-					if (line.startsWith('data: ')) {
+					if (line.trim() === "") continue; // Skip empty lines
+
+					if (line.startsWith("data: ")) {
 						try {
-							const data = JSON.parse(line.slice(6));
+							const jsonStr = line.slice(6);
+
+							const data = JSON.parse(jsonStr);
+
 							if (data.chunk) {
 								onChunk(data.chunk);
 								result += data.chunk;
+							} else if (data.content) {
+								// Handle alternative response format
+								onChunk(data.content);
+								result += data.content;
+							} else {
 							}
 						} catch (e) {
-							// Ignore malformed JSON
+							// Don't ignore - this might be the issue
 						}
+					} else {
 					}
 				}
 			}
 
+			if (result.length === 0) {
+				console.warn("🚀 WARNING: No content received from stream!");
+			}
+
 			return { code: result, success: true };
 		} catch (error) {
-			console.error("BackendClient: Error streaming code generation:", error);
+			console.error(
+				"🚀 BackendClient: Error streaming code generation:",
+				error
+			);
+			console.error("🚀 Error details:", {
+				message: error instanceof Error ? error.message : String(error),
+				stack: error instanceof Error ? error.stack : undefined,
+				request: request,
+			});
 			throw error;
 		}
 	}
@@ -585,16 +627,13 @@ export class BackendClient {
 		temperature?: number;
 	}): Promise<any> {
 		try {
-			const response = await fetch(
-				`${this.baseUrl}/llm/code`,
-				{
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-					},
-					body: JSON.stringify(request),
-				}
-			);
+			const response = await fetch(`${this.baseUrl}/llm/code`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(request),
+			});
 
 			if (response.ok) {
 				return await response.json();

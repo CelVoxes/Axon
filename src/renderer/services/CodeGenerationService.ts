@@ -1,5 +1,12 @@
 import { BackendClient } from "./BackendClient";
-import { CodeValidationService } from "./CodeValidationService";
+import { EventManager } from "../utils/EventManager";
+import { 
+	CodeGenerationStartedEvent,
+	CodeGenerationChunkEvent,
+	CodeGenerationCompletedEvent,
+	CodeGenerationFailedEvent,
+	CodeValidationErrorEvent
+} from "./types";
 
 export interface CodeGenerationRequest {
 	stepDescription: string;
@@ -19,9 +26,7 @@ export interface CodeGenerationResult {
 export class CodeGenerationService {
 	private backendClient: BackendClient;
 	private selectedModel: string;
-	private codeValidationService: CodeValidationService;
-	private codeGenerationCallback?: (code: string, step: string) => void;
-	private streamingCodeCallback?: (chunk: string, step: string) => void;
+	private activeGenerations = new Map<string, { accumulatedCode: string; startTime: number }>();
 
 	constructor(
 		backendClient: BackendClient,
@@ -29,41 +34,29 @@ export class CodeGenerationService {
 	) {
 		this.backendClient = backendClient;
 		this.selectedModel = selectedModel;
-		this.codeValidationService = new CodeValidationService(backendClient);
 	}
 
 	setModel(model: string) {
 		this.selectedModel = model;
 	}
 
-	setCodeGenerationCallback(callback: (code: string, step: string) => void) {
-		this.codeGenerationCallback = callback;
-	}
-
-	setStreamingCodeCallback(callback: (chunk: string, step: string) => void) {
-		this.streamingCodeCallback = callback;
-	}
-
-	async generateDataDrivenStepCode(
-		request: CodeGenerationRequest
+	/**
+	 * Main method for generating code with event-driven streaming
+	 * This replaces all the complex callback management
+	 */
+	async generateCodeWithEvents(
+		request: CodeGenerationRequest,
+		stepId: string
 	): Promise<CodeGenerationResult> {
 		console.log(
-			"CodeGenerationService: generateDataDrivenStepCode called for:",
+			"🎯 CodeGenerationService: generateCodeWithEvents for:",
 			request.stepDescription
 		);
 
-		// Use the streaming method internally to provide real-time updates
-		const result = await this.generateDataDrivenStepCodeStream(
-			request,
-			(chunk: string) => {
-				// Trigger streaming callback if available
-				if (this.streamingCodeCallback) {
-					this.streamingCodeCallback(chunk, request.stepDescription);
-				}
-			}
-		);
-		return result;
+		return await this.generateDataDrivenStepCodeWithEvents(request, stepId);
 	}
+
+
 
 	private buildEnhancedContext(request: CodeGenerationRequest): string {
 		const datasetInfo = request.datasets
@@ -104,90 +97,150 @@ IMPORTANT: Do not repeat imports or setup code that was already generated. Focus
 		return context;
 	}
 
-	// Note: Code cleaning and validation is now handled by CodeValidationService
+	// Note: Code cleaning and validation is now handled by CodeQualityService
 
-	async generateDataDrivenStepCodeStream(
+	private async generateDataDrivenStepCodeWithEvents(
 		request: CodeGenerationRequest,
-		onChunk: (chunk: string) => void
+		stepId: string
 	): Promise<CodeGenerationResult> {
-		try {
-			console.log(
-				"CodeGenerationService: Starting streaming for step:",
-				request.stepDescription
-			);
+		const timestamp = Date.now();
+		
+		// Initialize tracking for this generation
+		this.activeGenerations.set(stepId, {
+			accumulatedCode: '',
+			startTime: timestamp
+		});
+		
+		// Emit generation started event
+		EventManager.dispatchEvent('code-generation-started', {
+			stepId,
+			stepDescription: request.stepDescription,
+			timestamp
+		} as CodeGenerationStartedEvent);
+		
+		return await this.generateDataDrivenStepCodeStream(request, stepId);
+	}
 
+	private async generateDataDrivenStepCodeStream(
+		request: CodeGenerationRequest,
+		stepId: string
+	): Promise<CodeGenerationResult> {
+		console.log(
+			"🎯 CodeGenerationService: Starting streaming for step:",
+			request.stepDescription,
+			"stepId:",
+			stepId
+		);
+
+		try {
 			// Prepare enhanced context with more detailed information
 			const enhancedContext = this.buildEnhancedContext(request);
 
 			console.log(
-				"CodeGenerationService: Making streaming API call to:",
+				"🎯 Enhanced context prepared, length:",
+				enhancedContext.length
+			);
+			console.log(
+				"🎯 Making streaming API call to:",
 				`${this.backendClient.getBaseUrl()}/llm/code/stream`
 			);
 
-			let generatedCode = "";
+			let chunkCount = 0;
+			const generation = this.activeGenerations.get(stepId);
+			if (!generation) {
+				throw new Error(`Generation tracking not found for stepId: ${stepId}`);
+			}
+
+			// Create event-based chunk handler
+			const chunkCallback = (chunk: string) => {
+				chunkCount++;
+				console.log(`🎯 Received chunk ${chunkCount}, length: ${chunk.length}`);
+
+				// Update accumulated code
+				generation.accumulatedCode += chunk;
+
+				// Emit chunk event
+				EventManager.dispatchEvent('code-generation-chunk', {
+					stepId,
+					stepDescription: request.stepDescription,
+					chunk,
+					accumulatedCode: generation.accumulatedCode,
+					timestamp: Date.now()
+				} as CodeGenerationChunkEvent);
+			};
+
 			const result = await this.backendClient.generateCodeStream(
 				{
 					task_description: request.stepDescription,
 					language: "python",
 					context: enhancedContext,
 				},
-				(chunk: string) => {
-					generatedCode += chunk;
-					onChunk(chunk);
-				}
+				chunkCallback
 			);
 
-			console.log(
-				"CodeGenerationService: Streaming completed, final code length:",
-				generatedCode.length
-			);
+			console.log("🎯 Streaming completed!");
+			console.log("🎯 Total chunks received:", chunkCount);
+			console.log("🎯 Generated code length:", generation.accumulatedCode.length);
+			console.log("🎯 Backend result:", result);
 
-			// Streaming code generation completed
+			// Use the accumulated code from chunks, not the result
+			const finalGeneratedCode = generation.accumulatedCode || result.code || "";
 
-			// Validate and clean the generated code
-			const cleanedCode = this.codeValidationService.cleanAndPrepareCode(
-				generatedCode,
-				{
-					addImports: true,
-					addErrorHandling: true,
-					addDirectoryCreation: true,
-					stepDescription: request.stepDescription,
-				}
-			);
-
-			const finalCode =
-				cleanedCode ||
-				this.generateDataAwareBasicStepCode(
-					request.stepDescription,
-					request.datasets,
-					request.stepIndex
-				);
-
-			// Trigger callback if available
-			if (this.codeGenerationCallback) {
-				console.log(
-					"CodeGenerationService: Calling final code generation callback"
-				);
-				this.codeGenerationCallback(finalCode, request.stepDescription);
+			if (!finalGeneratedCode) {
+				console.warn("🎯 WARNING: No code generated from streaming!");
+				throw new Error("No code generated from streaming");
 			}
 
-			// Dispatch completion event for chat panel
-			const completeEvent = new CustomEvent("llm-code-complete", {
-				detail: { 
-					code: finalCode, 
-					step: request.stepDescription 
-				}
-			});
-			window.dispatchEvent(completeEvent);
+			// Return the generated code as-is (cleaning handled by CodeQualityService)
+			const finalCode = finalGeneratedCode || this.generateDataAwareBasicStepCode(
+				request.stepDescription,
+				request.datasets,
+				request.stepIndex
+			);
+
+			console.log("🎯 Final code length after cleaning:", finalCode.length);
+
+			// Emit completion event
+			EventManager.dispatchEvent('code-generation-completed', {
+				stepId,
+				stepDescription: request.stepDescription,
+				finalCode,
+				success: true,
+				timestamp: Date.now()
+			} as CodeGenerationCompletedEvent);
+			
+			// Clean up tracking
+			this.activeGenerations.delete(stepId);
 
 			return {
 				code: finalCode,
 				success: true,
 			};
 		} catch (error) {
-			console.error("CodeGenerationService: Error in streaming method:", error);
+			console.error(
+				"🎯 CodeGenerationService: Error in streaming method:",
+				error
+			);
+			console.error("🎯 Error details:", {
+				message: error instanceof Error ? error.message : String(error),
+				stack: error instanceof Error ? error.stack : undefined,
+				stepDescription: request.stepDescription,
+			});
+
+			// Emit failure event
+			EventManager.dispatchEvent('code-generation-failed', {
+				stepId,
+				stepDescription: request.stepDescription,
+				error: error instanceof Error ? error.message : String(error),
+				timestamp: Date.now()
+			} as CodeGenerationFailedEvent);
+			
+			// Clean up tracking
+			this.activeGenerations.delete(stepId);
+
 			// Fallback to non-streaming method
-			return this.generateDataDrivenStepCodeFallback(request);
+			console.log("🎯 Falling back to non-streaming method");
+			return this.generateDataDrivenStepCodeFallback(request, stepId);
 		}
 	}
 
@@ -195,7 +248,8 @@ IMPORTANT: Do not repeat imports or setup code that was already generated. Focus
 	 * Fallback method when streaming fails
 	 */
 	private async generateDataDrivenStepCodeFallback(
-		request: CodeGenerationRequest
+		request: CodeGenerationRequest,
+		stepId: string
 	): Promise<CodeGenerationResult> {
 		console.log(
 			"CodeGenerationService: Using fallback method for step:",
@@ -212,10 +266,14 @@ IMPORTANT: Do not repeat imports or setup code that was already generated. Focus
 
 			const code = result.code || result.response || "";
 
-			// Trigger callback if available
-			if (this.codeGenerationCallback) {
-				this.codeGenerationCallback(code, request.stepDescription);
-			}
+			// Emit completion event for fallback
+			EventManager.dispatchEvent('code-generation-completed', {
+				stepId,
+				stepDescription: request.stepDescription,
+				finalCode: code,
+				success: true,
+				timestamp: Date.now()
+			} as CodeGenerationCompletedEvent);
 
 			return {
 				code,
@@ -229,10 +287,14 @@ IMPORTANT: Do not repeat imports or setup code that was already generated. Focus
 				request.stepIndex
 			);
 
-			// Trigger callback if available
-			if (this.codeGenerationCallback) {
-				this.codeGenerationCallback(fallbackCode, request.stepDescription);
-			}
+			// Emit completion event for fallback (still successful, but with fallback code)
+			EventManager.dispatchEvent('code-generation-completed', {
+				stepId,
+				stepDescription: request.stepDescription,
+				finalCode: fallbackCode,
+				success: false,
+				timestamp: Date.now()
+			} as CodeGenerationCompletedEvent);
 
 			return {
 				code: fallbackCode,
@@ -291,10 +353,35 @@ print("Step completed successfully!")
 `;
 	}
 
+	/**
+	 * Generate single step code with events (main public method)
+	 */
 	async generateSingleStepCode(
-		request: CodeGenerationRequest
+		request: CodeGenerationRequest,
+		stepId?: string
 	): Promise<CodeGenerationResult> {
-		return this.generateDataDrivenStepCode(request);
+		const actualStepId = stepId || `single-step-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+		return this.generateCodeWithEvents(request, actualStepId);
+	}
+	
+	/**
+	 * Method to emit validation errors as events
+	 */
+	emitValidationErrors(
+		stepId: string,
+		errors: string[],
+		warnings: string[],
+		originalCode: string,
+		fixedCode?: string
+	): void {
+		EventManager.dispatchEvent('code-validation-error', {
+			stepId,
+			errors,
+			warnings,
+			originalCode,
+			fixedCode,
+			timestamp: Date.now()
+		} as CodeValidationErrorEvent);
 	}
 
 	extractPythonCode(response: string): string | null {

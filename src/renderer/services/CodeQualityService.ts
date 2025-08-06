@@ -1,0 +1,448 @@
+import { BackendClient } from "./BackendClient";
+import { CellExecutionService } from "./CellExecutionService";
+import { CodeGenerationService } from "./CodeGenerationService";
+
+export interface CodeQualityResult {
+	isValid: boolean;
+	executionPassed: boolean;
+	validationErrors: string[];
+	validationWarnings: string[];
+	executionOutput?: string;
+	executionError?: string;
+	lintedCode: string;
+	originalCode: string;
+	cleanedCode: string;
+}
+
+export interface CodeQualityOptions {
+	skipValidation?: boolean;
+	skipExecution?: boolean;
+	skipCleaning?: boolean;
+	stepTitle?: string;
+	addImports?: boolean;
+	addErrorHandling?: boolean;
+	addDirectoryCreation?: boolean;
+	stepDescription?: string;
+}
+
+export interface BatchTestResult {
+	results: CodeQualityResult[];
+	summary: {
+		totalTests: number;
+		validationPassed: number;
+		executionPassed: number;
+		totalErrors: number;
+		totalWarnings: number;
+		report: string;
+	};
+}
+
+/**
+ * Unified CodeQualityService handles all aspects of code quality:
+ * - Validation and linting
+ * - Code cleaning and enhancement
+ * - Execution testing
+ * - Error fixing with LLM
+ * - Comprehensive reporting
+ */
+export class CodeQualityService {
+	private backendClient: BackendClient;
+	private cellExecutionService: CellExecutionService;
+	private codeGenerationService: CodeGenerationService;
+	private statusCallback?: (status: string) => void;
+
+	constructor(
+		backendClient: BackendClient,
+		cellExecutionService: CellExecutionService,
+		codeGenerationService: CodeGenerationService
+	) {
+		this.backendClient = backendClient;
+		this.cellExecutionService = cellExecutionService;
+		this.codeGenerationService = codeGenerationService;
+	}
+
+	setStatusCallback(callback: (status: string) => void) {
+		this.statusCallback = callback;
+	}
+
+	private updateStatus(message: string) {
+		if (this.statusCallback) {
+			this.statusCallback(message);
+		}
+	}
+
+	/**
+	 * Comprehensive code quality check: validation + cleaning + execution
+	 */
+	async validateAndTest(
+		code: string,
+		stepId: string,
+		options: CodeQualityOptions = {}
+	): Promise<CodeQualityResult> {
+		const {
+			skipValidation = false,
+			skipExecution = false,
+			skipCleaning = false,
+			stepTitle = stepId,
+			addImports = true,
+			addErrorHandling = true,
+			addDirectoryCreation = true,
+			stepDescription
+		} = options;
+
+		const result: CodeQualityResult = {
+			isValid: true,
+			executionPassed: true,
+			validationErrors: [],
+			validationWarnings: [],
+			lintedCode: code,
+			originalCode: code,
+			cleanedCode: code
+		};
+
+		// Step 1: Code Cleaning (if not skipped)
+		if (!skipCleaning) {
+			this.updateStatus(`Cleaning code for ${stepTitle}...`);
+			result.cleanedCode = this.cleanAndPrepareCode(code, {
+				addImports,
+				addErrorHandling,
+				addDirectoryCreation,
+				stepDescription
+			});
+		}
+
+		// Step 2: Code Validation (if not skipped)
+		if (!skipValidation) {
+			this.updateStatus(`Validating code for ${stepTitle}...`);
+			
+			try {
+				const validationResult = await this.backendClient.validateCode({
+					code: result.cleanedCode,
+				});
+				
+				result.isValid = validationResult.is_valid;
+				result.validationErrors = validationResult.errors || [];
+				result.validationWarnings = validationResult.warnings || [];
+				result.lintedCode = validationResult.linted_code || result.cleanedCode;
+
+				if (!result.isValid) {
+					console.warn(`Code validation failed for ${stepTitle}:`, result.validationErrors);
+					
+					// Emit validation error event
+					this.codeGenerationService.emitValidationErrors(
+						stepId,
+						result.validationErrors,
+						result.validationWarnings,
+						result.originalCode,
+						result.lintedCode
+					);
+				} else {
+					this.updateStatus(`✅ Code validation passed for ${stepTitle}`);
+				}
+			} catch (error) {
+				result.isValid = false;
+				result.validationErrors.push(
+					error instanceof Error ? error.message : "Unknown validation error"
+				);
+				console.error(`Validation error for ${stepTitle}:`, error);
+			}
+		}
+
+		// Step 3: Execution Testing (if not skipped)
+		if (!skipExecution) {
+			this.updateStatus(`Testing code execution for ${stepTitle}...`);
+			
+			try {
+				const executionResult = await this.cellExecutionService.executeCell(
+					`test-${stepId}`,
+					result.lintedCode,
+					undefined
+				);
+
+				result.executionPassed = executionResult.status !== "failed";
+				result.executionOutput = executionResult.output;
+				
+				if (executionResult.status === "failed") {
+					result.executionError = executionResult.output || "Unknown execution error";
+					console.warn(`Code execution failed for ${stepTitle}:`, executionResult.output);
+					this.updateStatus(`⚠️ Code execution failed for ${stepTitle}, but test completed`);
+				} else {
+					this.updateStatus(`✅ Code execution passed for ${stepTitle}`);
+				}
+			} catch (error) {
+				result.executionPassed = false;
+				result.executionError = error instanceof Error ? error.message : "Unknown execution error";
+				console.error(`Execution test error for ${stepTitle}:`, error);
+				this.updateStatus(`⚠️ Error testing code execution for ${stepTitle}`);
+			}
+		}
+
+		return result;
+	}
+
+	/**
+	 * Validation-only convenience method
+	 */
+	async validateOnly(code: string, stepId: string, options?: CodeQualityOptions): Promise<CodeQualityResult> {
+		return this.validateAndTest(code, stepId, { 
+			...options, 
+			skipExecution: true 
+		});
+	}
+
+	/**
+	 * Execution-only convenience method
+	 */
+	async executeOnly(code: string, stepId: string, options?: CodeQualityOptions): Promise<CodeQualityResult> {
+		return this.validateAndTest(code, stepId, { 
+			...options, 
+			skipValidation: true 
+		});
+	}
+
+	/**
+	 * Cleaning-only convenience method
+	 */
+	cleanAndPrepareCode(code: string, options: {
+		addImports?: boolean;
+		addErrorHandling?: boolean;
+		addDirectoryCreation?: boolean;
+		stepDescription?: string;
+	} = {}): string {
+		if (!code || !code.trim()) {
+			return "";
+		}
+
+		// Remove markdown code blocks if present
+		let cleanedCode = code
+			.replace(/```python\s*/g, "")
+			.replace(/```\s*$/g, "")
+			.trim();
+
+		// Add imports if requested and missing
+		if (options.addImports && !this.hasBasicImports(cleanedCode)) {
+			cleanedCode = this.addBasicImports(cleanedCode);
+		}
+
+		// Add error handling if requested and missing
+		if (options.addErrorHandling && !this.hasErrorHandling(cleanedCode)) {
+			cleanedCode = this.addErrorHandling(cleanedCode, options.stepDescription);
+		}
+
+		// Add directory creation if requested and missing
+		if (
+			options.addDirectoryCreation &&
+			!this.hasDirectoryCreation(cleanedCode)
+		) {
+			cleanedCode = this.addDirectoryCreation(cleanedCode);
+		}
+
+		return cleanedCode;
+	}
+
+	/**
+	 * Fix validation errors using LLM
+	 */
+	async fixValidationErrors(code: string, errors: string[]): Promise<string> {
+		if (errors.length === 0) {
+			return code;
+		}
+
+		try {
+			let fixedCode = "";
+			await this.backendClient.generateCodeStream(
+				{
+					task_description: `Fix the following Python code validation errors:\n\nErrors:\n${errors.join(
+						"\n"
+					)}\n\nCode:\n${code}\n\nProvide only the corrected code, no explanations.`,
+					language: "python",
+					context: "Code validation error fixing",
+				},
+				(chunk: string) => {
+					fixedCode += chunk;
+				}
+			);
+
+			console.log("CodeQualityService: Code validation error fixing completed:", fixedCode);
+			return this.cleanAndPrepareCode(fixedCode.trim());
+		} catch (error) {
+			console.error("CodeQualityService: Error fixing validation errors:", error);
+			return code;
+		}
+	}
+
+	/**
+	 * Generate refactored code based on error output
+	 */
+	async generateRefactoredCode(
+		originalCode: string,
+		errorOutput: string,
+		cellTitle: string,
+		workspacePath: string
+	): Promise<string> {
+		try {
+			let refactoredCode = "";
+			await this.backendClient.generateCodeStream(
+				{
+					task_description: `Refactor the following Python code to fix the execution error:\n\nError Output:\n${errorOutput}\n\nOriginal Code:\n${originalCode}\n\nCell Title: ${cellTitle}\nWorkspace: ${workspacePath}\n\nProvide only the corrected code, no explanations.`,
+					language: "python",
+					context: "Code refactoring based on error output",
+				},
+				(chunk: string) => {
+					refactoredCode += chunk;
+				}
+			);
+
+			console.log("CodeQualityService: Code refactoring completed:", refactoredCode);
+			return refactoredCode || originalCode;
+		} catch (error) {
+			console.error("CodeQualityService: Error refactoring code:", error);
+			return originalCode;
+		}
+	}
+
+	/**
+	 * Batch test multiple code snippets
+	 */
+	async testMultipleCode(
+		codeSnippets: { code: string; stepId: string; title?: string }[],
+		options: CodeQualityOptions = {}
+	): Promise<BatchTestResult> {
+		this.updateStatus(`Testing ${codeSnippets.length} code snippets...`);
+		
+		const results: CodeQualityResult[] = [];
+		
+		for (let i = 0; i < codeSnippets.length; i++) {
+			const snippet = codeSnippets[i];
+			const testOptions = {
+				...options,
+				stepTitle: snippet.title || snippet.stepId
+			};
+			
+			this.updateStatus(`Testing snippet ${i + 1}/${codeSnippets.length}: ${testOptions.stepTitle}`);
+			
+			const result = await this.validateAndTest(snippet.code, snippet.stepId, testOptions);
+			results.push(result);
+			
+			// Small delay between tests to avoid overwhelming the system
+			if (i < codeSnippets.length - 1) {
+				await new Promise(resolve => setTimeout(resolve, 100));
+			}
+		}
+		
+		const summary = this.generateTestSummary(results);
+		this.updateStatus(`Completed testing ${codeSnippets.length} code snippets`);
+		
+		return { results, summary };
+	}
+
+	/**
+	 * Generate test summary report
+	 */
+	private generateTestSummary(results: CodeQualityResult[]) {
+		const totalTests = results.length;
+		const validationPassed = results.filter(r => r.isValid).length;
+		const executionPassed = results.filter(r => r.executionPassed).length;
+		const totalErrors = results.reduce((sum, r) => sum + r.validationErrors.length, 0);
+		const totalWarnings = results.reduce((sum, r) => sum + r.validationWarnings.length, 0);
+		
+		let report = `Code Quality Report:\n`;
+		report += `- Total tests: ${totalTests}\n`;
+		report += `- Validation passed: ${validationPassed}/${totalTests}\n`;
+		report += `- Execution passed: ${executionPassed}/${totalTests}\n`;
+		report += `- Total errors: ${totalErrors}\n`;
+		report += `- Total warnings: ${totalWarnings}`;
+		
+		if (totalErrors === 0 && validationPassed === totalTests && executionPassed === totalTests) {
+			report += `\n✅ All tests passed successfully!`;
+		} else if (totalErrors > 0) {
+			report += `\n❌ Some tests failed with errors`;
+		} else {
+			report += `\n⚠️ Tests completed with warnings`;
+		}
+
+		return {
+			totalTests,
+			validationPassed,
+			executionPassed,
+			totalErrors,
+			totalWarnings,
+			report
+		};
+	}
+
+	/**
+	 * Get the best code version (linted if validation passed, cleaned otherwise)
+	 */
+	getBestCode(result: CodeQualityResult): string {
+		if (result.isValid && result.lintedCode) {
+			return result.lintedCode;
+		}
+		if (result.cleanedCode) {
+			return result.cleanedCode;
+		}
+		return result.originalCode;
+	}
+
+	/**
+	 * Check if code is safe to use based on test results
+	 */
+	isCodeSafe(result: CodeQualityResult, requireExecution: boolean = false): boolean {
+		if (requireExecution) {
+			return result.isValid && result.executionPassed;
+		}
+		// At minimum, code should validate without critical errors
+		return result.isValid || result.validationErrors.length === 0;
+	}
+
+	// Helper methods for code analysis
+	private hasBasicImports(code: string): boolean {
+		return (
+			code.includes("import pandas") ||
+			code.includes("import numpy") ||
+			code.includes("import matplotlib") ||
+			code.includes("import seaborn")
+		);
+	}
+
+	private addBasicImports(code: string): string {
+		return `import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os
+from pathlib import Path
+
+${code}`;
+	}
+
+	private hasErrorHandling(code: string): boolean {
+		return code.includes("try:") || code.includes("except:");
+	}
+
+	private addErrorHandling(code: string, stepDescription?: string): string {
+		const description = stepDescription || "this step";
+		return `try:
+${code
+	.split("\n")
+	.map((line) => `    ${line}`)
+	.join("\n")}
+except Exception as e:
+    print(f"Error in ${description}: {e}")
+    raise`;
+	}
+
+	private hasDirectoryCreation(code: string): boolean {
+		return code.includes("mkdir") || code.includes("Path(");
+	}
+
+	private addDirectoryCreation(code: string): string {
+		return `# Create output directories
+results_dir = Path('results')
+figures_dir = Path('figures')
+results_dir.mkdir(exist_ok=True)
+figures_dir.mkdir(exist_ok=True)
+
+${code}`;
+	}
+}

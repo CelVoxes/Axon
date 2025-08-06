@@ -1,9 +1,4 @@
-import { StatusManager } from "./StatusManager";
-import {
-	CodeGenerationService,
-	CodeGenerationRequest,
-} from "./CodeGenerationService";
-import { Dataset } from "./AnalysisPlanner";
+import { Dataset } from "./types";
 import { AsyncUtils } from "../utils/AsyncUtils";
 import { EventManager } from "../utils/EventManager";
 
@@ -18,26 +13,42 @@ export interface NotebookCell {
 
 export interface NotebookOptions {
 	workspacePath: string;
-	statusManager?: StatusManager;
-	codeGenerationService?: CodeGenerationService;
 	kernelName?: string;
 }
 
+export interface NotebookGenerationOptions {
+	query: string;
+	datasets: Dataset[];
+	analysisSteps: any[];
+	workspaceDir: string;
+	includePackageInstall?: boolean;
+	markdownContent?: string[];
+}
+
+export interface NotebookReadyResult {
+	isReady: boolean;
+	error?: string;
+	timeout?: boolean;
+}
+
+/**
+ * NotebookService - Pure file operations for Jupyter notebooks
+ * Responsibilities: ONLY notebook file creation/modification
+ * Does NOT: Generate code, manage status, execute cells
+ */
 export class NotebookService {
 	private workspacePath: string;
-	private statusManager: StatusManager;
-	private codeGenerationService?: CodeGenerationService;
 	private kernelName: string;
 
 	constructor(options: NotebookOptions) {
 		this.workspacePath = options.workspacePath;
-		this.statusManager = options.statusManager || StatusManager.getInstance();
-		this.codeGenerationService = options.codeGenerationService;
 		this.kernelName = options.kernelName || "python3";
 	}
 
 	updateWorkspacePath(newWorkspacePath: string) {
-		console.log(`NotebookService: Updating workspace path from ${this.workspacePath} to ${newWorkspacePath}`);
+		console.log(
+			`NotebookService: Updating workspace path from ${this.workspacePath} to ${newWorkspacePath}`
+		);
 		this.workspacePath = newWorkspacePath;
 	}
 
@@ -45,28 +56,24 @@ export class NotebookService {
 	 * Add a markdown cell to a notebook
 	 */
 	async addMarkdownCell(notebookPath: string, content: string): Promise<void> {
-		this.statusManager.updateStatus("Adding markdown cell...");
 		EventManager.dispatchEvent("add-notebook-cell", {
 			filePath: notebookPath,
 			cellType: "markdown",
 			content: content,
 		});
 		await EventManager.waitForEvent("notebook-cell-added");
-		this.statusManager.updateStatus("Markdown cell added successfully");
 	}
 
 	/**
 	 * Add a code cell to a notebook
 	 */
 	async addCodeCell(notebookPath: string, code: string): Promise<void> {
-		this.statusManager.updateStatus("Adding code cell...");
 		EventManager.dispatchEvent("add-notebook-cell", {
 			filePath: notebookPath,
 			cellType: "code",
 			content: code,
 		});
 		await EventManager.waitForEvent("notebook-cell-added");
-		this.statusManager.updateStatus("Code cell added successfully");
 	}
 
 	/**
@@ -78,393 +85,354 @@ export class NotebookService {
 		output: string,
 		workspaceDir: string
 	): Promise<void> {
-		// Handle -1 index for last cell
-		let actualCellIndex = cellIndex;
-		if (cellIndex === -1) {
-			// Read the notebook to get the last cell index
-			try {
-				const notebookContent = await window.electronAPI.readFile(
-					notebookPath
-				);
-				const notebook = JSON.parse(notebookContent);
-				actualCellIndex = notebook.cells.length - 1;
-			} catch (error) {
-				console.error("Failed to determine last cell index:", error);
-				return; // Skip update if we can't determine the index
+		try {
+			// Read current notebook
+			const notebookContent = await window.electronAPI.readFile(notebookPath);
+			const notebook = JSON.parse(notebookContent);
+
+			// Update cell output
+			if (notebook.cells[cellIndex]) {
+				notebook.cells[cellIndex].outputs = [
+					{
+						output_type: "stream",
+						name: "stdout",
+						text: output.split("\n"),
+					},
+				];
 			}
+
+			// Write updated notebook
+			await window.electronAPI.writeFile(
+				notebookPath,
+				JSON.stringify(notebook, null, 2)
+			);
+		} catch (error) {
+			console.error("NotebookService: Error updating cell output:", error);
+			throw error;
 		}
-
-		this.statusManager.updateStatus(
-			`Updating cell ${actualCellIndex + 1} output...`
-		);
-
-		EventManager.dispatchEvent("update-notebook-cell", {
-			filePath: notebookPath,
-			cellIndex: actualCellIndex,
-			output: output,
-		});
-
-		await EventManager.waitForEvent("notebook-cell-updated");
-
-		this.statusManager.updateStatus(
-			`Cell ${actualCellIndex + 1} output updated`
-		);
 	}
 
 	/**
-	 * Create an empty notebook file with basic structure
+	 * Create a simple empty notebook with basic structure
 	 */
 	async createEmptyNotebook(
 		query: string,
 		datasets: Dataset[],
 		workspaceDir: string
 	): Promise<string> {
-		try {
-			this.statusManager.updateStatus("Creating empty notebook...");
+		const notebookPath = `${workspaceDir}/analysis_${Date.now()}.ipynb`;
 
-			const notebookPath = `${workspaceDir}/analysis_${Date.now()}.ipynb`;
+		// Create basic notebook structure with header only
+		const cells: NotebookCell[] = [
+			{
+				id: "header",
+				code: `# Analysis Notebook\n\n**Question:** ${query}\n\n**Selected Datasets:**\n${datasets
+					.map((d) => `- **${d.id}**: ${d.title}`)
+					.join("\n")}\n\n---`,
+				language: "markdown",
+			},
+		];
 
-			// Create empty notebook with just header
-			const notebook = {
-				cells: [
-					{
-						cell_type: "markdown",
-						metadata: {},
-						source: [
-							`# Analysis: ${query}\n\n`,
-							`This notebook will contain your analysis pipeline.\n\n`,
-							`## Selected Datasets\n`,
-							datasets.map(d => `- **${d.id}**: ${d.title} (${d.organism})`).join('\n'),
-							`\n\n---\n`,
-							`*Generated by Axon AI*`
-						]
-					}
-				],
-				metadata: {
-					kernelspec: {
-						display_name: this.kernelName.startsWith("axon-") ? "Axon Python Environment" : "Python 3",
-						language: "python",
-						name: this.kernelName,
-					},
-					language_info: {
-						codemirror_mode: {
-							name: "ipython",
-							version: 3,
-						},
-						file_extension: ".py",
-						mimetype: "text/x-python",
-						name: "python",
-						nbconvert_exporter: "python",
-						pygments_lexer: "ipython3",
-						version: "3.8.0",
-					},
-				},
-				nbformat: 4,
-				nbformat_minor: 4,
-			};
-
-			// Write the notebook file to disk
-			await window.electronAPI.writeFile(
-				notebookPath,
-				JSON.stringify(notebook, null, 2)
-			);
-
-			this.statusManager.updateStatus("Empty notebook created successfully");
-			return notebookPath;
-		} catch (error) {
-			console.error("NotebookService: Error creating empty notebook:", error);
-			this.statusManager.updateStatus("Failed to create empty notebook");
-			throw error;
-		}
+		await this.createNotebook(notebookPath, cells);
+		return notebookPath;
 	}
 
 	/**
-	 * Create a complete notebook with cells
+	 * Wait for notebook to be ready for operations
 	 */
-	async createNotebook(
+	async waitForNotebookReady(
 		notebookPath: string,
-		cells: NotebookCell[]
-	): Promise<void> {
-		try {
-			this.statusManager.updateStatus("Creating notebook...");
+		timeoutMs: number = 10000
+	): Promise<NotebookReadyResult> {
+		console.log(
+			`NotebookService: waitForNotebookReady called for ${notebookPath} with timeout ${timeoutMs}ms`
+		);
+		return new Promise((resolve) => {
+			// First, check if the notebook is already ready (in case event was dispatched before listener was set up)
+			const checkIfAlreadyReady = async () => {
+				try {
+					const fileContent = await window.electronAPI.readFile(notebookPath);
+					if (fileContent && fileContent.length > 0) {
+						// Try to parse as JSON to verify it's a valid notebook
+						try {
+							JSON.parse(fileContent);
+							console.log(
+								`NotebookService: Notebook already exists and is valid: ${notebookPath}`
+							);
+							return true;
+						} catch (parseError) {
+							console.warn(
+								`NotebookService: Notebook file exists but is not valid JSON: ${notebookPath}`
+							);
+							return false;
+						}
+					}
+				} catch (error) {
+					// File doesn't exist yet, continue waiting
+				}
+				return false;
+			};
 
-			// Convert cells to Jupyter notebook format
-			const notebookCells = cells.map((cell) => {
-				if (cell.language === "markdown") {
-					return {
-						cell_type: "markdown",
-						metadata: {},
-						source: cell.code,
-					};
-				} else {
-					return {
-						cell_type: "code",
-						execution_count: null,
-						metadata: {},
-						outputs: [],
-						source: cell.code,
-					};
+			const timeout = setTimeout(async () => {
+				console.warn(
+					`NotebookService: Timeout waiting for notebook ready: ${notebookPath}`
+				);
+				try {
+					const fileContent = await window.electronAPI.readFile(notebookPath);
+					console.log(
+						`NotebookService: Notebook file exists and has content length: ${fileContent.length}`
+					);
+				} catch (fileError) {
+					console.error(
+						`NotebookService: Notebook file does not exist or cannot be read after timeout: ${fileError}`
+					);
+				}
+				resolve({ isReady: false, timeout: true });
+			}, timeoutMs);
+
+			const handleNotebookReady = (event: Event) => {
+				const customEvent = event as CustomEvent;
+				const { filePath } = customEvent.detail;
+				console.log(
+					`NotebookService: Received notebook-ready event for ${filePath}, waiting for ${notebookPath}`
+				);
+				if (filePath === notebookPath) {
+					console.log(
+						`NotebookService: Notebook ready event matched for: ${notebookPath}`
+					);
+					clearTimeout(timeout);
+					window.removeEventListener("notebook-ready", handleNotebookReady);
+					resolve({ isReady: true });
+				}
+			};
+
+			console.log(
+				`NotebookService: Setting up notebook-ready event listener for ${notebookPath}`
+			);
+			window.addEventListener("notebook-ready", handleNotebookReady);
+
+			// Check if already ready immediately after setting up listener
+			checkIfAlreadyReady().then((isReady) => {
+				if (isReady) {
+					clearTimeout(timeout);
+					window.removeEventListener("notebook-ready", handleNotebookReady);
+					resolve({ isReady: true });
 				}
 			});
-
-			// Create the notebook structure
-			const notebook = {
-				cells: notebookCells,
-				metadata: {
-					kernelspec: {
-						display_name: this.kernelName.startsWith("axon-") ? "Axon Python Environment" : "Python 3",
-						language: "python",
-						name: this.kernelName,
-					},
-					language_info: {
-						codemirror_mode: {
-							name: "ipython",
-							version: 3,
-						},
-						file_extension: ".py",
-						mimetype: "text/x-python",
-						name: "python",
-						nbconvert_exporter: "python",
-						pygments_lexer: "ipython3",
-						version: "3.8.0",
-					},
-				},
-				nbformat: 4,
-				nbformat_minor: 4,
-			};
-
-			// Write the notebook file to disk
-			await window.electronAPI.writeFile(
-				notebookPath,
-				JSON.stringify(notebook, null, 2)
-			);
-
-			this.statusManager.updateStatus("Notebook created successfully");
-		} catch (error) {
-			console.error("NotebookService: Error creating notebook:", error);
-			this.statusManager.updateStatus("Failed to create notebook");
-			throw error;
-		}
-	}
-
-	/**
-	 * Generate a data download notebook with AI-generated code
-	 */
-	async generateDataDownloadNotebook(
-		query: string,
-		datasets: Dataset[],
-		workspaceDir: string
-	): Promise<string> {
-		try {
-			this.statusManager.updateStatus("Generating data download notebook...");
-
-			const notebookPath = `${workspaceDir}/data_download_${Date.now()}.ipynb`;
-
-			// Create notebook structure
-			const cells: NotebookCell[] = [
-				{
-					id: "header",
-					code: `# Data Download & Preprocessing\n\nThis notebook was generated by the AI agent for your question:\n\n> ${query}\n\n## Selected Datasets\n${datasets
-						.map((d, i) => `- **${d.id}**: ${d.title} (${d.organism})`)
-						.join(
-							"\n"
-						)}\n\n---\nYou can run each cell to download and preprocess the data yourself.`,
-					language: "markdown",
-				},
-				{
-					id: "setup",
-					code: `# Setup and Imports
-import pandas as pd
-import numpy as np
-import requests
-import os
-from pathlib import Path
-
-# Create data directory
-data_dir = Path('data')
-data_dir.mkdir(exist_ok=True)
-
-print("Setup completed successfully!")`,
-					language: "python",
-				},
-			];
-
-			// Add dataset download cells with AI-generated code if available
-			for (let i = 0; i < datasets.length; i++) {
-				const dataset = datasets[i];
-				this.statusManager.updateStatus(
-					`Generating download code for dataset ${i + 1}/${datasets.length}: ${
-						dataset.id
-					}`
-				);
-
-				let code: string;
-				if (this.codeGenerationService) {
-					// Use AI to generate download code
-					const request: CodeGenerationRequest = {
-						stepDescription: `Download and preprocess dataset ${dataset.id} (${dataset.title})`,
-						originalQuestion: query,
-						datasets: [dataset],
-						workingDir: workspaceDir,
-						stepIndex: i,
-					};
-
-					const result =
-						await this.codeGenerationService.generateDataDrivenStepCode(
-							request
-						);
-					code = result.code;
-				} else {
-					// Fallback to basic template
-					code = `# Download Dataset: ${dataset.title}
-print(f"Downloading dataset: {dataset.title}")
-
-# TODO: Implement download logic for ${dataset.id}
-# URL: ${dataset.url || "Not available"}
-
-print("Dataset download completed!")`;
-				}
-
-				cells.push({
-					id: `dataset-${dataset.id}`,
-					code: code,
-					language: "python",
-				});
-			}
-
-			await this.createNotebook(notebookPath, cells);
-
-			this.statusManager.updateStatus(
-				"Data download notebook generated successfully"
-			);
-			return notebookPath;
-		} catch (error) {
-			console.error(
-				"NotebookService: Error generating data download notebook:",
-				error
-			);
-			this.statusManager.updateStatus(
-				"Failed to generate data download notebook"
-			);
-			throw error;
-		}
-	}
-
-	/**
-	 * Generate a unified analysis notebook with AI-generated code
-	 */
-	async generateUnifiedNotebook(
-		query: string,
-		datasets: Dataset[],
-		analysisSteps: any[],
-		workspaceDir: string
-	): Promise<string> {
-		try {
-			this.statusManager.updateStatus(
-				"Generating unified analysis notebook..."
-			);
-
-			const notebookPath = `${workspaceDir}/analysis_${Date.now()}.ipynb`;
-
-			// Create notebook structure
-			const cells: NotebookCell[] = [
-				{
-					id: "header",
-					code: `# Complete Analysis: ${query}\n\nThis notebook contains the complete analysis pipeline including data download and analysis.\n\n## Selected Datasets\n${datasets
-						.map((d, i) => `- **${d.id}**: ${d.title} (${d.organism})`)
-						.join("\n")}\n\n## Analysis Steps\n${analysisSteps
-						.map((step, i) => `${i + 1}. ${step.description}`)
-						.join("\n")}\n\n---\nAll steps will be executed in order.`,
-					language: "markdown",
-				},
-				{
-					id: "setup",
-					code: `# Setup and Imports
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-import os
-from pathlib import Path
-
-# Create output directories
-results_dir = Path('results')
-figures_dir = Path('figures')
-results_dir.mkdir(exist_ok=True)
-figures_dir.mkdir(exist_ok=True)
-
-print("Setup completed successfully!")`,
-					language: "python",
-				},
-			];
-
-			// Add analysis step cells with AI-generated code if available
-			for (let i = 0; i < analysisSteps.length; i++) {
-				const step = analysisSteps[i];
-				let code: string;
-
-				if (this.codeGenerationService && step.description) {
-					// Use AI to generate analysis code
-					const request: CodeGenerationRequest = {
-						stepDescription: step.description,
-						originalQuestion: query,
-						datasets: datasets,
-						workingDir: workspaceDir,
-						stepIndex: i,
-					};
-
-					const result =
-						await this.codeGenerationService.generateDataDrivenStepCode(
-							request
-						);
-					code = result.code;
-				} else {
-					// Use existing code or fallback
-					code =
-						step.code ||
-						`# ${step.description}\nprint("Analysis step ${i + 1}")`;
-				}
-
-				cells.push({
-					id: `step-${i}`,
-					code: code,
-					language: "python",
-					title: step.description,
-				});
-			}
-
-			await this.createNotebook(notebookPath, cells);
-
-			this.statusManager.updateStatus(
-				"Unified analysis notebook generated successfully"
-			);
-			return notebookPath;
-		} catch (error) {
-			console.error(
-				"NotebookService: Error generating unified notebook:",
-				error
-			);
-			this.statusManager.updateStatus(
-				"Failed to generate unified analysis notebook"
-			);
-			throw error;
-		}
-	}
-
-	/**
-	 * Set status callback for this service
-	 */
-	setStatusCallback(callback: (message: string) => void) {
-		// Convert string callback to StatusUpdate callback
-		this.statusManager.setStatusCallback((statusUpdate) => {
-			callback(statusUpdate.message);
 		});
 	}
 
 	/**
-	 * Set code generation service for AI-powered notebook generation
+	 * Open notebook in editor with proper file existence checking
 	 */
-	setCodeGenerationService(codeGenerationService: CodeGenerationService) {
-		this.codeGenerationService = codeGenerationService;
+	async openNotebookInEditor(notebookPath: string): Promise<boolean> {
+		// Wait for the file to exist before trying to open it
+		let attempts = 0;
+		const maxAttempts = 10;
+
+		while (attempts < maxAttempts) {
+			try {
+				// Check if file exists by trying to read it
+				await window.electronAPI.readFile(notebookPath);
+				break; // File exists, proceed to open
+			} catch (error) {
+				attempts++;
+				if (attempts >= maxAttempts) {
+					console.error(
+						`Notebook file not found after ${maxAttempts} attempts: ${notebookPath}`
+					);
+					return false;
+				}
+				// Wait 500ms before next attempt
+				await AsyncUtils.sleep(500);
+			}
+		}
+
+		// Dispatch an event to open the notebook file in the workspace
+		EventManager.dispatchEvent("open-workspace-file", {
+			filePath: notebookPath,
+		});
+
+		// Add a delay to allow the FileEditor to process the event and load the notebook
+		console.log(
+			`NotebookService: Waiting 1 second for FileEditor to process open-workspace-file event for ${notebookPath}`
+		);
+		await AsyncUtils.sleep(1000);
+
+		// Wait for the notebook to be ready with a longer timeout
+		console.log(
+			`NotebookService: Starting waitForNotebookReady for ${notebookPath}`
+		);
+		const readyResult = await this.waitForNotebookReady(notebookPath, 15000); // Increased timeout to 15 seconds
+		console.log(
+			`NotebookService: waitForNotebookReady result for ${notebookPath}:`,
+			readyResult
+		);
+
+		if (!readyResult.isReady) {
+			console.warn(`Notebook not ready after timeout: ${notebookPath}`);
+			// Try to verify if the file exists and is valid
+			try {
+				const fileContent = await window.electronAPI.readFile(notebookPath);
+				if (fileContent && fileContent.length > 0) {
+					try {
+						JSON.parse(fileContent);
+						console.log(
+							`Notebook file exists and is valid, proceeding anyway: ${notebookPath}`
+						);
+						return true; // File exists and is valid, proceed
+					} catch (parseError) {
+						console.error(`Notebook file is not valid JSON: ${notebookPath}`);
+						return false;
+					}
+				}
+			} catch (fileError) {
+				console.error(
+					`Could not read notebook file: ${notebookPath}`,
+					fileError
+				);
+				return false;
+			}
+		}
+
+		return readyResult.isReady;
+	}
+
+	/**
+	 * Generate and open a complete notebook with all cells
+	 */
+	async generateAndOpenNotebook(
+		options: NotebookGenerationOptions
+	): Promise<string | null> {
+		try {
+			// Create the notebook
+			const notebookPath = await this.createEmptyNotebook(
+				options.query,
+				options.datasets,
+				options.workspaceDir
+			);
+
+			// Open it in the editor
+			const opened = await this.openNotebookInEditor(notebookPath);
+
+			if (!opened) {
+				console.error("Failed to open notebook in editor");
+				return null;
+			}
+
+			return notebookPath;
+		} catch (error) {
+			console.error("Error generating and opening notebook:", error);
+			return null;
+		}
+	}
+
+	/**
+	 * Add multiple cells to notebook in sequence
+	 */
+	async addMultipleCells(
+		notebookPath: string,
+		cells: { type: "markdown" | "code"; content: string }[]
+	): Promise<boolean> {
+		try {
+			for (let i = 0; i < cells.length; i++) {
+				const cell = cells[i];
+
+				if (cell.type === "markdown") {
+					await this.addMarkdownCell(notebookPath, cell.content);
+				} else {
+					await this.addCodeCell(notebookPath, cell.content);
+				}
+
+				// Small delay between cells for better coordination
+				if (i < cells.length - 1) {
+					await AsyncUtils.sleep(100);
+				}
+			}
+			return true;
+		} catch (error) {
+			console.error("Error adding multiple cells:", error);
+			return false;
+		}
+	}
+
+	/**
+	 * Update notebook cell code
+	 */
+	async updateCellCode(
+		notebookPath: string,
+		cellIndex: number,
+		newCode: string
+	): Promise<boolean> {
+		try {
+			// Dispatch event to update cell code
+			EventManager.dispatchEvent("update-notebook-cell-code", {
+				filePath: notebookPath,
+				cellIndex: cellIndex,
+				code: newCode,
+			});
+			return true;
+		} catch (error) {
+			console.error("Error updating cell code:", error);
+			return false;
+		}
+	}
+
+	/**
+	 * Create notebook file with given cells
+	 */
+	private async createNotebook(
+		notebookPath: string,
+		cells: NotebookCell[]
+	): Promise<void> {
+		try {
+			// Create Jupyter notebook structure
+			const notebook = {
+				cells: cells.map((cell, index) => ({
+					id: cell.id || `cell-${index}`,
+					cell_type: cell.language === "markdown" ? "markdown" : "code",
+					source: cell.code.split("\n"),
+					metadata: {},
+					outputs: [],
+					execution_count: null,
+				})),
+				metadata: {
+					kernelspec: {
+						display_name: "Python 3",
+						language: "python",
+						name: this.kernelName,
+					},
+					language_info: {
+						name: "python",
+						version: "3.8+",
+					},
+				},
+				nbformat: 4,
+				nbformat_minor: 4,
+			};
+
+			// Write notebook file
+			const notebookContent = JSON.stringify(notebook, null, 2);
+			await window.electronAPI.writeFile(notebookPath, notebookContent);
+
+			console.log(
+				`NotebookService: Created notebook at ${notebookPath} with ${notebookContent.length} bytes`
+			);
+
+			// Verify the file was written correctly
+			try {
+				const writtenContent = await window.electronAPI.readFile(notebookPath);
+				console.log(
+					`NotebookService: Verified notebook file has ${writtenContent.length} bytes`
+				);
+			} catch (verifyError) {
+				console.warn(
+					`NotebookService: Could not verify written notebook file: ${verifyError}`
+				);
+			}
+		} catch (error) {
+			console.error("NotebookService: Error creating notebook:", error);
+			throw error;
+		}
 	}
 }

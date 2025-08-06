@@ -1,11 +1,4 @@
-import { Dataset } from "./AnalysisPlanner";
-import { StatusManager } from "./StatusManager";
-
-export interface DataTypeAnalysis {
-	dataTypes: string[];
-	recommendedTools: string[];
-	analysisApproaches: string[];
-}
+import { Dataset, DataTypeAnalysis } from "./types";
 
 export interface FileAnalysis {
 	dataType: string;
@@ -13,17 +6,20 @@ export interface FileAnalysis {
 }
 
 export class DatasetManager {
-	private statusManager: StatusManager;
+	private statusCallback?: (status: string) => void;
 
 	constructor() {
-		this.statusManager = StatusManager.getInstance();
+		// No dependencies
 	}
 
 	setStatusCallback(callback: (status: string) => void) {
-		// Convert string callback to StatusUpdate callback
-		this.statusManager.setStatusCallback((statusUpdate) => {
-			callback(statusUpdate.message);
-		});
+		this.statusCallback = callback;
+	}
+
+	private updateStatus(message: string) {
+		if (this.statusCallback) {
+			this.statusCallback(message);
+		}
 	}
 
 	/**
@@ -46,9 +42,7 @@ export class DatasetManager {
 		return Array.from(new Set(dataTypes));
 	}
 
-	private updateStatus(message: string) {
-		this.statusManager.updateStatus(message);
-	}
+	// Removed duplicate updateStatus method
 
 	async analyzeDataTypesAndSelectTools(
 		datasets: Dataset[],
@@ -91,6 +85,9 @@ export class DatasetManager {
 				dataTypes: detectedDataTypes,
 				recommendedTools: toolRecommendations.tools,
 				analysisApproaches: toolRecommendations.approaches,
+				dataComplexity: "moderate" as const,
+				suggestedApproach: "standard analysis pipeline",
+				estimatedCells: detectedDataTypes.length * 3,
 			};
 		} catch (error) {
 			console.error("Error analyzing data types:", error);
@@ -99,6 +96,9 @@ export class DatasetManager {
 				dataTypes: ["unknown"],
 				recommendedTools: ["pandas", "numpy", "matplotlib"],
 				analysisApproaches: ["basic_analysis"],
+				dataComplexity: "simple" as const,
+				suggestedApproach: "basic data exploration",
+				estimatedCells: 5,
 			};
 		}
 	}
@@ -206,8 +206,8 @@ export class DatasetManager {
 
 	inferDataTypeFromMetadata(dataset: Dataset): string {
 		const title = dataset.title.toLowerCase();
-		const description = dataset.description.toLowerCase();
-		const platform = dataset.platform.toLowerCase();
+		const description = (dataset.description || "").toLowerCase();
+		const platform = (dataset.platform || "").toLowerCase();
 
 		// Check for single-cell data first (more specific)
 		if (

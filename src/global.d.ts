@@ -58,6 +58,7 @@ export interface ElectronAPI {
 	onJupyterError: (callback: (data: string) => void) => void;
 	onVirtualEnvStatus: (callback: (data: any) => void) => void;
 	onJupyterCodeWriting: (callback: (data: any) => void) => void;
+	onJupyterNetworkError: (callback: (data: any) => void) => void;
 
 	onSetWorkspace: (callback: (workspacePath: string) => void) => void;
 	onTriggerOpenWorkspace: (callback: () => void) => void;

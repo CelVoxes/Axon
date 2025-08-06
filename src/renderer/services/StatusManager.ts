@@ -3,6 +3,16 @@
  */
 export type StatusCallback = (status: StatusUpdate) => void;
 
+export interface ErrorInfo {
+	message: string;
+	code?: string;
+	details?: any;
+	source: string;
+	timestamp: Date;
+	severity: "low" | "medium" | "high" | "critical";
+	recoverable: boolean;
+}
+
 export interface StatusUpdate {
 	message: string;
 	type: "info" | "success" | "warning" | "error" | "progress";
@@ -11,30 +21,31 @@ export interface StatusUpdate {
 	source?: string;
 }
 
-export interface StatusConfig {
+export interface StatusManagerConfig {
 	enableLogging?: boolean;
 	enableProgress?: boolean;
-	timeout?: number;
+	statusTimeout?: number;
+    enableNotifications?: boolean;
+	recoveryStrategies?: Map<string, () => Promise<void>>;
 }
 
 export class StatusManager {
 	private statusCallback?: StatusCallback;
-	private config: StatusConfig;
+	private config: StatusManagerConfig;
 	private static instance: StatusManager;
 
-	constructor(config: StatusConfig = {}) {
+	private constructor(config: StatusManagerConfig = {}) {
 		this.config = {
 			enableLogging: true,
 			enableProgress: true,
-			timeout: 5000,
+			statusTimeout: 5000,
+            enableNotifications: true,
+			recoveryStrategies: new Map(),
 			...config,
 		};
 	}
 
-	/**
-	 * Get singleton instance
-	 */
-	static getInstance(config?: StatusConfig): StatusManager {
+	static getInstance(config?: StatusManagerConfig): StatusManager {
 		if (!StatusManager.instance) {
 			StatusManager.instance = new StatusManager(config);
 		}
@@ -68,9 +79,145 @@ export class StatusManager {
 		}
 	}
 
-	/**
-	 * Update status with progress information
-	 */
+    // --- Start of Merged ErrorHandler Logic ---
+
+    handleError(
+		error: Error | string,
+		source: string,
+		severity: ErrorInfo["severity"] = "medium",
+		recoverable: boolean = true,
+		details?: any
+	): ErrorInfo {
+		const errorInfo: ErrorInfo = {
+			message: typeof error === "string" ? error : error.message,
+			code:
+				typeof error === "object" && "code" in error
+					? (error as any).code
+					: undefined,
+			details,
+			source,
+			timestamp: new Date(),
+			severity,
+			recoverable,
+		};
+
+		// Log the error
+		if (this.config.enableLogging) {
+			console.error(`[${source}] ${severity.toUpperCase()}:`, errorInfo);
+		}
+
+		// Update status
+		const statusType =
+			severity === "critical" || severity === "high" ? "error" : "warning";
+		this.updateStatus(errorInfo.message, statusType, source);
+
+		// Attempt recovery if possible
+		if (recoverable && this.config.recoveryStrategies?.has(source)) {
+			this.attemptRecovery(source, errorInfo);
+		}
+
+		return errorInfo;
+	}
+
+    async handleAsyncError<T>(
+		asyncOperation: () => Promise<T>,
+		source: string,
+		severity: ErrorInfo["severity"] = "medium",
+		fallback?: T
+	): Promise<T> {
+		try {
+			return await asyncOperation();
+		} catch (error) {
+			this.handleError(error as Error | string, source, severity, true);
+			if (fallback !== undefined) {
+				return fallback;
+			}
+			throw error;
+		}
+	}
+
+	addRecoveryStrategy(source: string, strategy: () => Promise<void>) {
+		this.config.recoveryStrategies?.set(source, strategy);
+	}
+
+	private async attemptRecovery(source: string, errorInfo: ErrorInfo) {
+		const strategy = this.config.recoveryStrategies?.get(source);
+		if (strategy) {
+			try {
+				this.updateStatus(
+					`Attempting recovery for ${source}...`,
+					"info",
+					source
+				);
+				await strategy();
+				this.success(`Recovery successful for ${source}`, source);
+			} catch (recoveryError) {
+				this.error(
+					`Recovery failed for ${source}: ${recoveryError}`,
+					"StatusManager"
+				);
+			}
+		}
+	}
+
+    createSafeWrapper<T>(
+		operation: () => T | Promise<T>,
+		source: string,
+		severity: ErrorInfo["severity"] = "medium",
+		fallback?: T
+	): () => T | Promise<T> {
+		return async () => {
+			try {
+				const result = operation();
+				return result instanceof Promise ? await result : result;
+			} catch (error) {
+				this.handleError(error as Error | string, source, severity, true);
+				if (fallback !== undefined) {
+					return fallback;
+				}
+				throw error;
+			}
+		};
+	}
+
+    validateInput<T>(
+		input: T,
+		validator: (input: T) => boolean,
+		source: string,
+		errorMessage: string
+	): T {
+		if (!validator(input)) {
+			this.handleError(errorMessage, source, "medium", true);
+			throw new Error(errorMessage);
+		}
+		return input;
+	}
+
+    handleNetworkError(error: any, source: string): ErrorInfo {
+		const isNetworkError =
+			error.code === "NETWORK_ERROR" ||
+			error.message?.includes("network") ||
+			error.message?.includes("fetch");
+
+		return this.handleError(
+			error,
+			source,
+			isNetworkError ? "medium" : "high",
+			true,
+			{ isNetworkError }
+		);
+	}
+
+	handleAPIError(error: any, source: string, endpoint?: string): ErrorInfo {
+		return this.handleError(error, source, "medium", true, {
+			endpoint,
+			statusCode: error.status,
+		});
+	}
+
+    // --- End of Merged ErrorHandler Logic ---
+
+
 	updateStatusWithProgress(message: string, progress: number, source?: string) {
 		const statusUpdate: StatusUpdate = {
 			message,
@@ -91,9 +238,6 @@ export class StatusManager {
 		}
 	}
 
-	/**
-	 * Update status with a formatted message
-	 */
 	updateStatusFormatted(
 		step: string,
 		message: string,
@@ -103,9 +247,6 @@ export class StatusManager {
 		this.updateStatus(`${step}: ${message}`, type, source);
 	}
 
-	/**
-	 * Chain multiple status updates
-	 */
 	chainStatusUpdates(
 		updates: Array<{
 			message: string;
@@ -121,37 +262,22 @@ export class StatusManager {
 		});
 	}
 
-	/**
-	 * Success status update
-	 */
 	success(message: string, source?: string) {
 		this.updateStatus(message, "success", source);
 	}
 
-	/**
-	 * Warning status update
-	 */
 	warning(message: string, source?: string) {
 		this.updateStatus(message, "warning", source);
 	}
 
-	/**
-	 * Error status update
-	 */
-	error(message: string, source?: string) {
-		this.updateStatus(message, "error", source);
+	error(message: string | Error, source: string, details?: any) {
+        this.handleError(message, source, "medium", true, details);
 	}
 
-	/**
-	 * Info status update
-	 */
 	info(message: string, source?: string) {
 		this.updateStatus(message, "info", source);
 	}
 
-	/**
-	 * Clear status (useful for resetting)
-	 */
 	clear(source?: string) {
 		this.updateStatus("", "info", source);
 	}

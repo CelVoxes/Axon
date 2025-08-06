@@ -1,5 +1,5 @@
 import React from "react";
-import { DataTypeSuggestions, AnalysisSuggestion } from "../../services/AnalysisSuggestionsService";
+import { DataTypeSuggestions, AnalysisSuggestion } from "../../services/AnalysisOrchestrationService";
 
 interface AnalysisSuggestionsComponentProps {
 	suggestions: DataTypeSuggestions;
@@ -41,7 +41,7 @@ export const AnalysisSuggestionsComponent: React.FC<AnalysisSuggestionsComponent
 				<div className="suggestions-section">
 					<h4>Recommended Analyses:</h4>
 					<div className="suggestions-grid">
-						{suggestions.suggestions.map((suggestion, index) => (
+						{suggestions.suggestions.map((suggestion: AnalysisSuggestion, index: number) => (
 							<div
 								key={index}
 								className="suggestion-card"
@@ -83,13 +83,13 @@ export const AnalysisSuggestionsComponent: React.FC<AnalysisSuggestionsComponent
 				<div className="approaches-section">
 					<h4>Recommended Approaches:</h4>
 					<div className="approaches-list">
-						{suggestions.recommended_approaches.map((approach, index) => (
+						{suggestions.recommended_approaches.map((approach: any, index: number) => (
 							<div key={index} className="approach-item">
 								<div className="approach-title">{approach.approach}</div>
 								<div className="approach-description">{approach.description}</div>
 								<div className="approach-tools">
 									<span className="tools-label">Tools:</span>
-									{approach.tools.map((tool, toolIndex) => (
+									{approach.tools.map((tool: string, toolIndex: number) => (
 										<span key={toolIndex} className="tool-badge">{tool}</span>
 									))}
 								</div>
@@ -112,7 +112,7 @@ export const AnalysisSuggestionsComponent: React.FC<AnalysisSuggestionsComponent
 				<div className="next-steps-section">
 					<h4>Next Steps:</h4>
 					<ol className="next-steps-list">
-						{suggestions.next_steps.map((step, index) => (
+						{suggestions.next_steps.map((step: string, index: number) => (
 							<li key={index}>{step}</li>
 						))}
 					</ol>

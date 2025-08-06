@@ -60,7 +60,7 @@ type AppAction =
 	| { type: "SET_BIORAG_CONNECTED"; payload: boolean }
 	| { type: "SET_ANALYZING"; payload: boolean }
 	| { type: "SET_JUPYTER_URL"; payload: string | null }
-	| { type: "ADD_MESSAGE"; payload: Omit<Message, "id" | "timestamp"> }
+	| { type: "ADD_MESSAGE"; payload: Omit<Message, "id" | "timestamp"> & { id?: string } }
 	| {
 			type: "UPDATE_MESSAGE";
 			payload: { id: string; updates: Partial<Message> };
@@ -164,7 +164,7 @@ function appReducer(state: AppState, action: AppAction): AppState {
 		case "ADD_MESSAGE":
 			const newMessage: Message = {
 				...action.payload,
-				id: Math.random().toString(36).substring(7),
+				id: action.payload.id || Math.random().toString(36).substring(7),
 				timestamp: new Date(),
 			};
 			return { ...state, messages: [...state.messages, newMessage] };
