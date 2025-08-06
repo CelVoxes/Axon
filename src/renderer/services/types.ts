@@ -46,11 +46,11 @@ export interface AnalysisPlan {
 
 // Code Generation Event Types
 export interface CodeGenerationEvents {
-	'code-generation-started': CodeGenerationStartedEvent;
-	'code-generation-chunk': CodeGenerationChunkEvent;
-	'code-generation-completed': CodeGenerationCompletedEvent;
-	'code-generation-failed': CodeGenerationFailedEvent;
-	'code-validation-error': CodeValidationErrorEvent;
+	"code-generation-started": CodeGenerationStartedEvent;
+	"code-generation-chunk": CodeGenerationChunkEvent;
+	"code-generation-completed": CodeGenerationCompletedEvent;
+	"code-generation-failed": CodeGenerationFailedEvent;
+	"code-validation-error": CodeValidationErrorEvent;
 }
 
 export interface CodeGenerationStartedEvent {
@@ -104,6 +104,10 @@ export interface CodeGenerationRequest {
 	workingDir: string;
 	stepIndex: number;
 	previousCode?: string;
+	globalCodeContext?: string; // Add global code context from entire conversation
+	fallbackMode?: "basic" | "timeout-safe" | "data-aware";
+	withTesting?: boolean;
+	stepId?: string;
 }
 
 export interface CodeGenerationResult {
@@ -134,6 +138,7 @@ export interface CodeQualityOptions {
 	stepTitle?: string;
 	maxRetries?: number;
 	timeoutMs?: number;
+	globalCodeContext?: string;
 }
 
 export interface CodeValidationResult {
@@ -150,23 +155,11 @@ export interface CodeValidationResult {
 // ========== SERVICE INTERFACES FOR DEPENDENCY INJECTION ==========
 
 export interface ICodeGenerator {
-	generateCodeWithEvents(
-		request: CodeGenerationRequest,
-		stepId: string
-	): Promise<CodeGenerationResult>;
-	
-	generateDataAwareBasicStepCodePublic(
-		stepDescription: string,
-		datasets: Dataset[],
-		stepIndex: number
-	): string;
-	
-	generateTimeoutSafeCodePublic(
-		stepDescription: string,
-		datasets: Dataset[],
-		stepIndex: number
-	): string;
-	
+	/**
+	 * Unified code generation method - handles all scenarios
+	 */
+	generateCode(request: CodeGenerationRequest): Promise<CodeGenerationResult>;
+
 	setModel(model: string): void;
 }
 
@@ -176,26 +169,26 @@ export interface ICodeExecutor {
 		code: string,
 		onProgress?: (updates: Partial<Cell>) => void
 	): Promise<ExecutionResult>;
-	
+
 	executeCellWithAnalysis(
 		cell: Cell,
 		onProgress?: (updates: Partial<Cell>) => void
 	): Promise<ExecutionResult>;
-	
+
 	updateWorkspacePath(newWorkspacePath: string): void;
 }
 
 export interface ICodeQualityValidator {
 	validateOnly(code: string, stepId: string): Promise<CodeValidationResult>;
-	
+
 	validateAndTest(
 		code: string,
 		stepId: string,
 		options?: CodeQualityOptions
 	): Promise<CodeValidationResult>;
-	
+
 	getBestCode(result: CodeValidationResult): string;
-	
+
 	setStatusCallback(callback: (status: string) => void): void;
 }
 
@@ -205,14 +198,14 @@ export interface IBackendClient {
 		language?: string;
 		context?: string;
 	}): Promise<any>;
-	
+
 	generateCodeFix(request: {
 		prompt: string;
 		model: string;
 		max_tokens?: number;
 		temperature?: number;
 	}): Promise<any>;
-	
+
 	generateSuggestions(request: {
 		dataTypes: string[];
 		query: string;

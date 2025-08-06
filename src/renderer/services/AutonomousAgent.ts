@@ -1,11 +1,11 @@
 import { BackendClient } from "./BackendClient";
-import { 
-	Dataset, 
+import {
+	Dataset,
 	AnalysisPlan,
 	CodeGenerationRequest,
 	ICodeGenerator,
 	ICodeExecutor,
-	ICodeQualityValidator
+	ICodeQualityValidator,
 } from "./types";
 import { DatasetManager } from "./DatasetManager";
 import { CodeGenerationService } from "./CodeGenerationService";
@@ -69,6 +69,10 @@ export class AutonomousAgent {
 	private shouldStopAnalysis: boolean = false;
 	private selectedModel: string = "gpt-4o-mini";
 
+	// Global code context to track all generated code across the conversation
+	private globalCodeContext = new Map<string, string>();
+	private conversationId: string;
+
 	constructor(
 		backendClient: BackendClient,
 		workspacePath: string,
@@ -80,17 +84,17 @@ export class AutonomousAgent {
 		this.datasetManager = new DatasetManager();
 		this.environmentManager = new EnvironmentManager(this.datasetManager);
 		this.workspaceManager = new WorkspaceManager();
-		
+
 		// Use dependency injection to break circular dependencies
 		this.codeGenerator = new CodeGenerationService(
 			backendClient,
 			selectedModel || "gpt-4o-mini"
 		);
 		this.codeExecutor = new CellExecutionService(workspacePath);
-		
+
 		// Create dependency-free code quality validator
 		this.codeQualityValidator = new CodeQualityOrchestrator(backendClient);
-		
+
 		this.notebookService = new NotebookService({
 			workspacePath,
 			kernelName: kernelName,
@@ -99,6 +103,11 @@ export class AutonomousAgent {
 		if (selectedModel) {
 			this.selectedModel = selectedModel;
 		}
+
+		// Initialize conversation tracking
+		this.conversationId = `conv_${Date.now()}_${Math.random()
+			.toString(36)
+			.substr(2, 9)}`;
 	}
 
 	private async updateKernelNameFromWorkspace(): Promise<void> {
@@ -144,6 +153,72 @@ export class AutonomousAgent {
 		if (this.statusCallback) {
 			this.statusCallback(message);
 		}
+	}
+
+	// ========== GLOBAL CODE CONTEXT MANAGEMENT ==========
+
+	/**
+	 * Add code to the global context
+	 */
+	addCodeToContext(codeId: string, code: string): void {
+		this.globalCodeContext.set(codeId, code);
+		console.log(`📝 AutonomousAgent: Added code to global context: ${codeId}`);
+	}
+
+	/**
+	 * Get all code from the global context
+	 */
+	getGlobalCodeContext(): string {
+		const allCode = Array.from(this.globalCodeContext.values()).join("\n\n");
+		return allCode;
+	}
+
+	/**
+	 * Get code context as a formatted string for LLM prompts
+	 */
+	getFormattedCodeContext(): string {
+		if (this.globalCodeContext.size === 0) {
+			return "";
+		}
+
+		const contextEntries = Array.from(this.globalCodeContext.entries())
+			.map(([id, code]) => `// Code Block: ${id}\n${code}`)
+			.join("\n\n");
+
+		return `\n\nPREVIOUSLY GENERATED CODE (DO NOT REPEAT IMPORTS OR SETUP):
+\`\`\`python
+${contextEntries}
+\`\`\`
+
+IMPORTANT: Do not repeat imports, setup code, or functions that were already generated. Focus only on new functionality for this step.`;
+	}
+
+	/**
+	 * Clear the global code context (useful for new conversations)
+	 */
+	clearCodeContext(): void {
+		this.globalCodeContext.clear();
+		console.log("🧹 AutonomousAgent: Cleared global code context");
+	}
+
+	/**
+	 * Get the current conversation ID
+	 */
+	getConversationId(): string {
+		return this.conversationId;
+	}
+
+	/**
+	 * Start a new conversation (clears context and generates new ID)
+	 */
+	startNewConversation(): void {
+		this.clearCodeContext();
+		this.conversationId = `conv_${Date.now()}_${Math.random()
+			.toString(36)
+			.substr(2, 9)}`;
+		console.log(
+			`🆕 AutonomousAgent: Started new conversation: ${this.conversationId}`
+		);
 	}
 
 	/**
@@ -364,7 +439,7 @@ export class AutonomousAgent {
 	}
 
 	/**
-	 * Simplified method for step-by-step generation using events
+	 * Simplified method for step-by-step generation using unified method
 	 */
 	public async generateSingleStepCode(
 		stepDescription: string,
@@ -373,45 +448,28 @@ export class AutonomousAgent {
 		workingDir: string,
 		stepIndex: number
 	): Promise<string> {
-		try {
-			this.updateStatus(
-				`Generating AI code for: ${stepDescription.substring(0, 50)}...`
-			);
+		this.updateStatus(
+			`Generating AI code for: ${stepDescription.substring(0, 50)}...`
+		);
 
-			const request: CodeGenerationRequest = {
-				stepDescription,
-				originalQuestion,
-				datasets,
-				workingDir,
-				stepIndex,
-			};
-
-			// Generate unique step ID
-			const stepId = `step-${stepIndex}-${Date.now()}-${Math.random()
+		const request: CodeGenerationRequest = {
+			stepDescription,
+			originalQuestion,
+			datasets,
+			workingDir,
+			stepIndex,
+			globalCodeContext: this.getGlobalCodeContext(),
+			stepId: `step-${stepIndex}-${Date.now()}-${Math.random()
 				.toString(36)
-				.substr(2, 9)}`;
+				.substr(2, 9)}`,
+		};
 
-			// Use the new event-based method
-			const result = await this.codeGenerator.generateCodeWithEvents(
-				request,
-				stepId
-			);
+		const result = await this.codeGenerator.generateCode(request);
 
-			return result.code;
-		} catch (error) {
-			console.error(
-				`LLM code generation failed for "${stepDescription}":`,
-				error
-			);
-			this.updateStatus(
-				`Using fallback code for: ${stepDescription.substring(0, 50)}...`
-			);
-			return this.codeGenerator.generateDataAwareBasicStepCodePublic(
-				stepDescription,
-				datasets,
-				stepIndex
-			);
-		}
+		// Store the generated code in global context
+		this.addCodeToContext(request.stepId!, result.code);
+
+		return result.code;
 	}
 
 	async executeStep(
@@ -464,7 +522,7 @@ export class AutonomousAgent {
 	}
 
 	/**
-	 * Simplified dynamic code generation using events
+	 * Simplified dynamic code generation using unified method
 	 */
 	async generateDynamicCode(
 		step: AnalysisStep,
@@ -481,6 +539,9 @@ export class AutonomousAgent {
 		step.dataTypes = dataAnalysis.dataTypes;
 		step.tools = dataAnalysis.recommendedTools;
 
+		// Generate unique step ID for dynamic generation
+		const stepId = `dynamic-${step.id}-${Date.now()}`;
+
 		// Regenerate code with current context and data-driven tool selection
 		const request: CodeGenerationRequest = {
 			stepDescription: step.description,
@@ -488,15 +549,14 @@ export class AutonomousAgent {
 			datasets: analysisResult.datasets,
 			workingDir: analysisResult.workingDirectory,
 			stepIndex: parseInt(step.id.split("_")[1]) - 1,
+			globalCodeContext: this.getGlobalCodeContext(),
+			stepId,
 		};
 
-		// Generate unique step ID for dynamic generation
-		const stepId = `dynamic-${step.id}-${Date.now()}`;
+		const result = await this.codeGenerator.generateCode(request);
 
-		const result = await this.codeGenerator.generateCodeWithEvents(
-			request,
-			stepId
-		);
+		// Store the generated code in global context
+		this.addCodeToContext(stepId, result.code);
 
 		return result.code;
 	}
@@ -735,7 +795,7 @@ export class AutonomousAgent {
 	}
 
 	/**
-	 * Generate and test code for a single step
+	 * Generate and test code for a single step using unified method
 	 */
 	private async generateAndTestStepCode(
 		step: AnalysisStep,
@@ -744,57 +804,50 @@ export class AutonomousAgent {
 		workspaceDir: string,
 		stepIndex: number
 	): Promise<string> {
-		try {
-			// Generate code using CodeGenerationService
-			const request: CodeGenerationRequest = {
-				stepDescription: step.description,
-				originalQuestion: query,
-				datasets,
-				workingDir: workspaceDir,
-				stepIndex,
-			};
+		const stepId = `step-${stepIndex}-${Date.now()}`;
 
-			const stepId = `step-${stepIndex}-${Date.now()}`;
-			const result = await this.codeGenerator.generateCodeWithEvents(
-				request,
-				stepId
-			);
+		// Generate code using unified method with testing enabled
+		const request: CodeGenerationRequest = {
+			stepDescription: step.description,
+			originalQuestion: query,
+			datasets,
+			workingDir: workspaceDir,
+			stepIndex,
+			globalCodeContext: this.getGlobalCodeContext(),
+			withTesting: true,
+			stepId,
+		};
 
-			// Test the generated code using CodeQualityValidator
-			const testResult = await this.codeQualityValidator.validateAndTest(
-				result.code,
-				stepId,
-				{ stepTitle: step.description }
-			);
+		const result = await this.codeGenerator.generateCode(request);
 
-			// Return the best version of the code
-			return this.codeQualityValidator.getBestCode(testResult);
-		} catch (error) {
-			console.error(
-				`Error generating code for step: ${step.description}:`,
-				error
-			);
-			
-			// Check if this is related to a timeout issue and use safer code
-			const isTimeoutRelated = error instanceof Error && 
-				error.message.toLowerCase().includes('timeout');
-				
-			if (isTimeoutRelated) {
-				console.log("Using timeout-safe code generation for:", step.description);
-				return this.codeGenerator.generateTimeoutSafeCodePublic(
-					step.description,
-					datasets,
-					stepIndex
+		// Store the generated code in global context
+		this.addCodeToContext(stepId, result.code);
+
+		// If testing was requested, validate the code
+		if (request.withTesting) {
+			try {
+				const testResult = await this.codeQualityValidator.validateAndTest(
+					result.code,
+					stepId,
+					{
+						stepTitle: step.description,
+						globalCodeContext: this.getGlobalCodeContext(),
+					}
 				);
+
+				// Return the best version of the code
+				return this.codeQualityValidator.getBestCode(testResult);
+			} catch (testError) {
+				console.warn(
+					`Code testing failed for step: ${step.description}:`,
+					testError
+				);
+				// Return original code if testing fails
+				return result.code;
 			}
-			
-			// Return regular fallback code
-			return this.codeGenerator.generateDataAwareBasicStepCodePublic(
-				step.description,
-				datasets,
-				stepIndex
-			);
 		}
+
+		return result.code;
 	}
 
 	/**

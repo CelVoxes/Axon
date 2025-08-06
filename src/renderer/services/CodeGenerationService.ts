@@ -33,6 +33,96 @@ export class CodeGenerationService implements ICodeGenerator {
 	}
 
 	/**
+	 * UNIFIED CODE GENERATION METHOD
+	 * Handles all code generation scenarios with proper import deduplication
+	 */
+	async generateCode(
+		request: CodeGenerationRequest
+	): Promise<CodeGenerationResult> {
+		console.log(
+			"🎯 CodeGenerationService: generateCode for:",
+			request.stepDescription
+		);
+
+		const stepId =
+			request.stepId ||
+			`step-${request.stepIndex}-${Date.now()}-${Math.random()
+				.toString(36)
+				.substr(2, 9)}`;
+
+		try {
+			// Try LLM-based generation first (unless fallback mode is specified)
+			if (!request.fallbackMode) {
+				const result = await this.generateDataDrivenStepCodeWithEvents(
+					request,
+					stepId
+				);
+				return result;
+			}
+
+			// Use fallback mode
+			const fallbackCode = this.generateFallbackCode(request);
+			return {
+				code: fallbackCode,
+				success: true,
+			};
+		} catch (error) {
+			console.error("🎯 LLM generation failed, using fallback:", error);
+
+			// Determine appropriate fallback mode
+			const isTimeoutRelated =
+				error instanceof Error &&
+				error.message.toLowerCase().includes("timeout");
+			const effectiveFallbackMode =
+				request.fallbackMode ||
+				(isTimeoutRelated ? "timeout-safe" : "data-aware");
+
+			const fallbackCode = this.generateFallbackCode({
+				...request,
+				fallbackMode: effectiveFallbackMode,
+			});
+
+			return {
+				code: fallbackCode,
+				success: false,
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+	}
+
+	/**
+	 * Generate fallback code based on the specified mode
+	 */
+	private generateFallbackCode(request: CodeGenerationRequest): string {
+		const existingImports = this.getExistingImports(request.globalCodeContext);
+
+		switch (request.fallbackMode) {
+			case "basic":
+				return this.generateBasicStepCode(
+					request.stepDescription,
+					request.stepIndex,
+					existingImports
+				);
+			case "timeout-safe":
+				return this.generateTimeoutSafeCode(
+					request.stepDescription,
+					request.datasets,
+					request.stepIndex,
+					existingImports
+				);
+			case "data-aware":
+			default:
+				return this.generateDataAwareBasicStepCode(
+					request.stepDescription,
+					request.datasets,
+					request.stepIndex,
+					existingImports
+				);
+		}
+	}
+
+	/**
+	 * @deprecated Use generateCode() instead
 	 * Main method for generating code with event-driven streaming
 	 * This replaces all the complex callback management
 	 */
@@ -48,6 +138,74 @@ export class CodeGenerationService implements ICodeGenerator {
 		return await this.generateDataDrivenStepCodeWithEvents(request, stepId);
 	}
 
+	/**
+	 * Extract imports from code string
+	 */
+	private extractImports(code: string): Set<string> {
+		const imports = new Set<string>();
+		const lines = code.split("\n");
+
+		for (const line of lines) {
+			const trimmedLine = line.trim();
+			// Match various import patterns
+			if (
+				trimmedLine.startsWith("import ") ||
+				trimmedLine.startsWith("from ") ||
+				trimmedLine.match(/^import\s+\w+/)
+			) {
+				imports.add(trimmedLine);
+			}
+		}
+
+		return imports;
+	}
+
+	/**
+	 * Get all imports from global code context
+	 */
+	private getExistingImports(globalCodeContext?: string): Set<string> {
+		const allImports = new Set<string>();
+
+		if (globalCodeContext) {
+			const imports = this.extractImports(globalCodeContext);
+			imports.forEach((imp) => allImports.add(imp));
+		}
+
+		return allImports;
+	}
+
+	/**
+	 * Remove duplicate imports from code
+	 */
+	private removeDuplicateImports(
+		code: string,
+		existingImports: Set<string>
+	): string {
+		const lines = code.split("\n");
+		const filteredLines: string[] = [];
+
+		for (const line of lines) {
+			const trimmedLine = line.trim();
+			// Check if this line is an import
+			if (
+				trimmedLine.startsWith("import ") ||
+				trimmedLine.startsWith("from ") ||
+				trimmedLine.match(/^import\s+\w+/)
+			) {
+				// Only add if this import doesn't already exist
+				if (!existingImports.has(trimmedLine)) {
+					filteredLines.push(line);
+					existingImports.add(trimmedLine); // Track this new import
+				}
+			} else {
+				// Non-import line, always include
+				filteredLines.push(line);
+			}
+		}
+
+		return filteredLines.join("\n");
+	}
+
 	private buildEnhancedContext(request: CodeGenerationRequest): string {
 		const datasetInfo = request.datasets
 			.map(
@@ -58,6 +216,10 @@ export class CodeGenerationService implements ICodeGenerator {
 			)
 			.join("\n");
 
+		// Get existing imports from global context
+		const existingImports = this.getExistingImports(request.globalCodeContext);
+		const existingImportsList = Array.from(existingImports).join("\n");
+
 		let context = `Original question: ${request.originalQuestion}
 Working directory: ${request.workingDir}
 Step index: ${request.stepIndex}
@@ -67,15 +229,34 @@ ${datasetInfo}
 
 Requirements:
 - Use proper error handling with try-except blocks
-- Include all necessary imports
 - Add progress print statements
 - Save outputs to appropriate directories (results/, figures/)
 - Handle missing or corrupted data gracefully
 - Use robust data validation
 - Follow Python best practices`;
 
-		// Add previously generated code as context if available
-		if (request.previousCode) {
+		// Add global code context from entire conversation if available
+		if (request.globalCodeContext && request.globalCodeContext.trim()) {
+			context += `\n\n⚠️  CRITICAL: The following code has already been generated. DO NOT repeat any of it! ⚠️
+
+PREVIOUSLY GENERATED CODE FROM ENTIRE CONVERSATION:
+\`\`\`python
+${request.globalCodeContext}
+\`\`\`
+
+CRITICAL INSTRUCTIONS:
+- The following imports are ALREADY AVAILABLE - DO NOT include them again:
+${existingImportsList ? existingImportsList : "  (No imports detected yet)"}
+- DO NOT repeat any setup code, function definitions, or variable assignments from previous cells
+- DO NOT create output directories or define helper functions that already exist
+- Focus ONLY on the new analysis functionality for this specific step
+- Start your code directly with the analysis logic, not with imports or setup
+- If you need new imports that aren't listed above, you may include them
+
+YOUR CODE SHOULD START WITH THE ANALYSIS LOGIC, NOT WITH EXISTING IMPORTS!`;
+		}
+		// Fallback to step-specific previous code if no global context
+		else if (request.previousCode) {
 			context += `\n\nPreviously generated code (DO NOT REPEAT IMPORTS OR SETUP):
 \`\`\`python
 ${request.previousCode}
@@ -184,14 +365,18 @@ IMPORTANT: Do not repeat imports or setup code that was already generated. Focus
 				throw new Error("No code generated from streaming");
 			}
 
-			// Return the generated code as-is (cleaning handled by CodeQualityService)
-			const finalCode =
-				finalGeneratedCode ||
-				this.generateDataAwareBasicStepCode(
-					request.stepDescription,
-					request.datasets,
-					request.stepIndex
-				);
+			// Clean up any duplicate imports before returning
+			const existingImports = this.getExistingImports(
+				request.globalCodeContext
+			);
+			const finalCode = finalGeneratedCode
+				? this.removeDuplicateImports(finalGeneratedCode, existingImports)
+				: this.generateDataAwareBasicStepCode(
+						request.stepDescription,
+						request.datasets,
+						request.stepIndex,
+						existingImports
+				  );
 
 			console.log("🎯 Final code length after cleaning:", finalCode.length);
 
@@ -301,10 +486,11 @@ IMPORTANT: Do not repeat imports or setup code that was already generated. Focus
 
 	private generateBasicStepCode(
 		stepDescription: string,
-		stepIndex: number
+		stepIndex: number,
+		existingImports?: Set<string>
 	): string {
 		// Fallback code generation when LLM is not available
-		return `# Step ${stepIndex + 1}: ${stepDescription}
+		let code = `# Step ${stepIndex + 1}: ${stepDescription}
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -317,16 +503,24 @@ print(f"Executing step {stepIndex + 1}: {stepDescription}")
 
 print("Step completed successfully!")
 `;
+
+		// Remove duplicate imports if existing imports are provided
+		if (existingImports && existingImports.size > 0) {
+			code = this.removeDuplicateImports(code, new Set(existingImports));
+		}
+
+		return code;
 	}
 
 	private generateDataAwareBasicStepCode(
 		stepDescription: string,
 		datasets: any[],
-		stepIndex: number
+		stepIndex: number,
+		existingImports?: Set<string>
 	): string {
 		const datasetIds = datasets.map((d) => d.id).join(", ");
 
-		return `# Step ${stepIndex + 1}: ${stepDescription}
+		let code = `# Step ${stepIndex + 1}: ${stepDescription}
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -346,19 +540,24 @@ print(f"Available data files: {data_files}")
 
 print("Step completed successfully!")
 `;
+
+		// Remove duplicate imports if existing imports are provided
+		if (existingImports && existingImports.size > 0) {
+			code = this.removeDuplicateImports(code, new Set(existingImports));
+		}
+
+		return code;
 	}
 
 	/**
+	 * @deprecated Use generateCode() instead
 	 * Generate single step code with events (main public method)
 	 */
 	async generateSingleStepCode(
 		request: CodeGenerationRequest,
 		stepId?: string
 	): Promise<CodeGenerationResult> {
-		const actualStepId =
-			stepId ||
-			`single-step-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-		return this.generateCodeWithEvents(request, actualStepId);
+		return this.generateCode({ ...request, stepId });
 	}
 
 	/**
@@ -418,10 +617,11 @@ print("Step completed successfully!")
 	private generateTimeoutSafeCode(
 		stepDescription: string,
 		datasets: any[],
-		stepIndex: number
+		stepIndex: number,
+		existingImports?: Set<string>
 	): string {
 		const datasetIds = datasets.map((d) => d.id).join(", ");
-		return `# Step ${stepIndex + 1}: ${stepDescription} (Safe Mode)
+		let code = `# Step ${stepIndex + 1}: ${stepDescription} (Safe Mode)
 import os
 import sys
 
@@ -442,37 +642,59 @@ except Exception as e:
 
 print("Safe step completed!")
 `;
+
+		// Remove duplicate imports if existing imports are provided
+		if (existingImports && existingImports.size > 0) {
+			code = this.removeDuplicateImports(code, new Set(existingImports));
+		}
+
+		return code;
 	}
 
+	// @deprecated - Use generateCode() instead
 	// Public wrapper methods for fallback code generation
 	public generateBasicStepCodePublic(
 		stepDescription: string,
-		stepIndex: number
+		stepIndex: number,
+		globalCodeContext?: string
 	): string {
-		return this.generateBasicStepCode(stepDescription, stepIndex);
-	}
-
-	public generateDataAwareBasicStepCodePublic(
-		stepDescription: string,
-		datasets: any[],
-		stepIndex: number
-	): string {
-		return this.generateDataAwareBasicStepCode(
+		const existingImports = this.getExistingImports(globalCodeContext);
+		return this.generateBasicStepCode(
 			stepDescription,
-			datasets,
-			stepIndex
+			stepIndex,
+			existingImports
 		);
 	}
 
+	// @deprecated - Use generateCode() instead
+	public generateDataAwareBasicStepCodePublic(
+		stepDescription: string,
+		datasets: any[],
+		stepIndex: number,
+		globalCodeContext?: string
+	): string {
+		const existingImports = this.getExistingImports(globalCodeContext);
+		return this.generateDataAwareBasicStepCode(
+			stepDescription,
+			datasets,
+			stepIndex,
+			existingImports
+		);
+	}
+
+	// @deprecated - Use generateCode() instead
 	public generateTimeoutSafeCodePublic(
 		stepDescription: string,
 		datasets: any[],
-		stepIndex: number
+		stepIndex: number,
+		globalCodeContext?: string
 	): string {
+		const existingImports = this.getExistingImports(globalCodeContext);
 		return this.generateTimeoutSafeCode(
 			stepDescription,
 			datasets,
-			stepIndex
+			stepIndex,
+			existingImports
 		);
 	}
 }

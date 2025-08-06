@@ -53,14 +53,85 @@ export class AnalysisOrchestrationService {
 	private workspaceManager: WorkspaceManager;
 	private statusCallback?: (status: string) => void;
 
+	// Global code context to track all generated code across the conversation
+	private globalCodeContext = new Map<string, string>();
+	private conversationId: string;
+
 	constructor(backendClient: BackendClient) {
 		this.backendClient = backendClient;
 		this.workspaceManager = new WorkspaceManager();
+		this.conversationId = `conv_${Date.now()}_${Math.random()
+			.toString(36)
+			.substr(2, 9)}`;
 	}
 
 	setStatusCallback(callback: (status: string) => void) {
 		this.statusCallback = callback;
 		this.workspaceManager.setStatusCallback(callback);
+	}
+
+	// ========== GLOBAL CODE CONTEXT MANAGEMENT ==========
+
+	/**
+	 * Add code to the global context
+	 */
+	addCodeToContext(codeId: string, code: string): void {
+		this.globalCodeContext.set(codeId, code);
+		console.log(`📝 Added code to global context: ${codeId}`);
+	}
+
+	/**
+	 * Get all code from the global context
+	 */
+	getGlobalCodeContext(): string {
+		const allCode = Array.from(this.globalCodeContext.values()).join("\n\n");
+		return allCode;
+	}
+
+	/**
+	 * Get code context as a formatted string for LLM prompts
+	 */
+	getFormattedCodeContext(): string {
+		if (this.globalCodeContext.size === 0) {
+			return "";
+		}
+
+		const contextEntries = Array.from(this.globalCodeContext.entries())
+			.map(([id, code]) => `// Code Block: ${id}\n${code}`)
+			.join("\n\n");
+
+		return `\n\nPREVIOUSLY GENERATED CODE (DO NOT REPEAT IMPORTS OR SETUP):
+\`\`\`python
+${contextEntries}
+\`\`\`
+
+IMPORTANT: Do not repeat imports, setup code, or functions that were already generated. Focus only on new functionality for this step.`;
+	}
+
+	/**
+	 * Clear the global code context (useful for new conversations)
+	 */
+	clearCodeContext(): void {
+		this.globalCodeContext.clear();
+		console.log("🧹 Cleared global code context");
+	}
+
+	/**
+	 * Get the current conversation ID
+	 */
+	getConversationId(): string {
+		return this.conversationId;
+	}
+
+	/**
+	 * Start a new conversation (clears context and generates new ID)
+	 */
+	startNewConversation(): void {
+		this.clearCodeContext();
+		this.conversationId = `conv_${Date.now()}_${Math.random()
+			.toString(36)
+			.substr(2, 9)}`;
+		console.log(`🆕 Started new conversation: ${this.conversationId}`);
 	}
 
 	private updateStatus(message: string) {

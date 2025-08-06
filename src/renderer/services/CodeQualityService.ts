@@ -23,6 +23,7 @@ export interface CodeQualityOptions {
 	addErrorHandling?: boolean;
 	addDirectoryCreation?: boolean;
 	stepDescription?: string;
+	globalCodeContext?: string;
 }
 
 export interface BatchTestResult {
@@ -107,7 +108,8 @@ export class CodeQualityService {
 				addImports,
 				addErrorHandling,
 				addDirectoryCreation,
-				stepDescription
+				stepDescription,
+				globalCodeContext: options.globalCodeContext
 			});
 		}
 
@@ -225,6 +227,7 @@ export class CodeQualityService {
 		addErrorHandling?: boolean;
 		addDirectoryCreation?: boolean;
 		stepDescription?: string;
+		globalCodeContext?: string;
 	} = {}): string {
 		if (!code || !code.trim()) {
 			console.warn("CodeQualityService: Empty code provided to cleanAndPrepareCode");
@@ -253,7 +256,7 @@ print("Code placeholder - original code was empty or only contained markdown")`;
 
 		// Add imports if requested and missing
 		if (options.addImports && !this.hasBasicImports(cleanedCode)) {
-			cleanedCode = this.addBasicImports(cleanedCode);
+			cleanedCode = this.addBasicImports(cleanedCode, options.globalCodeContext);
 		}
 
 		// Add error handling if requested and missing
@@ -472,8 +475,69 @@ ${code.replace(/while\s+(True|1):/g, (match) => {
 		);
 	}
 
-	private addBasicImports(code: string): string {
-		return `import pandas as pd
+	/**
+	 * Extract imports from code string
+	 */
+	private extractImports(code: string): Set<string> {
+		const imports = new Set<string>();
+		const lines = code.split('\n');
+		
+		for (const line of lines) {
+			const trimmedLine = line.trim();
+			// Match various import patterns
+			if (trimmedLine.startsWith('import ') || 
+				trimmedLine.startsWith('from ') ||
+				trimmedLine.match(/^import\s+\w+/)) {
+				imports.add(trimmedLine);
+			}
+		}
+		
+		return imports;
+	}
+
+	/**
+	 * Get all imports from global code context
+	 */
+	private getExistingImports(globalCodeContext?: string): Set<string> {
+		const allImports = new Set<string>();
+		
+		if (globalCodeContext) {
+			const imports = this.extractImports(globalCodeContext);
+			imports.forEach(imp => allImports.add(imp));
+		}
+		
+		return allImports;
+	}
+
+	/**
+	 * Remove duplicate imports from code
+	 */
+	private removeDuplicateImports(code: string, existingImports: Set<string>): string {
+		const lines = code.split('\n');
+		const filteredLines: string[] = [];
+		
+		for (const line of lines) {
+			const trimmedLine = line.trim();
+			// Check if this line is an import
+			if (trimmedLine.startsWith('import ') || 
+				trimmedLine.startsWith('from ') ||
+				trimmedLine.match(/^import\s+\w+/)) {
+				// Only add if this import doesn't already exist
+				if (!existingImports.has(trimmedLine)) {
+					filteredLines.push(line);
+					existingImports.add(trimmedLine); // Track this new import
+				}
+			} else {
+				// Non-import line, always include
+				filteredLines.push(line);
+			}
+		}
+		
+		return filteredLines.join('\n');
+	}
+
+	private addBasicImports(code: string, globalCodeContext?: string): string {
+		const basicImportsCode = `import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -481,6 +545,14 @@ import os
 from pathlib import Path
 
 ${code}`;
+
+		// If we have global context, deduplicate imports
+		if (globalCodeContext) {
+			const existingImports = this.getExistingImports(globalCodeContext);
+			return this.removeDuplicateImports(basicImportsCode, existingImports);
+		}
+
+		return basicImportsCode;
 	}
 
 	private hasErrorHandling(code: string): boolean {

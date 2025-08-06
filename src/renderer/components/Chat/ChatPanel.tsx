@@ -385,6 +385,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [currentSuggestions, setCurrentSuggestions] =
 		useState<DataTypeSuggestions | null>(null);
 
+	// Global code context to track all generated code across the conversation
+	const [globalCodeContext, setGlobalCodeContext] = useState<
+		Map<string, string>
+	>(new Map());
+
 	// Debounced streaming updates to prevent jiggling
 	const debouncedStreamingUpdate = useRef(
 		AsyncUtils.debounce((stepId: string, content: string) => {

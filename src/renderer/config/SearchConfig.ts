@@ -1,14 +1,14 @@
 // Search Limits
-export const DEFAULT_SEARCH_LIMIT = 5;
+export const DEFAULT_SEARCH_LIMIT = 2;
 export const MAX_SEARCH_LIMIT = 20;
-export const MIN_SEARCH_LIMIT = 5;
+export const MIN_SEARCH_LIMIT = 2;
 
 // Batch Processing
 export const DEFAULT_BATCH_SIZE = 1;
 export const MAX_BATCH_SIZE = 2;
 
 // API Rate Limiting
-export const DEFAULT_REQUEST_INTERVAL = 0.1; // seconds
+export const DEFAULT_REQUEST_INTERVAL = 0.05; // seconds
 export const MIN_REQUEST_INTERVAL = 0.01; // seconds
 
 // Search Multipliers
