@@ -802,15 +802,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			) {
 				await handleSuggestionsRequest(userMessage);
 			}
-			// Check if the message is about searching for datasets
-			else if (
-				userMessage.toLowerCase().includes("search") ||
-				userMessage.toLowerCase().includes("find") ||
-				userMessage.toLowerCase().includes("dataset") ||
-				userMessage.toLowerCase().includes("data") ||
-				userMessage.toLowerCase().includes("geo") ||
-				userMessage.toLowerCase().includes("sra")
-			) {
+			// Use intelligent detection to understand if user wants to search for datasets
+			else if (await shouldSearchForDatasets(userMessage)) {
 				console.log("🔍 Detected search request for:", userMessage);
 				// Search for datasets
 				if (isMounted) {
@@ -1620,6 +1613,87 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		});
 	};
 
+	// Intelligent function to determine if user wants to search for datasets
+	const shouldSearchForDatasets = async (
+		userMessage: string
+	): Promise<boolean> => {
+		const message = userMessage.toLowerCase();
+
+		// Quick heuristic checks first
+		const searchKeywords = [
+			"search for datasets",
+			"find datasets",
+			"look for datasets",
+			"search geo",
+			"find geo datasets",
+			"search sra",
+			"find sra datasets",
+			"search for data",
+			"find data",
+			"search biological databases",
+			"find biological data",
+		];
+
+		// If any of these exact phrases are found, it's definitely a search request
+		if (searchKeywords.some((keyword) => message.includes(keyword))) {
+			return true;
+		}
+
+		// Check for analysis-related keywords that should NOT trigger search
+		const analysisKeywords = [
+			"analyze",
+			"analysis",
+			"perform",
+			"run",
+			"execute",
+			"create",
+			"generate",
+			"plot",
+			"visualize",
+			"statistical",
+			"differential",
+			"clustering",
+			"quality control",
+			"exploratory",
+		];
+
+		// If the message contains analysis keywords, it's likely an analysis request
+		if (analysisKeywords.some((keyword) => message.includes(keyword))) {
+			return false;
+		}
+
+		// Check for ambiguous cases that need more context
+		const ambiguousKeywords = ["find", "search", "data", "dataset"];
+		const hasAmbiguousKeywords = ambiguousKeywords.some((keyword) =>
+			message.includes(keyword)
+		);
+
+		if (hasAmbiguousKeywords) {
+			// Use a simple context-based decision
+			// If the message is short and contains "find" or "search" without analysis context, it might be a search
+			if (
+				message.length < 50 &&
+				(message.includes("find") || message.includes("search"))
+			) {
+				// Check if it's asking for specific types of data/datasets
+				const dataTypes = [
+					"cancer",
+					"gene",
+					"expression",
+					"rna",
+					"protein",
+					"disease",
+					"cell",
+				];
+				if (dataTypes.some((type) => message.includes(type))) {
+					return true; // Likely searching for specific datasets
+				}
+			}
+		}
+
+		return false; // Default to not searching
+	};
+
 	const handleStopProcessing = () => {
 		setIsLoading(false);
 		setIsProcessing(false);
@@ -1648,7 +1722,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							onAnalysisClick={handleAnalysisClick}
 						/>
 						{message.code && (
-							<div style={{ marginTop: "8px", marginLeft: "44px" }}>
+							<div style={{ marginTop: "8px" }}>
 								<ExpandableCodeBlock
 									code={message.code}
 									language={message.codeLanguage || "python"}
@@ -1658,7 +1732,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							</div>
 						)}
 						{message.suggestions && (
-							<div style={{ marginTop: "8px", marginLeft: "44px" }}>
+							<div style={{ marginTop: "8px" }}>
 								<ExamplesComponent
 									onExampleSelect={(example) => {
 										setInputValue(example);
