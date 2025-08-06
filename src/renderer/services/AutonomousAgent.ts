@@ -1,15 +1,19 @@
 import { BackendClient } from "./BackendClient";
-import { Dataset, AnalysisPlan } from "./types";
-import { DatasetManager } from "./DatasetManager";
-import {
-	CodeGenerationService,
+import { 
+	Dataset, 
+	AnalysisPlan,
 	CodeGenerationRequest,
-} from "./CodeGenerationService";
+	ICodeGenerator,
+	ICodeExecutor,
+	ICodeQualityValidator
+} from "./types";
+import { DatasetManager } from "./DatasetManager";
+import { CodeGenerationService } from "./CodeGenerationService";
 import { CellExecutionService } from "./CellExecutionService";
 import { NotebookService } from "./NotebookService";
 import { EnvironmentManager } from "./EnvironmentManager";
 import { WorkspaceManager } from "./WorkspaceManager";
-import { CodeQualityService, CodeQualityOptions } from "./CodeQualityService";
+import { CodeQualityOrchestrator } from "./CodeQualityOrchestrator";
 import { NotebookGenerationOptions } from "./NotebookService";
 import { AsyncUtils } from "../utils/AsyncUtils";
 import { AnalysisOrchestrationService } from "./AnalysisOrchestrationService";
@@ -52,13 +56,13 @@ export class AutonomousAgent {
 	private backendClient: BackendClient;
 	private analysisOrchestrator: AnalysisOrchestrationService;
 	private datasetManager: DatasetManager;
-	private codeGenerationService: CodeGenerationService;
-	private cellExecutionService: CellExecutionService;
+	private codeGenerator: ICodeGenerator;
+	private codeExecutor: ICodeExecutor;
+	private codeQualityValidator: ICodeQualityValidator;
 	private statusCallback?: (status: string) => void;
 	private notebookService: NotebookService;
 	private environmentManager: EnvironmentManager;
 	private workspaceManager: WorkspaceManager;
-	private codeQualityService: CodeQualityService;
 	private workspacePath: string;
 	private originalQuery: string = "";
 	public isRunning: boolean = false;
@@ -76,16 +80,17 @@ export class AutonomousAgent {
 		this.datasetManager = new DatasetManager();
 		this.environmentManager = new EnvironmentManager(this.datasetManager);
 		this.workspaceManager = new WorkspaceManager();
-		this.codeGenerationService = new CodeGenerationService(
+		
+		// Use dependency injection to break circular dependencies
+		this.codeGenerator = new CodeGenerationService(
 			backendClient,
 			selectedModel || "gpt-4o-mini"
 		);
-		this.cellExecutionService = new CellExecutionService(workspacePath);
-		this.codeQualityService = new CodeQualityService(
-			backendClient,
-			this.cellExecutionService,
-			this.codeGenerationService
-		);
+		this.codeExecutor = new CellExecutionService(workspacePath);
+		
+		// Create dependency-free code quality validator
+		this.codeQualityValidator = new CodeQualityOrchestrator(backendClient);
+		
 		this.notebookService = new NotebookService({
 			workspacePath,
 			kernelName: kernelName,
@@ -123,7 +128,7 @@ export class AutonomousAgent {
 
 	setModel(model: string) {
 		this.selectedModel = model;
-		this.codeGenerationService.setModel(model);
+		this.codeGenerator.setModel(model);
 	}
 
 	setStatusCallback(callback: (status: string) => void) {
@@ -132,7 +137,7 @@ export class AutonomousAgent {
 		this.datasetManager.setStatusCallback(callback);
 		this.environmentManager.setStatusCallback(callback);
 		this.workspaceManager.setStatusCallback(callback);
-		this.codeQualityService.setStatusCallback(callback);
+		this.codeQualityValidator.setStatusCallback(callback);
 	}
 
 	private updateStatus(message: string) {
@@ -211,7 +216,7 @@ export class AutonomousAgent {
 
 			// Update the workspace path to use the analysis-specific directory
 			this.workspacePath = analysisPlan.workingDirectory;
-			this.cellExecutionService.updateWorkspacePath(this.workspacePath);
+			this.codeExecutor.updateWorkspacePath(this.workspacePath);
 			this.notebookService.updateWorkspacePath(this.workspacePath);
 
 			// Ensure environment is ready (create virtual environment if needed)
@@ -387,7 +392,7 @@ export class AutonomousAgent {
 				.substr(2, 9)}`;
 
 			// Use the new event-based method
-			const result = await this.codeGenerationService.generateCodeWithEvents(
+			const result = await this.codeGenerator.generateCodeWithEvents(
 				request,
 				stepId
 			);
@@ -401,7 +406,7 @@ export class AutonomousAgent {
 			this.updateStatus(
 				`Using fallback code for: ${stepDescription.substring(0, 50)}...`
 			);
-			return this.codeGenerationService.generateDataAwareBasicStepCodePublic(
+			return this.codeGenerator.generateDataAwareBasicStepCodePublic(
 				stepDescription,
 				datasets,
 				stepIndex
@@ -431,7 +436,7 @@ export class AutonomousAgent {
 
 		try {
 			// Use CellExecutionService to execute the step
-			const result = await this.cellExecutionService.executeCell(
+			const result = await this.codeExecutor.executeCell(
 				step.id,
 				step.code,
 				(updates: any) => {
@@ -488,7 +493,7 @@ export class AutonomousAgent {
 		// Generate unique step ID for dynamic generation
 		const stepId = `dynamic-${step.id}-${Date.now()}`;
 
-		const result = await this.codeGenerationService.generateCodeWithEvents(
+		const result = await this.codeGenerator.generateCodeWithEvents(
 			request,
 			stepId
 		);
@@ -671,13 +676,13 @@ export class AutonomousAgent {
 					datasets,
 					analysisSteps
 				);
-			const packageTestResult = await this.codeQualityService.validateOnly(
+			const packageTestResult = await this.codeQualityValidator.validateOnly(
 				packageCode,
 				"package-install"
 			);
 			await this.notebookService.addCodeCell(
 				notebookPath,
-				this.codeQualityService.getBestCode(packageTestResult)
+				this.codeQualityValidator.getBestCode(packageTestResult)
 			);
 
 			this.updateStatus("Package installation cell added");
@@ -750,27 +755,41 @@ export class AutonomousAgent {
 			};
 
 			const stepId = `step-${stepIndex}-${Date.now()}`;
-			const result = await this.codeGenerationService.generateCodeWithEvents(
+			const result = await this.codeGenerator.generateCodeWithEvents(
 				request,
 				stepId
 			);
 
-			// Test the generated code using CodeQualityService
-			const testResult = await this.codeQualityService.validateAndTest(
+			// Test the generated code using CodeQualityValidator
+			const testResult = await this.codeQualityValidator.validateAndTest(
 				result.code,
 				stepId,
 				{ stepTitle: step.description }
 			);
 
 			// Return the best version of the code
-			return this.codeQualityService.getBestCode(testResult);
+			return this.codeQualityValidator.getBestCode(testResult);
 		} catch (error) {
 			console.error(
 				`Error generating code for step: ${step.description}:`,
 				error
 			);
-			// Return fallback code
-			return this.codeGenerationService.generateDataAwareBasicStepCodePublic(
+			
+			// Check if this is related to a timeout issue and use safer code
+			const isTimeoutRelated = error instanceof Error && 
+				error.message.toLowerCase().includes('timeout');
+				
+			if (isTimeoutRelated) {
+				console.log("Using timeout-safe code generation for:", step.description);
+				return this.codeGenerator.generateTimeoutSafeCodePublic(
+					step.description,
+					datasets,
+					stepIndex
+				);
+			}
+			
+			// Return regular fallback code
+			return this.codeGenerator.generateDataAwareBasicStepCodePublic(
 				step.description,
 				datasets,
 				stepIndex

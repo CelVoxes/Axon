@@ -56,6 +56,14 @@ export class NotebookService {
 	 * Add a markdown cell to a notebook
 	 */
 	async addMarkdownCell(notebookPath: string, content: string): Promise<void> {
+		// Validate content before adding
+		if (!content || !content.trim()) {
+			console.warn("NotebookService: Attempted to add empty markdown cell, skipping");
+			return;
+		}
+
+		console.log(`NotebookService: Adding markdown cell with ${content.length} characters to ${notebookPath}`);
+		
 		EventManager.dispatchEvent("add-notebook-cell", {
 			filePath: notebookPath,
 			cellType: "markdown",
@@ -68,6 +76,14 @@ export class NotebookService {
 	 * Add a code cell to a notebook
 	 */
 	async addCodeCell(notebookPath: string, code: string): Promise<void> {
+		// Validate code content before adding
+		if (!code || !code.trim()) {
+			console.warn("NotebookService: Attempted to add empty code cell, skipping");
+			return;
+		}
+
+		console.log(`NotebookService: Adding code cell with ${code.length} characters to ${notebookPath}`);
+		
 		EventManager.dispatchEvent("add-notebook-cell", {
 			filePath: notebookPath,
 			cellType: "code",

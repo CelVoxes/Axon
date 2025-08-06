@@ -90,3 +90,133 @@ export interface CodeValidationErrorEvent {
 	fixedCode?: string;
 	timestamp: number;
 }
+
+// ========== DEPENDENCY-FREE SERVICE INTERFACES ==========
+
+/**
+ * Interfaces to break circular dependencies between services
+ */
+
+export interface CodeGenerationRequest {
+	stepDescription: string;
+	originalQuestion: string;
+	datasets: Dataset[];
+	workingDir: string;
+	stepIndex: number;
+	previousCode?: string;
+}
+
+export interface CodeGenerationResult {
+	code: string;
+	success: boolean;
+	error?: string;
+}
+
+export interface Cell {
+	id: string;
+	code: string;
+	language: "python" | "r" | "markdown";
+	output: string;
+	hasError: boolean;
+	status: "pending" | "running" | "completed" | "failed";
+	title?: string;
+	isMarkdown?: boolean;
+}
+
+export interface ExecutionResult {
+	status: "completed" | "failed";
+	output: string;
+	shouldRetry: boolean;
+	analysis?: any;
+}
+
+export interface CodeQualityOptions {
+	stepTitle?: string;
+	maxRetries?: number;
+	timeoutMs?: number;
+}
+
+export interface CodeValidationResult {
+	isValid: boolean;
+	originalCode: string;
+	validatedCode: string;
+	errors: string[];
+	warnings: string[];
+	improvements: string[];
+	retryCount: number;
+	success: boolean;
+}
+
+// ========== SERVICE INTERFACES FOR DEPENDENCY INJECTION ==========
+
+export interface ICodeGenerator {
+	generateCodeWithEvents(
+		request: CodeGenerationRequest,
+		stepId: string
+	): Promise<CodeGenerationResult>;
+	
+	generateDataAwareBasicStepCodePublic(
+		stepDescription: string,
+		datasets: Dataset[],
+		stepIndex: number
+	): string;
+	
+	generateTimeoutSafeCodePublic(
+		stepDescription: string,
+		datasets: Dataset[],
+		stepIndex: number
+	): string;
+	
+	setModel(model: string): void;
+}
+
+export interface ICodeExecutor {
+	executeCell(
+		cellId: string,
+		code: string,
+		onProgress?: (updates: Partial<Cell>) => void
+	): Promise<ExecutionResult>;
+	
+	executeCellWithAnalysis(
+		cell: Cell,
+		onProgress?: (updates: Partial<Cell>) => void
+	): Promise<ExecutionResult>;
+	
+	updateWorkspacePath(newWorkspacePath: string): void;
+}
+
+export interface ICodeQualityValidator {
+	validateOnly(code: string, stepId: string): Promise<CodeValidationResult>;
+	
+	validateAndTest(
+		code: string,
+		stepId: string,
+		options?: CodeQualityOptions
+	): Promise<CodeValidationResult>;
+	
+	getBestCode(result: CodeValidationResult): string;
+	
+	setStatusCallback(callback: (status: string) => void): void;
+}
+
+export interface IBackendClient {
+	validateCode(request: {
+		code: string;
+		language?: string;
+		context?: string;
+	}): Promise<any>;
+	
+	generateCodeFix(request: {
+		prompt: string;
+		model: string;
+		max_tokens?: number;
+		temperature?: number;
+	}): Promise<any>;
+	
+	generateSuggestions(request: {
+		dataTypes: string[];
+		query: string;
+		selectedDatasets: any[];
+		contextInfo?: string;
+	}): Promise<any>;
+}

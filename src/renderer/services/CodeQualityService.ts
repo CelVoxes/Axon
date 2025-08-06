@@ -151,6 +151,9 @@ export class CodeQualityService {
 		// Step 3: Execution Testing (if not skipped)
 		if (!skipExecution) {
 			this.updateStatus(`Testing code execution for ${stepTitle}...`);
+			console.log(`CodeQualityService: About to execute code for ${stepTitle}`);
+			console.log(`CodeQualityService: Code to execute length: ${result.lintedCode.length}`);
+			console.log(`CodeQualityService: First 150 chars of code to execute:`, result.lintedCode.substring(0, 150));
 			
 			try {
 				const executionResult = await this.cellExecutionService.executeCell(
@@ -158,6 +161,12 @@ export class CodeQualityService {
 					result.lintedCode,
 					undefined
 				);
+				
+				console.log(`CodeQualityService: Execution completed for ${stepTitle}`, {
+					status: executionResult.status,
+					outputLength: executionResult.output?.length || 0,
+					hasOutput: !!executionResult.output
+				});
 
 				result.executionPassed = executionResult.status !== "failed";
 				result.executionOutput = executionResult.output;
@@ -165,7 +174,15 @@ export class CodeQualityService {
 				if (executionResult.status === "failed") {
 					result.executionError = executionResult.output || "Unknown execution error";
 					console.warn(`Code execution failed for ${stepTitle}:`, executionResult.output);
-					this.updateStatus(`⚠️ Code execution failed for ${stepTitle}, but test completed`);
+					
+					// Check if this is a timeout error and suggest timeout-safe code
+					const isTimeoutError = result.executionError.toLowerCase().includes('timeout');
+					if (isTimeoutError) {
+						this.updateStatus(`⚠️ Code execution timed out for ${stepTitle} - consider using safer code patterns`);
+						console.warn("CodeQualityService: Timeout detected - code may be too complex or have infinite loops");
+					} else {
+						this.updateStatus(`⚠️ Code execution failed for ${stepTitle}, but test completed`);
+					}
 				} else {
 					this.updateStatus(`✅ Code execution passed for ${stepTitle}`);
 				}
@@ -210,14 +227,29 @@ export class CodeQualityService {
 		stepDescription?: string;
 	} = {}): string {
 		if (!code || !code.trim()) {
+			console.warn("CodeQualityService: Empty code provided to cleanAndPrepareCode");
 			return "";
 		}
 
+		console.log(`CodeQualityService: Original code length: ${code.length}`);
+		console.log(`CodeQualityService: Original code preview: ${code.substring(0, 100)}...`);
+
 		// Remove markdown code blocks if present
 		let cleanedCode = code
-			.replace(/```python\s*/g, "")
-			.replace(/```\s*$/g, "")
+			.replace(/```python\s*/gi, "")  // Remove ```python (case insensitive)
+			.replace(/```/g, "")            // Remove ALL ``` occurrences  
 			.trim();
+
+		console.log(`CodeQualityService: Cleaned code length: ${cleanedCode.length}`);
+		console.log(`CodeQualityService: Cleaned code preview: ${cleanedCode.substring(0, 100)}...`);
+
+		// If cleaning resulted in empty code, return a basic comment
+		if (!cleanedCode || !cleanedCode.trim()) {
+			console.warn("CodeQualityService: Code cleaning resulted in empty code, returning placeholder");
+			cleanedCode = `# Code cleaning resulted in empty content
+# Original code length: ${code.length}
+print("Code placeholder - original code was empty or only contained markdown")`;
+		}
 
 		// Add imports if requested and missing
 		if (options.addImports && !this.hasBasicImports(cleanedCode)) {
@@ -237,7 +269,42 @@ export class CodeQualityService {
 			cleanedCode = this.addDirectoryCreation(cleanedCode);
 		}
 
+		// Check for potentially problematic code patterns
+		cleanedCode = this.addSafetyChecks(cleanedCode);
+
 		return cleanedCode;
+	}
+
+	/**
+	 * Add safety checks to prevent infinite loops and other issues
+	 */
+	private addSafetyChecks(code: string): string {
+		// Check for common infinite loop patterns
+		const hasWhileLoop = /while\s+True:|while\s+1:/.test(code);
+		const hasForLoop = /for\s+\w+\s+in\s+range\s*\(\s*\d+\s*\)/.test(code);
+		const hasInfiniteRange = /range\s*\(\s*\d{6,}\s*\)/.test(code); // Very large ranges
+
+		if (hasWhileLoop && !code.includes('break')) {
+			console.warn("CodeQualityService: Detected potential infinite while loop, adding safety break");
+			code = `# Safety: Added loop counter to prevent infinite loops
+loop_counter = 0
+max_iterations = 1000
+
+${code.replace(/while\s+(True|1):/g, (match) => {
+	return `${match}
+    loop_counter += 1
+    if loop_counter > max_iterations:
+        print("Loop terminated to prevent infinite execution")
+        break`;
+})}`;
+		}
+
+		if (hasInfiniteRange) {
+			console.warn("CodeQualityService: Detected very large range, limiting to prevent timeout");
+			code = code.replace(/range\s*\(\s*(\d{6,})\s*\)/g, 'range(min($1, 10000))');
+		}
+
+		return code;
 	}
 
 	/**

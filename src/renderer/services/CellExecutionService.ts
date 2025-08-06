@@ -1,5 +1,6 @@
 // Centralized notebook step execution logic
 import { ErrorUtils } from "../utils/ErrorUtils";
+import { Cell, ExecutionResult, ICodeExecutor } from "./types";
 async function runNotebookStep(
 	stepId: string,
 	code: string,
@@ -11,6 +12,16 @@ async function runNotebookStep(
 			`Executing notebook step ${stepId} with code:`,
 			code.substring(0, 100) + "..."
 		);
+		console.log(`Workspace path: ${workspacePath}`);
+		console.log(`Code length: ${code.length} characters`);
+
+		// Check if electronAPI is available
+		if (!window.electronAPI || !window.electronAPI.executeJupyterCode) {
+			const error = "electronAPI.executeJupyterCode is not available";
+			console.error(error);
+			update({ output: null, error });
+			return;
+		}
 
 		// @ts-ignore
 		const result = await window.electronAPI.executeJupyterCode(
@@ -26,30 +37,17 @@ async function runNotebookStep(
 			update({ output: null, error: result.error || "Execution failed" });
 		}
 	} catch (error: unknown) {
+		console.error(`Critical error in runNotebookStep for ${stepId}:`, error);
 		const errMsg = ErrorUtils.handleError(`Error executing notebook step ${stepId}`, error);
 		update({ output: null, error: errMsg });
 	}
 }
 
-export interface Cell {
-	id: string;
-	code: string;
-	language: "python" | "r" | "markdown";
-	output: string;
-	hasError: boolean;
-	status: "pending" | "running" | "completed" | "failed";
-	title?: string;
-	isMarkdown?: boolean;
-}
+// Interface definitions moved to types.ts to prevent circular dependencies
+// Re-export Cell interface for backwards compatibility
+export { Cell, ExecutionResult } from "./types";
 
-export interface ExecutionResult {
-	status: "completed" | "failed";
-	output: string;
-	shouldRetry: boolean;
-	analysis?: any;
-}
-
-export class CellExecutionService {
+export class CellExecutionService implements ICodeExecutor {
 	private workspacePath: string;
 
 	constructor(workspacePath: string) {
@@ -68,6 +66,9 @@ export class CellExecutionService {
 		console.log(
 			`CellExecutionService: Executing cell with analysis: ${cell.title}`
 		);
+		console.log(`CellExecutionService: Code length: ${cell.code.length} characters`);
+		console.log(`CellExecutionService: First 200 chars of code: ${cell.code.substring(0, 200)}...`);
+		console.log(`CellExecutionService: Workspace path: ${this.workspacePath}`);
 
 		// Update cell status to running
 		onProgress?.({ status: "running" });
@@ -78,7 +79,8 @@ export class CellExecutionService {
 			let hasError = false;
 			let errorMessage = "";
 
-			await runNotebookStep(
+			// Add timeout wrapper for execution
+			const executionPromise = runNotebookStep(
 				cell.id,
 				cell.code,
 				(payload: { output: string | null; error: string | null }) => {
@@ -98,6 +100,15 @@ export class CellExecutionService {
 				},
 				this.workspacePath
 			);
+
+			// Add timeout handling (30 seconds for code execution)
+			const timeoutPromise = new Promise<void>((_, reject) => {
+				setTimeout(() => {
+					reject(new Error('Code execution timeout after 30 seconds'));
+				}, 30000);
+			});
+
+			await Promise.race([executionPromise, timeoutPromise]);
 
 			if (hasError) {
 				console.log(
@@ -161,6 +172,25 @@ export class CellExecutionService {
 			"FileNotFoundError",
 			"PermissionError",
 		];
+
+		// Don't retry timeout errors as they likely indicate problematic code
+		const timeoutErrors = [
+			"Execution timeout",
+			"timeout",
+			"TimeoutError",
+			"execution time exceeded"
+		];
+
+		const hasTimeoutError = timeoutErrors.some((errorType) =>
+			errorOutput.toLowerCase().includes(errorType.toLowerCase())
+		);
+
+		if (hasTimeoutError) {
+			console.log(
+				`CellExecutionService: Timeout error detected, not retrying: ${errorOutput}`
+			);
+			return false;
+		}
 
 		const isRetryable = retryableErrors.some((errorType) =>
 			errorOutput.includes(errorType)

@@ -1,5 +1,6 @@
 import axios from "axios";
 import { SearchConfig, MAX_SEARCH_ATTEMPTS } from "../config/SearchConfig";
+import { IBackendClient } from "./types";
 
 export interface GEODataset {
 	id: string;
@@ -24,7 +25,7 @@ export interface SearchProgress {
 	currentTerm?: string;
 }
 
-export class BackendClient {
+export class BackendClient implements IBackendClient {
 	private baseUrl: string;
 	private onProgress?: (progress: SearchProgress) => void;
 
@@ -464,27 +465,55 @@ export class BackendClient {
 		selectedDatasets: any[];
 		contextInfo?: string;
 	}): Promise<any> {
+		console.log("BackendClient: generateSuggestions called with:", {
+			...request,
+			query: request.query.substring(0, 100) + "..."
+		});
+		console.log("BackendClient: Making POST request to:", `${this.baseUrl}/llm/suggestions`);
+
 		try {
+			const requestBody = {
+				data_types: request.dataTypes,
+				user_question: request.query,
+				available_datasets: request.selectedDatasets,
+				current_context: request.contextInfo || "",
+			};
+
+			console.log("BackendClient: Request body:", requestBody);
+
 			const response = await fetch(`${this.baseUrl}/llm/suggestions`, {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({
-					data_types: request.dataTypes,
-					user_question: request.query,
-					available_datasets: request.selectedDatasets,
-					current_context: request.contextInfo || "",
-				}),
+				body: JSON.stringify(requestBody),
 			});
 
+			console.log("BackendClient: Response status:", response.status);
+			console.log("BackendClient: Response ok:", response.ok);
+
 			if (response.ok) {
-				return await response.json();
+				const result = await response.json();
+				console.log("BackendClient: Successful response:", result);
+				return result;
 			} else {
-				throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+				const errorText = await response.text();
+				console.error(`BackendClient: HTTP error ${response.status}: ${response.statusText}`);
+				console.error("BackendClient: Error response body:", errorText);
+				throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorText}`);
 			}
 		} catch (error) {
 			console.error("BackendClient: Error generating suggestions:", error);
+			console.error("BackendClient: Error details:", {
+				message: error instanceof Error ? error.message : String(error),
+				stack: error instanceof Error ? error.stack : undefined,
+				url: `${this.baseUrl}/llm/suggestions`,
+				requestBody: {
+					data_types: request.dataTypes,
+					user_question: request.query?.substring(0, 100) + "...",
+					available_datasets: request.selectedDatasets?.length,
+				}
+			});
 			throw error;
 		}
 	}
@@ -568,7 +597,6 @@ export class BackendClient {
 
 				chunkCount++;
 				const rawChunk = decoder.decode(value);
-				console.log(`🚀 Raw chunk ${chunkCount}:`, rawChunk);
 
 				const lines = rawChunk.split("\n");
 

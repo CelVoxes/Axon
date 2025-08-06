@@ -14,6 +14,7 @@ interface ChatMessageProps {
 		analysisResult?: any;
 		isStreaming?: boolean;
 	};
+	onAnalysisClick?: (analysisType: string) => void;
 }
 
 const pulse = keyframes`
@@ -40,7 +41,6 @@ const MessageContainer = styled.div<{ $messageType: string }>`
 		}
 	}
 `;
-
 
 const MessageContent = styled.div<{ $messageType: string }>`
 	flex: 1;
@@ -262,7 +262,6 @@ const ThinkingComponent: React.FC = () => (
 	</ThinkingContainer>
 );
 
-
 const formatTimestamp = (timestamp: Date): string => {
 	const now = new Date();
 	const diff = now.getTime() - timestamp.getTime();
@@ -317,8 +316,8 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeProps> = ({
 
 	return (
 		<div className="expandable-code-block" style={{ margin: "12px 0" }}>
-			<div 
-				className="code-header" 
+			<div
+				className="code-header"
 				onClick={() => setIsExpanded(!isExpanded)}
 				style={{ cursor: "pointer" }}
 			>
@@ -326,7 +325,9 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeProps> = ({
 					<span className="code-title">Code</span>
 					<span className="code-language">
 						{language}
-						{isStreaming && <span style={{ color: "#0ea5e9", marginLeft: 4 }}>●</span>}
+						{isStreaming && (
+							<span style={{ color: "#0ea5e9", marginLeft: 4 }}>●</span>
+						)}
 					</span>
 					<span className="code-size-indicator">{code.length} chars</span>
 				</div>
@@ -347,23 +348,27 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeProps> = ({
 			</div>
 			{isExpanded && (
 				<div className="code-content">
-					<pre style={{ 
-						margin: 0,
-						padding: "16px",
-						background: "#1e1e1e",
-						fontSize: typography.sm,
-						lineHeight: "1.4",
-						overflow: "auto",
-						fontFamily: "'Monaco', 'Menlo', 'Ubuntu Mono', monospace",
-						whiteSpace: "pre-wrap",
-						wordWrap: "break-word"
-					}}>
-						<code className={`language-${language}`} style={{ 
-							background: "transparent",
-							color: "#e5e7eb",
-							fontSize: "inherit",
-							fontFamily: "inherit"
-						}}>
+					<pre
+						style={{
+							margin: 0,
+							background: "#1e1e1e",
+							fontSize: typography.xs,
+							lineHeight: "1.4",
+							overflow: "auto",
+							fontFamily: "'Monaco', 'Menlo', 'Ubuntu Mono', monospace",
+							whiteSpace: "pre-wrap",
+							wordWrap: "break-word",
+						}}
+					>
+						<code
+							className={`language-${language}`}
+							style={{
+								background: "transparent",
+								color: "#e5e7eb",
+								fontSize: "inherit",
+								fontFamily: "inherit",
+							}}
+						>
 							{code}
 						</code>
 					</pre>
@@ -373,7 +378,7 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeProps> = ({
 	);
 };
 
-export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = ({ message, onAnalysisClick }) => {
 	const [expandedBlocks, setExpandedBlocks] = React.useState<Set<string>>(
 		new Set()
 	);
@@ -521,9 +526,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
 								<ReactMarkdown
 									components={{
 										code: ({ node, inline, className, children, ...props }) => {
-											const match = /language-(\w+)/.exec(className || '');
-											const language = match ? match[1] : 'text';
-											
+											const match = /language-(\w+)/.exec(className || "");
+											const language = match ? match[1] : "text";
+
 											if (inline) {
 												return (
 													<code className="inline-code" {...props}>
@@ -531,14 +536,16 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
 													</code>
 												);
 											}
-											
+
 											const currentIndex = codeBlockCounter++;
 											return (
 												<ExpandableCodeBlock
 													language={language}
 													messageId={message.id}
 													blockIndex={currentIndex}
-													isStreaming={message.isStreaming || message.status === "pending"}
+													isStreaming={
+														message.isStreaming || message.status === "pending"
+													}
 												>
 													{children}
 												</ExpandableCodeBlock>
@@ -547,7 +554,47 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
 										pre: ({ children }) => {
 											// Don't render the default pre tag, let our ExpandableCodeBlock handle it
 											return <>{children}</>;
-										}
+										},
+										a: ({ href, children, ...props }) => {
+											// Handle special analyze: links
+											if (href && href.startsWith('analyze:')) {
+												const analysisType = href.replace('analyze:', '');
+												return (
+													<button
+														type="button"
+														onClick={(e) => {
+															e.preventDefault();
+															if (onAnalysisClick) {
+																onAnalysisClick(analysisType);
+															}
+														}}
+														style={{
+															color: '#007acc',
+															cursor: 'pointer',
+															textDecoration: 'underline',
+															background: 'none',
+															border: 'none',
+															padding: 0,
+															font: 'inherit',
+															display: 'inline'
+														}}
+													>
+														{children}
+													</button>
+												);
+											}
+											// Regular links - avoid javascript: URLs
+											if (href && (href.startsWith('http://') || href.startsWith('https://'))) {
+												return (
+													<a href={href} target="_blank" rel="noopener noreferrer">
+														{children}
+													</a>
+												);
+											} else {
+												// For invalid or javascript: URLs, render as plain text
+												return <span style={{ color: '#007acc', textDecoration: 'underline' }}>{children}</span>;
+											}
+										},
 									}}
 								>
 									{message.content}

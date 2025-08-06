@@ -1,32 +1,24 @@
 import { BackendClient } from "./BackendClient";
 import { EventManager } from "../utils/EventManager";
-import { 
+import {
 	CodeGenerationStartedEvent,
 	CodeGenerationChunkEvent,
 	CodeGenerationCompletedEvent,
 	CodeGenerationFailedEvent,
-	CodeValidationErrorEvent
+	CodeValidationErrorEvent,
+	CodeGenerationRequest,
+	CodeGenerationResult,
+	Dataset,
+	ICodeGenerator,
 } from "./types";
 
-export interface CodeGenerationRequest {
-	stepDescription: string;
-	originalQuestion: string;
-	datasets: any[];
-	workingDir: string;
-	stepIndex: number;
-	previousCode?: string; // Add previously generated code as context
-}
-
-export interface CodeGenerationResult {
-	code: string;
-	success: boolean;
-	error?: string;
-}
-
-export class CodeGenerationService {
+export class CodeGenerationService implements ICodeGenerator {
 	private backendClient: BackendClient;
 	private selectedModel: string;
-	private activeGenerations = new Map<string, { accumulatedCode: string; startTime: number }>();
+	private activeGenerations = new Map<
+		string,
+		{ accumulatedCode: string; startTime: number }
+	>();
 
 	constructor(
 		backendClient: BackendClient,
@@ -55,8 +47,6 @@ export class CodeGenerationService {
 
 		return await this.generateDataDrivenStepCodeWithEvents(request, stepId);
 	}
-
-
 
 	private buildEnhancedContext(request: CodeGenerationRequest): string {
 		const datasetInfo = request.datasets
@@ -104,20 +94,20 @@ IMPORTANT: Do not repeat imports or setup code that was already generated. Focus
 		stepId: string
 	): Promise<CodeGenerationResult> {
 		const timestamp = Date.now();
-		
+
 		// Initialize tracking for this generation
 		this.activeGenerations.set(stepId, {
-			accumulatedCode: '',
-			startTime: timestamp
+			accumulatedCode: "",
+			startTime: timestamp,
 		});
-		
+
 		// Emit generation started event
-		EventManager.dispatchEvent('code-generation-started', {
+		EventManager.dispatchEvent("code-generation-started", {
 			stepId,
 			stepDescription: request.stepDescription,
-			timestamp
+			timestamp,
 		} as CodeGenerationStartedEvent);
-		
+
 		return await this.generateDataDrivenStepCodeStream(request, stepId);
 	}
 
@@ -154,18 +144,17 @@ IMPORTANT: Do not repeat imports or setup code that was already generated. Focus
 			// Create event-based chunk handler
 			const chunkCallback = (chunk: string) => {
 				chunkCount++;
-				console.log(`🎯 Received chunk ${chunkCount}, length: ${chunk.length}`);
 
 				// Update accumulated code
 				generation.accumulatedCode += chunk;
 
 				// Emit chunk event
-				EventManager.dispatchEvent('code-generation-chunk', {
+				EventManager.dispatchEvent("code-generation-chunk", {
 					stepId,
 					stepDescription: request.stepDescription,
 					chunk,
 					accumulatedCode: generation.accumulatedCode,
-					timestamp: Date.now()
+					timestamp: Date.now(),
 				} as CodeGenerationChunkEvent);
 			};
 
@@ -180,11 +169,15 @@ IMPORTANT: Do not repeat imports or setup code that was already generated. Focus
 
 			console.log("🎯 Streaming completed!");
 			console.log("🎯 Total chunks received:", chunkCount);
-			console.log("🎯 Generated code length:", generation.accumulatedCode.length);
+			console.log(
+				"🎯 Generated code length:",
+				generation.accumulatedCode.length
+			);
 			console.log("🎯 Backend result:", result);
 
 			// Use the accumulated code from chunks, not the result
-			const finalGeneratedCode = generation.accumulatedCode || result.code || "";
+			const finalGeneratedCode =
+				generation.accumulatedCode || result.code || "";
 
 			if (!finalGeneratedCode) {
 				console.warn("🎯 WARNING: No code generated from streaming!");
@@ -192,23 +185,25 @@ IMPORTANT: Do not repeat imports or setup code that was already generated. Focus
 			}
 
 			// Return the generated code as-is (cleaning handled by CodeQualityService)
-			const finalCode = finalGeneratedCode || this.generateDataAwareBasicStepCode(
-				request.stepDescription,
-				request.datasets,
-				request.stepIndex
-			);
+			const finalCode =
+				finalGeneratedCode ||
+				this.generateDataAwareBasicStepCode(
+					request.stepDescription,
+					request.datasets,
+					request.stepIndex
+				);
 
 			console.log("🎯 Final code length after cleaning:", finalCode.length);
 
 			// Emit completion event
-			EventManager.dispatchEvent('code-generation-completed', {
+			EventManager.dispatchEvent("code-generation-completed", {
 				stepId,
 				stepDescription: request.stepDescription,
 				finalCode,
 				success: true,
-				timestamp: Date.now()
+				timestamp: Date.now(),
 			} as CodeGenerationCompletedEvent);
-			
+
 			// Clean up tracking
 			this.activeGenerations.delete(stepId);
 
@@ -228,13 +223,13 @@ IMPORTANT: Do not repeat imports or setup code that was already generated. Focus
 			});
 
 			// Emit failure event
-			EventManager.dispatchEvent('code-generation-failed', {
+			EventManager.dispatchEvent("code-generation-failed", {
 				stepId,
 				stepDescription: request.stepDescription,
 				error: error instanceof Error ? error.message : String(error),
-				timestamp: Date.now()
+				timestamp: Date.now(),
 			} as CodeGenerationFailedEvent);
-			
+
 			// Clean up tracking
 			this.activeGenerations.delete(stepId);
 
@@ -267,12 +262,12 @@ IMPORTANT: Do not repeat imports or setup code that was already generated. Focus
 			const code = result.code || result.response || "";
 
 			// Emit completion event for fallback
-			EventManager.dispatchEvent('code-generation-completed', {
+			EventManager.dispatchEvent("code-generation-completed", {
 				stepId,
 				stepDescription: request.stepDescription,
 				finalCode: code,
 				success: true,
-				timestamp: Date.now()
+				timestamp: Date.now(),
 			} as CodeGenerationCompletedEvent);
 
 			return {
@@ -288,12 +283,12 @@ IMPORTANT: Do not repeat imports or setup code that was already generated. Focus
 			);
 
 			// Emit completion event for fallback (still successful, but with fallback code)
-			EventManager.dispatchEvent('code-generation-completed', {
+			EventManager.dispatchEvent("code-generation-completed", {
 				stepId,
 				stepDescription: request.stepDescription,
 				finalCode: fallbackCode,
 				success: false,
-				timestamp: Date.now()
+				timestamp: Date.now(),
 			} as CodeGenerationCompletedEvent);
 
 			return {
@@ -360,10 +355,12 @@ print("Step completed successfully!")
 		request: CodeGenerationRequest,
 		stepId?: string
 	): Promise<CodeGenerationResult> {
-		const actualStepId = stepId || `single-step-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+		const actualStepId =
+			stepId ||
+			`single-step-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 		return this.generateCodeWithEvents(request, actualStepId);
 	}
-	
+
 	/**
 	 * Method to emit validation errors as events
 	 */
@@ -374,13 +371,13 @@ print("Step completed successfully!")
 		originalCode: string,
 		fixedCode?: string
 	): void {
-		EventManager.dispatchEvent('code-validation-error', {
+		EventManager.dispatchEvent("code-validation-error", {
 			stepId,
 			errors,
 			warnings,
 			originalCode,
 			fixedCode,
-			timestamp: Date.now()
+			timestamp: Date.now(),
 		} as CodeValidationErrorEvent);
 	}
 
@@ -415,6 +412,38 @@ print("Step completed successfully!")
 		return null;
 	}
 
+	/**
+	 * Generate extra-safe minimal code for timeout scenarios
+	 */
+	private generateTimeoutSafeCode(
+		stepDescription: string,
+		datasets: any[],
+		stepIndex: number
+	): string {
+		const datasetIds = datasets.map((d) => d.id).join(", ");
+		return `# Step ${stepIndex + 1}: ${stepDescription} (Safe Mode)
+import os
+import sys
+
+print(f"Executing step ${stepIndex + 1} in safe mode: ${stepDescription}")
+
+try:
+    # Minimal safe implementation
+    print("Current working directory:", os.getcwd())
+    print("Python version:", sys.version)
+    print("Available datasets: ${datasetIds}")
+    
+    # Just print basic info without complex processing
+    print("This step has been simplified to prevent execution timeout")
+    print("Step description: ${stepDescription}")
+    
+except Exception as e:
+    print(f"Error: {e}")
+
+print("Safe step completed!")
+`;
+	}
+
 	// Public wrapper methods for fallback code generation
 	public generateBasicStepCodePublic(
 		stepDescription: string,
@@ -429,6 +458,18 @@ print("Step completed successfully!")
 		stepIndex: number
 	): string {
 		return this.generateDataAwareBasicStepCode(
+			stepDescription,
+			datasets,
+			stepIndex
+		);
+	}
+
+	public generateTimeoutSafeCodePublic(
+		stepDescription: string,
+		datasets: any[],
+		stepIndex: number
+	): string {
+		return this.generateTimeoutSafeCode(
 			stepDescription,
 			datasets,
 			stepIndex

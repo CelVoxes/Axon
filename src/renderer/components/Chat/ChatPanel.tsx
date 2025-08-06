@@ -25,12 +25,14 @@ import {
 } from "../../services/AnalysisOrchestrationService";
 import { AnalysisSuggestionsComponent } from "./AnalysisSuggestionsComponent";
 import { EventManager } from "../../utils/EventManager";
+import { AsyncUtils } from "../../utils/AsyncUtils";
 import {
 	CodeGenerationStartedEvent,
 	CodeGenerationChunkEvent,
 	CodeGenerationCompletedEvent,
 	CodeGenerationFailedEvent,
 	CodeValidationErrorEvent,
+	Dataset,
 } from "../../services/types";
 
 // Expandable Code Block Component
@@ -51,12 +53,18 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeBlockProps> = ({
 	const [copied, setCopied] = useState(false);
 	const [showFullCode, setShowFullCode] = useState(false);
 
-	// Auto-expand when streaming starts
+	// Auto-expand when streaming starts and prevent collapsing during streaming
 	useEffect(() => {
 		if (isStreaming) {
 			setIsExpanded(true);
 		}
 	}, [isStreaming]);
+
+	// Prevent collapsing during streaming
+	const handleToggle = () => {
+		if (isStreaming) return; // Don't allow collapsing during streaming
+		setIsExpanded(!isExpanded);
+	};
 
 	const copyToClipboard = async () => {
 		try {
@@ -77,7 +85,7 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeBlockProps> = ({
 
 	return (
 		<div>
-			<div className="code-header" onClick={() => setIsExpanded(!isExpanded)}>
+			<div className="code-header" onClick={handleToggle}>
 				<div className="code-header-left">
 					{title && <span className="code-title">{title}</span>}
 					<span className="code-language">
@@ -102,7 +110,7 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeBlockProps> = ({
 				</div>
 			</div>
 			{isExpanded && (
-				<div className="code-content">
+				<div className={`code-content ${isStreaming ? "streaming" : ""}`}>
 					<pre>
 						<code className={`language-${language}`}>{displayCode}</code>
 					</pre>
@@ -168,18 +176,47 @@ const MessageContent: React.FC<MessageContentProps> = ({
 
 	const formatContent = useCallback(
 		(content: string): React.ReactNode => {
-			// Split content by code blocks
+			// Debug: Log content being processed
+			if (content.includes("```")) {
+				console.log(
+					"MessageContent: Processing content with code blocks:",
+					content.substring(0, 200) + "..."
+				);
+				console.log("MessageContent: Full content length:", content.length);
+				console.log(
+					"MessageContent: Content contains newlines:",
+					content.includes("\n")
+				);
+			}
+
+			// Split content by code blocks - only match complete blocks with content
 			const codeBlockRegex = /```(\w+)?\n([\s\S]*?)\n```/g;
+
+			// Check if content is just an incomplete code block (for streaming)
+			if (content.trim() === "```python" || content.trim() === "```python\n") {
+				return (
+					<div className="message-text">
+						<em>Generating code...</em>
+					</div>
+				);
+			}
+
 			const parts: React.ReactNode[] = [];
 			let lastIndex = 0;
 			let match;
 			let blockIndex = 0;
 
 			while ((match = codeBlockRegex.exec(content)) !== null) {
-				// Add text before code block
+				// Add text before code block only if it's meaningful content
 				if (match.index > lastIndex) {
 					const textContent = content.slice(lastIndex, match.index);
-					if (textContent.trim()) {
+					const trimmedText = textContent.trim();
+					// Only add text blocks if they have meaningful content (not just whitespace or empty)
+					if (
+						trimmedText &&
+						trimmedText.length > 0 &&
+						!trimmedText.match(/^\s*$/)
+					) {
 						parts.push(
 							<div
 								key={`text-${blockIndex}`}
@@ -198,33 +235,69 @@ const MessageContent: React.FC<MessageContentProps> = ({
 					}
 				}
 
-				// Add code block
+				// Add code block only if it has content
 				const language = match[1] || "text";
 				const code = match[2];
-				const blockId = `code-${blockIndex}-${Math.random()
-					.toString(36)
-					.substr(2, 9)}`;
+
+				// Skip empty code blocks to prevent 0-char blocks
+				if (!code || code.trim().length === 0) {
+					lastIndex = match.index + match[0].length;
+					blockIndex++;
+					continue;
+				}
+
+				// Verify this is a complete code block by checking for proper structure
+				const blockContent = match[0];
+				const lines = blockContent.split("\n");
+				if (lines.length < 3) {
+					// Incomplete block, skip
+					lastIndex = match.index + match[0].length;
+					blockIndex++;
+					continue;
+				}
+
+				// Use stable block ID based on content hash to prevent jiggling
+				const contentHash = btoa(code).slice(0, 8);
+				const blockId = `code-${blockIndex}-${contentHash}`;
 				const isExpanded = expandedBlocks.has(blockId) || isStreaming;
 				const isCopied = copiedBlocks.has(blockId);
 
-				parts.push(
-					<ExpandableCodeBlock
-						key={blockId}
-						code={code}
-						language={language}
-						title="Code"
-						isStreaming={isStreaming}
-					/>
-				);
+				// Only create code blocks if they have actual content
+				if (code && code.trim().length > 0) {
+					console.log(
+						`MessageContent: Creating code block with ${code.length} chars, language: ${language}`
+					);
+					parts.push(
+						<ExpandableCodeBlock
+							key={blockId}
+							code={code}
+							language={language}
+							title="Code"
+							isStreaming={isStreaming}
+						/>
+					);
+				} else {
+					console.log(
+						`MessageContent: Skipping empty code block, code length: ${
+							code?.length || 0
+						}`
+					);
+				}
 
 				lastIndex = match.index + match[0].length;
 				blockIndex++;
 			}
 
-			// Add remaining text
+			// Add remaining text only if it's meaningful content
 			if (lastIndex < content.length) {
 				const textContent = content.slice(lastIndex);
-				if (textContent.trim()) {
+				const trimmedText = textContent.trim();
+				// Only add text blocks if they have meaningful content
+				if (
+					trimmedText &&
+					trimmedText.length > 0 &&
+					!trimmedText.match(/^\s*$/)
+				) {
 					parts.push(
 						<div
 							key={`text-${blockIndex}`}
@@ -255,7 +328,20 @@ const MessageContent: React.FC<MessageContentProps> = ({
 				);
 			}
 
-			return parts;
+			console.log(`MessageContent: Final parts count: ${parts.length}`);
+
+			// Filter out any empty parts that might have been created
+			const filteredParts = parts.filter((part) => {
+				if (React.isValidElement(part) && part.type === ExpandableCodeBlock) {
+					return part.props.code && part.props.code.trim().length > 0;
+				}
+				return true;
+			});
+
+			console.log(
+				`MessageContent: Filtered parts count: ${filteredParts.length}`
+			);
+			return filteredParts;
 		},
 		[expandedBlocks, copiedBlocks, isStreaming]
 	);
@@ -286,6 +372,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [validationErrors, setValidationErrors] = useState<string[]>([]);
 	const [validationWarnings, setValidationWarnings] = useState<string[]>([]);
 	const [availableDatasets, setAvailableDatasets] = useState<any[]>([]);
+	const [suggestionButtons, setSuggestionButtons] = useState<string[]>([]);
 	const [virtualEnvStatus, setVirtualEnvStatus] = useState("");
 	const [recentMessages, setRecentMessages] = useState<string[]>([]);
 	const [processedEvents, setProcessedEvents] = useState<Set<string>>(
@@ -298,6 +385,24 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [selectedDatasets, setSelectedDatasets] = useState<any[]>([]);
 	const [currentSuggestions, setCurrentSuggestions] =
 		useState<DataTypeSuggestions | null>(null);
+
+	// Debounced streaming updates to prevent jiggling
+	const debouncedStreamingUpdate = useRef(
+		AsyncUtils.debounce((stepId: string, content: string) => {
+			const stream = activeStreams.current.get(stepId);
+			if (stream) {
+				analysisDispatch({
+					type: "UPDATE_MESSAGE",
+					payload: {
+						id: stream.messageId,
+						updates: {
+							content: content,
+						},
+					},
+				});
+			}
+		}, 100) // 100ms debounce
+	).current;
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	// Simplified: using event system instead of complex message refs
 	const activeStreams = useRef<
@@ -418,7 +523,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				type: "ADD_MESSAGE",
 				payload: {
 					id: messageId,
-					content: `Generating code for: ${stepDescription}\n\n\`\`\`python\n`,
+					content: `\`\`\`python\n`,
 					isUser: false,
 					isStreaming: true,
 				},
@@ -436,16 +541,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			// Update accumulated code
 			stream.accumulatedCode += chunk;
 
-			// Update the message content
-			analysisDispatch({
-				type: "UPDATE_MESSAGE",
-				payload: {
-					id: stream.messageId,
-					updates: {
-						content: `Generating code for: ${customEvent.detail.stepDescription}\n\n\`\`\`python\n${stream.accumulatedCode}`,
-					},
-				},
-			});
+			// Use debounced update to prevent jiggling
+			// Format content to avoid creating empty text blocks
+			const content = `\`\`\`python\n${stream.accumulatedCode}\n\`\`\``;
+			debouncedStreamingUpdate(stepId, content);
 		};
 
 		const handleCodeGenerationCompleted = (event: Event) => {
@@ -462,7 +561,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					payload: {
 						id: stream.messageId,
 						updates: {
-							content: `Generated code for: ${stepDescription}\n\n\`\`\`python\n${finalCode}\n\`\`\``,
+							content: `\`\`\`python\n${finalCode}\n\`\`\``,
 							isStreaming: false,
 							status: success ? "completed" : ("failed" as any),
 						},
@@ -998,16 +1097,76 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					responseContent += `\n`;
 				});
 
-				responseContent += `Ready to Analyze!\n\n`;
-				responseContent += `Now tell me what analysis you'd like to perform on these datasets.\n\n`;
-				responseContent += `**Examples:**\n`;
-				responseContent += `• "Perform differential expression analysis between conditions"\n`;
-				responseContent += `• "Find cell type markers and create UMAP visualization"\n`;
-				responseContent += `• "Analyze gene expression patterns and identify clusters"\n`;
-				responseContent += `• "Compare expression profiles across different time points"\n\n`;
-				responseContent += `Tip: Be specific about what you want to analyze and what outputs you expect.`;
+				responseContent += `Perfect! Let me provide some analysis suggestions based on your selections.\n\n`;
 
 				addMessage(responseContent, false);
+
+				// Generate simple AI-powered suggestions
+				try {
+					// Quick data type inference
+					const hasRNASeq = selectedDatasets.some(
+						(d) =>
+							(d.title || "").toLowerCase().includes("rna-seq") ||
+							(d.title || "").toLowerCase().includes("rnaseq") ||
+							(d.title || "").toLowerCase().includes("transcriptome")
+					);
+
+					const hasSingleCell = selectedDatasets.some(
+						(d) =>
+							(d.title || "").toLowerCase().includes("single cell") ||
+							(d.title || "").toLowerCase().includes("single-cell") ||
+							(d.title || "").toLowerCase().includes("sc-rna")
+					);
+
+					const dataTypeContext = hasSingleCell
+						? "single-cell RNA-seq"
+						: hasRNASeq
+						? "RNA-seq"
+						: "expression";
+
+					console.log(
+						"ChatPanel: Generating simple suggestions for",
+						dataTypeContext,
+						"data"
+					);
+
+					// Use existing loading mechanism
+					setIsLoading(true);
+					setProgressMessage("Generating analysis suggestions...");
+
+					try {
+						// Make a simple backend call for short suggestions
+						const suggestionText = await generateShortSuggestions(
+							selectedDatasets
+						);
+
+						// Check if it contains suggestions to render as buttons
+						if (suggestionText.startsWith("SUGGESTIONS:")) {
+							const suggestions = JSON.parse(
+								suggestionText.replace("SUGGESTIONS:", "")
+							);
+
+							// Store suggestions in state for rendering
+							setSuggestionButtons(suggestions);
+
+							// Add a simple message indicating suggestions are available
+							addMessage("Here are some analysis suggestions:", false);
+						} else {
+							// Add regular text
+							addMessage(suggestionText, false);
+						}
+					} finally {
+						setIsLoading(false);
+						setProgressMessage("");
+					}
+				} catch (error) {
+					console.error("ChatPanel: Error generating suggestions:", error);
+					// Add fallback suggestions even if there's an error
+					addMessage(
+						"[Perform exploratory analysis](analyze:exploratory), [Create visualizations](analyze:visualization), [Run quality control](analyze:quality_control)",
+						false
+					);
+				}
 			}
 		},
 		[
@@ -1016,6 +1175,129 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			analysisDispatch,
 			scrollToBottomImmediate,
 		]
+	);
+
+	// Simple method to generate short suggestions (no backend call needed)
+	const generateShortSuggestions = async (
+		datasets: Dataset[]
+	): Promise<string> => {
+		if (datasets.length === 0) {
+			return "No datasets selected. Please select one or more datasets to get analysis suggestions.";
+		}
+
+		try {
+			console.log(
+				"ChatPanel: Generating suggestions for datasets:",
+				datasets.map((d) => d.title)
+			);
+
+			// Extract data types from datasets
+			const dataTypes = datasets
+				.map((d) => d.dataType || "unknown")
+				.filter(Boolean);
+
+			// Try to get suggestions from backend first
+			try {
+				const backendSuggestions =
+					await suggestionsService!.generateSuggestions(
+						dataTypes,
+						`Analyze ${datasets.length} dataset(s)`,
+						datasets,
+						"Dataset selection context"
+					);
+
+				if (backendSuggestions.suggestions.length > 0) {
+					// Store suggestions for button rendering
+					const suggestions = backendSuggestions.suggestions.slice(0, 3);
+
+					// Return a special marker that will be replaced with buttons
+					return `SUGGESTIONS:${JSON.stringify(
+						suggestions.map((s) => s.title)
+					)}`;
+				}
+			} catch (backendError) {
+				console.log(
+					"ChatPanel: Backend suggestions failed, using fallback:",
+					backendError
+				);
+			}
+
+			// Fallback to local suggestion generation based on data type
+			const dataType = dataTypes.join(", ");
+			let fallbackSuggestions = [];
+			if (dataType.includes("single-cell")) {
+				fallbackSuggestions = [
+					"Perform quality control",
+					"Create cell clustering",
+					"Identify marker genes",
+				];
+			} else if (dataType.includes("RNA-seq")) {
+				fallbackSuggestions = [
+					"Perform differential expression",
+					"Create gene plots",
+					"Analyze pathways",
+				];
+			} else {
+				fallbackSuggestions = [
+					"Perform exploratory analysis",
+					"Create visualizations",
+					"Run statistical tests",
+				];
+			}
+
+			return `SUGGESTIONS:${JSON.stringify(fallbackSuggestions)}`;
+		} catch (error) {
+			console.error("ChatPanel: Error generating suggestions:", error);
+			return `SUGGESTIONS:${JSON.stringify(["Perform exploratory analysis"])}`;
+		}
+	};
+
+	// Handle clicks on suggestion buttons
+	useEffect(() => {
+		const handleButtonClick = (e: Event) => {
+			const target = e.target as HTMLElement;
+			if (target && target.classList.contains("suggestion-button")) {
+				const suggestion = target.getAttribute("data-suggestion");
+				if (suggestion) {
+					console.log("ChatPanel: Suggestion button clicked:", suggestion);
+
+					// Set the clicked text as the next message
+					setInputValue(suggestion);
+
+					// Simulate form submission after a brief delay to allow state update
+					setTimeout(() => {
+						const form = document.querySelector("form");
+						if (form) {
+							form.requestSubmit();
+						}
+					}, 10);
+				}
+			}
+		};
+
+		document.addEventListener("click", handleButtonClick);
+		return () => {
+			document.removeEventListener("click", handleButtonClick);
+		};
+	}, [setInputValue]);
+
+	// Handle clicks on analysis suggestion links (kept for backward compatibility)
+	const handleAnalysisClick = useCallback(
+		(analysisType: string) => {
+			console.log("ChatPanel: Analysis clicked:", analysisType);
+
+			// Just set the clicked text as the next message
+			setInputValue(analysisType);
+
+			// Simulate form submission after a brief delay to allow state update
+			setTimeout(() => {
+				const form = document.querySelector("form");
+				if (form) {
+					form.requestSubmit();
+				}
+			}, 10);
+		},
+		[setInputValue]
 	);
 
 	// Function to handle suggestions requests
@@ -1079,13 +1361,41 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					}
 
 					if (dataTypes.length > 0 && suggestionsService) {
-						const suggestions = await suggestionsService.generateSuggestions(
-							dataTypes,
-							message,
-							selectedDatasets
-						);
+						try {
+							const suggestions = await suggestionsService.generateSuggestions(
+								dataTypes,
+								message,
+								selectedDatasets
+							);
 
-						addMessage("", false, undefined, undefined, undefined, suggestions);
+							if (
+								suggestions &&
+								(suggestions.suggestions.length > 0 ||
+									suggestions.recommended_approaches.length > 0)
+							) {
+								addMessage(
+									"",
+									false,
+									undefined,
+									undefined,
+									undefined,
+									suggestions
+								);
+							} else {
+								addMessage(
+									`Based on your selected datasets with ${dataTypes.join(
+										", "
+									)} data, I recommend starting with exploratory data analysis, quality control checks, then statistical analysis or visualization depending on your research goals.`,
+									false
+								);
+							}
+						} catch (error) {
+							console.error("ChatPanel: Error generating suggestions:", error);
+							addMessage(
+								`Based on your ${selectedDatasets.length} selected datasets, I recommend starting with data loading and exploration, followed by quality assessment and then statistical analysis appropriate for your data type.`,
+								false
+							);
+						}
 					} else {
 						addMessage(
 							"General Analysis Suggestions:\n\n" +
@@ -1441,7 +1751,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			<div className="chat-messages">
 				{analysisState.messages.map((message: any) => (
 					<div key={message.id}>
-						<ChatMessage message={message} />
+						<ChatMessage
+							message={message}
+							onAnalysisClick={handleAnalysisClick}
+						/>
 						{message.code && (
 							<div style={{ marginTop: "8px", marginLeft: "44px" }}>
 								<ExpandableCodeBlock
@@ -1661,6 +1974,47 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					)}
 				</button>
 			</div>
+
+			{/* Suggestion Buttons */}
+			{suggestionButtons.length > 0 && (
+				<div
+					style={{
+						padding: "16px",
+						display: "flex",
+						gap: "8px",
+						flexWrap: "wrap",
+						borderTop: "1px solid #444",
+					}}
+				>
+					{suggestionButtons.map((suggestion, index) => (
+						<button
+							key={index}
+							onClick={() => {
+								setInputValue(suggestion);
+								setSuggestionButtons([]); // Clear buttons after click
+								setTimeout(() => {
+									const form = document.querySelector("form");
+									if (form) {
+										form.requestSubmit();
+									}
+								}, 10);
+							}}
+							style={{
+								background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)",
+								color: "white",
+								border: "none",
+								padding: "8px 16px",
+								borderRadius: "20px",
+								cursor: "pointer",
+								fontSize: "14px",
+								fontWeight: "500",
+							}}
+						>
+							{suggestion}
+						</button>
+					))}
+				</div>
+			)}
 
 			{/* Dataset Selection Modal */}
 			<DatasetSelectionModal
