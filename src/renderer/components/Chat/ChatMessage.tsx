@@ -17,16 +17,10 @@ interface ChatMessageProps {
 	onAnalysisClick?: (analysisType: string) => void;
 }
 
-const pulse = keyframes`
-	0%, 20% { opacity: 0.4; }
-	50% { opacity: 1; }
-	80%, 100% { opacity: 0.4; }
-`;
-
 const MessageContainer = styled.div<{ $messageType: string }>`
 	display: block;
 	margin-bottom: ${(props) =>
-		props.$messageType === "system" ? "8px" : "16px"};
+		props.$messageType === "system" ? "8px" : "0px"};
 	animation: ${(props) =>
 		props.$messageType === "system" ? "none" : "fadeIn 0.3s ease-out"};
 
@@ -213,32 +207,6 @@ const MessageText = styled.div<{ $messageType: string }>`
 	}
 `;
 
-const ThinkingContainer = styled.div`
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	padding: 12px 16px;
-	background: rgba(42, 42, 42, 0.6);
-	border-radius: 4px 16px 16px 16px;
-	border: 1px solid rgba(75, 85, 99, 0.3);
-	font-size: ${typography.base};
-	color: #94a3b8;
-`;
-
-const ThinkingDots = styled.div`
-	display: flex;
-	gap: 4px;
-`;
-
-const Dot = styled.div<{ delay: number }>`
-	width: 6px;
-	height: 6px;
-	border-radius: 50%;
-	background: #0ea5e9;
-	animation: ${pulse} 1.4s infinite;
-	animation-delay: ${(props) => props.delay}s;
-`;
-
 const MessageTimestamp = styled.div`
 	font-size: ${typography.xs};
 	color: #6b7280;
@@ -250,17 +218,6 @@ const MessageTimestamp = styled.div`
 		opacity: 1;
 	}
 `;
-
-const ThinkingComponent: React.FC = () => (
-	<ThinkingContainer>
-		<span>Thinking</span>
-		<ThinkingDots>
-			<Dot delay={0} />
-			<Dot delay={0.2} />
-			<Dot delay={0.4} />
-		</ThinkingDots>
-	</ThinkingContainer>
-);
 
 const formatTimestamp = (timestamp: Date): string => {
 	const now = new Date();
@@ -283,6 +240,7 @@ interface ExpandableCodeProps {
 	messageId: string;
 	blockIndex: number;
 	isStreaming?: boolean;
+	previousCodeBlocks?: string;
 }
 
 const ExpandableCodeBlock: React.FC<ExpandableCodeProps> = ({
@@ -291,10 +249,11 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeProps> = ({
 	messageId,
 	blockIndex,
 	isStreaming = false,
+	previousCodeBlocks,
 }) => {
 	const [isExpanded, setIsExpanded] = React.useState(false);
 	const [copied, setCopied] = React.useState(false);
-	const code = String(children || "").replace(/\n$/, "");
+	const code = String(children || "").trim();
 	const blockId = `${messageId}-code-${blockIndex}`;
 
 	const copyToClipboard = async () => {
@@ -308,11 +267,12 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeProps> = ({
 	};
 
 	const isLongCode = code.length > 500;
-	const shouldAutoExpand = code.length <= 200 || isStreaming;
+	const shouldAutoExpand =
+		code.length <= 200 || (isStreaming && code.length > 0);
 
 	React.useEffect(() => {
 		setIsExpanded(shouldAutoExpand);
-	}, [shouldAutoExpand, isStreaming]);
+	}, [shouldAutoExpand, isStreaming, code.length]);
 
 	return (
 		<div className="expandable-code-block" style={{ margin: "12px 0" }}>
@@ -327,6 +287,14 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeProps> = ({
 						{language}
 						{isStreaming && (
 							<span style={{ color: "#0ea5e9", marginLeft: 4 }}>●</span>
+						)}
+						{previousCodeBlocks && previousCodeBlocks.length > 0 && (
+							<span
+								style={{ color: "#10b981", marginLeft: 4 }}
+								title={`References previous code blocks`}
+							>
+								🔗
+							</span>
 						)}
 					</span>
 					<span className="code-size-indicator">{code.length} chars</span>
@@ -347,45 +315,99 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeProps> = ({
 				</div>
 			</div>
 			{isExpanded && (
-				<div className="code-content">
-					<pre
-						style={{
-							margin: 0,
-							background: "#1e1e1e",
-							fontSize: typography.xs,
-							lineHeight: "1.4",
-							overflow: "auto",
-							fontFamily: "'Monaco', 'Menlo', 'Ubuntu Mono', monospace",
-							whiteSpace: "pre-wrap",
-							wordWrap: "break-word",
-						}}
-					>
-						<code
-							className={`language-${language}`}
+				<>
+					{previousCodeBlocks && previousCodeBlocks.length > 0 && (
+						<div
+							className="code-context"
 							style={{
-								background: "transparent",
-								color: "#e5e7eb",
-								fontSize: "inherit",
-								fontFamily: "inherit",
+								background: "#2a2a2a",
+								borderBottom: "1px solid #333",
+								padding: "8px 12px",
+								fontSize: typography.xs,
+								color: "#888",
+								fontStyle: "italic",
 							}}
 						>
-							{code}
-						</code>
-					</pre>
-				</div>
+							<span>📋 Context from previous code blocks available</span>
+						</div>
+					)}
+					<div className="code-content">
+						<pre
+							style={{
+								margin: 0,
+								background: "#1e1e1e",
+								fontSize: typography.xs,
+								lineHeight: "1.4",
+								overflow: "auto",
+								fontFamily: "'Monaco', 'Menlo', 'Ubuntu Mono', monospace",
+								whiteSpace: "pre-wrap",
+								wordWrap: "break-word",
+							}}
+						>
+							<code
+								className={`language-${language}`}
+								style={{
+									background: "transparent",
+									color: "#e5e7eb",
+									fontSize: "inherit",
+									fontFamily: "inherit",
+								}}
+							>
+								{code}
+							</code>
+						</pre>
+					</div>
+				</>
 			)}
 		</div>
 	);
 };
 
-export const ChatMessage: React.FC<ChatMessageProps> = ({ message, onAnalysisClick }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = ({
+	message,
+	onAnalysisClick,
+}) => {
 	const [expandedBlocks, setExpandedBlocks] = React.useState<Set<string>>(
 		new Set()
 	);
 	const [copiedBlocks, setCopiedBlocks] = React.useState<Set<string>>(
 		new Set()
 	);
-	let codeBlockCounter = 0;
+	const [codeBlockCounter, setCodeBlockCounter] = React.useState(0);
+	const [codeBlocks, setCodeBlocks] = React.useState<Map<number, string>>(
+		new Map()
+	);
+
+	// Reset code block counter and code blocks when message ID changes (new message)
+	React.useEffect(() => {
+		setCodeBlockCounter(0);
+		setCodeBlocks(new Map());
+	}, [message.id]);
+
+	// Track code blocks from the message content
+	React.useEffect(() => {
+		if (message.content) {
+			// Parse the content to find code blocks and update the codeBlocks state
+			// Use a more robust regex that handles edge cases better
+			const codeBlockRegex = /```(\w+)?\s*\n([\s\S]*?)\n\s*```/g;
+			let match;
+			let index = 0;
+			const newCodeBlocks = new Map<number, string>();
+
+			while ((match = codeBlockRegex.exec(message.content)) !== null) {
+				const language = match[1] || "text";
+				const code = match[2].trim();
+				// Only add non-empty code blocks and filter out blocks that are just whitespace
+				if (code.length > 0 && code.replace(/\s/g, "").length > 0) {
+					newCodeBlocks.set(index, code);
+					index++;
+				}
+			}
+
+			setCodeBlocks(newCodeBlocks);
+			setCodeBlockCounter(newCodeBlocks.size); // Use the actual number of valid code blocks
+		}
+	}, [message.content]);
 
 	const copyToClipboard = React.useCallback(
 		async (code: string, blockId: string) => {
@@ -511,109 +533,133 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message, onAnalysisCli
 	};
 
 	const messageType = getMessageType();
-	// Only show thinking bubble for empty pending messages (true loading states)
-	const isThinking = message.status === "pending" && !message.content.trim();
 
 	return (
 		<MessageContainer $messageType={messageType}>
 			<MessageContent $messageType={messageType}>
-				{isThinking && !message.isUser ? (
-					<ThinkingComponent />
-				) : (
-					<>
-						{messageType === "assistant" ? (
-							<MessageText $messageType={messageType} onClick={handleClick}>
-								<ReactMarkdown
-									components={{
-										code: ({ node, inline, className, children, ...props }) => {
-											const match = /language-(\w+)/.exec(className || "");
-											const language = match ? match[1] : "text";
+				{messageType === "assistant" ? (
+					<MessageText $messageType={messageType} onClick={handleClick}>
+						<ReactMarkdown
+							components={{
+								code: ({ node, inline, className, children, ...props }) => {
+									const match = /language-(\w+)/.exec(className || "");
+									const language = match ? match[1] : "text";
 
-											if (inline) {
-												return (
-													<code className="inline-code" {...props}>
-														{children}
-													</code>
-												);
+									if (inline) {
+										return (
+											<code className="inline-code" {...props}>
+												{children}
+											</code>
+										);
+									}
+
+									// Don't render empty code blocks during streaming
+									const codeContent = String(children || "").trim();
+									// Filter out empty code blocks or blocks that are just whitespace
+									if (
+										codeContent.length === 0 ||
+										codeContent.replace(/\s/g, "").length === 0 ||
+										(message.isStreaming && codeContent.length === 0)
+									) {
+										return null;
+									}
+
+									// Use a stable index based on the current code block position in the content
+									const currentIndex = codeBlockCounter;
+
+									// Get context from previously generated code blocks
+									const previousCodeBlocks = Array.from(codeBlocks.entries())
+										.filter(([index]) => index < currentIndex)
+										.map(([index, code]) => `Code Block ${index + 1}:\n${code}`)
+										.join("\n\n");
+
+									return (
+										<ExpandableCodeBlock
+											language={language}
+											messageId={message.id}
+											blockIndex={currentIndex}
+											isStreaming={
+												message.isStreaming || message.status === "pending"
 											}
-
-											const currentIndex = codeBlockCounter++;
-											return (
-												<ExpandableCodeBlock
-													language={language}
-													messageId={message.id}
-													blockIndex={currentIndex}
-													isStreaming={
-														message.isStreaming || message.status === "pending"
+											previousCodeBlocks={previousCodeBlocks}
+										>
+											{children}
+										</ExpandableCodeBlock>
+									);
+								},
+								pre: ({ children }) => {
+									// Don't render the default pre tag, let our ExpandableCodeBlock handle it
+									return <>{children}</>;
+								},
+								a: ({ href, children, ...props }) => {
+									// Handle special analyze: links
+									if (href && href.startsWith("analyze:")) {
+										const analysisType = href.replace("analyze:", "");
+										return (
+											<button
+												type="button"
+												onClick={(e) => {
+													e.preventDefault();
+													if (onAnalysisClick) {
+														onAnalysisClick(analysisType);
 													}
-												>
-													{children}
-												</ExpandableCodeBlock>
-											);
-										},
-										pre: ({ children }) => {
-											// Don't render the default pre tag, let our ExpandableCodeBlock handle it
-											return <>{children}</>;
-										},
-										a: ({ href, children, ...props }) => {
-											// Handle special analyze: links
-											if (href && href.startsWith('analyze:')) {
-												const analysisType = href.replace('analyze:', '');
-												return (
-													<button
-														type="button"
-														onClick={(e) => {
-															e.preventDefault();
-															if (onAnalysisClick) {
-																onAnalysisClick(analysisType);
-															}
-														}}
-														style={{
-															color: '#007acc',
-															cursor: 'pointer',
-															textDecoration: 'underline',
-															background: 'none',
-															border: 'none',
-															padding: 0,
-															font: 'inherit',
-															display: 'inline'
-														}}
-													>
-														{children}
-													</button>
-												);
-											}
-											// Regular links - avoid javascript: URLs
-											if (href && (href.startsWith('http://') || href.startsWith('https://'))) {
-												return (
-													<a href={href} target="_blank" rel="noopener noreferrer">
-														{children}
-													</a>
-												);
-											} else {
-												// For invalid or javascript: URLs, render as plain text
-												return <span style={{ color: '#007acc', textDecoration: 'underline' }}>{children}</span>;
-											}
-										},
-									}}
-								>
-									{message.content}
-								</ReactMarkdown>
-							</MessageText>
-						) : (
-							<MessageText
-								$messageType={messageType}
-								onClick={handleClick}
-								dangerouslySetInnerHTML={{
-									__html: formatContent(message.content),
-								}}
-							/>
-						)}
-						<MessageTimestamp>
-							{formatTimestamp(message.timestamp)}
-						</MessageTimestamp>
-					</>
+												}}
+												style={{
+													color: "#007acc",
+													cursor: "pointer",
+													textDecoration: "underline",
+													background: "none",
+													border: "none",
+													padding: 0,
+													font: "inherit",
+													display: "inline",
+												}}
+											>
+												{children}
+											</button>
+										);
+									}
+									// Regular links - avoid javascript: URLs
+									if (
+										href &&
+										(href.startsWith("http://") || href.startsWith("https://"))
+									) {
+										return (
+											<a href={href} target="_blank" rel="noopener noreferrer">
+												{children}
+											</a>
+										);
+									} else {
+										// For invalid or javascript: URLs, render as plain text
+										return (
+											<span
+												style={{
+													color: "#007acc",
+													textDecoration: "underline",
+												}}
+											>
+												{children}
+											</span>
+										);
+									}
+								},
+							}}
+						>
+							{message.content}
+						</ReactMarkdown>
+					</MessageText>
+				) : (
+					<MessageText
+						$messageType={messageType}
+						onClick={handleClick}
+						dangerouslySetInnerHTML={{
+							__html: formatContent(message.content),
+						}}
+					/>
 				)}
+				<MessageTimestamp>
+					{formatTimestamp(message.timestamp)}
+				</MessageTimestamp>
 			</MessageContent>
 		</MessageContainer>
 	);

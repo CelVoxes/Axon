@@ -1,123 +1,80 @@
 import React from "react";
-import { DataTypeSuggestions, AnalysisSuggestion } from "../../services/AnalysisOrchestrationService";
 
-interface AnalysisSuggestionsComponentProps {
-	suggestions: DataTypeSuggestions;
-	onSuggestionSelect: (suggestion: AnalysisSuggestion) => void;
-	onCustomAnalysis: () => void;
+interface ExamplesComponentProps {
+	onExampleSelect: (example: string) => void;
 }
 
-export const AnalysisSuggestionsComponent: React.FC<AnalysisSuggestionsComponentProps> = ({
-	suggestions,
-	onSuggestionSelect,
-	onCustomAnalysis,
+export const ExamplesComponent: React.FC<ExamplesComponentProps> = ({
+	onExampleSelect,
 }) => {
-	const getComplexityColor = (complexity: string) => {
-		switch (complexity) {
-			case "easy": return "#28a745";
-			case "medium": return "#ffc107";
-			case "hard": return "#dc3545";
-			default: return "#6c757d";
-		}
-	};
-
-	const getComplexityEmoji = (complexity: string) => {
-		switch (complexity) {
-			case "easy": return "🟢";
-			case "medium": return "🟡";
-			case "hard": return "🔴";
-			default: return "⚪";
-		}
-	};
+	const examples = [
+		{
+			title: "Load and explore data",
+			description:
+				"Start by loading your datasets and examining their structure",
+			query: "Load my datasets and show me a summary of the data",
+		},
+		{
+			title: "Create visualizations",
+			description: "Generate plots and charts to understand your data",
+			query: "Create some visualizations to explore my data",
+		},
+		{
+			title: "Perform quality control",
+			description: "Check data quality and identify potential issues",
+			query: "Run quality control checks on my data",
+		},
+		{
+			title: "Statistical analysis",
+			description: "Perform basic statistical tests and analysis",
+			query: "Perform statistical analysis on my data",
+		},
+		{
+			title: "Differential expression",
+			description:
+				"Find genes that are differentially expressed between conditions",
+			query: "Find differentially expressed genes between my conditions",
+		},
+		{
+			title: "Clustering analysis",
+			description: "Group similar samples or genes together",
+			query: "Perform clustering analysis on my data",
+		},
+	];
 
 	return (
-		<div className="analysis-suggestions-container">
-			<div className="suggestions-header">
-				<h3>🔍 Analysis Suggestions Based on Your Data</h3>
-				<p>Click on any suggestion to start the analysis:</p>
+		<div className="examples-container">
+			<div className="examples-header">
+				<h3>💡 Example Queries</h3>
+				<p>Click on any example to get started:</p>
 			</div>
 
-			{suggestions.suggestions.length > 0 && (
-				<div className="suggestions-section">
-					<h4>Recommended Analyses:</h4>
-					<div className="suggestions-grid">
-						{suggestions.suggestions.map((suggestion: AnalysisSuggestion, index: number) => (
-							<div
-								key={index}
-								className="suggestion-card"
-								onClick={() => onSuggestionSelect(suggestion)}
-							>
-								<div className="suggestion-header">
-									<span className="suggestion-title">{suggestion.title}</span>
-									<span 
-										className="complexity-badge"
-										style={{ backgroundColor: getComplexityColor(suggestion.complexity) }}
-									>
-										{getComplexityEmoji(suggestion.complexity)} {suggestion.complexity}
-									</span>
-								</div>
-								
-								<p className="suggestion-description">{suggestion.description}</p>
-								
-								<div className="suggestion-details">
-									<div className="detail-item">
-										<span className="detail-icon">⏱️</span>
-										<span>{suggestion.estimated_time}</span>
-									</div>
-									<div className="detail-item">
-										<span className="detail-icon">📊</span>
-										<span>Insights: {suggestion.expected_insights.slice(0, 2).join(", ")}</span>
-									</div>
-								</div>
-								
-								<div className="suggestion-footer">
-									<span className="click-hint">Click to start analysis →</span>
-								</div>
-							</div>
-						))}
-					</div>
-				</div>
-			)}
+			<div className="examples-grid">
+				{examples.map((example, index) => (
+					<div
+						key={index}
+						className="example-card"
+						onClick={() => onExampleSelect(example.query)}
+					>
+						<div className="example-header">
+							<span className="example-title">{example.title}</span>
+						</div>
 
-			{suggestions.recommended_approaches.length > 0 && (
-				<div className="approaches-section">
-					<h4>Recommended Approaches:</h4>
-					<div className="approaches-list">
-						{suggestions.recommended_approaches.map((approach: any, index: number) => (
-							<div key={index} className="approach-item">
-								<div className="approach-title">{approach.approach}</div>
-								<div className="approach-description">{approach.description}</div>
-								<div className="approach-tools">
-									<span className="tools-label">Tools:</span>
-									{approach.tools.map((tool: string, toolIndex: number) => (
-										<span key={toolIndex} className="tool-badge">{tool}</span>
-									))}
-								</div>
-							</div>
-						))}
-					</div>
-				</div>
-			)}
+						<p className="example-description">{example.description}</p>
 
-			<div className="suggestions-actions">
-				<button 
-					className="custom-analysis-button"
-					onClick={onCustomAnalysis}
-				>
-					🎯 Create Custom Analysis
-				</button>
+						<div className="example-footer">
+							<span className="click-hint">Click to try →</span>
+						</div>
+					</div>
+				))}
 			</div>
 
-			{suggestions.next_steps.length > 0 && (
-				<div className="next-steps-section">
-					<h4>Next Steps:</h4>
-					<ol className="next-steps-list">
-						{suggestions.next_steps.map((step: string, index: number) => (
-							<li key={index}>{step}</li>
-						))}
-					</ol>
-				</div>
-			)}
+			<div className="examples-footer">
+				<p>
+					💡 <strong>Tip:</strong> You can also ask me anything specific about
+					your data analysis needs!
+				</p>
+			</div>
 		</div>
 	);
 };

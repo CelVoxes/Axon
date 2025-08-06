@@ -21,9 +21,8 @@ import { AutonomousAgent } from "../../services/AutonomousAgent";
 import {
 	AnalysisOrchestrationService,
 	DataTypeSuggestions,
-	AnalysisSuggestion,
 } from "../../services/AnalysisOrchestrationService";
-import { AnalysisSuggestionsComponent } from "./AnalysisSuggestionsComponent";
+import { ExamplesComponent } from "./AnalysisSuggestionsComponent";
 import { EventManager } from "../../utils/EventManager";
 import { AsyncUtils } from "../../utils/AsyncUtils";
 import {
@@ -1097,76 +1096,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					responseContent += `\n`;
 				});
 
-				responseContent += `Perfect! Let me provide some analysis suggestions based on your selections.\n\n`;
+				responseContent += `Perfect! Here are some example queries you can try:\n\n`;
 
-				addMessage(responseContent, false);
-
-				// Generate simple AI-powered suggestions
-				try {
-					// Quick data type inference
-					const hasRNASeq = selectedDatasets.some(
-						(d) =>
-							(d.title || "").toLowerCase().includes("rna-seq") ||
-							(d.title || "").toLowerCase().includes("rnaseq") ||
-							(d.title || "").toLowerCase().includes("transcriptome")
-					);
-
-					const hasSingleCell = selectedDatasets.some(
-						(d) =>
-							(d.title || "").toLowerCase().includes("single cell") ||
-							(d.title || "").toLowerCase().includes("single-cell") ||
-							(d.title || "").toLowerCase().includes("sc-rna")
-					);
-
-					const dataTypeContext = hasSingleCell
-						? "single-cell RNA-seq"
-						: hasRNASeq
-						? "RNA-seq"
-						: "expression";
-
-					console.log(
-						"ChatPanel: Generating simple suggestions for",
-						dataTypeContext,
-						"data"
-					);
-
-					// Use existing loading mechanism
-					setIsLoading(true);
-					setProgressMessage("Generating analysis suggestions...");
-
-					try {
-						// Make a simple backend call for short suggestions
-						const suggestionText = await generateShortSuggestions(
-							selectedDatasets
-						);
-
-						// Check if it contains suggestions to render as buttons
-						if (suggestionText.startsWith("SUGGESTIONS:")) {
-							const suggestions = JSON.parse(
-								suggestionText.replace("SUGGESTIONS:", "")
-							);
-
-							// Store suggestions in state for rendering
-							setSuggestionButtons(suggestions);
-
-							// Add a simple message indicating suggestions are available
-							addMessage("Here are some analysis suggestions:", false);
-						} else {
-							// Add regular text
-							addMessage(suggestionText, false);
-						}
-					} finally {
-						setIsLoading(false);
-						setProgressMessage("");
-					}
-				} catch (error) {
-					console.error("ChatPanel: Error generating suggestions:", error);
-					// Add fallback suggestions even if there's an error
-					addMessage(
-						"[Perform exploratory analysis](analyze:exploratory), [Create visualizations](analyze:visualization), [Run quality control](analyze:quality_control)",
-						false
-					);
-				}
+				addMessage(responseContent, false, undefined, undefined, undefined, {
+					suggestions: [],
+					recommended_approaches: [],
+					data_insights: [],
+					next_steps: [],
+				});
 			}
 		},
 		[
@@ -1690,51 +1627,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		addMessage("Processing stopped by user.", false);
 	};
 
-	const handleSuggestionSelect = useCallback(
-		async (suggestion: AnalysisSuggestion) => {
-			addMessage(`I want to perform: ${suggestion.title}`, true);
-
-			// Start the selected analysis
-			if (selectedDatasets.length > 0) {
-				try {
-					setIsLoading(true);
-					setProgressMessage(`Starting ${suggestion.title}...`);
-
-					// Use the suggestion title as the analysis request
-					await handleAnalysisRequest(suggestion.title);
-				} catch (error) {
-					console.error("Error executing selected suggestion:", error);
-					addMessage(
-						"Sorry, I encountered an error starting the analysis. Please try again.",
-						false
-					);
-				} finally {
-					setIsLoading(false);
-					setProgressMessage("");
-				}
-			} else {
-				addMessage(
-					"Please select datasets first before starting the analysis.",
-					false
-				);
-			}
-		},
-		[
-			selectedDatasets,
-			handleAnalysisRequest,
-			analysisDispatch,
-			scrollToBottomImmediate,
-		]
-	);
-
-	const handleCustomAnalysis = useCallback(() => {
-		addMessage("I'd like to create a custom analysis", true);
-		addMessage(
-			'Custom Analysis Mode\n\nPlease describe what specific analysis you\'d like to perform with your selected datasets. For example:\n\n• "Find differentially expressed genes between conditions"\n• "Perform clustering analysis to identify cell types"\n• "Analyze pathway enrichment in my data"\n• "Create visualizations comparing samples"\n\nJust describe your analysis goal and I\'ll help you create a custom workflow!',
-			false
-		);
-	}, [analysisDispatch, scrollToBottomImmediate]);
-
 	return (
 		<div className={`chat-panel ${className || ""}`}>
 			<div className="chat-header">
@@ -1767,10 +1659,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						)}
 						{message.suggestions && (
 							<div style={{ marginTop: "8px", marginLeft: "44px" }}>
-								<AnalysisSuggestionsComponent
-									suggestions={message.suggestions}
-									onSuggestionSelect={handleSuggestionSelect}
-									onCustomAnalysis={handleCustomAnalysis}
+								<ExamplesComponent
+									onExampleSelect={(example) => {
+										setInputValue(example);
+										setTimeout(() => {
+											const form = document.querySelector("form");
+											if (form) {
+												form.requestSubmit();
+											}
+										}, 10);
+									}}
 								/>
 							</div>
 						)}
@@ -1956,8 +1854,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					className={`send-button ${isProcessing ? "stop-mode" : ""}`}
 				>
 					{isProcessing ? (
-						<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-							<rect x="6" y="6" width="12" height="12" fill="#555" />
+						<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+							<rect x="4" y="4" width="16" height="16" fill="#555" />
 						</svg>
 					) : isLoading ? (
 						<div className="loading-dots">
