@@ -1,25 +1,30 @@
-import { BackendClient, GEODataset, SearchProgress } from "./BackendClient";
+import { BackendClient, SearchProgress } from "./BackendClient";
+import { GEODataset } from "../types/DatasetTypes";
+import {
+	deduplicateDatasets,
+	prioritizeSearchTerms,
+} from "../utils/SearchUtils";
 import { MAX_SEARCH_ATTEMPTS } from "../config/SearchConfig";
 
 export class SearchService {
-    private backendClient: BackendClient;
-    private onProgress?: (progress: SearchProgress) => void;
+	private backendClient: BackendClient;
+	private onProgress?: (progress: SearchProgress) => void;
 
-    constructor(backendClient: BackendClient) {
-        this.backendClient = backendClient;
-    }
+	constructor(backendClient: BackendClient) {
+		this.backendClient = backendClient;
+	}
 
-    setProgressCallback(callback: (progress: SearchProgress) => void) {
+	setProgressCallback(callback: (progress: SearchProgress) => void) {
 		this.onProgress = callback;
 	}
 
-    private updateProgress(progress: SearchProgress) {
+	private updateProgress(progress: SearchProgress) {
 		if (this.onProgress) {
 			this.onProgress(progress);
 		}
 	}
 
-    async discoverDatasets(
+	async discoverDatasets(
 		query: string,
 		options?: { organism?: string; limit?: number }
 	): Promise<{
@@ -139,11 +144,8 @@ export class SearchService {
 				progress: 90,
 			});
 
-			const uniqueDatasets = this.deduplicateDatasets(allDatasets);
-			const prioritizedTerms = this.prioritizeSearchTerms(
-				usedSearchTerms,
-				query
-			);
+			const uniqueDatasets = deduplicateDatasets(allDatasets);
+			const prioritizedTerms = prioritizeSearchTerms(usedSearchTerms, query);
 
 			this.updateProgress({
 				message: `Found ${uniqueDatasets.length} datasets`,
@@ -169,32 +171,5 @@ export class SearchService {
 		}
 	}
 
-    private deduplicateDatasets(datasets: GEODataset[]): GEODataset[] {
-		const seen = new Set<string>();
-		return datasets.filter((dataset) => {
-			if (seen.has(dataset.id)) {
-				return false;
-			}
-			seen.add(dataset.id);
-			return true;
-		});
-	}
-
-	private prioritizeSearchTerms(
-		terms: string[],
-		originalQuery: string
-	): string[] {
-		// Simple prioritization: prefer terms that appear in the original query
-		const originalLower = originalQuery.toLowerCase();
-		return terms.sort((a, b) => {
-			const aInOriginal = originalLower.includes(a.toLowerCase());
-			const bInOriginal = originalLower.includes(b.toLowerCase());
-
-			if (aInOriginal && !bInOriginal) return -1;
-			if (!aInOriginal && bInOriginal) return 1;
-
-			// If both or neither are in original, prefer shorter terms (more specific)
-			return a.length - b.length;
-		});
-	}
+	// Removed local deduplicate/prioritize in favor of shared utils
 }

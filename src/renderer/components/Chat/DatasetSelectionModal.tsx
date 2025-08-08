@@ -8,6 +8,7 @@ import {
 	FiExternalLink,
 } from "react-icons/fi";
 import { typography } from "../../styles/design-system";
+import { GEODataset as Dataset } from "../../types/DatasetTypes";
 
 const ModalOverlay = styled.div`
 	position: fixed;
@@ -255,20 +256,7 @@ const PaginationInfo = styled.div`
 	margin: 0 16px;
 `;
 
-interface Dataset {
-	id: string;
-	title: string;
-	description: string;
-	organism: string;
-	samples: number;
-	sample_count?: string;
-	type?: string;
-	platform: string;
-	publication_date?: string;
-	similarity_score?: number;
-	source?: string;
-	url?: string;
-}
+// Using shared GEODataset type as Dataset
 
 interface DatasetSelectionModalProps {
 	isOpen: boolean;
@@ -309,12 +297,14 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 	// Handle dataset changes while modal is open - optimize to prevent infinite re-renders
 	useEffect(() => {
 		if (!isOpen || safeDatasets.length === 0) return;
-		
+
 		// Remove any selected datasets that no longer exist in the current dataset list
 		const validDatasetIds = new Set(safeDatasets.map((d) => d.id));
 		const currentSelectionArray = Array.from(selectedDatasets);
-		const filteredSelectionArray = currentSelectionArray.filter((id) => validDatasetIds.has(id));
-		
+		const filteredSelectionArray = currentSelectionArray.filter((id) =>
+			validDatasetIds.has(id)
+		);
+
 		// Only update if there's a meaningful change
 		if (filteredSelectionArray.length !== currentSelectionArray.length) {
 			if (filteredSelectionArray.length === 0) {
@@ -360,9 +350,20 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 			return;
 		}
 
-		const url =
-			dataset.url ||
-			`https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=${dataset.id}`;
+		// Handle different dataset sources with appropriate URLs
+		let url = dataset.url || "";
+		if (!url) {
+			if (
+				(dataset as any).source === "CellxCensus" ||
+				(dataset.id && dataset.id.includes("-"))
+			) {
+				// CellxCensus datasets: link to interactive dataset viewer
+				url = `https://cellxgene.cziscience.com/e/${dataset.id}.cxg`;
+			} else {
+				// GEO datasets typically have GSE/GSM format IDs
+				url = `https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=${dataset.id}`;
+			}
+		}
 		window.open(url, "_blank");
 	};
 
@@ -432,13 +433,34 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 											<strong>Organism:</strong> {dataset.organism || "Unknown"}
 										</MetaItem>
 										<MetaItem>
-											<strong>Samples:</strong>{" "}
-											{dataset.sample_count || dataset.samples || "Unknown"}
+											{(dataset as any).source === "CellxCensus" ? (
+												<>
+													<strong>Cells:</strong>{" "}
+													{(() => {
+														const count = dataset.sample_count;
+														if (typeof count === "number") {
+															return count.toLocaleString();
+														}
+														if (
+															typeof count === "string" &&
+															!isNaN(Number(count))
+														) {
+															return Number(count).toLocaleString();
+														}
+														return count || "Unknown";
+													})()}
+												</>
+											) : (
+												<>
+													<strong>Samples:</strong>{" "}
+													{dataset.samples || dataset.sample_count || "Unknown"}
+												</>
+											)}
 										</MetaItem>
 										<MetaItem>
 											<strong>Platform:</strong> {dataset.platform || "Unknown"}
 										</MetaItem>
-										{dataset.similarity_score && (
+										{dataset.similarity_score !== undefined && (
 											<MetaItem>
 												<strong>Similarity:</strong>{" "}
 												{(dataset.similarity_score * 100).toFixed(1)}%
@@ -449,16 +471,57 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 												<strong>Date:</strong> {dataset.publication_date}
 											</MetaItem>
 										)}
+										{(dataset as any).source && (
+											<MetaItem>
+												<strong>Source:</strong> {(dataset as any).source}
+											</MetaItem>
+										)}
+										{((dataset as any).source === "CellxCensus" ||
+											(dataset.id && dataset.id.includes("-"))) &&
+											dataset.sample_count && (
+												<MetaItem>
+													<strong>Est. Size:</strong>{" "}
+													{(() => {
+														const count =
+															typeof dataset.sample_count === "number"
+																? dataset.sample_count
+																: parseInt(String(dataset.sample_count)) || 0;
+														const sizeEstimateMB = Math.round(
+															(count / 1000) * 5
+														); // ~5MB per 1000 cells
+														return sizeEstimateMB < 1000
+															? `~${Math.max(1, sizeEstimateMB)}MB`
+															: `~${(sizeEstimateMB / 1000).toFixed(1)}GB`;
+													})()}
+												</MetaItem>
+											)}
 									</DatasetMeta>
 
 									<DatasetDescription>
 										{dataset.description || "No description available"}
+										{((dataset as any).source === "CellxCensus" ||
+											(dataset.id && dataset.id.includes("-"))) && (
+											<div
+												style={{
+													marginTop: "8px",
+													fontSize: "12px",
+													color: "#666",
+													fontFamily: "monospace",
+												}}
+											>
+												📁 https://datasets.cellxgene.cziscience.com/
+												{dataset.id}.h5ad
+											</div>
+										)}
 									</DatasetDescription>
 
 									<DatasetActions onClick={(e) => e.stopPropagation()}>
 										<InfoButton onClick={() => openDatasetUrl(dataset)}>
 											<FiExternalLink size={12} />
-											View on GEO
+											{(dataset as any).source === "CellxCensus" ||
+											(dataset.id && dataset.id.includes("-"))
+												? "Explore Dataset"
+												: "View on GEO"}
 										</InfoButton>
 									</DatasetActions>
 								</DatasetCard>
@@ -529,7 +592,7 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 							disabled={selectedDatasets.size === 0 || isLoading}
 						>
 							<FiDownload size={16} />
-							Download & Analyze ({selectedDatasets.size})
+							Select & Analyze ({selectedDatasets.size})
 						</Button>
 					</ActionButtons>
 				</ModalFooter>

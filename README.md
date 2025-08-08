@@ -7,7 +7,7 @@ AI-powered biological analysis platform that combines LLM-driven code generation
 ## Features
 
 - **🤖 LLM-Driven Analysis**: AI generates custom Python code for your research questions
-- **🔬 Smart Dataset Search**: Finds relevant biological datasets from GEO, PubMed, UniProt
+- **🔬 Smart Dataset Search**: Finds relevant single-cell datasets from CellxCensus, with GEO and PubMed fallback
 - **📊 Jupyter Integration**: Seamless notebook execution with virtual environments
 - **💬 Natural Language Interface**: Ask questions like "Find transcriptional subtypes of B-ALL"
 - **🔄 Auto-Execution Pipeline**: Cells execute automatically with output analysis and refactoring

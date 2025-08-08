@@ -3,17 +3,10 @@ import styled, { keyframes } from "styled-components";
 import ReactMarkdown from "react-markdown";
 import { FiCopy, FiChevronDown, FiChevronUp } from "react-icons/fi";
 import { typography } from "../../styles/design-system";
+import { Message } from "../../context/AppContext";
 
 interface ChatMessageProps {
-	message: {
-		id: string;
-		content: string;
-		isUser: boolean;
-		timestamp: Date;
-		status?: "pending" | "completed" | "failed";
-		analysisResult?: any;
-		isStreaming?: boolean;
-	};
+	message: Message;
 	onAnalysisClick?: (analysisType: string) => void;
 }
 

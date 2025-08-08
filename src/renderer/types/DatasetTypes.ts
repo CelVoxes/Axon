@@ -22,10 +22,12 @@ export interface Dataset extends BaseDataset {
 
 export interface GEODataset extends BaseDataset {
 	gse_id?: string;
-	sample_count?: string;
+	sample_count?: number | string;
 	type?: string;
 	publication_date?: string;
 	similarity_score?: number;
+	url?: string;
+	source?: string;
 	summary?: string;
 	overall_design?: string;
 }

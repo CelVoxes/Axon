@@ -1,21 +1,11 @@
 import axios from "axios";
 import { SearchConfig, MAX_SEARCH_ATTEMPTS } from "../config/SearchConfig";
 import { IBackendClient } from "./types";
+import { readNdjsonStream, readDataStream } from "../utils/StreamUtils";
+import { Logger } from "../utils/Logger";
+import { GEODataset } from "../types/DatasetTypes";
 
-export interface GEODataset {
-	id: string;
-	title: string;
-	description?: string;
-	organism?: string;
-	url?: string;
-	sample_count?: string;
-	platform?: string;
-	similarity_score?: number;
-	source?: string;
-	publication_date?: string;
-	samples?: number;
-	type?: string;
-}
+// GEODataset now sourced from shared types
 
 export interface SearchProgress {
 	message: string;
@@ -24,6 +14,8 @@ export interface SearchProgress {
 	datasetsFound?: number;
 	currentTerm?: string;
 }
+
+const log = Logger.createLogger("backendClient");
 
 export class BackendClient implements IBackendClient {
 	private baseUrl: string;
@@ -48,10 +40,11 @@ export class BackendClient implements IBackendClient {
 		organism?: string;
 	}): Promise<GEODataset[]> {
 		try {
-			const response = await axios.post(`${this.baseUrl}/search`, {
+			// Use CellxCensus instead of GEO for better single-cell data
+			const response = await axios.post(`${this.baseUrl}/cellxcensus/search`, {
 				query: query.query,
 				limit: query.limit || 50,
-				organism: query.organism,
+				organism: query.organism || "Homo sapiens",
 			});
 			return response.data;
 		} catch (error) {
@@ -66,11 +59,11 @@ export class BackendClient implements IBackendClient {
 		organism?: string;
 	}): Promise<GEODataset[]> {
 		try {
-			console.log(
+			log.info(
 				"🔍 BackendClient.searchDatasetsWithLLM called with:",
 				JSON.stringify(query)
 			);
-			console.log("🔍 Making POST request to:", `${this.baseUrl}/search/llm`);
+			log.info("🔍 Making POST request to:", `${this.baseUrl}/search/llm`);
 
 			// Simulate progress updates for UI feedback
 			if (this.onProgress) {
@@ -91,7 +84,7 @@ export class BackendClient implements IBackendClient {
 				requestPayload.organism = query.organism;
 			}
 
-			console.log("🔍 Final request payload:", JSON.stringify(requestPayload));
+			log.debug("🔍 Final request payload:", JSON.stringify(requestPayload));
 
 			if (this.onProgress) {
 				this.onProgress({
@@ -106,7 +99,7 @@ export class BackendClient implements IBackendClient {
 				max_attempts: 2, // Add max_attempts for LLM search
 			});
 
-			console.log("🔍 Response status:", response.status);
+			log.debug("🔍 Response status:", String(response.status));
 
 			if (this.onProgress) {
 				this.onProgress({
@@ -119,12 +112,9 @@ export class BackendClient implements IBackendClient {
 			// LLM search returns {datasets: [...], search_terms: [...], search_steps: [...]}
 			const llmResponse = response.data;
 			if (llmResponse && llmResponse.datasets) {
-				console.log(
-					"🔍 LLM search found datasets:",
-					llmResponse.datasets.length
-				);
-				console.log("🔍 Search terms used:", llmResponse.search_terms);
-				console.log("🔍 Search steps:", llmResponse.search_steps);
+				log.info("🔍 LLM search found datasets:", llmResponse.datasets.length);
+				log.debug("🔍 Search terms used:", llmResponse.search_terms);
+				log.debug("🔍 Search steps:", llmResponse.search_steps);
 
 				if (this.onProgress) {
 					this.onProgress({
@@ -137,7 +127,7 @@ export class BackendClient implements IBackendClient {
 
 				return llmResponse.datasets;
 			} else {
-				console.log("🔍 No datasets in LLM response");
+				log.warn("🔍 No datasets in LLM response");
 
 				if (this.onProgress) {
 					this.onProgress({
@@ -151,8 +141,8 @@ export class BackendClient implements IBackendClient {
 				return [];
 			}
 		} catch (error) {
-			console.error("BackendClient: Error searching datasets with LLM:", error);
-			console.error("BackendClient: Error details:", {
+			log.error("BackendClient: Error searching datasets with LLM:", error);
+			log.error("BackendClient: Error details:", {
 				url: `${this.baseUrl}/search/llm`,
 				query: query,
 				error: error,
@@ -176,18 +166,97 @@ export class BackendClient implements IBackendClient {
 		options: { limit?: number; organism?: string }
 	): Promise<{ datasets: GEODataset[] }> {
 		try {
-			const datasets = await this.searchDatasetsWithLLM({
-				query: query,
-				limit: options.limit,
-				organism: options.organism,
+			// Use backend LLM to derive strong search terms, then use CellxCensus
+			const simplified = await this.simplifyQuery(query);
+			const llmTerms = await this.generateSearchTerms(simplified, 1, true);
+			const finalQuery =
+				llmTerms && llmTerms.length > 0 ? llmTerms[0] : simplified;
+
+			// Prefer CellxCensus streaming search to provide real-time progress and non-GEO results
+			const originalLower = query.toLowerCase();
+			const candidateTerms = new Set<string>([finalQuery]);
+			if (
+				originalLower.includes("b-all") ||
+				originalLower.includes(" ball ") ||
+				query.includes("ALL")
+			) {
+				candidateTerms.add("B cell");
+			}
+			if (finalQuery.toLowerCase().includes("leukemia")) {
+				candidateTerms.add("B cell");
+			}
+
+			let aggregated: GEODataset[] = [];
+			for (const term of candidateTerms) {
+				const part = await this.searchDatasetsStream(
+					{
+						query: term,
+						limit: options.limit,
+						organism: options.organism ?? "Homo sapiens",
+					},
+					this.onProgress,
+					undefined,
+					(msg) => console.warn("Streaming search error:", msg)
+				);
+				aggregated.push(...part);
+				if (aggregated.length >= (options.limit ?? 20)) break;
+			}
+			// Deduplicate by id
+			const seen = new Set<string>();
+			const deduped = aggregated.filter((d) => {
+				if (seen.has(d.id)) return false;
+				seen.add(d.id);
+				return true;
 			});
-			return { datasets };
+			return { datasets: deduped };
 		} catch (error) {
 			console.error(
 				`BackendClient: Error discovering datasets for query: ${query}`,
 				error
 			);
-			throw error;
+			// Fallback to non-streaming CellxCensus search
+			try {
+				const simplified = await this.simplifyQuery(query);
+				const llmTerms = await this.generateSearchTerms(simplified, 1, true);
+				const finalQuery =
+					llmTerms && llmTerms.length > 0 ? llmTerms[0] : simplified;
+				const candidateTerms = new Set<string>([finalQuery]);
+				if (query.toLowerCase().includes("b-all") || query.includes("ALL")) {
+					candidateTerms.add("B cell");
+				}
+				if (finalQuery.toLowerCase().includes("leukemia")) {
+					candidateTerms.add("B cell");
+				}
+				let aggregated: GEODataset[] = [];
+				for (const term of candidateTerms) {
+					const part = await this.searchDatasets({
+						query: term,
+						limit: options.limit,
+						organism: options.organism ?? "Homo sapiens",
+					});
+					aggregated.push(...part);
+					if (aggregated.length >= (options.limit ?? 20)) break;
+				}
+				const seen = new Set<string>();
+				const deduped = aggregated.filter((d) => {
+					if (seen.has(d.id)) return false;
+					seen.add(d.id);
+					return true;
+				});
+				return { datasets: deduped };
+			} catch (fallbackError) {
+				console.error(
+					"BackendClient: Fallback CellxCensus search failed:",
+					fallbackError
+				);
+				// As a last resort, optionally fall back to LLM GEO search to avoid total failure
+				const datasets = await this.searchDatasetsWithLLM({
+					query,
+					limit: options.limit,
+					organism: options.organism,
+				});
+				return { datasets };
+			}
 		}
 	}
 
@@ -203,75 +272,45 @@ export class BackendClient implements IBackendClient {
 		onError?: (error: string) => void
 	): Promise<GEODataset[]> {
 		try {
-			const response = await fetch(`${this.baseUrl}/search/stream`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
+			const response = await fetch(
+				`${this.baseUrl}/cellxcensus/search/stream`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({
+						query: query.query,
+						limit: query.limit || 50,
+						organism: query.organism,
+					}),
+				}
+			);
+
+			let finalResults: GEODataset[] | null = null;
+			await readNdjsonStream(response, {
+				onProgress: (data: any) => {
+					onProgress?.({
+						message: data.message,
+						step: data.step,
+						progress: data.progress,
+						datasetsFound: data.datasetsFound,
+					});
 				},
-				body: JSON.stringify({
-					query: query.query,
-					limit: query.limit || 50,
-					organism: query.organism,
-				}),
+				onLine: (data: any) => {
+					if (data.type === "results") {
+						finalResults = data.datasets as GEODataset[];
+						onResults?.(finalResults);
+					}
+					if (data.type === "error") {
+						onError?.(data.message);
+					}
+				},
+				onError: (msg: string) => onError?.(msg),
 			});
 
-			if (!response.ok) {
-				throw new Error(`HTTP error! status: ${response.status}`);
-			}
-
-			const reader = response.body?.getReader();
-			if (!reader) {
-				throw new Error("No response body");
-			}
-
-			const decoder = new TextDecoder();
-			let buffer = "";
-
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) break;
-
-				buffer += decoder.decode(value, { stream: true });
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
-
-				for (const line of lines) {
-					if (line.startsWith("data: ")) {
-						try {
-							const data = JSON.parse(line.slice(6));
-
-							switch (data.type) {
-								case "progress":
-									if (onProgress) {
-										onProgress({
-											message: data.message,
-											step: data.step,
-											progress: data.progress,
-											datasetsFound: data.datasetsFound,
-										});
-									}
-									break;
-
-								case "results":
-									if (onResults) {
-										onResults(data.datasets);
-									}
-									return data.datasets;
-
-								case "error":
-									if (onError) {
-										onError(data.message);
-									}
-									throw new Error(data.message);
-							}
-						} catch (error) {
-							console.error("Error parsing SSE data:", error);
-						}
-					}
-				}
-			}
-
-			throw new Error("Stream ended without results");
+			if (!finalResults) throw new Error("Stream ended without results");
+			return finalResults;
 		} catch (error) {
 			console.error("BackendClient: Error in streaming search:", error);
 			throw error;
@@ -337,8 +376,8 @@ export class BackendClient implements IBackendClient {
 	): Promise<GEODataset[]> {
 		try {
 			const url = organism
-				? `${this.baseUrl}/search/gene/${gene}?organism=${organism}&limit=${limit}`
-				: `${this.baseUrl}/search/gene/${gene}?limit=${limit}`;
+				? `${this.baseUrl}/cellxcensus/search/cell_type/${gene}?organism=${organism}&limit=${limit}`
+				: `${this.baseUrl}/cellxcensus/search/cell_type/${gene}?limit=${limit}`;
 
 			const response = await axios.get(url);
 			return response.data;
@@ -354,7 +393,7 @@ export class BackendClient implements IBackendClient {
 	): Promise<GEODataset[]> {
 		try {
 			const response = await axios.get(
-				`${this.baseUrl}/search/disease/${disease}?limit=${limit}`
+				`${this.baseUrl}/cellxcensus/search/disease/${disease}?limit=${limit}`
 			);
 			return response.data;
 		} catch (error) {
@@ -467,9 +506,12 @@ export class BackendClient implements IBackendClient {
 	}): Promise<any> {
 		console.log("BackendClient: generateSuggestions called with:", {
 			...request,
-			query: request.query.substring(0, 100) + "..."
+			query: request.query.substring(0, 100) + "...",
 		});
-		console.log("BackendClient: Making POST request to:", `${this.baseUrl}/llm/suggestions`);
+		console.log(
+			"BackendClient: Making POST request to:",
+			`${this.baseUrl}/llm/suggestions`
+		);
 
 		try {
 			const requestBody = {
@@ -498,9 +540,13 @@ export class BackendClient implements IBackendClient {
 				return result;
 			} else {
 				const errorText = await response.text();
-				console.error(`BackendClient: HTTP error ${response.status}: ${response.statusText}`);
+				console.error(
+					`BackendClient: HTTP error ${response.status}: ${response.statusText}`
+				);
 				console.error("BackendClient: Error response body:", errorText);
-				throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorText}`);
+				throw new Error(
+					`HTTP ${response.status}: ${response.statusText} - ${errorText}`
+				);
 			}
 		} catch (error) {
 			console.error("BackendClient: Error generating suggestions:", error);
@@ -512,7 +558,7 @@ export class BackendClient implements IBackendClient {
 					data_types: request.dataTypes,
 					user_question: request.query?.substring(0, 100) + "...",
 					available_datasets: request.selectedDatasets?.length,
-				}
+				},
 			});
 			throw error;
 		}
@@ -554,7 +600,6 @@ export class BackendClient implements IBackendClient {
 		onChunk: (chunk: string) => void
 	): Promise<any> {
 		console.log("🚀 BackendClient.generateCodeStream: Starting stream request");
-		console.log("🚀 Request payload:", JSON.stringify(request, null, 2));
 		console.log("🚀 Streaming endpoint:", `${this.baseUrl}/llm/code/stream`);
 
 		try {
@@ -566,77 +611,17 @@ export class BackendClient implements IBackendClient {
 				body: JSON.stringify(request),
 			});
 
-			console.log("🚀 Response status:", response.status);
-			console.log("🚀 Response headers:", response.headers);
-
-			if (!response.ok) {
-				const errorText = await response.text();
-				console.error("🚀 HTTP Error response body:", errorText);
-				throw new Error(
-					`HTTP ${response.status}: ${response.statusText} - ${errorText}`
-				);
+			const code = await readDataStream(response, onChunk);
+			if (code.length === 0) {
+				log.warn("🚀 WARNING: No content received from stream!");
 			}
-
-			const reader = response.body?.getReader();
-			if (!reader) {
-				console.error("🚀 No readable response body");
-				throw new Error("Response body is not readable");
-			}
-
-			console.log("🚀 Starting to read stream...");
-			const decoder = new TextDecoder();
-			let result = "";
-			let chunkCount = 0;
-
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) {
-					console.log("🚀 Stream reading completed");
-					break;
-				}
-
-				chunkCount++;
-				const rawChunk = decoder.decode(value);
-
-				const lines = rawChunk.split("\n");
-
-				for (const line of lines) {
-					if (line.trim() === "") continue; // Skip empty lines
-
-					if (line.startsWith("data: ")) {
-						try {
-							const jsonStr = line.slice(6);
-
-							const data = JSON.parse(jsonStr);
-
-							if (data.chunk) {
-								onChunk(data.chunk);
-								result += data.chunk;
-							} else if (data.content) {
-								// Handle alternative response format
-								onChunk(data.content);
-								result += data.content;
-							} else {
-							}
-						} catch (e) {
-							// Don't ignore - this might be the issue
-						}
-					} else {
-					}
-				}
-			}
-
-			if (result.length === 0) {
-				console.warn("🚀 WARNING: No content received from stream!");
-			}
-
-			return { code: result, success: true };
+			return { code, success: true };
 		} catch (error) {
-			console.error(
+			log.error(
 				"🚀 BackendClient: Error streaming code generation:",
-				error
+				error as any
 			);
-			console.error("🚀 Error details:", {
+			log.error("🚀 Error details:", {
 				message: error instanceof Error ? error.message : String(error),
 				stack: error instanceof Error ? error.stack : undefined,
 				request: request,

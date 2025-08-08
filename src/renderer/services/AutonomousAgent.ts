@@ -14,6 +14,7 @@ import { NotebookService } from "./NotebookService";
 import { EnvironmentManager } from "./EnvironmentManager";
 import { WorkspaceManager } from "./WorkspaceManager";
 import { CodeQualityOrchestrator } from "./CodeQualityOrchestrator";
+import { CodeQualityService } from "./CodeQualityService";
 import { NotebookGenerationOptions } from "./NotebookService";
 import { AsyncUtils } from "../utils/AsyncUtils";
 import { AnalysisOrchestrationService } from "./AnalysisOrchestrationService";
@@ -59,6 +60,7 @@ export class AutonomousAgent {
 	private codeGenerator: ICodeGenerator;
 	private codeExecutor: ICodeExecutor;
 	private codeQualityValidator: ICodeQualityValidator;
+	private codeQualityService: CodeQualityService;
 	private statusCallback?: (status: string) => void;
 	private notebookService: NotebookService;
 	private environmentManager: EnvironmentManager;
@@ -94,6 +96,12 @@ export class AutonomousAgent {
 
 		// Create dependency-free code quality validator
 		this.codeQualityValidator = new CodeQualityOrchestrator(backendClient);
+		// Full code quality service (validation + optional execution tests)
+		this.codeQualityService = new CodeQualityService(
+			backendClient,
+			this.codeExecutor as any,
+			this.codeGenerator as any
+		);
 
 		this.notebookService = new NotebookService({
 			workspacePath,
@@ -736,13 +744,15 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 					datasets,
 					analysisSteps
 				);
-			const packageTestResult = await this.codeQualityValidator.validateOnly(
+			// Validate and gently test package cell to ensure syntax correctness
+			const packageTestResult = await this.codeQualityService.validateAndTest(
 				packageCode,
-				"package-install"
+				"package-install",
+				{ stepTitle: "Package installation" }
 			);
 			await this.notebookService.addCodeCell(
 				notebookPath,
-				this.codeQualityValidator.getBestCode(packageTestResult)
+				this.codeQualityService.getBestCode(packageTestResult)
 			);
 
 			this.updateStatus("Package installation cell added");
@@ -806,7 +816,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 	): Promise<string> {
 		const stepId = `step-${stepIndex}-${Date.now()}`;
 
-		// Generate code using unified method with testing enabled
+		// Generate code using unified method
 		const request: CodeGenerationRequest = {
 			stepDescription: step.description,
 			originalQuestion: query,
@@ -814,40 +824,33 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			workingDir: workspaceDir,
 			stepIndex,
 			globalCodeContext: this.getGlobalCodeContext(),
-			withTesting: true,
 			stepId,
 		};
 
-		const result = await this.codeGenerator.generateCode(request);
+		const genResult = await this.codeGenerator.generateCode(request);
 
-		// Store the generated code in global context
-		this.addCodeToContext(stepId, result.code);
+		// Store generated code in global context
+		this.addCodeToContext(stepId, genResult.code);
 
-		// If testing was requested, validate the code
-		if (request.withTesting) {
-			try {
-				const testResult = await this.codeQualityValidator.validateAndTest(
-					result.code,
-					stepId,
-					{
-						stepTitle: step.description,
-						globalCodeContext: this.getGlobalCodeContext(),
-					}
-				);
-
-				// Return the best version of the code
-				return this.codeQualityValidator.getBestCode(testResult);
-			} catch (testError) {
-				console.warn(
-					`Code testing failed for step: ${step.description}:`,
-					testError
-				);
-				// Return original code if testing fails
-				return result.code;
-			}
+		// Validate, clean (strip ```python fences), auto-fix, and lightly execute
+		try {
+			const quality = await this.codeQualityService.validateAndTest(
+				genResult.code,
+				stepId,
+				{
+					stepTitle: step.description,
+					globalCodeContext: this.getGlobalCodeContext(),
+				}
+			);
+			return this.codeQualityService.getBestCode(quality);
+		} catch (e) {
+			console.warn(
+				`Code quality pipeline failed for step: ${step.description}:`,
+				e as any
+			);
+			// Fall back to raw generated code
+			return genResult.code;
 		}
-
-		return result.code;
 	}
 
 	/**

@@ -1397,18 +1397,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				// Reset agent instance for new analysis
 				setAgentInstance(null);
 
-				// Convert selected datasets to the format expected by AutonomousAgent
+				// Convert selected datasets preserving source and urls for the agent/LLM
 				const datasets = selectedDatasets.map((dataset) => ({
 					id: dataset.id,
 					title: dataset.title,
-					source: "GEO",
+					source: (dataset as any).source || "Unknown",
 					organism: dataset.organism || "Unknown",
-					samples: 0, // Will be updated during download
-					platform: "Unknown",
+					samples:
+						(dataset as any).samples ?? (dataset as any).sample_count ?? 0,
+					platform: dataset.platform || "Unknown",
 					description: dataset.description || "",
-					url:
-						dataset.url ||
-						`https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=${dataset.id}`,
+					// Pass through URL only if provided by the search source; do not invent URLs
+					url: (dataset as any).url,
 				}));
 
 				// Get the original query from the last user message

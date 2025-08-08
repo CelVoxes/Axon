@@ -1,4 +1,5 @@
-import { BackendClient, GEODataset } from "./BackendClient";
+import { BackendClient } from "./BackendClient";
+import { GEODataset } from "../types/DatasetTypes";
 import { Dataset, DataTypeAnalysis, AnalysisPlan } from "./types";
 import { WorkspaceManager } from "./WorkspaceManager";
 
@@ -204,7 +205,9 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			datasets: datasets.map((d) => ({
 				id: d.id,
 				title: d.title,
-				source: d.source,
+				source: (d as any).source,
+				url: (d as any).url,
+				organism: d.organism,
 			})),
 		};
 
@@ -296,7 +299,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 
 			return searchResults.map((d) => ({
 				...d,
-				source: d.source || "GEO",
+				source: d.source || "CellxCensus",
 			}));
 		} catch (error) {
 			console.error("AnalysisOrchestrationService: Error finding data:", error);

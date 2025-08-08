@@ -22,17 +22,19 @@ else:
 
 from .geo_search import SimpleGEOClient
 from .broad_search import SimpleBroadClient
+from .cellxcensus_search import SimpleCellxCensusClient
 from .llm_service import get_llm_service
 
 app = FastAPI(
-    title="GEO and Broad Single Cell Semantic Search",
-    description="Simple API for finding similar datasets using semantic search across GEO and Broad Institute Single Cell Portal",
-    version="1.0.0"
+    title="Multi-Source Single Cell Data Search API",
+    description="Comprehensive API for finding similar datasets using semantic search across GEO, Broad Institute Single Cell Portal, and CellxCensus",
+    version="1.1.0"
 )
 
 # Initialize the simple clients lazily
 geo_client = None
 broad_client = None
+cellxcensus_client = None
 
 def get_geo_client():
     """Get or create the GEO client."""
@@ -47,6 +49,13 @@ def get_broad_client():
     if broad_client is None:
         broad_client = SimpleBroadClient()
     return broad_client
+
+def get_cellxcensus_client():
+    """Get or create the CellxCensus client."""
+    global cellxcensus_client
+    if cellxcensus_client is None:
+        cellxcensus_client = SimpleCellxCensusClient()
+    return cellxcensus_client
 
 
 class SearchRequest(BaseModel):
@@ -154,10 +163,15 @@ class DataTypeSuggestionsResponse(BaseModel):
 async def root():
     """Root endpoint."""
     return {
-        "message": "Minimal GEO Semantic Search API",
-        "version": "1.0.0",
+        "message": "Multi-Source Single Cell Data Search API",
+        "version": "1.1.0",
+        "data_sources": ["GEO", "Broad Single Cell Portal", "CellxCensus"],
         "endpoints": {
-            "search": "/search",
+            "geo_search": "/search",
+            "geo_search_stream": "/search/stream",
+            "broad_search": "/broad/search",
+            "cellxcensus_search": "/cellxcensus/search",
+            "cellxcensus_search_stream": "/cellxcensus/search/stream",
             "llm_search": "/search/llm",
             "query_simplify": "/llm/simplify",
             "code_generate": "/llm/code",
@@ -325,6 +339,8 @@ async def llm_search_datasets(request: LLMSearchRequest):
                 try:
                     search_steps.append(f"Searching for: {term}")
                     
+                    # Use GEO search for reliable results (CellxCensus is too slow)
+                    geo_client = get_geo_client()
                     search_results = await geo_client.find_similar_datasets(
                         query=term,
                         limit=request.limit // len(llm_search_terms),
@@ -1024,6 +1040,280 @@ async def generate_broad_curl_config(auth_code: str, output_path: str):
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate curl config: {str(e)}")
+
+
+# CellxCensus endpoints
+@app.post("/cellxcensus/search", response_model=List[DatasetResponse])
+async def search_cellxcensus_datasets(request: SearchRequest):
+    """Search for single-cell datasets in CellxCensus.
+    
+    Args:
+        request: Search request with query and parameters
+        
+    Returns:
+        List of matching single-cell datasets
+    """
+    try:
+        client = get_cellxcensus_client()
+        datasets = await client.find_similar_datasets(
+            query=request.query,
+            limit=request.limit,
+            organism=request.organism
+        )
+        
+        # Convert to DatasetResponse format
+        results = []
+        for dataset in datasets:
+            results.append(DatasetResponse(
+                id=dataset.get('id', ''),
+                title=dataset.get('title', ''),
+                description=dataset.get('description', ''),
+                organism=dataset.get('organism', ''),
+                sample_count=dataset.get('sample_count', ''),
+                platform=dataset.get('platform', ''),
+                similarity_score=dataset.get('similarity_score', 0.0),
+                source='CellxCensus'
+            ))
+        
+        return results
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"CellxCensus search failed: {str(e)}")
+
+
+@app.post("/cellxcensus/search/stream")
+async def search_cellxcensus_datasets_stream(request: SearchRequest):
+    """Search CellxCensus datasets with real-time progress updates using Server-Sent Events.
+    
+    Args:
+        request: Search parameters
+        
+    Returns:
+        Streaming response with progress updates and final results
+    """
+    async def generate():
+        try:
+            client = get_cellxcensus_client()
+            
+            # Create a queue for real-time progress updates
+            progress_queue = asyncio.Queue()
+            
+            # Set up progress callback
+            def progress_callback(progress_data):
+                asyncio.create_task(progress_queue.put(progress_data))
+            
+            client.set_progress_callback(progress_callback)
+            
+            # Send initial progress
+            yield f"data: {json.dumps({'type': 'progress', 'step': 'init', 'progress': 10, 'message': 'Initializing CellxCensus search...', 'datasetsFound': 0})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            # Start the search in a separate task
+            search_task = asyncio.create_task(
+                client.find_similar_datasets(
+                    query=request.query,
+                    limit=request.limit,
+                    organism=request.organism
+                )
+            )
+            
+            # Process progress updates in real-time
+            while not search_task.done():
+                try:
+                    progress = await asyncio.wait_for(progress_queue.get(), timeout=0.1)
+                    yield f"data: {json.dumps({'type': 'progress', **progress})}\n\n"
+                except asyncio.TimeoutError:
+                    pass
+            
+            # Get the search results
+            datasets = await search_task
+            
+            # Send final results
+            results = []
+            for dataset in datasets:
+                results.append({
+                    "id": dataset.get("id", ""),
+                    "title": dataset.get("title", ""),
+                    "description": dataset.get("description", ""),
+                    "organism": dataset.get("organism", "Unknown"),
+                    "sample_count": dataset.get("sample_count", "0"),
+                    "platform": dataset.get("platform", "Unknown"),
+                    "similarity_score": dataset.get("similarity_score", 0.0)
+                })
+            
+            yield f"data: {json.dumps({'type': 'results', 'datasets': results})}\n\n"
+            
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/event-stream",
+        }
+    )
+
+
+@app.get("/cellxcensus/search/cell_type/{cell_type}")
+async def search_cellxcensus_by_cell_type(
+    cell_type: str,
+    organism: Optional[str] = None,
+    limit: int = SearchConfig.get_search_limit()
+):
+    """Find CellxCensus datasets related to a specific cell type.
+    
+    Args:
+        cell_type: Cell type name
+        organism: Organism filter ('Homo sapiens' or 'Mus musculus')
+        limit: Maximum results
+        
+    Returns:
+        Cell type-related datasets
+    """
+    try:
+        client = get_cellxcensus_client()
+        datasets = await client.search_by_cell_type(
+            cell_type=cell_type,
+            organism=organism,
+            limit=limit
+        )
+        
+        return {
+            "cell_type": cell_type,
+            "organism": organism,
+            "datasets": datasets,
+            "count": len(datasets)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"CellxCensus cell type search failed: {str(e)}")
+
+
+@app.get("/cellxcensus/search/tissue/{tissue}")
+async def search_cellxcensus_by_tissue(
+    tissue: str,
+    organism: Optional[str] = None,
+    limit: int = SearchConfig.get_search_limit()
+):
+    """Find CellxCensus datasets related to a specific tissue.
+    
+    Args:
+        tissue: Tissue name
+        organism: Organism filter
+        limit: Maximum results
+        
+    Returns:
+        Tissue-related datasets
+    """
+    try:
+        client = get_cellxcensus_client()
+        datasets = await client.search_by_tissue(
+            tissue=tissue,
+            organism=organism,
+            limit=limit
+        )
+        
+        return {
+            "tissue": tissue,
+            "organism": organism,
+            "datasets": datasets,
+            "count": len(datasets)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"CellxCensus tissue search failed: {str(e)}")
+
+
+@app.get("/cellxcensus/search/disease/{disease}")
+async def search_cellxcensus_by_disease(
+    disease: str,
+    organism: Optional[str] = None,
+    limit: int = SearchConfig.get_search_limit()
+):
+    """Find CellxCensus datasets related to a specific disease.
+    
+    Args:
+        disease: Disease name
+        organism: Organism filter
+        limit: Maximum results
+        
+    Returns:
+        Disease-related datasets
+    """
+    try:
+        client = get_cellxcensus_client()
+        datasets = await client.search_by_disease(
+            disease=disease,
+            organism=organism,
+            limit=limit
+        )
+        
+        return {
+            "disease": disease,
+            "organism": organism,
+            "datasets": datasets,
+            "count": len(datasets)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"CellxCensus disease search failed: {str(e)}")
+
+
+class DatasetDataRequest(BaseModel):
+    dataset_id: str
+    organism: str = "Homo sapiens"
+    cell_type: Optional[str] = None
+    tissue: Optional[str] = None
+    genes: Optional[List[str]] = None
+
+
+@app.post("/cellxcensus/dataset/data")
+async def get_cellxcensus_dataset_data(request: DatasetDataRequest):
+    """Get expression data for a specific CellxCensus dataset.
+    
+    Args:
+        request: Dataset data request parameters
+        
+    Returns:
+        Dataset information and download instructions
+    """
+    try:
+        client = get_cellxcensus_client()
+        adata = await client.get_dataset_data(
+            dataset_id=request.dataset_id,
+            organism=request.organism,
+            cell_type=request.cell_type,
+            tissue=request.tissue,
+            genes=request.genes
+        )
+        
+        if adata:
+            # Return metadata about the data instead of the actual data
+            # (which would be too large for HTTP response)
+            return {
+                "dataset_id": request.dataset_id,
+                "shape": {
+                    "n_cells": adata.n_obs,
+                    "n_genes": adata.n_vars
+                },
+                "organism": request.organism,
+                "filters_applied": {
+                    "cell_type": request.cell_type,
+                    "tissue": request.tissue,
+                    "genes": request.genes
+                },
+                "obs_columns": list(adata.obs.columns),
+                "var_columns": list(adata.var.columns),
+                "message": "Data successfully retrieved. Use cellxgene_census.get_anndata() to access the full dataset programmatically."
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Dataset not found or no data matching filters")
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get dataset data: {str(e)}")
 
 
 @app.get("/health")

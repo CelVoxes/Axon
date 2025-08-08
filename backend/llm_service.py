@@ -202,13 +202,20 @@ Return ONLY a simple, concise query optimized for dataset search. Do not include
 
 Simplified query:"""
             
-            response = await self.provider.generate([
-                {"role": "system", "content": "You are a biomedical research assistant that simplifies complex queries for dataset search. Always prioritize disease/condition names and technical terms. Return only the simplified query, no formatting or explanations."},
-                {"role": "user", "content": prompt}
-            ], max_tokens=100, temperature=0.2)
+            # Add timeout protection
+            response = await asyncio.wait_for(
+                self.provider.generate([
+                    {"role": "system", "content": "You are a biomedical research assistant that simplifies complex queries for dataset search. Always prioritize disease/condition names and technical terms. Return only the simplified query, no formatting or explanations."},
+                    {"role": "user", "content": prompt}
+                ], max_tokens=100, temperature=0.2),
+                timeout=25.0  # 25 second timeout
+            )
             
             return response.strip().strip('"').strip("'")
             
+        except asyncio.TimeoutError:
+            print(f"Query simplification timed out after 25 seconds, using original query")
+            return complex_query
         except Exception as e:
             print(f"Query simplification error: {e}")
             return complex_query

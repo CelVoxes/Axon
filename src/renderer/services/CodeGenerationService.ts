@@ -207,14 +207,35 @@ export class CodeGenerationService implements ICodeGenerator {
 	}
 
 	private buildEnhancedContext(request: CodeGenerationRequest): string {
+		// Provide rich, actionable dataset context (IDs, titles, organisms, sources, URLs, formats)
 		const datasetInfo = request.datasets
-			.map(
-				(d) =>
-					`- ${d.id}: ${d.title || "Unknown"} (${
-						d.organism || "Unknown organism"
-					})`
-			)
-			.join("\n");
+			.map((d) => {
+				const url = (d as any).url || "";
+				const source = (d as any).source || "Unknown";
+				const format = url
+					? url.toLowerCase().endsWith(".h5ad")
+						? "h5ad"
+						: url.toLowerCase().endsWith(".csv")
+						? "csv"
+						: url.toLowerCase().endsWith(".tsv")
+						? "tsv"
+						: url.toLowerCase().endsWith(".txt")
+						? "txt"
+						: "unknown"
+					: "unknown";
+				const sampleCount = (d as any).sample_count;
+				const sampleStr =
+					sampleCount !== undefined && sampleCount !== null
+						? `, samples/cells: ${sampleCount}`
+						: "";
+				return `- id: ${d.id}
+  title: ${d.title || "Unknown"}
+  organism: ${d.organism || "Unknown"}
+  source: ${source}
+  url: ${url || "(none provided)"}
+  format: ${format}${sampleStr}`;
+			})
+			.join("\n\n");
 
 		// Get existing imports from global context
 		const existingImports = this.getExistingImports(request.globalCodeContext);
@@ -224,10 +245,18 @@ export class CodeGenerationService implements ICodeGenerator {
 Working directory: ${request.workingDir}
 Step index: ${request.stepIndex}
 
-Available datasets:
+Available datasets (use ONLY these, do NOT invent links):
 ${datasetInfo}
 
-Requirements:
+Dataset handling constraints:
+- Use ONLY the provided dataset URLs above if present. If a dataset has no URL, print a clear message and skip it.
+- Create a local data directory (./data) and download files there before loading.
+- For format=h5ad: use anndata.read_h5ad on the downloaded file.
+- For format=csv/tsv/txt: use pandas read_csv with the appropriate separator.
+- Validate HTTP status codes, content-type, and file size before saving.
+- Add robust error handling; continue if a specific dataset fails.
+
+General requirements:
 - Use proper error handling with try-except blocks
 - Add progress print statements
 - Save outputs to appropriate directories (results/, figures/)
@@ -237,32 +266,11 @@ Requirements:
 
 		// Add global code context from entire conversation if available
 		if (request.globalCodeContext && request.globalCodeContext.trim()) {
-			context += `\n\n⚠️  CRITICAL: The following code has already been generated. DO NOT repeat any of it! ⚠️
-
-PREVIOUSLY GENERATED CODE FROM ENTIRE CONVERSATION:
-\`\`\`python
-${request.globalCodeContext}
-\`\`\`
-
-CRITICAL INSTRUCTIONS:
-- The following imports are ALREADY AVAILABLE - DO NOT include them again:
-${existingImportsList ? existingImportsList : "  (No imports detected yet)"}
-- DO NOT repeat any setup code, function definitions, or variable assignments from previous cells
-- DO NOT create output directories or define helper functions that already exist
-- Focus ONLY on the new analysis functionality for this specific step
-- Start your code directly with the analysis logic, not with imports or setup
-- If you need new imports that aren't listed above, you may include them
-
-YOUR CODE SHOULD START WITH THE ANALYSIS LOGIC, NOT WITH EXISTING IMPORTS!`;
+			context += `\n\n⚠️  CRITICAL: The following code has already been generated. DO NOT repeat any of it! ⚠️\n\nPREVIOUSLY GENERATED CODE FROM ENTIRE CONVERSATION:\n\n\`\`\`python\n${request.globalCodeContext}\n\`\`\`\n\nIMPORTANT: Do not repeat imports or setup code that was already generated. Focus only on the new functionality for this step.`;
 		}
-		// Fallback to step-specific previous code if no global context
-		else if (request.previousCode) {
-			context += `\n\nPreviously generated code (DO NOT REPEAT IMPORTS OR SETUP):
-\`\`\`python
-${request.previousCode}
-\`\`\`
 
-IMPORTANT: Do not repeat imports or setup code that was already generated. Focus only on the new functionality for this step.`;
+		if (request.previousCode && request.previousCode.trim()) {
+			context += `\n\nPreviously generated code (DO NOT REPEAT IMPORTS OR SETUP):\n\`\`\`python\n${request.previousCode}\n\`\`\`\n\nIMPORTANT: Do not repeat imports or setup code that was already generated. Focus only on the new functionality for this step.`;
 		}
 
 		return context;
@@ -496,7 +504,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-print(f"Executing step {stepIndex + 1}: {stepDescription}")
+print(f"Executing step ${stepIndex + 1}: ${stepDescription}")
 
 # TODO: Implement ${stepDescription}
 # This is a placeholder implementation
@@ -520,6 +528,70 @@ print("Step completed successfully!")
 	): string {
 		const datasetIds = datasets.map((d) => d.id).join(", ");
 
+		// Generate dataset loading code with URL derivation for CellxCensus and GEO
+		let datasetLoadingCode = "";
+		const hasUrls = datasets.some((d) => (d as any).url);
+
+		if (hasUrls || datasets.length > 0) {
+			// For datasets with URLs (like CellxCensus), generate robust download-then-load code
+			datasetLoadingCode = [
+				"from pathlib import Path",
+				"import os",
+				"import requests",
+				"from urllib.parse import urlparse",
+				"data_dir = Path('data')",
+				"data_dir.mkdir(exist_ok=True)",
+				...datasets
+					.map((dataset, idx) => {
+						let url: string | undefined = (dataset as any).url;
+						// Derive known URLs if missing
+						if (!url && (dataset as any).source === "CellxCensus") {
+							url = `https://datasets.cellxgene.cziscience.com/${dataset.id}.h5ad`;
+						} else if (
+							!url &&
+							typeof dataset.id === "string" &&
+							dataset.id.startsWith("GSE")
+						) {
+							url = `https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=${dataset.id}`;
+						}
+						if (url) {
+							const varName = `dataset_${idx + 1}`;
+							const safeTitle = dataset.title || dataset.id;
+							const isH5ad = url.toLowerCase().endsWith(".h5ad");
+							const loader = isH5ad
+								? `import anndata as ad\n${varName} = ad.read_h5ad(local_path)`
+								: `${varName} = pd.read_csv(local_path)`;
+							const summary = isH5ad
+								? `print(f\\"Loaded ${safeTitle}: {${varName}.n_obs} cells, {${varName}.n_vars} genes\\")`
+								: `print(f\\"Loaded ${safeTitle}: {${varName}.shape} shape\\")`;
+							return `# Download and load ${safeTitle}
+${varName}_url = "${url}"
+try:
+    print("Downloading:", ${varName}_url)
+    parsed = urlparse(${varName}_url)
+    filename = os.path.basename(parsed.path) or "${dataset.id}"
+    local_path = str(data_dir / filename)
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = requests.get(${varName}_url, headers=headers, timeout=60)
+    resp.raise_for_status()
+    content_type = resp.headers.get('content-type', '')
+    if 'text/html' in content_type.lower() and len(resp.content) < 10000:
+        print("Warning: HTML content received; possible error page. Skipping", ${varName}_url)
+    else:
+        with open(local_path, 'wb') as f:
+            f.write(resp.content)
+        print("Saved to:", local_path)
+        ${loader}
+        ${summary}
+except Exception as e:
+    print("Failed to download or load ${safeTitle}:", e)`;
+						}
+						return "";
+					})
+					.filter(Boolean),
+			].join("\n");
+		}
+
 		let code = `# Step ${stepIndex + 1}: ${stepDescription}
 import pandas as pd
 import numpy as np
@@ -527,15 +599,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 
-print(f"Executing step {stepIndex + 1}: {stepDescription}")
-print(f"Working with datasets: {datasetIds}")
+print(f"Executing step ${stepIndex + 1}: ${stepDescription}")
+print(f"Working with datasets: ${datasetIds}")
 
-# Check available data files
-data_dir = "."
-data_files = [f for f in os.listdir(data_dir) if f.endswith(('.csv', '.txt', '.tsv'))]
-print(f"Available data files: {data_files}")
+${datasetLoadingCode}
 
-# TODO: Implement ${stepDescription} with available datasets
+# TODO: Implement ${stepDescription} with loaded datasets
 # This is a placeholder implementation
 
 print("Step completed successfully!")

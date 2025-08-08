@@ -1,5 +1,7 @@
 """Centralized configuration for search settings."""
 
+from typing import Optional
+
 # Search Limits
 DEFAULT_SEARCH_LIMIT = 20
 MAX_SEARCH_LIMIT = 100
@@ -27,14 +29,14 @@ class SearchConfig:
     """Centralized search configuration."""
     
     @staticmethod
-    def get_search_limit(limit: int = None) -> int:
+    def get_search_limit(limit: Optional[int] = None) -> int:
         """Get the search limit, ensuring it's within bounds."""
         if limit is None:
             return DEFAULT_SEARCH_LIMIT
         return max(MIN_SEARCH_LIMIT, min(limit, MAX_SEARCH_LIMIT))
     
     @staticmethod
-    def get_batch_size(batch_size: int = None) -> int:
+    def get_batch_size(batch_size: Optional[int] = None) -> int:
         """Get the batch size, ensuring it's within bounds."""
         if batch_size is None:
             return DEFAULT_BATCH_SIZE
