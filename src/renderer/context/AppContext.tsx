@@ -1,4 +1,11 @@
-import React, { createContext, useContext, useReducer } from "react";
+import React, {
+	createContext,
+	useContext,
+	useEffect,
+	useReducer,
+	useRef,
+} from "react";
+import { electronAPI } from "../utils/electronAPI";
 
 // Types from previous contexts
 export interface FileItem {
@@ -60,7 +67,10 @@ type AppAction =
 	| { type: "SET_BIORAG_CONNECTED"; payload: boolean }
 	| { type: "SET_ANALYZING"; payload: boolean }
 	| { type: "SET_JUPYTER_URL"; payload: string | null }
-	| { type: "ADD_MESSAGE"; payload: Omit<Message, "id" | "timestamp"> & { id?: string } }
+	| {
+			type: "ADD_MESSAGE";
+			payload: Omit<Message, "id" | "timestamp"> & { id?: string };
+	  }
 	| {
 			type: "UPDATE_MESSAGE";
 			payload: { id: string; updates: Partial<Message> };
@@ -212,6 +222,54 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 	children,
 }) => {
 	const [state, dispatch] = useReducer(appReducer, initialState);
+	const restoredWorkspaceRef = useRef<string | null>(null);
+
+	// Note: We intentionally do not auto-open the last workspace on boot.
+
+	// Persist chat history per workspace on changes
+	useEffect(() => {
+		(async () => {
+			try {
+				if (state.currentWorkspace) {
+					// Only persist after we've restored chat for this workspace, to avoid overwriting
+					if (restoredWorkspaceRef.current !== state.currentWorkspace) {
+						return;
+					}
+					const chatKey = `chatHistory:${state.currentWorkspace}`;
+					await electronAPI.storeSet(chatKey, state.messages);
+				}
+			} catch (e) {
+				// noop
+			}
+		})();
+	}, [state.currentWorkspace, state.messages]);
+
+	// When workspace changes during a session, load its chat history
+	useEffect(() => {
+		(async () => {
+			try {
+				if (state.currentWorkspace) {
+					const chatKey = `chatHistory:${state.currentWorkspace}`;
+					const chat = await electronAPI.storeGet(chatKey);
+					if (chat?.success && Array.isArray(chat.data)) {
+						const restored = (chat.data as any[]).map((m) => ({
+							...m,
+							id: m.id || Math.random().toString(36).slice(2),
+							timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+						}));
+						dispatch({ type: "SET_CHAT_MESSAGES", payload: restored as any });
+					} else {
+						dispatch({ type: "SET_CHAT_MESSAGES", payload: [] as any });
+					}
+					restoredWorkspaceRef.current = state.currentWorkspace;
+				} else {
+					dispatch({ type: "SET_CHAT_MESSAGES", payload: [] as any });
+				}
+			} catch (e) {
+				// noop
+			}
+		})();
+	}, [state.currentWorkspace]);
 
 	return (
 		<AppContext.Provider value={{ state, dispatch }}>

@@ -238,6 +238,12 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 			}
 		}
 		workspaceDispatch({ type: "SET_WORKSPACE", payload: path });
+		// Persist as last opened workspace for auto-restore
+		try {
+			await electronAPI.storeSet("lastWorkspace", path);
+		} catch (e) {
+			// ignore
+		}
 		setRecentWorkspaces((prev: string[]) => {
 			const updated = [path, ...prev.filter((w: string) => w !== path)].slice(
 				0,

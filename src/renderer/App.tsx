@@ -4,7 +4,12 @@ import { Sidebar } from "./components/Sidebar/Sidebar";
 import { ChatPanel } from "./components/Chat/ChatPanel";
 import { MainContent } from "./components/MainContent/MainContent";
 import { StatusBar } from "./components/StatusBar/StatusBar";
-import { AppProvider, useWorkspaceContext, useUIContext } from "./context/AppContext";
+import {
+	AppProvider,
+	useWorkspaceContext,
+	useUIContext,
+} from "./context/AppContext";
+import { electronAPI } from "./utils/electronAPI";
 
 const AppContent: React.FC = () => {
 	const { state: workspaceState } = useWorkspaceContext();
@@ -16,6 +21,22 @@ const AppContent: React.FC = () => {
 			uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
 		}
 	}, [workspaceState.currentWorkspace, uiState.showChatPanel, uiDispatch]);
+
+	// Persist last workspace for convenience (no auto-open on boot)
+	useEffect(() => {
+		(async () => {
+			try {
+				if (workspaceState.currentWorkspace) {
+					await electronAPI.storeSet(
+						"lastWorkspace",
+						workspaceState.currentWorkspace
+					);
+				}
+			} catch (e) {
+				// ignore
+			}
+		})();
+	}, [workspaceState.currentWorkspace]);
 
 	return (
 		<Layout>

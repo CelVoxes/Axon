@@ -1,5 +1,5 @@
 import React from "react";
-import styled, { keyframes } from "styled-components";
+import styled from "styled-components";
 import ReactMarkdown from "react-markdown";
 import { typography } from "../../styles/design-system";
 import { Message } from "../../context/AppContext";
@@ -226,167 +226,11 @@ const formatTimestamp = (timestamp: Date): string => {
 	return timestamp.toLocaleDateString();
 };
 
-// Use shared CodeBlock in markdown code renderer
-
 export const ChatMessage: React.FC<ChatMessageProps> = ({
 	message,
 	onAnalysisClick,
 }) => {
-	const [expandedBlocks, setExpandedBlocks] = React.useState<Set<string>>(
-		new Set()
-	);
-	const [copiedBlocks, setCopiedBlocks] = React.useState<Set<string>>(
-		new Set()
-	);
-	const [codeBlockCounter, setCodeBlockCounter] = React.useState(0);
-	const [codeBlocks, setCodeBlocks] = React.useState<Map<number, string>>(
-		new Map()
-	);
-
-	// Reset code block counter and code blocks when message ID changes (new message)
-	React.useEffect(() => {
-		setCodeBlockCounter(0);
-		setCodeBlocks(new Map());
-	}, [message.id]);
-
-	// Track code blocks from the message content
-	React.useEffect(() => {
-		if (message.content) {
-			// Parse the content to find code blocks and update the codeBlocks state
-			// Use a more robust regex that handles edge cases better
-			const codeBlockRegex = /```(\w+)?\s*\n([\s\S]*?)\n\s*```/g;
-			let match;
-			let index = 0;
-			const newCodeBlocks = new Map<number, string>();
-
-			while ((match = codeBlockRegex.exec(message.content)) !== null) {
-				const language = match[1] || "text";
-				const code = match[2].trim();
-				// Only add non-empty code blocks and filter out blocks that are just whitespace
-				if (code.length > 0 && code.replace(/\s/g, "").length > 0) {
-					newCodeBlocks.set(index, code);
-					index++;
-				}
-			}
-
-			setCodeBlocks(newCodeBlocks);
-			setCodeBlockCounter(newCodeBlocks.size); // Use the actual number of valid code blocks
-		}
-	}, [message.content]);
-
-	const copyToClipboard = React.useCallback(
-		async (code: string, blockId: string) => {
-			try {
-				await navigator.clipboard.writeText(code);
-				setCopiedBlocks((prev) => new Set(prev).add(blockId));
-				setTimeout(() => {
-					setCopiedBlocks((prev) => {
-						const newSet = new Set(prev);
-						newSet.delete(blockId);
-						return newSet;
-					});
-				}, 2000);
-			} catch (error) {
-				console.error("Failed to copy code:", error);
-			}
-		},
-		[]
-	);
-
-	const toggleCodeBlock = React.useCallback((blockId: string) => {
-		setExpandedBlocks((prev) => {
-			const newSet = new Set(prev);
-			if (newSet.has(blockId)) {
-				newSet.delete(blockId);
-			} else {
-				newSet.add(blockId);
-			}
-			return newSet;
-		});
-	}, []);
-
-	const formatContent = React.useCallback(
-		(content: string): string => {
-			// Convert markdown-like formatting to HTML
-			let formatted = content;
-
-			// Bold text
-			formatted = formatted.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-
-			// Code blocks - remove inline handlers, will be handled by React
-			formatted = formatted.replace(
-				/```(\w+)?\n([\s\S]*?)\n```/g,
-				(match, language, code, offset) => {
-					const lang = language || "text";
-					const escapedCode = code.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-					const codeId = `${message.id}-code-${offset}`;
-					const isExpanded = expandedBlocks.has(codeId);
-					const isCopied = copiedBlocks.has(codeId);
-
-					return `<div class="code-header" data-code-id="${codeId}" data-code="${escapedCode.replace(
-						/"/g,
-						"&quot;"
-					)}">
-					<div class="code-header-left">
-						<span class="code-title">Code</span>
-						<span class="code-language">${lang}</span>
-					</div>
-					<div class="code-header-right">
-						<button class="copy-button">${isCopied ? "✅ Copied!" : "📋 Copy"}</button>
-						<span class="toggle-icon">${isExpanded ? "▼" : "▶"}</span>
-					</div>
-				</div>
-				<div class="code-content" style="display: ${isExpanded ? "block" : "none"};">
-					<pre><code class="language-${lang}">${escapedCode}</code></pre>
-				</div>`;
-				}
-			);
-
-			// Inline code
-			formatted = formatted.replace(
-				/`([^`]+)`/g,
-				"<code class='inline-code'>$1</code>"
-			);
-
-			// Line breaks
-			formatted = formatted.replace(/\n/g, "<br />");
-
-			return formatted;
-		},
-		[expandedBlocks, copiedBlocks]
-	);
-
-	// Handle click events for code blocks
-	const handleClick = React.useCallback(
-		(e: React.MouseEvent) => {
-			const target = e.target as HTMLElement;
-			const codeHeader = target.closest(".code-header");
-
-			if (codeHeader) {
-				const codeId = codeHeader.getAttribute("data-code-id");
-				const code = codeHeader.getAttribute("data-code");
-
-				if (target.classList.contains("copy-button") && codeId && code) {
-					e.stopPropagation();
-					copyToClipboard(
-						code
-							.replace(/&quot;/g, '"')
-							.replace(/&lt;/g, "<")
-							.replace(/&gt;/g, ">"),
-						codeId
-					);
-				} else if (
-					target.classList.contains("code-header") ||
-					target.closest(".code-header")
-				) {
-					if (codeId) {
-						toggleCodeBlock(codeId);
-					}
-				}
-			}
-		},
-		[copyToClipboard, toggleCodeBlock]
-	);
+	// Use shared CodeBlock in markdown code renderer for all message types
 
 	// Determine message type from isUser and status
 	const getMessageType = () => {
@@ -402,115 +246,95 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 	return (
 		<MessageContainer $messageType={messageType}>
 			<MessageContent $messageType={messageType}>
-				{messageType === "assistant" ? (
-					<MessageText $messageType={messageType} onClick={handleClick}>
-						<ReactMarkdown
-							components={{
-								code: ({ node, inline, className, children, ...props }) => {
-									const match = /language-(\w+)/.exec(className || "");
-									const language = match ? match[1] : "text";
-
-									if (inline) {
-										return (
-											<code className="inline-code" {...props}>
-												{children}
-											</code>
-										);
-									}
-
-									// Don't render empty code blocks during streaming
-									const codeContent = String(children || "").trim();
-									// Filter out empty code blocks or blocks that are just whitespace
-									if (
-										codeContent.length === 0 ||
-										codeContent.replace(/\s/g, "").length === 0 ||
-										(message.isStreaming && codeContent.length === 0)
-									) {
-										return null;
-									}
-
-									// Use shared CodeBlock; auto-expansion behavior handled internally
+				<MessageText $messageType={messageType}>
+					<ReactMarkdown
+						components={{
+							code: ({ node, inline, className, children, ...props }) => {
+								const match = /language-(\w+)/.exec(className || "");
+								const language = match ? match[1] : "text";
+								if (inline) {
 									return (
-										<CodeBlock
-											code={String(children || "").trim()}
-											language={language}
-											title="Code"
-											isStreaming={
-												message.isStreaming || message.status === "pending"
-											}
-										/>
+										<code className="inline-code" {...props}>
+											{children}
+										</code>
 									);
-								},
-								pre: ({ children }) => {
-									// Don't render the default pre tag, let our ExpandableCodeBlock handle it
-									return <>{children}</>;
-								},
-								a: ({ href, children, ...props }) => {
-									// Handle special analyze: links
-									if (href && href.startsWith("analyze:")) {
-										const analysisType = href.replace("analyze:", "");
-										return (
-											<button
-												type="button"
-												onClick={(e) => {
-													e.preventDefault();
-													if (onAnalysisClick) {
-														onAnalysisClick(analysisType);
-													}
-												}}
-												style={{
-													color: "#007acc",
-													cursor: "pointer",
-													textDecoration: "underline",
-													background: "none",
-													border: "none",
-													padding: 0,
-													font: "inherit",
-													display: "inline",
-												}}
-											>
-												{children}
-											</button>
-										);
-									}
-									// Regular links - avoid javascript: URLs
-									if (
-										href &&
-										(href.startsWith("http://") || href.startsWith("https://"))
-									) {
-										return (
-											<a href={href} target="_blank" rel="noopener noreferrer">
-												{children}
-											</a>
-										);
-									} else {
-										// For invalid or javascript: URLs, render as plain text
-										return (
-											<span
-												style={{
-													color: "#007acc",
-													textDecoration: "underline",
-												}}
-											>
-												{children}
-											</span>
-										);
-									}
-								},
-							}}
-						>
-							{message.content}
-						</ReactMarkdown>
-					</MessageText>
-				) : (
-					<MessageText
-						$messageType={messageType}
-						onClick={handleClick}
-						dangerouslySetInnerHTML={{
-							__html: formatContent(message.content),
+								}
+								const codeContent = String(children || "").trim();
+								if (
+									codeContent.length === 0 ||
+									codeContent.replace(/\s/g, "").length === 0 ||
+									(message.isStreaming && codeContent.length === 0)
+								) {
+									return null;
+								}
+								return (
+									<CodeBlock
+										code={String(children || "").trim()}
+										language={language}
+										title="Code"
+										isStreaming={
+											message.isStreaming || message.status === "pending"
+										}
+									/>
+								);
+							},
+							pre: ({ children }) => {
+								return <>{children}</>;
+							},
+							a: ({ href, children, ...props }) => {
+								if (href && href.startsWith("analyze:")) {
+									const analysisType = href.replace("analyze:", "");
+									return (
+										<button
+											type="button"
+											onClick={(e) => {
+												e.preventDefault();
+												if (onAnalysisClick) {
+													onAnalysisClick(analysisType);
+												}
+											}}
+											style={{
+												color: "#007acc",
+												cursor: "pointer",
+												textDecoration: "underline",
+												background: "none",
+												border: "none",
+												padding: 0,
+												font: "inherit",
+												display: "inline",
+											}}
+										>
+											{children}
+										</button>
+									);
+								}
+								if (
+									href &&
+									(href.startsWith("http://") || href.startsWith("https://"))
+								) {
+									return (
+										<a href={href} target="_blank" rel="noopener noreferrer">
+											{children}
+										</a>
+									);
+								} else {
+									return (
+										<span
+											style={{
+												color: "#007acc",
+												textDecoration: "underline",
+											}}
+										>
+											{children}
+										</span>
+									);
+								}
+							},
 						}}
-					/>
-				)}
+					>
+						{message.content}
+					</ReactMarkdown>
+				</MessageText>
 				<MessageTimestamp>
 					{formatTimestamp(message.timestamp)}
 				</MessageTimestamp>

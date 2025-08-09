@@ -94,6 +94,15 @@ export const electronAPI = {
 	},
 
 	/**
+	 * Safely check if a directory exists
+	 */
+	async directoryExists(
+		dirPath: string
+	): Promise<{ success: boolean; data?: boolean; error?: string }> {
+		return safeElectronAPICall<boolean>("directoryExists", dirPath);
+	},
+
+	/**
 	 * Safely list directory contents
 	 */
 	async listDirectory(

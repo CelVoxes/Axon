@@ -21,6 +21,86 @@ export const PROGRESS_UPDATE_INTERVAL = 0.1; // seconds
 export const MAX_SEARCH_ATTEMPTS = 2;
 export const DEFAULT_ORGANISM = "Homo sapiens";
 
+// Chat parsing keyword sets (centralized to avoid hardcoding in components)
+export const SEARCH_KEYWORDS: string[] = [
+	"search for datasets",
+	"find datasets",
+	"look for datasets",
+	"search geo",
+	"find geo datasets",
+	"search sra",
+	"find sra datasets",
+	"search for data",
+	"find data",
+	"search biological databases",
+	"find biological data",
+];
+
+export const ANALYSIS_KEYWORDS: string[] = [
+	// General actions
+	"analyze",
+	"analysis",
+	"assess",
+	"evaluate",
+	"examine",
+	"investigate",
+	"perform",
+	"conduct",
+	"run",
+	"execute",
+	"create",
+	"generate",
+	"plot",
+	"visualize",
+	// Methods and tasks
+	"statistical",
+	"differential",
+	"differential expression",
+	"clustering",
+	"quality control",
+	"exploratory",
+	"visualization",
+	"heatmap",
+	"umap",
+	"pca",
+	"markers",
+	"subtypes",
+	"pathway",
+	"enrichment",
+	"correlation",
+	"transcriptional",
+	"gene expression",
+	"single cell",
+	"scrnaseq",
+];
+
+export const AMBIGUOUS_KEYWORDS: string[] = [
+	"find",
+	"search",
+	"data",
+	"dataset",
+];
+
+export const DATA_HINT_WORDS: string[] = [
+	"cancer",
+	"gene",
+	"expression",
+	"rna",
+	"protein",
+	"disease",
+	"cell",
+];
+
+// Suggestion requests keywords
+export const SUGGESTION_KEYWORDS: string[] = [
+	"suggest",
+	"help",
+	"what can i",
+	"recommend",
+	"ideas",
+	"options",
+];
+
 export class SearchConfig {
 	/**
 	 * Get the search limit, ensuring it's within bounds.

@@ -163,7 +163,7 @@ export const Notebook: React.FC<NotebookProps> = ({
 	const [cells, setCells] = useState<Cell[]>([]);
 	const [jupyterStatus, setJupyterStatus] = useState<
 		"starting" | "ready" | "error" | "running"
-	>("starting");
+	>("ready");
 	const [isAutoExecuting, setIsAutoExecuting] = useState(false);
 	const [currentStepIndex, setCurrentStepIndex] = useState(0);
 
@@ -176,42 +176,7 @@ export const Notebook: React.FC<NotebookProps> = ({
 		return workspacePath ? new CellExecutionService(workspacePath) : null;
 	}, [workspacePath]);
 
-	// Check Jupyter status and start if needed
-	useEffect(() => {
-		const checkAndStartJupyter = async () => {
-			if (!workspacePath) {
-				setJupyterStatus("error");
-				return;
-			}
-
-			try {
-				// First check if Jupyter is already running
-				const isRunning = await window.electronAPI.checkJupyterStatus();
-
-				if (isRunning) {
-					setJupyterStatus("ready");
-					return;
-				}
-
-				// If not running, start a new instance
-				setJupyterStatus("starting");
-
-				const result = await window.electronAPI.startJupyter(workspacePath);
-
-				if (result.success) {
-					setJupyterStatus("ready");
-				} else {
-					console.error("Notebook: Failed to start Jupyter:", result.error);
-					setJupyterStatus("error");
-				}
-			} catch (error) {
-				console.error("Notebook: Error checking/starting Jupyter:", error);
-				setJupyterStatus("error");
-			}
-		};
-
-		checkAndStartJupyter();
-	}, [workspacePath]);
+	// Notebook no longer starts/monitors Jupyter; environment flow ensures readiness.
 
 	// Listen for notebook cell events from AutonomousAgent
 	useEffect(() => {
@@ -345,23 +310,25 @@ export const Notebook: React.FC<NotebookProps> = ({
 	const moveCellUp = (index: number) => {
 		if (index === 0) return;
 		const newCells = [...cells];
-		[newCells[index - 1], newCells[index]] = [newCells[index], newCells[index - 1]];
+		[newCells[index - 1], newCells[index]] = [
+			newCells[index],
+			newCells[index - 1],
+		];
 		setCells(newCells);
 	};
 
 	const moveCellDown = (index: number) => {
 		if (index === cells.length - 1) return;
 		const newCells = [...cells];
-		[newCells[index], newCells[index + 1]] = [newCells[index + 1], newCells[index]];
+		[newCells[index], newCells[index + 1]] = [
+			newCells[index + 1],
+			newCells[index],
+		];
 		setCells(newCells);
 	};
 
 	const executeCell = async (id: string, code: string) => {
 		console.log(`Executing cell ${id} with status: ${jupyterStatus}`);
-		if (jupyterStatus !== "ready") {
-			console.error("Jupyter not ready for execution");
-			return;
-		}
 		const cell = cells.find((c) => c.id === id);
 		if (!cell || cell.isMarkdown) {
 			console.log(`Cell ${id} not found or is markdown`);
@@ -392,7 +359,7 @@ export const Notebook: React.FC<NotebookProps> = ({
 	};
 
 	const executeAllSteps = async () => {
-		if (jupyterStatus !== "ready" || !cells || cells.length === 0) return;
+		if (!cells || cells.length === 0) return;
 
 		setJupyterStatus("running");
 		setIsAutoExecuting(true);
@@ -427,7 +394,7 @@ export const Notebook: React.FC<NotebookProps> = ({
 
 	// Execute cells one by one with user control
 	const executeNextCell = async () => {
-		if (jupyterStatus !== "ready" || !cells || cells.length === 0) return;
+		if (!cells || cells.length === 0) return;
 
 		// Find the first pending cell
 		const nextCell = cells.find(
@@ -594,31 +561,51 @@ export const Notebook: React.FC<NotebookProps> = ({
 								capabilities:
 							</div>
 							<div
-								style={{ fontSize: "12px", color: "#666", marginBottom: "12px" }}
+								style={{
+									fontSize: "12px",
+									color: "#666",
+									marginBottom: "12px",
+								}}
 							>
 								📊 <strong>Data Tables</strong> - Beautiful, interactive data
 								displays
 							</div>
 							<div
-								style={{ fontSize: "12px", color: "#666", marginBottom: "12px" }}
+								style={{
+									fontSize: "12px",
+									color: "#666",
+									marginBottom: "12px",
+								}}
 							>
-								📈 <strong>Charts & Plots</strong> - Visualize your data with rich
-								graphics
+								📈 <strong>Charts & Plots</strong> - Visualize your data with
+								rich graphics
 							</div>
 							<div
-								style={{ fontSize: "12px", color: "#666", marginBottom: "12px" }}
+								style={{
+									fontSize: "12px",
+									color: "#666",
+									marginBottom: "12px",
+								}}
 							>
 								📝 <strong>Rich Text</strong> - Markdown formatting and syntax
 								highlighting
 							</div>
 							<div
-								style={{ fontSize: "12px", color: "#666", marginBottom: "12px" }}
+								style={{
+									fontSize: "12px",
+									color: "#666",
+									marginBottom: "12px",
+								}}
 							>
 								🔧 <strong>JSON & Metrics</strong> - Structured data with
 								collapsible views
 							</div>
 							<div
-								style={{ fontSize: "12px", color: "#666", marginBottom: "12px" }}
+								style={{
+									fontSize: "12px",
+									color: "#666",
+									marginBottom: "12px",
+								}}
 							>
 								💾 <strong>Export & Copy</strong> - Download outputs and copy to
 								clipboard
@@ -656,8 +643,8 @@ export const Notebook: React.FC<NotebookProps> = ({
 													<FiChevronDown size={12} />
 												</CellActionButton>
 											)}
-											<CellActionButton 
-												className="danger" 
+											<CellActionButton
+												className="danger"
 												onClick={() => removeCell(cell.id)}
 											>
 												<FiTrash2 size={12} />

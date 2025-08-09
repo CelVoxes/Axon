@@ -6,9 +6,10 @@ import {
 } from "../../context/AppContext";
 import { BackendClient } from "../../services/BackendClient";
 import { SearchConfig } from "../../config/SearchConfig";
+import { useChatIntent } from "../../hooks/useChatIntent";
 import { DatasetSelectionModal } from "./DatasetSelectionModal";
 import { ChatMessage } from "./ChatMessage";
-import { FiMinimize2, FiMaximize2, FiSquare } from "react-icons/fi";
+import { FiMinimize2, FiMaximize2 } from "react-icons/fi";
 import { CodeBlock } from "./shared/CodeBlock";
 import { Composer } from "./Composer";
 import { ProcessingIndicator } from "./Status/ProcessingIndicator";
@@ -42,6 +43,8 @@ interface ChatPanelProps {
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
+	const { isSuggestionsRequest, shouldSearchForDatasets, isAnalysisRequest } =
+		useChatIntent();
 	const { state: analysisState, dispatch: analysisDispatch } =
 		useAnalysisContext();
 	const { state: uiState, dispatch: uiDispatch } = useUIContext();
@@ -510,18 +513,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 		try {
 			// Check if this is a request for suggestions or help
-			if (
-				userMessage.toLowerCase().includes("suggest") ||
-				userMessage.toLowerCase().includes("help") ||
-				userMessage.toLowerCase().includes("what can i") ||
-				userMessage.toLowerCase().includes("recommend") ||
-				userMessage.toLowerCase().includes("ideas") ||
-				userMessage.toLowerCase().includes("options")
-			) {
+			if (isSuggestionsRequest(userMessage)) {
 				await handleSuggestionsRequest(userMessage);
 			}
 			// Use intelligent detection to understand if user wants to search for datasets
-			else if (await shouldSearchForDatasets(userMessage)) {
+			else if (shouldSearchForDatasets(userMessage)) {
 				console.log("🔍 Detected search request for:", userMessage);
 				// Search for datasets
 				if (isMounted) {
@@ -622,40 +618,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				await handleAnalysisRequest(userMessage);
 			} else {
 				// Check if this is an analysis request (even without datasets selected)
-				const analysisKeywords = [
-					"analyze",
-					"analysis",
-					"assess",
-					"evaluate",
-					"examine",
-					"investigate",
-					"perform",
-					"conduct",
-					"run",
-					"execute",
-					"differential expression",
-					"clustering",
-					"visualization",
-					"heatmap",
-					"umap",
-					"pca",
-					"markers",
-					"subtypes",
-					"pathway",
-					"enrichment",
-					"correlation",
-					"statistical",
-					"transcriptional",
-					"gene expression",
-					"single cell",
-					"scrnaseq",
-				];
+				const isAnalysis = isAnalysisRequest(userMessage);
 
-				const isAnalysisRequest = analysisKeywords.some((keyword) =>
-					userMessage.toLowerCase().includes(keyword)
-				);
-
-				if (isAnalysisRequest) {
+				if (isAnalysis) {
 					// This is an analysis request, but no datasets are selected yet
 					addMessage(
 						`Analysis Request Detected!\n\n` +
@@ -1331,86 +1296,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		});
 	};
 
-	// Intelligent function to determine if user wants to search for datasets
-	const shouldSearchForDatasets = async (
-		userMessage: string
-	): Promise<boolean> => {
-		const message = userMessage.toLowerCase();
-
-		// Quick heuristic checks first
-		const searchKeywords = [
-			"search for datasets",
-			"find datasets",
-			"look for datasets",
-			"search geo",
-			"find geo datasets",
-			"search sra",
-			"find sra datasets",
-			"search for data",
-			"find data",
-			"search biological databases",
-			"find biological data",
-		];
-
-		// If any of these exact phrases are found, it's definitely a search request
-		if (searchKeywords.some((keyword) => message.includes(keyword))) {
-			return true;
-		}
-
-		// Check for analysis-related keywords that should NOT trigger search
-		const analysisKeywords = [
-			"analyze",
-			"analysis",
-			"perform",
-			"run",
-			"execute",
-			"create",
-			"generate",
-			"plot",
-			"visualize",
-			"statistical",
-			"differential",
-			"clustering",
-			"quality control",
-			"exploratory",
-		];
-
-		// If the message contains analysis keywords, it's likely an analysis request
-		if (analysisKeywords.some((keyword) => message.includes(keyword))) {
-			return false;
-		}
-
-		// Check for ambiguous cases that need more context
-		const ambiguousKeywords = ["find", "search", "data", "dataset"];
-		const hasAmbiguousKeywords = ambiguousKeywords.some((keyword) =>
-			message.includes(keyword)
-		);
-
-		if (hasAmbiguousKeywords) {
-			// Use a simple context-based decision
-			// If the message is short and contains "find" or "search" without analysis context, it might be a search
-			if (
-				message.length < 50 &&
-				(message.includes("find") || message.includes("search"))
-			) {
-				// Check if it's asking for specific types of data/datasets
-				const dataTypes = [
-					"cancer",
-					"gene",
-					"expression",
-					"rna",
-					"protein",
-					"disease",
-					"cell",
-				];
-				if (dataTypes.some((type) => message.includes(type))) {
-					return true; // Likely searching for specific datasets
-				}
-			}
-		}
-
-		return false; // Default to not searching
-	};
+	// Intent detection moved to useChatIntent hook
 
 	const handleStopProcessing = () => {
 		setIsLoading(false);
@@ -1467,26 +1353,24 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					</div>
 				))}
 
-                {isProcessing && (
-                    <ProcessingIndicator
-                        text={
-                            analysisState.analysisStatus ||
-                            progressMessage ||
-                            "Processing"
-                        }
-                    />
-                )}
+				{isProcessing && (
+					<ProcessingIndicator
+						text={
+							analysisState.analysisStatus || progressMessage || "Processing"
+						}
+					/>
+				)}
 
-                <ValidationErrors errors={validationErrors} />
+				<ValidationErrors errors={validationErrors} />
 
-                <SearchProgressView progress={searchProgress} />
+				<SearchProgressView progress={searchProgress} />
 
-                <EnvironmentStatus
-                    virtualEnvStatus={virtualEnvStatus}
-                    showLog={showVirtualEnvLog}
-                    onToggleLog={() => setShowVirtualEnvLog(!showVirtualEnvLog)}
-                    isAutoExecuting={isAutoExecuting}
-                />
+				<EnvironmentStatus
+					virtualEnvStatus={virtualEnvStatus}
+					showLog={showVirtualEnvLog}
+					onToggleLog={() => setShowVirtualEnvLog(!showVirtualEnvLog)}
+					isAutoExecuting={isAutoExecuting}
+				/>
 
 				{/* Loading dots at the end of chat */}
 				{isProcessing && (
@@ -1500,14 +1384,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				<div ref={messagesEndRef} />
 			</div>
 
-            <Composer
-                value={inputValue}
-                onChange={setInputValue}
-                onSend={handleSendMessage}
-                onStop={handleStopProcessing}
-                isProcessing={isProcessing}
-                isLoading={isLoading}
-            />
+			<Composer
+				value={inputValue}
+				onChange={setInputValue}
+				onSend={handleSendMessage}
+				onStop={handleStopProcessing}
+				isProcessing={isProcessing}
+				isLoading={isLoading}
+			/>
 
 			{/* Suggestion Buttons */}
 			{suggestionButtons.length > 0 && (
