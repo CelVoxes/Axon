@@ -7,6 +7,9 @@ import {
 	FiPlay,
 	FiCheck,
 	FiX,
+	FiTrash2,
+	FiChevronUp,
+	FiChevronDown,
 } from "react-icons/fi";
 import { CodeCell } from "./CodeCell";
 import { NotebookOutputRenderer } from "./NotebookOutputRenderer";
@@ -75,6 +78,76 @@ const AddCellButton = styled.button`
 		background: #404040;
 		color: #ffffff;
 		border-color: #007acc;
+	}
+`;
+
+const InsertCellButton = styled.button`
+	width: 100%;
+	padding: 8px;
+	background: transparent;
+	border: 1px dashed #404040;
+	border-radius: 4px;
+	color: #666;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	font-size: ${typography.sm};
+	transition: all 0.2s ease;
+	opacity: 0.5;
+	margin: 8px 0;
+
+	&:hover {
+		background: #2d2d30;
+		color: #007acc;
+		border-color: #007acc;
+		opacity: 1;
+	}
+`;
+
+const CellContainer = styled.div`
+	position: relative;
+	margin-bottom: 16px;
+`;
+
+const CellActions = styled.div`
+	position: absolute;
+	top: 8px;
+	right: 8px;
+	display: flex;
+	gap: 4px;
+	opacity: 0;
+	transition: opacity 0.2s ease;
+	z-index: 2;
+`;
+
+const CellActionButton = styled.button`
+	padding: 4px;
+	background: rgba(0, 0, 0, 0.8);
+	border: 1px solid #404040;
+	border-radius: 4px;
+	color: #fff;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: all 0.2s ease;
+
+	&:hover {
+		background: #007acc;
+		border-color: #007acc;
+	}
+
+	&.danger:hover {
+		background: #ff6b6b;
+		border-color: #ff6b6b;
+	}
+`;
+
+const CellWrapper = styled.div`
+	&:hover ${CellActions} {
+		opacity: 1;
 	}
 `;
 
@@ -233,9 +306,13 @@ export const Notebook: React.FC<NotebookProps> = ({
 		};
 	}, [workspacePath]);
 
-	const addCell = (language: "python" | "r" = "python") => {
+	const generateCellId = () => {
+		return `cell-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+	};
+
+	const addCell = (language: "python" | "r" = "python", index?: number) => {
 		const newCell: Cell = {
-			id: Date.now().toString(),
+			id: generateCellId(),
 			code:
 				language === "python"
 					? "# Write Python code here"
@@ -245,7 +322,14 @@ export const Notebook: React.FC<NotebookProps> = ({
 			hasError: false,
 			status: "pending",
 		};
-		setCells([...cells, newCell]);
+
+		if (index !== undefined) {
+			const newCells = [...cells];
+			newCells.splice(index, 0, newCell);
+			setCells(newCells);
+		} else {
+			setCells([...cells, newCell]);
+		}
 	};
 
 	const updateCell = (id: string, updates: Partial<Cell>) => {
@@ -256,6 +340,20 @@ export const Notebook: React.FC<NotebookProps> = ({
 
 	const removeCell = (id: string) => {
 		setCells(cells.filter((cell) => cell.id !== id));
+	};
+
+	const moveCellUp = (index: number) => {
+		if (index === 0) return;
+		const newCells = [...cells];
+		[newCells[index - 1], newCells[index]] = [newCells[index], newCells[index - 1]];
+		setCells(newCells);
+	};
+
+	const moveCellDown = (index: number) => {
+		if (index === cells.length - 1) return;
+		const newCells = [...cells];
+		[newCells[index], newCells[index + 1]] = [newCells[index + 1], newCells[index]];
+		setCells(newCells);
 	};
 
 	const executeCell = async (id: string, code: string) => {
@@ -462,140 +560,184 @@ export const Notebook: React.FC<NotebookProps> = ({
 
 			<CellsContainer ref={cellsContainerRef}>
 				{!cells || cells.length === 0 ? (
-					<div
-						style={{
-							display: "flex",
-							flexDirection: "column",
-							alignItems: "center",
-							justifyContent: "center",
-							padding: "60px 20px",
-							color: "#858585",
-							textAlign: "center",
-						}}
-					>
-						<div style={{ fontSize: "48px", marginBottom: "16px" }}>📊</div>
+					<>
 						<div
 							style={{
-								fontSize: "18px",
-								fontWeight: "600",
-								marginBottom: "8px",
-								color: "#cccccc",
+								display: "flex",
+								flexDirection: "column",
+								alignItems: "center",
+								justifyContent: "center",
+								padding: "60px 20px",
+								color: "#858585",
+								textAlign: "center",
 							}}
 						>
-							Enhanced Interactive Notebook
+							<div style={{ fontSize: "48px", marginBottom: "16px" }}>📊</div>
+							<div
+								style={{
+									fontSize: "18px",
+									fontWeight: "600",
+									marginBottom: "8px",
+									color: "#cccccc",
+								}}
+							>
+								Enhanced Interactive Notebook
+							</div>
+							<div
+								style={{
+									fontSize: "14px",
+									marginBottom: "24px",
+									maxWidth: "500px",
+								}}
+							>
+								Experience rich notebook outputs with advanced rendering
+								capabilities:
+							</div>
+							<div
+								style={{ fontSize: "12px", color: "#666", marginBottom: "12px" }}
+							>
+								📊 <strong>Data Tables</strong> - Beautiful, interactive data
+								displays
+							</div>
+							<div
+								style={{ fontSize: "12px", color: "#666", marginBottom: "12px" }}
+							>
+								📈 <strong>Charts & Plots</strong> - Visualize your data with rich
+								graphics
+							</div>
+							<div
+								style={{ fontSize: "12px", color: "#666", marginBottom: "12px" }}
+							>
+								📝 <strong>Rich Text</strong> - Markdown formatting and syntax
+								highlighting
+							</div>
+							<div
+								style={{ fontSize: "12px", color: "#666", marginBottom: "12px" }}
+							>
+								🔧 <strong>JSON & Metrics</strong> - Structured data with
+								collapsible views
+							</div>
+							<div
+								style={{ fontSize: "12px", color: "#666", marginBottom: "12px" }}
+							>
+								💾 <strong>Export & Copy</strong> - Download outputs and copy to
+								clipboard
+							</div>
+							<div style={{ fontSize: "12px", color: "#666" }}>
+								Ask questions in the chat panel to generate analysis workflows
+								with enhanced outputs
+							</div>
 						</div>
-						<div
-							style={{
-								fontSize: "14px",
-								marginBottom: "24px",
-								maxWidth: "500px",
-							}}
-						>
-							Experience rich notebook outputs with advanced rendering
-							capabilities:
-						</div>
-						<div
-							style={{ fontSize: "12px", color: "#666", marginBottom: "12px" }}
-						>
-							📊 <strong>Data Tables</strong> - Beautiful, interactive data
-							displays
-						</div>
-						<div
-							style={{ fontSize: "12px", color: "#666", marginBottom: "12px" }}
-						>
-							📈 <strong>Charts & Plots</strong> - Visualize your data with rich
-							graphics
-						</div>
-						<div
-							style={{ fontSize: "12px", color: "#666", marginBottom: "12px" }}
-						>
-							📝 <strong>Rich Text</strong> - Markdown formatting and syntax
-							highlighting
-						</div>
-						<div
-							style={{ fontSize: "12px", color: "#666", marginBottom: "12px" }}
-						>
-							🔧 <strong>JSON & Metrics</strong> - Structured data with
-							collapsible views
-						</div>
-						<div
-							style={{ fontSize: "12px", color: "#666", marginBottom: "12px" }}
-						>
-							💾 <strong>Export & Copy</strong> - Download outputs and copy to
-							clipboard
-						</div>
-						<div style={{ fontSize: "12px", color: "#666" }}>
-							Ask questions in the chat panel to generate analysis workflows
-							with enhanced outputs
-						</div>
-					</div>
+						<AddCellButton onClick={() => addCell()}>
+							<FiPlus size={16} />
+							Add Your First Cell
+						</AddCellButton>
+					</>
 				) : (
-					(cells || []).map((cell, index) => (
-						<div key={cell.id} style={{ marginBottom: "16px" }}>
-							{cell.title && !cell.isMarkdown && (
-								<div
-									style={{
-										color: "#007acc",
-										fontSize: "14px",
-										fontWeight: "600",
-										marginBottom: "8px",
-										display: "flex",
-										alignItems: "center",
-										gap: "8px",
-									}}
-								>
-									{cell.status === "completed" && (
-										<FiCheck size={16} color="#00ff00" />
-									)}
-									{cell.status === "failed" && (
-										<FiX size={16} color="#ff0000" />
-									)}
-									{cell.status === "running" && (
-										<FiPlay size={16} color="#007acc" />
-									)}
-									{cell.title}
-								</div>
-							)}
-							{cell.isMarkdown ? (
-								<div
-									style={{
-										background: "#1e1e1e",
-										border: "1px solid #404040",
-										borderRadius: "8px",
-										padding: "16px",
-										color: "#ffffff",
-										fontSize: "14px",
-										lineHeight: "1.6",
-									}}
-								>
-									<div
-										dangerouslySetInnerHTML={{
-											__html: cell.code.replace(/\n/g, "<br/>"),
-										}}
-									/>
-								</div>
-							) : (
-								<>
-									<CodeCell
-										key={cell.id}
-										initialCode={cell.code}
-										initialOutput={cell.output}
-										language={cell.language}
-										workspacePath={workspacePath}
-										onExecute={(code, output) => {
-											updateCell(cell.id, { code, output });
-										}}
-									/>
-									{cell.output && (
-										<NotebookOutputRenderer
-											output={cell.output}
-											hasError={cell.hasError}
-										/>
-									)}
-								</>
-							)}
-						</div>
-					))
+					<>
+						{/* Add cell button at the top */}
+						<InsertCellButton onClick={() => addCell("python", 0)}>
+							<FiPlus size={12} />
+							Insert Cell
+						</InsertCellButton>
+
+						{(cells || []).map((cell, index) => (
+							<React.Fragment key={cell.id}>
+								<CellWrapper>
+									<CellContainer>
+										<CellActions>
+											{index > 0 && (
+												<CellActionButton onClick={() => moveCellUp(index)}>
+													<FiChevronUp size={12} />
+												</CellActionButton>
+											)}
+											{index < cells.length - 1 && (
+												<CellActionButton onClick={() => moveCellDown(index)}>
+													<FiChevronDown size={12} />
+												</CellActionButton>
+											)}
+											<CellActionButton 
+												className="danger" 
+												onClick={() => removeCell(cell.id)}
+											>
+												<FiTrash2 size={12} />
+											</CellActionButton>
+										</CellActions>
+
+										{cell.title && !cell.isMarkdown && (
+											<div
+												style={{
+													color: "#007acc",
+													fontSize: "14px",
+													fontWeight: "600",
+													marginBottom: "8px",
+													display: "flex",
+													alignItems: "center",
+													gap: "8px",
+												}}
+											>
+												{cell.status === "completed" && (
+													<FiCheck size={16} color="#00ff00" />
+												)}
+												{cell.status === "failed" && (
+													<FiX size={16} color="#ff0000" />
+												)}
+												{cell.status === "running" && (
+													<FiPlay size={16} color="#007acc" />
+												)}
+												{cell.title}
+											</div>
+										)}
+
+										{cell.isMarkdown ? (
+											<div
+												style={{
+													background: "#1e1e1e",
+													border: "1px solid #404040",
+													borderRadius: "8px",
+													padding: "16px",
+													color: "#ffffff",
+													fontSize: "14px",
+													lineHeight: "1.6",
+												}}
+											>
+												<div
+													dangerouslySetInnerHTML={{
+														__html: cell.code.replace(/\n/g, "<br/>"),
+													}}
+												/>
+											</div>
+										) : (
+											<>
+												<CodeCell
+													key={cell.id}
+													initialCode={cell.code}
+													initialOutput={cell.output}
+													language={cell.language}
+													workspacePath={workspacePath}
+													onExecute={(code, output) => {
+														updateCell(cell.id, { code, output });
+													}}
+												/>
+												{cell.output && (
+													<NotebookOutputRenderer
+														output={cell.output}
+														hasError={cell.hasError}
+													/>
+												)}
+											</>
+										)}
+									</CellContainer>
+								</CellWrapper>
+
+								{/* Insert cell button after each cell */}
+								<InsertCellButton onClick={() => addCell("python", index + 1)}>
+									<FiPlus size={12} />
+									Insert Cell
+								</InsertCellButton>
+							</React.Fragment>
+						))}
+					</>
 				)}
 
 				{/* Add ref for autoscroll */}

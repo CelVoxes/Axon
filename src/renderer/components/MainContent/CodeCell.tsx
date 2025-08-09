@@ -559,7 +559,7 @@ const OutputRenderer: React.FC<{ output: string; hasError: boolean }> = ({
 	hasError,
 }) => {
 	const [isCollapsed, setIsCollapsed] = useState(false);
-	const [showRaw, setShowRaw] = useState(false);
+	const [showRaw, setShowRaw] = useState(true);
 
 	const parsed = parseOutput(output);
 	const outputLength = output.length;

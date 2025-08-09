@@ -1,6 +1,7 @@
 import { BackendClient } from "./BackendClient";
 import { CellExecutionService } from "./CellExecutionService";
 import { CodeGenerationService } from "./CodeGenerationService";
+import { CELLXCENSUS_DATASET_BASE } from "../utils/Constants";
 
 export interface CodeQualityResult {
 	isValid: boolean;
@@ -355,9 +356,17 @@ print("Code placeholder - original code was empty or only contained markdown")`;
 		cleanedCode = this.ensureCriticalImports(cleanedCode);
 
 		// If code defines a `datasets` list/dict without URLs, inject safe URL derivation
-		if (/\bdatasets\s*=\s*\[/m.test(cleanedCode) || /\bdatasets\s*=\s*\{/m.test(cleanedCode)) {
-			const derivationPrelude = `\n# --- Auto-derivation of dataset URLs when missing ---\ntry:\n    datasets  # ensure variable exists\n    def _axon_derive_url(rec):\n        try:\n            url = rec.get('url') if isinstance(rec, dict) else None\n            if url:\n                return url\n            idv = rec.get('id', '') if isinstance(rec, dict) else ''\n            src = (rec.get('source') or '').strip() if isinstance(rec, dict) else ''\n            # Derive CellxCensus by UUID-like id or explicit source\n            if src == 'CellxCensus' or ('-' in idv and len(idv) >= 8):\n                rec['url'] = f"https://datasets.cellxgene.cziscience.com/{idv}.h5ad"\n                rec['format'] = rec.get('format') or 'h5ad'\n                return rec['url']\n            # Derive GEO page links for GSE/GSM ids\n            if idv.startswith('GSE') or idv.startswith('GSM'):\n                rec['url'] = f"https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc={idv}"\n                rec['format'] = rec.get('format') or 'unknown'\n                return rec['url']\n        except Exception:\n            return None\n        return None\n\n    try:\n        for _d in datasets:\n            if isinstance(_d, dict):\n                _axon_derive_url(_d)\n    except Exception:\n        pass\n# --- End auto-derivation ---\n`;
-			cleanedCode = derivationPrelude + cleanedCode;
+		if (
+			/\bdatasets\s*=\s*\[/m.test(cleanedCode) ||
+			/\bdatasets\s*=\s*\{/m.test(cleanedCode)
+		) {
+			const derivationPrelude = `\n# --- Auto-derivation of dataset URLs when missing ---\ndef _axon_derive_url(rec):\n    try:\n        url = rec.get('url') if isinstance(rec, dict) else None\n        if url:\n            return url\n        idv = rec.get('id', '') if isinstance(rec, dict) else ''\n        src = (rec.get('source') or '').strip() if isinstance(rec, dict) else ''\n        # Derive CellxCensus by UUID-like id or explicit source\n        if src == 'CellxCensus' or ('-' in idv and len(idv) >= 8):\n            rec['url'] = f"${CELLXCENSUS_DATASET_BASE}/{idv}.h5ad"\n            rec['format'] = rec.get('format') or 'h5ad'\n            return rec['url']\n        # Derive GEO page links for GSE/GSM ids\n        if idv.startswith('GSE') or idv.startswith('GSM'):\n            rec['url'] = f"https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc={idv}"\n            rec['format'] = rec.get('format') or 'unknown'\n            return rec['url']\n    except Exception:\n        return None\n    return None\n\ntry:\n    _ds_iter = datasets if isinstance(datasets, (list, tuple)) else []\n    for _d in _ds_iter:\n        if isinstance(_d, dict):\n            _axon_derive_url(_d)\nexcept Exception:\n    pass\n# --- End auto-derivation ---\n`;
+			// Prefer inserting immediately after the datasets literal so derivation runs before usage
+			const inserted = this.insertAfterDatasetsDefinition(
+				cleanedCode,
+				derivationPrelude
+			);
+			cleanedCode = inserted;
 		}
 
 		// Add error handling if requested and missing
@@ -377,6 +386,27 @@ print("Code placeholder - original code was empty or only contained markdown")`;
 		cleanedCode = this.addSafetyChecks(cleanedCode);
 
 		return cleanedCode;
+	}
+
+	/**
+	 * Insert a snippet immediately after a `datasets = [...]` or `datasets = {...}` literal.
+	 * If no literal is found, append the snippet at the end.
+	 */
+	private insertAfterDatasetsDefinition(code: string, snippet: string): string {
+		// Match a simple datasets assignment with a list or dict literal, possibly across lines
+		const listRegex =
+			/(\bdatasets\s*=\s*\[)([\s\S]*?\])(?![\s\S]*\bdatasets\s*=)/m;
+		const dictRegex =
+			/(\bdatasets\s*=\s*\{)([\s\S]*?\})(?![\s\S]*\bdatasets\s*=)/m;
+
+		if (listRegex.test(code)) {
+			return code.replace(listRegex, (match) => `${match}\n${snippet}`);
+		}
+		if (dictRegex.test(code)) {
+			return code.replace(dictRegex, (match) => `${match}\n${snippet}`);
+		}
+		// Fallback: append
+		return `${code}\n${snippet}`;
 	}
 
 	/**
@@ -783,12 +813,48 @@ except Exception as e:
 	}
 
 	private addDirectoryCreation(code: string): string {
-		return `# Create output directories
+		// Prepare the directory creation snippet
+		const directorySnippet = `# Create output directories
 results_dir = Path('results')
 figures_dir = Path('figures')
 results_dir.mkdir(exist_ok=True)
-figures_dir.mkdir(exist_ok=True)
+figures_dir.mkdir(exist_ok=True)`;
 
-${code}`;
+		// Split code into lines for controlled insertion
+		const lines = code.split("\n");
+
+		// Identify the insertion point right AFTER the import block
+		// Import block includes:
+		// - blank lines
+		// - comments
+		// - lines starting with "import " or "from "
+		let insertIndex = 0;
+		for (let i = 0; i < lines.length; i++) {
+			const trimmed = lines[i].trim();
+			if (
+				trimmed === "" ||
+				trimmed.startsWith("#") ||
+				trimmed.startsWith("import ") ||
+				trimmed.startsWith("from ")
+			) {
+				insertIndex = i + 1;
+				continue;
+			}
+			break;
+		}
+
+		// Ensure pathlib import exists since the snippet uses Path
+		const hasPathImport = code.includes("from pathlib import Path");
+		const updatedLines = [...lines];
+		if (!hasPathImport) {
+			// Insert the import at the end of the import block
+			updatedLines.splice(insertIndex, 0, "from pathlib import Path");
+			insertIndex += 1; // Maintain insertion order for the snippet
+		}
+
+		// Insert the directory snippet right after imports and add a spacer line
+		updatedLines.splice(insertIndex, 0, directorySnippet, "");
+
+		return updatedLines.join("\n");
 	}
 }

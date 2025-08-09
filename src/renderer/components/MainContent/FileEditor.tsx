@@ -125,9 +125,13 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 	// Get workspace context at the top level to avoid React hooks warning
 	const { state: workspaceState } = useWorkspaceContext();
-	const workspacePath =
-		workspaceState.currentWorkspace ||
-		filePath.substring(0, filePath.lastIndexOf("/"));
+	// Prefer the directory of the currently open file (e.g., the notebook folder)
+	// Fallback to the globally selected workspace if filePath has no parent
+	const fileDirectory = filePath.includes("/")
+		? filePath.substring(0, filePath.lastIndexOf("/"))
+		: undefined;
+	const workspacePath: string | undefined =
+		fileDirectory || workspaceState.currentWorkspace || undefined;
 
 	// Queue for events that arrive before notebookData is loaded
 	const [pendingEvents, setPendingEvents] = useState<

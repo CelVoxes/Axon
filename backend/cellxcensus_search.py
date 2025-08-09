@@ -54,7 +54,9 @@ class CellxCensusSearch:
         """Ensure the census is opened."""
         if self.census is None:
             loop = asyncio.get_event_loop()
-            versions_to_try = ["2024-07-01", "2025-01-30","2023-07-25", None]
+
+            # TODO: Dataset IDs are changed in every version. So, we need to fix this in later versions.
+            versions_to_try = ["2025-01-30", "2024-07-01", "2023-07-25", None]
             
             for version in versions_to_try:
                 try:

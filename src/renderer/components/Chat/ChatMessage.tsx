@@ -246,6 +246,9 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeProps> = ({
 }) => {
 	const [isExpanded, setIsExpanded] = React.useState(false);
 	const [copied, setCopied] = React.useState(false);
+	const containerRef = React.useRef<HTMLDivElement | null>(null);
+	const preRef = React.useRef<HTMLPreElement | null>(null);
+	const autoScrollRef = React.useRef(true);
 	const code = String(children || "").trim();
 	const blockId = `${messageId}-code-${blockIndex}`;
 
@@ -266,6 +269,29 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeProps> = ({
 	React.useEffect(() => {
 		setIsExpanded(shouldAutoExpand);
 	}, [shouldAutoExpand, isStreaming, code.length]);
+
+	// Track user scroll on the scrolling container (code-content), not the <pre>
+	React.useEffect(() => {
+		const el = containerRef.current;
+		if (!el) return;
+		const onScroll = () => {
+			const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+			autoScrollRef.current = nearBottom;
+		};
+		el.addEventListener("scroll", onScroll);
+		return () => el.removeEventListener("scroll", onScroll);
+	}, []);
+
+	// Auto-scroll as content streams in (scroll the container with overflow)
+	React.useEffect(() => {
+		if (!isExpanded) return;
+		if (!isStreaming && !autoScrollRef.current) return;
+		const scroller = containerRef.current;
+		if (!scroller) return;
+		if (autoScrollRef.current) {
+			scroller.scrollTop = scroller.scrollHeight;
+		}
+	}, [code, isStreaming, isExpanded]);
 
 	return (
 		<div className="expandable-code-block" style={{ margin: "12px 0" }}>
@@ -324,8 +350,9 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeProps> = ({
 							<span>📋 Context from previous code blocks available</span>
 						</div>
 					)}
-					<div className="code-content">
+					<div className="code-content" ref={containerRef}>
 						<pre
+							ref={preRef}
 							style={{
 								margin: 0,
 								background: "#1e1e1e",

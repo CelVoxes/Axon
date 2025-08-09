@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import styled from "styled-components";
 import {
 	FiCopy,
@@ -170,6 +170,35 @@ const CollapsibleOutput = styled.div<{
 			pointer-events: none;
 		}
 	`}
+`;
+
+const FullscreenModal = styled.div<{ $isFullscreen: boolean }>`
+	position: fixed;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	background: rgba(0, 0, 0, 0.95);
+	z-index: 1000;
+	display: ${(props) => (props.$isFullscreen ? "flex" : "none")};
+	flex-direction: column;
+	padding: 20px;
+
+	${OutputContainer} {
+		flex: 1;
+		margin: 0;
+		max-height: none;
+		overflow-y: auto;
+	}
+`;
+
+const FullscreenContent = styled.div`
+	flex: 1;
+	overflow-y: auto;
+	padding: 20px;
+	background: #18181a;
+	border-radius: 8px;
+	margin-top: 10px;
 `;
 
 const ExpandButton = styled.button`
@@ -351,7 +380,7 @@ export const NotebookOutputRenderer: React.FC<NotebookOutputRendererProps> = ({
 	outputType,
 }) => {
 	const [isCollapsed, setIsCollapsed] = useState(false);
-	const [showRaw, setShowRaw] = useState(false);
+	const [showRaw, setShowRaw] = useState(true);
 	const [isFullscreen, setIsFullscreen] = useState(false);
 
 	const parsed = useMemo(
@@ -362,6 +391,11 @@ export const NotebookOutputRenderer: React.FC<NotebookOutputRendererProps> = ({
 	const lineCount = output.split("\n").length;
 
 	const shouldCollapse = outputLength > 1000 || lineCount > 50;
+
+	// Set initial collapsed state
+	useEffect(() => {
+		setIsCollapsed(shouldCollapse);
+	}, [shouldCollapse]);
 
 	const copyOutput = async () => {
 		try {
@@ -509,14 +543,62 @@ export const NotebookOutputRenderer: React.FC<NotebookOutputRendererProps> = ({
 				<StatItem>{parsed.type} format</StatItem>
 			</OutputStats>
 
-			<CollapsibleOutput
-				$isCollapsed={isCollapsed && !showRaw}
-				$maxHeight={isFullscreen ? "600px" : "300px"}
-			>
-				{renderContent()}
-			</CollapsibleOutput>
+			{isFullscreen ? (
+				<FullscreenModal $isFullscreen={isFullscreen}>
+					<OutputHeader>
+						<OutputTitle>
+							{parsed.type === "dataframe" && "📊 Data Table"}
+							{parsed.type === "chart" && "📈 Chart"}
+							{parsed.type === "image" && "🖼️ Image"}
+							{parsed.type === "markdown" && "📝 Rich Text"}
+							{parsed.type === "json" && "🔧 JSON"}
+							{parsed.type === "progress" && "⏳ Progress"}
+							{parsed.type === "metrics" && "📊 Metrics"}
+							{parsed.type === "error" && "❌ Error"}
+							{parsed.type === "success" && "✅ Success"}
+							{parsed.type === "warning" && "⚠️ Warning"}
+							{parsed.type === "info" && "ℹ️ Info"}
+							{parsed.type === "text" && "📄 Output"} - Fullscreen
+						</OutputTitle>
+						<OutputActions>
+							<ActionButton onClick={copyOutput} $variant="secondary">
+								<FiCopy size={12} />
+								Copy
+							</ActionButton>
+							<ActionButton
+								onClick={() => setShowRaw(!showRaw)}
+								$variant="secondary"
+							>
+								{showRaw ? <FiEyeOff size={12} /> : <FiEye size={12} />}
+								{showRaw ? "Hide Raw" : "Show Raw"}
+							</ActionButton>
+							<ActionButton
+								onClick={() => setIsFullscreen(false)}
+								$variant="secondary"
+							>
+								<FiMinimize2 size={12} />
+								Exit Fullscreen
+							</ActionButton>
+							<ActionButton onClick={downloadOutput} $variant="secondary">
+								<FiDownload size={12} />
+								Download
+							</ActionButton>
+						</OutputActions>
+					</OutputHeader>
+					<FullscreenContent>
+						{renderContent()}
+					</FullscreenContent>
+				</FullscreenModal>
+			) : (
+				<CollapsibleOutput
+					$isCollapsed={shouldCollapse && isCollapsed}
+					$maxHeight="300px"
+				>
+					{renderContent()}
+				</CollapsibleOutput>
+			)}
 
-			{shouldCollapse && isCollapsed && !showRaw && (
+			{shouldCollapse && isCollapsed && !isFullscreen && (
 				<ExpandButton onClick={() => setIsCollapsed(false)}>
 					<FiChevronDown size={14} />
 					Show more ({outputLength - 1000} more characters)
@@ -636,59 +718,71 @@ const parseOutput = (output: string, outputType?: string) => {
 };
 
 const renderDataFrame = (data: string) => {
-	// Enhanced DataFrame parsing
-	const lines = data.split("\n");
-	const tableData: string[][] = [];
+	// Enhanced DataFrame parsing with better error handling
+	try {
+		const lines = data.split("\n");
+		const tableData: string[][] = [];
 
-	lines.forEach((line) => {
-		if (
-			line.trim() &&
-			!line.includes("DataFrame") &&
-			!line.includes("dtype") &&
-			!line.includes("memory usage") &&
-			!line.includes("RangeIndex")
-		) {
-			const cells = line.split(/\s+/).filter((cell) => cell.trim());
-			if (cells.length > 1) {
-				tableData.push(cells);
+		lines.forEach((line) => {
+			if (
+				line.trim() &&
+				!line.includes("DataFrame") &&
+				!line.includes("dtype") &&
+				!line.includes("memory usage") &&
+				!line.includes("RangeIndex") &&
+				!line.includes("...") &&
+				!line.includes("rows ×")
+			) {
+				const cells = line.split(/\s+/).filter((cell) => cell.trim());
+				if (cells.length > 1) {
+					tableData.push(cells);
+				}
 			}
+		});
+
+		if (tableData.length === 0) return <CodeBlock>{data}</CodeBlock>;
+
+		const headers = tableData[0];
+		const rows = tableData.slice(1);
+
+		// Validate table structure
+		if (!headers || headers.length === 0) {
+			return <CodeBlock>{data}</CodeBlock>;
 		}
-	});
 
-	if (tableData.length === 0) return <CodeBlock>{data}</CodeBlock>;
+		// Calculate column widths based on content
+		const columnWidths = headers.map((_, colIndex) => {
+			const maxLength = Math.max(
+				headers[colIndex]?.length || 0,
+				...rows.map((row) => row[colIndex]?.length || 0)
+			);
+			return Math.min(Math.max(maxLength * 8, 80), 300) + "px";
+		});
 
-	const headers = tableData[0];
-	const rows = tableData.slice(1);
-
-	// Calculate column widths based on content
-	const columnWidths = headers.map((_, colIndex) => {
-		const maxLength = Math.max(
-			headers[colIndex].length,
-			...rows.map((row) => row[colIndex]?.length || 0)
-		);
-		return Math.min(Math.max(maxLength * 8, 80), 200) + "px";
-	});
-
-	return (
-		<DataTable>
-			<TableHeader>
-				{headers.map((header, index) => (
-					<TableCell key={index} $isHeader $width={columnWidths[index]}>
-						{header}
-					</TableCell>
-				))}
-			</TableHeader>
-			{rows.map((row, rowIndex) => (
-				<TableRow key={rowIndex}>
-					{row.map((cell, cellIndex) => (
-						<TableCell key={cellIndex} $width={columnWidths[cellIndex]}>
-							{cell}
+		return (
+			<DataTable>
+				<TableHeader>
+					{headers.map((header, index) => (
+						<TableCell key={index} $isHeader $width={columnWidths[index]}>
+							{header || ''}
 						</TableCell>
 					))}
-				</TableRow>
-			))}
-		</DataTable>
-	);
+				</TableHeader>
+				{rows.map((row, rowIndex) => (
+					<TableRow key={rowIndex}>
+						{headers.map((_, cellIndex) => (
+							<TableCell key={cellIndex} $width={columnWidths[cellIndex]}>
+								{row[cellIndex] || ''}
+							</TableCell>
+						))}
+					</TableRow>
+				))}
+			</DataTable>
+		);
+	} catch (error) {
+		console.error('Error rendering DataFrame:', error);
+		return <CodeBlock>{data}</CodeBlock>;
+	}
 };
 
 const renderImage = (data: string) => {
@@ -725,22 +819,42 @@ const renderChart = (data: string) => {
 };
 
 const renderMarkdown = (data: string) => {
-	// Enhanced markdown to HTML conversion
-	const html = data
-		.replace(/```(\w+)?\n([\s\S]*?)```/g, "<pre><code>$2</code></pre>")
-		.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-		.replace(/\*(.*?)\*/g, "<em>$1</em>")
-		.replace(/^### (.*$)/gm, "<h3>$1</h3>")
-		.replace(/^## (.*$)/gm, "<h2>$1</h2>")
-		.replace(/^# (.*$)/gm, "<h1>$1</h1>")
-		.replace(/`([^`]+)`/g, "<code>$1</code>")
-		.replace(
-			/\[([^\]]+)\]\(([^)]+)\)/g,
-			'<a href="$2" target="_blank" style="color: #007acc;">$1</a>'
-		)
-		.replace(/\n/g, "<br/>");
+	// Enhanced markdown to HTML conversion with better error handling
+	try {
+		const html = data
+			// Code blocks first (to avoid conflicts)
+			.replace(/```([\w]*)?\n([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>')
+			// Headers (in order of specificity)
+			.replace(/^#### (.*$)/gm, '<h4>$1</h4>')
+			.replace(/^### (.*$)/gm, '<h3>$1</h3>')
+			.replace(/^## (.*$)/gm, '<h2>$1</h2>')
+			.replace(/^# (.*$)/gm, '<h1>$1</h1>')
+			// Bold and italic
+			.replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
+			.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+			.replace(/\*(.*?)\*/g, '<em>$1</em>')
+			// Inline code
+			.replace(/`([^`]+)`/g, '<code>$1</code>')
+			// Links
+			.replace(
+				/\[([^\]]+)\]\(([^)]+)\)/g,
+				'<a href="$2" target="_blank" rel="noopener noreferrer" style="color: #007acc; text-decoration: underline;">$1</a>'
+			)
+			// Lists
+			.replace(/^\* (.+)$/gm, '<li>$1</li>')
+			.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>')
+			.replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+			// Line breaks
+			.replace(/\n\n/g, '</p><p>')
+			.replace(/\n/g, '<br/>')
+			// Wrap in paragraphs if not already in block elements
+			.replace(/^(?!<[h1-6ul])/gm, '<p>');
 
-	return <RichTextOutput dangerouslySetInnerHTML={{ __html: html }} />;
+		return <RichTextOutput dangerouslySetInnerHTML={{ __html: html }} />;
+	} catch (error) {
+		console.error('Error rendering markdown:', error);
+		return <CodeBlock>{data}</CodeBlock>;
+	}
 };
 
 const renderJSON = (data: any) => {

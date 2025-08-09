@@ -25,6 +25,9 @@ PROGRESS_UPDATE_INTERVAL = 0.1  # seconds
 MAX_SEARCH_ATTEMPTS = 2
 DEFAULT_ORGANISM = "Homo sapiens"
 
+# LLM Configuration
+DEFAULT_LLM_MODEL = "gpt-4.1"  # Uses Chain-of-Thought reasoning internally
+
 class SearchConfig:
     """Centralized search configuration."""
     
@@ -50,4 +53,9 @@ class SearchConfig:
     @staticmethod
     def get_request_interval() -> float:
         """Get the request interval for rate limiting."""
-        return DEFAULT_REQUEST_INTERVAL 
+        return DEFAULT_REQUEST_INTERVAL
+    
+    @staticmethod
+    def get_default_llm_model() -> str:
+        """Get the default LLM model."""
+        return DEFAULT_LLM_MODEL 

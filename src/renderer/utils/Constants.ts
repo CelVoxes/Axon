@@ -4,13 +4,13 @@
 
 export const LANGUAGES = {
 	PYTHON: "python",
-	R: "r", 
+	R: "r",
 	MARKDOWN: "markdown",
 } as const;
 
 export const CELL_STATUS = {
 	PENDING: "pending",
-	RUNNING: "running", 
+	RUNNING: "running",
 	COMPLETED: "completed",
 	FAILED: "failed",
 	CANCELLED: "cancelled",
@@ -18,7 +18,7 @@ export const CELL_STATUS = {
 
 export const ANALYSIS_TYPES = {
 	DIFFERENTIAL_EXPRESSION: "differential expression analysis",
-	TIME_SERIES: "time series analysis", 
+	TIME_SERIES: "time series analysis",
 	SURVIVAL: "survival analysis",
 	PATHWAY_ENRICHMENT: "pathway enrichment analysis",
 } as const;
@@ -26,7 +26,7 @@ export const ANALYSIS_TYPES = {
 export const FILE_FORMATS = {
 	CSV: "csv",
 	TSV: "tsv",
-	JSON: "json", 
+	JSON: "json",
 	IPYNB: ".ipynb",
 } as const;
 
@@ -38,6 +38,10 @@ export const API_ENDPOINTS = {
 	LLM_VALIDATE_CODE: "/llm/validate-code",
 } as const;
 
+// External service bases
+export const CELLXCENSUS_DATASET_BASE =
+	"https://datasets.cellxgene.cziscience.com";
+
 export const DEFAULT_CONFIGS = {
 	MAX_TOKENS: 2000,
 	TEMPERATURE: 0.1,
@@ -45,7 +49,7 @@ export const DEFAULT_CONFIGS = {
 	TIMEOUT_MS: 120000,
 } as const;
 
-export type Language = typeof LANGUAGES[keyof typeof LANGUAGES];
-export type CellStatus = typeof CELL_STATUS[keyof typeof CELL_STATUS];
-export type AnalysisType = typeof ANALYSIS_TYPES[keyof typeof ANALYSIS_TYPES];
-export type FileFormat = typeof FILE_FORMATS[keyof typeof FILE_FORMATS];
+export type Language = (typeof LANGUAGES)[keyof typeof LANGUAGES];
+export type CellStatus = (typeof CELL_STATUS)[keyof typeof CELL_STATUS];
+export type AnalysisType = (typeof ANALYSIS_TYPES)[keyof typeof ANALYSIS_TYPES];
+export type FileFormat = (typeof FILE_FORMATS)[keyof typeof FILE_FORMATS];

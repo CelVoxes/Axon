@@ -59,23 +59,51 @@ export async function readDataStream(
 
 	const decoder = new TextDecoder();
 	let result = "";
+	let buffer = "";
 
 	while (true) {
 		const { done, value } = await reader.read();
 		if (done) break;
-		const raw = decoder.decode(value);
-		for (const line of raw.split("\n")) {
-			if (!line.trim()) continue;
-			if (!line.startsWith("data: ")) continue;
+
+		// Use streaming decode to handle multi-byte characters across chunks
+		buffer += decoder.decode(value, { stream: true });
+
+		// Process complete lines only; keep partial in buffer
+		const lines = buffer.split("\n");
+		buffer = lines.pop() || "";
+
+		for (const line of lines) {
+			const trimmed = line.trim();
+			if (!trimmed) continue;
+			if (!trimmed.startsWith("data: ")) continue;
 			try {
-				const data = JSON.parse(line.slice(6));
+				const jsonStr = trimmed.slice(6);
+				const data = JSON.parse(jsonStr);
 				const text = data.chunk ?? data.content ?? "";
 				if (text) {
 					onChunk(text);
 					result += text;
 				}
-			} catch {}
+			} catch {
+				// ignore malformed partials; they will be completed in subsequent chunks
+			}
 		}
 	}
+
+	// Flush any remaining buffered data if it's a complete JSON line
+	const final = buffer.trim();
+	if (final && final.startsWith("data: ")) {
+		try {
+			const data = JSON.parse(final.slice(6));
+			const text = data.chunk ?? data.content ?? "";
+			if (text) {
+				onChunk(text);
+				result += text;
+			}
+		} catch {
+			// ignore
+		}
+	}
+
 	return result;
 }

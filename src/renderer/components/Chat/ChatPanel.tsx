@@ -51,6 +51,8 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeBlockProps> = ({
 	const [isExpanded, setIsExpanded] = useState(isStreaming); // Auto-expand when streaming
 	const [copied, setCopied] = useState(false);
 	const [showFullCode, setShowFullCode] = useState(false);
+	const preRef = useRef<HTMLPreElement | null>(null);
+	const autoScrollRef = useRef(true);
 
 	// Auto-expand when streaming starts and prevent collapsing during streaming
 	useEffect(() => {
@@ -64,6 +66,29 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeBlockProps> = ({
 		if (isStreaming) return; // Don't allow collapsing during streaming
 		setIsExpanded(!isExpanded);
 	};
+
+	// Track user scroll to pause autoscroll when scrolled up
+	useEffect(() => {
+		const el = preRef.current;
+		if (!el) return;
+		const onScroll = () => {
+			const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+			autoScrollRef.current = nearBottom;
+		};
+		el.addEventListener("scroll", onScroll);
+		return () => el.removeEventListener("scroll", onScroll);
+	}, []);
+
+	// Auto-scroll as content streams in
+	useEffect(() => {
+		if (!isExpanded) return;
+		if (!isStreaming && !autoScrollRef.current) return;
+		const el = preRef.current;
+		if (!el) return;
+		if (autoScrollRef.current) {
+			el.scrollTop = el.scrollHeight;
+		}
+	}, [code, isStreaming, isExpanded]);
 
 	const copyToClipboard = async () => {
 		try {
@@ -110,7 +135,7 @@ const ExpandableCodeBlock: React.FC<ExpandableCodeBlockProps> = ({
 			</div>
 			{isExpanded && (
 				<div className={`code-content ${isStreaming ? "streaming" : ""}`}>
-					<pre>
+					<pre ref={preRef}>
 						<code className={`language-${language}`}>{displayCode}</code>
 					</pre>
 					{isLongCode && (
@@ -390,24 +415,60 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		Map<string, string>
 	>(new Map());
 
-	// Debounced streaming updates to prevent jiggling
-	const debouncedStreamingUpdate = useRef(
-		AsyncUtils.debounce((stepId: string, content: string) => {
-			const stream = activeStreams.current.get(stepId);
-			if (stream) {
+	// rAF-batched streaming updates for smoother UI
+	const rafStateRef = useRef<{
+		pending: Record<string, string>;
+		scheduled: boolean;
+	}>({ pending: {}, scheduled: false });
+
+	const scheduleRafUpdate = useCallback(() => {
+		if (rafStateRef.current.scheduled) return;
+		rafStateRef.current.scheduled = true;
+		requestAnimationFrame(() => {
+			const pending = rafStateRef.current.pending;
+			rafStateRef.current.pending = {};
+			rafStateRef.current.scheduled = false;
+			for (const stepId of Object.keys(pending)) {
+				const stream = activeStreams.current.get(stepId);
+				if (!stream) continue;
 				analysisDispatch({
 					type: "UPDATE_MESSAGE",
 					payload: {
 						id: stream.messageId,
-						updates: {
-							content: content,
-						},
+						updates: { content: pending[stepId] },
 					},
 				});
 			}
-		}, 100) // 100ms debounce
-	).current;
+			// Keep view pinned to bottom during streaming if user is near bottom
+			const container = chatContainerRef.current;
+			if (container && chatAutoScrollRef.current) {
+				container.scrollTop = container.scrollHeight;
+			}
+		});
+	}, [analysisDispatch]);
+
+	const enqueueStreamingUpdate = useCallback(
+		(stepId: string, content: string) => {
+			rafStateRef.current.pending[stepId] = content;
+			scheduleRafUpdate();
+		},
+		[scheduleRafUpdate]
+	);
 	const messagesEndRef = useRef<HTMLDivElement>(null);
+	const chatContainerRef = useRef<HTMLDivElement>(null);
+	const chatAutoScrollRef = useRef<boolean>(true);
+
+	// Track scroll position of chat container to avoid jiggling when user scrolls up
+	useEffect(() => {
+		const el = chatContainerRef.current;
+		if (!el) return;
+		const onScroll = () => {
+			const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+			chatAutoScrollRef.current = nearBottom;
+		};
+		el.addEventListener("scroll", onScroll);
+		return () => el.removeEventListener("scroll", onScroll);
+	}, []);
 	// Simplified: using event system instead of complex message refs
 	const activeStreams = useRef<
 		Map<string, { messageId: string; accumulatedCode: string }>
@@ -545,10 +606,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			// Update accumulated code
 			stream.accumulatedCode += chunk;
 
-			// Use debounced update to prevent jiggling
-			// Format content to avoid creating empty text blocks
+			// Format content and enqueue for rAF-batched update
 			const content = `\`\`\`python\n${stream.accumulatedCode}\n\`\`\``;
-			debouncedStreamingUpdate(stepId, content);
+			enqueueStreamingUpdate(stepId, content);
 		};
 
 		const handleCodeGenerationCompleted = (event: Event) => {
@@ -656,9 +716,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		};
 	}, [analysisDispatch]); // Remove addMessage from deps since it's defined after this useEffect
 
-	// Auto-scroll to bottom when new messages are added
+	// Auto-scroll to bottom when new messages are added (only if near bottom)
 	useEffect(() => {
-		scrollToBottom();
+		scrollToBottomImmediate();
 	}, [analysisState.messages]);
 
 	// Component lifecycle logging (disabled for performance)
@@ -668,18 +728,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	// 	};
 	// }, [componentId]);
 
-	const scrollToBottom = () => {
-		setTimeout(() => {
-			if (messagesEndRef.current) {
-				messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
-			}
-		}, 100);
-	};
-
 	const scrollToBottomImmediate = useCallback(() => {
-		if (messagesEndRef.current) {
-			messagesEndRef.current.scrollIntoView({ behavior: "auto" });
-		}
+		const el = chatContainerRef.current;
+		if (!el) return;
+		if (!chatAutoScrollRef.current) return;
+		el.scrollTop = el.scrollHeight;
 	}, []);
 
 	const addMessage = useCallback(
@@ -1709,7 +1762,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	return (
 		<div className={`chat-panel ${className || ""}`}>
 			<div className="chat-header">
-				<h3>AI Assistant</h3>
+				<h3></h3>
 				<button
 					onClick={toggleChat}
 					className="chat-toggle-button"
@@ -1719,7 +1772,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				</button>
 			</div>
 
-			<div className="chat-messages">
+			<div className="chat-messages" ref={chatContainerRef}>
 				{analysisState.messages.map((message: any) => (
 					<div key={message.id}>
 						<ChatMessage

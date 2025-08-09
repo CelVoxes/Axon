@@ -1,4 +1,5 @@
 import { BackendClient } from "./BackendClient";
+import { CELLXCENSUS_DATASET_BASE } from "../utils/Constants";
 import {
 	Dataset,
 	AnalysisPlan,
@@ -18,6 +19,7 @@ import { CodeQualityService } from "./CodeQualityService";
 import { NotebookGenerationOptions } from "./NotebookService";
 import { AsyncUtils } from "../utils/AsyncUtils";
 import { AnalysisOrchestrationService } from "./AnalysisOrchestrationService";
+import { ConfigManager } from "./ConfigManager";
 
 interface AnalysisStep {
 	id: string;
@@ -69,7 +71,7 @@ export class AutonomousAgent {
 	private originalQuery: string = "";
 	public isRunning: boolean = false;
 	private shouldStopAnalysis: boolean = false;
-	private selectedModel: string = "gpt-4o-mini";
+	private selectedModel: string = ConfigManager.getInstance().getDefaultModel();
 
 	// Global code context to track all generated code across the conversation
 	private globalCodeContext = new Map<string, string>();
@@ -90,7 +92,7 @@ export class AutonomousAgent {
 		// Use dependency injection to break circular dependencies
 		this.codeGenerator = new CodeGenerationService(
 			backendClient,
-			selectedModel || "gpt-4o-mini"
+			selectedModel || ConfigManager.getInstance().getDefaultModel()
 		);
 		this.codeExecutor = new CellExecutionService(workspacePath);
 
@@ -440,10 +442,81 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		// Just create the step description - NO CODE GENERATION YET
 		return {
 			id: "data-loading",
-			description: "Download and load datasets with size checking",
+			description:
+				"Download datasets deterministically to ./data and verify files",
 			code: "", // Empty - code will be generated later
 			status: "pending",
 		};
+	}
+
+	/**
+	 * Build a deterministic data download cell using selected dataset metadata only.
+	 * This avoids LLM duplication and ensures stable behavior.
+	 */
+	private buildDeterministicDataDownloadCode(datasets: Dataset[]): string {
+		const lines: string[] = [];
+		lines.push("from pathlib import Path");
+		lines.push("import requests");
+		lines.push("import os");
+		lines.push("");
+		lines.push("print('Starting deterministic data download...')");
+		lines.push("data_dir = Path('data')");
+		lines.push("data_dir.mkdir(exist_ok=True)");
+		lines.push("");
+		lines.push("datasets = [");
+		for (const d of datasets) {
+			const source = (d as any).source || "Unknown";
+			const providedUrl = (d as any).url || "";
+			// Derive CellxCensus URL only when url missing and id looks like UUID or source is CellxCensus
+			const shouldDerive =
+				!providedUrl &&
+				(source === "CellxCensus" ||
+					(typeof d.id === "string" && d.id.includes("-")));
+			const derivedUrl = shouldDerive
+				? `${CELLXCENSUS_DATASET_BASE}/${d.id}.h5ad`
+				: providedUrl;
+			const safeTitle = (d.title || d.id).replace(/"/g, '\\"');
+			lines.push(
+				`    {"id": "${d.id}", "title": "${safeTitle}", "source": "${source}", "url": "${derivedUrl}"},`
+			);
+		}
+		lines.push("]");
+		lines.push("");
+		lines.push("def _safe_filename(url, dataset_id):");
+		lines.push("    url_l = (url or '').lower()");
+		lines.push("    if url_l.endswith('.h5ad'): return f'{dataset_id}.h5ad'");
+		lines.push("    if url_l.endswith('.csv'): return f'{dataset_id}.csv'");
+		lines.push("    if url_l.endswith('.tsv'): return f'{dataset_id}.tsv'");
+		lines.push("    if url_l.endswith('.txt'): return f'{dataset_id}.txt'");
+		lines.push("    return f'{dataset_id}.data'");
+		lines.push("");
+		lines.push("for rec in datasets:");
+		lines.push("    did = rec.get('id')");
+		lines.push("    url = rec.get('url')");
+		lines.push("    title = rec.get('title') or did");
+		lines.push("    if not url:");
+		lines.push("        print(f'No URL for dataset: {title}')");
+		lines.push("        continue");
+		lines.push("    try:");
+		lines.push("        print('Downloading:', title)");
+		lines.push(
+			"        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60)"
+		);
+		lines.push("        resp.raise_for_status()");
+		lines.push("        fname = _safe_filename(url, did)");
+		lines.push("        fpath = data_dir / fname");
+		lines.push("        if fpath.exists():");
+		lines.push("            print('Already exists, skipping:', str(fpath))");
+		lines.push("            continue");
+		lines.push("        with open(fpath, 'wb') as f: f.write(resp.content)");
+		lines.push("        size = os.path.getsize(fpath)");
+		lines.push("        print('Saved:', str(fpath), 'size:', size, 'bytes')");
+		lines.push("    except Exception as e:");
+		lines.push("        print('Failed to download', title, 'error:', str(e))");
+		lines.push("");
+		lines.push("print('Deterministic data download complete.')");
+		lines.push("");
+		return lines.join("\n");
 	}
 
 	/**
@@ -757,21 +830,28 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 
 			this.updateStatus("Package installation cell added");
 
-			// Step 3: Generate and add data loading code
-			const dataLoadingStep = await this.generateDataLoadingStep(
-				datasets,
-				workspaceDir
+			// Step 3: Deterministic data download (bypass LLM for reliability)
+			const rawDataDownloadCode =
+				this.buildDeterministicDataDownloadCode(datasets);
+			// Validate and lightly clean to ensure imports and structure
+			const dataDownloadValidation =
+				await this.codeQualityService.validateAndTest(
+					rawDataDownloadCode,
+					"data-download",
+					{ stepTitle: "Data download" }
+				);
+			const finalDataDownloadCode = this.codeQualityService.getBestCode(
+				dataDownloadValidation
 			);
-			const dataCode = await this.generateAndTestStepCode(
-				dataLoadingStep,
-				query,
-				datasets,
-				workspaceDir,
-				1
+			await this.notebookService.addCodeCell(
+				notebookPath,
+				finalDataDownloadCode
 			);
-			await this.notebookService.addCodeCell(notebookPath, dataCode);
 
-			this.updateStatus("Data loading cell added");
+			// Add deterministic download code to global context to prevent LLM re-downloading
+			this.addCodeToContext("data-download", finalDataDownloadCode);
+
+			this.updateStatus("Data download cell added");
 
 			// Step 4: Generate and add analysis step codes
 			for (let i = 0; i < analysisSteps.length; i++) {

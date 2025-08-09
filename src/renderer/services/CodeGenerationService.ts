@@ -1,4 +1,5 @@
 import { BackendClient } from "./BackendClient";
+import { CELLXCENSUS_DATASET_BASE } from "../utils/Constants";
 import { EventManager } from "../utils/EventManager";
 import {
 	CodeGenerationStartedEvent,
@@ -11,6 +12,7 @@ import {
 	Dataset,
 	ICodeGenerator,
 } from "./types";
+import { ConfigManager } from "./ConfigManager";
 
 export class CodeGenerationService implements ICodeGenerator {
 	private backendClient: BackendClient;
@@ -22,7 +24,7 @@ export class CodeGenerationService implements ICodeGenerator {
 
 	constructor(
 		backendClient: BackendClient,
-		selectedModel: string = "gpt-4o-mini"
+		selectedModel: string = ConfigManager.getInstance().getDefaultModel()
 	) {
 		this.backendClient = backendClient;
 		this.selectedModel = selectedModel;
@@ -249,7 +251,8 @@ Available datasets (use ONLY these, do NOT invent links):
 ${datasetInfo}
 
 Dataset handling constraints:
-- Use ONLY the provided dataset URLs above if present. If a dataset has no URL, print a clear message and skip it.
+		- Data files are already downloaded to ./data by a previous step. Do NOT re-download; only load existing files.
+		- Use ONLY the provided dataset URLs above if present. If a dataset has no URL, print a clear message and skip it.
 - Create a local data directory (./data) and download files there before loading.
 - For format=h5ad: use anndata.read_h5ad on the downloaded file.
 - For format=csv/tsv/txt: use pandas read_csv with the appropriate separator.
@@ -528,69 +531,37 @@ print("Step completed successfully!")
 	): string {
 		const datasetIds = datasets.map((d) => d.id).join(", ");
 
-		// Generate dataset loading code with URL derivation for CellxCensus and GEO
-		let datasetLoadingCode = "";
-		const hasUrls = datasets.some((d) => (d as any).url);
-
-		if (hasUrls || datasets.length > 0) {
-			// For datasets with URLs (like CellxCensus), generate robust download-then-load code
-			datasetLoadingCode = [
-				"from pathlib import Path",
-				"import os",
-				"import requests",
-				"from urllib.parse import urlparse",
-				"data_dir = Path('data')",
-				"data_dir.mkdir(exist_ok=True)",
-				...datasets
-					.map((dataset, idx) => {
-						let url: string | undefined = (dataset as any).url;
-						// Derive known URLs if missing
-						if (!url && (dataset as any).source === "CellxCensus") {
-							url = `https://datasets.cellxgene.cziscience.com/${dataset.id}.h5ad`;
-						} else if (
-							!url &&
-							typeof dataset.id === "string" &&
-							dataset.id.startsWith("GSE")
-						) {
-							url = `https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=${dataset.id}`;
-						}
-						if (url) {
-							const varName = `dataset_${idx + 1}`;
-							const safeTitle = dataset.title || dataset.id;
-							const isH5ad = url.toLowerCase().endsWith(".h5ad");
-							const loader = isH5ad
-								? `import anndata as ad\n${varName} = ad.read_h5ad(local_path)`
-								: `${varName} = pd.read_csv(local_path)`;
-							const summary = isH5ad
-								? `print(f\\"Loaded ${safeTitle}: {${varName}.n_obs} cells, {${varName}.n_vars} genes\\")`
-								: `print(f\\"Loaded ${safeTitle}: {${varName}.shape} shape\\")`;
-							return `# Download and load ${safeTitle}
-${varName}_url = "${url}"
-try:
-    print("Downloading:", ${varName}_url)
-    parsed = urlparse(${varName}_url)
-    filename = os.path.basename(parsed.path) or "${dataset.id}"
-    local_path = str(data_dir / filename)
-    headers = {"User-Agent": "Mozilla/5.0"}
-    resp = requests.get(${varName}_url, headers=headers, timeout=60)
-    resp.raise_for_status()
-    content_type = resp.headers.get('content-type', '')
-    if 'text/html' in content_type.lower() and len(resp.content) < 10000:
-        print("Warning: HTML content received; possible error page. Skipping", ${varName}_url)
-    else:
-        with open(local_path, 'wb') as f:
-            f.write(resp.content)
-        print("Saved to:", local_path)
-        ${loader}
-        ${summary}
-except Exception as e:
-    print("Failed to download or load ${safeTitle}:", e)`;
-						}
-						return "";
-					})
-					.filter(Boolean),
-			].join("\n");
-		}
+		// Simplified: minimal download by dataset id (prefer provided URL; derive CellxCensus if missing)
+		let datasetLoadingCode = [
+			"from pathlib import Path",
+			"import requests",
+			"data_dir = Path('data')",
+			"data_dir.mkdir(exist_ok=True)",
+			...datasets
+				.map((dataset) => {
+					const src: string | undefined = (dataset as any).source;
+					let url: string | undefined = (dataset as any).url;
+					if (
+						!url &&
+						(src === "CellxCensus" ||
+							(typeof dataset.id === "string" && dataset.id.includes("-")))
+					) {
+						url = `${CELLXCENSUS_DATASET_BASE}/${dataset.id}.h5ad`;
+					}
+					if (!url) {
+						return `print("No URL for dataset: ${
+							dataset.title || dataset.id
+						}")`;
+					}
+					const filename = url.toLowerCase().endsWith(".h5ad")
+						? `${dataset.id}.h5ad`
+						: `${dataset.id}.data`;
+					return `from pathlib import Path\n_title = "${
+						dataset.title || dataset.id
+					}"\n_dest = data_dir / "${filename}"\nif Path(_dest).exists():\n    print("Using existing:", str(_dest))\nelse:\n    print("Downloading:", _title)\n    resp = requests.get("${url}", headers={"User-Agent": "Mozilla/5.0"}, timeout=60)\n    resp.raise_for_status()\n    open(_dest, 'wb').write(resp.content)\n    print("Saved:", str(_dest))`;
+				})
+				.filter(Boolean),
+		].join("\n");
 
 		let code = `# Step ${stepIndex + 1}: ${stepDescription}
 import pandas as pd

@@ -183,7 +183,7 @@ export class ConfigManager {
 				retryAttempts: 3,
 			},
 			analysis: {
-				defaultModel: "gpt-4o-mini",
+				defaultModel: "gpt-4.1", // Uses Chain-of-Thought reasoning internally
 				maxSteps: 20,
 				timeout: 300000, // 5 minutes
 				enableProgress: true,
@@ -212,6 +212,13 @@ export class ConfigManager {
 				enableProfiling: false,
 			},
 		};
+	}
+
+	/**
+	 * Get the default LLM model
+	 */
+	getDefaultModel(): string {
+		return this.config.analysis.defaultModel;
 	}
 
 	/**

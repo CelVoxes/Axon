@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 import openai
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
+from .config import SearchConfig
 
 
 class LLMProvider(ABC):
@@ -27,31 +28,80 @@ class LLMProvider(ABC):
 class OpenAIProvider(LLMProvider):
     """OpenAI provider implementation."""
     
-    def __init__(self, api_key: str, model: str = "gpt-4o-mini"):
+    def __init__(self, api_key: str, model: str = None):
         self.client = AsyncOpenAI(api_key=api_key)
-        self.model = model
+        self.model = model or SearchConfig.get_default_llm_model()
+    
+    def _prepare_kwargs(self, kwargs: dict) -> dict:
+        """Prepare kwargs for OpenAI API, handling model-specific parameter differences."""
+        prepared_kwargs = kwargs.copy()
+        
+        # Handle gpt-5-mini restrictions
+        if self._is_gpt5_mini():
+            # Remove unsupported parameters for gpt-5-mini
+            prepared_kwargs.pop("max_tokens", None)
+            prepared_kwargs.pop("temperature", None)  # Only supports temperature=1 (default)
+            # Note: max_completion_tokens would be used but current client doesn't support it
+            
+        return prepared_kwargs
+    
+    def _is_gpt5_mini(self) -> bool:
+        """Check if the model is gpt-5-mini."""
+        return "gpt-5-mini" in self.model.lower()
+    
+    def _is_new_model(self) -> bool:
+        """Check if the model is a newer model that uses max_completion_tokens."""
+        new_models = ["gpt-5-mini", "gpt-4o-2024-11-20", "gpt-4o-mini-2024-07-18", "chatgpt-4o-latest"]
+        return any(model in self.model for model in new_models)
     
     async def generate(self, messages: Sequence[ChatCompletionMessageParam], **kwargs) -> str:
+        prepared_kwargs = self._prepare_kwargs(kwargs)
+        
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=list(messages),
-            **kwargs
+            **prepared_kwargs
         )
+        
+        # Check for COT usage and log it
+        if hasattr(response, 'usage') and hasattr(response.usage, 'completion_tokens_details'):
+            details = response.usage.completion_tokens_details
+            if hasattr(details, 'reasoning_tokens') and details.reasoning_tokens > 0:
+                total_completion = response.usage.completion_tokens
+                reasoning_pct = (details.reasoning_tokens / total_completion) * 100 if total_completion > 0 else 0
+                print(f"🧠 COT Reasoning detected: {details.reasoning_tokens}/{total_completion} tokens ({reasoning_pct:.1f}% reasoning)")
+        
         return response.choices[0].message.content.strip()
     
     async def generate_stream(self, messages: Sequence[ChatCompletionMessageParam], **kwargs):
         """Generate streaming response from messages."""
         try:
+            prepared_kwargs = self._prepare_kwargs(kwargs)
+            
             stream = await self.client.chat.completions.create(
                 model=self.model,
                 messages=list(messages),
                 stream=True,
-                **kwargs
+                **prepared_kwargs
             )
             
+            # For streaming, we'll collect usage info at the end if available
+            total_content = ""
             async for chunk in stream:
                 if chunk.choices[0].delta.content is not None:
-                    yield chunk.choices[0].delta.content
+                    content = chunk.choices[0].delta.content
+                    total_content += content
+                    yield content
+                    
+                # Check for usage info in final chunk (if available)
+                if hasattr(chunk, 'usage') and chunk.usage:
+                    usage = chunk.usage
+                    if hasattr(usage, 'completion_tokens_details'):
+                        details = usage.completion_tokens_details
+                        if hasattr(details, 'reasoning_tokens') and details.reasoning_tokens > 0:
+                            total_completion = usage.completion_tokens
+                            reasoning_pct = (details.reasoning_tokens / total_completion) * 100 if total_completion > 0 else 0
+                            print(f"🧠 COT Reasoning (streaming): {details.reasoning_tokens}/{total_completion} tokens ({reasoning_pct:.1f}% reasoning)")
                     
         except Exception as e:
             print(f"OpenAI streaming error: {e}")
@@ -135,7 +185,7 @@ class LLMService:
         
         if provider == "openai":
             api_key = kwargs.get("api_key") or os.getenv("OPENAI_API_KEY")
-            model = kwargs.get("model", "gpt-4o-mini")
+            model = kwargs.get("model", SearchConfig.get_default_llm_model())
             print(f"OpenAI API key found: {bool(api_key)}")
             if api_key:
                 print(f"Creating OpenAI provider with model: {model}")
