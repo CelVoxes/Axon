@@ -565,20 +565,75 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		step.status = "running";
 
 		try {
-			// Use CellExecutionService to execute the step
-			const result = await this.codeExecutor.executeCell(
-				step.id,
-				step.code,
-				(updates: any) => {
-					// Update step with progress
-					Object.assign(step, updates);
+			// Execute with auto-fix-and-rerun loop
+			const maxAttempts = 2;
+			let attempt = 0;
+			let lastResult: any = {
+				status: "failed",
+				output: "",
+				shouldRetry: false,
+			};
+
+			while (attempt <= maxAttempts) {
+				// Use CellExecutionService to execute the step
+				const result = await this.codeExecutor.executeCell(
+					step.id,
+					step.code,
+					(updates: any) => {
+						// Update step with progress (streaming)
+						Object.assign(step, updates);
+					}
+				);
+
+				step.status = result.status;
+				step.output = result.output;
+
+				if (result.status === "completed") {
+					return result;
 				}
-			);
 
-			step.status = result.status;
-			step.output = result.output;
+				// If failed, decide whether to attempt auto-fix based on output
+				lastResult = result;
+				const errorOutput = result.output || "";
+				const canRetry = Boolean(result.shouldRetry) && errorOutput.length > 0;
+				if (!canRetry || attempt === maxAttempts) {
+					break;
+				}
 
-			return result;
+				// Attempt auto-fix using CodeQualityService and retry once
+				this.updateStatus(
+					`⚠️ Step failed, attempting auto-fix (attempt ${attempt + 1})...`
+				);
+				const refactored = await this.codeQualityService.generateRefactoredCode(
+					step.code,
+					errorOutput,
+					step.description,
+					this.workspacePath
+				);
+
+				// Clean and prepare the refactored code (imports, dirs, error handling)
+				const prepared = this.codeQualityService.cleanAndPrepareCode(
+					refactored,
+					{
+						addImports: true,
+						addErrorHandling: true,
+						addDirectoryCreation: true,
+						stepDescription: step.description,
+						globalCodeContext: this.getGlobalCodeContext(),
+					}
+				);
+
+				// Update step code and global context, then retry
+				step.code = prepared;
+				this.addCodeToContext(
+					`auto-fix-${step.id}-attempt-${attempt + 1}`,
+					prepared
+				);
+				attempt += 1;
+			}
+
+			// Return last failure if we couldn't recover
+			return lastResult;
 		} catch (error) {
 			step.status = "failed";
 			const errorMessage =

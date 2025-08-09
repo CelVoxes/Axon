@@ -1,6 +1,9 @@
 import React from "react";
 import styled from "styled-components";
-import { useWorkspaceContext } from "../../context/AppContext";
+import {
+	useWorkspaceContext,
+	useAnalysisContext,
+} from "../../context/AppContext";
 import { typography } from "../../styles/design-system";
 
 const StatusBarContainer = styled.div`
@@ -41,6 +44,7 @@ const StatusItem = styled.div`
 
 export const StatusBar: React.FC = () => {
 	const { state } = useWorkspaceContext();
+	const { state: analysisState } = useAnalysisContext();
 
 	return (
 		<StatusBarContainer>
@@ -53,7 +57,24 @@ export const StatusBar: React.FC = () => {
 			</StatusLeft>
 
 			<StatusRight>
-				<StatusItem>Ready</StatusItem>
+				<StatusItem>
+					<span
+						className={analysisState.isStreaming ? "pulse-dot" : ""}
+						style={{
+							display: "inline-block",
+							width: 8,
+							height: 8,
+							borderRadius: "50%",
+							backgroundColor: analysisState.isStreaming
+								? "#00ff00"
+								: "#9aa0a6",
+							animation: analysisState.isStreaming
+								? "pulse 1.5s infinite"
+								: "none",
+						}}
+					/>
+					{analysisState.isStreaming ? "Streaming" : "Ready"}
+				</StatusItem>
 			</StatusRight>
 		</StatusBarContainer>
 	);

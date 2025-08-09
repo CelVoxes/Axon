@@ -12,6 +12,7 @@ export interface AppConfig {
 	// Analysis configuration
 	analysis: {
 		defaultModel: string;
+		availableModels: string[];
 		maxSteps: number;
 		timeout: number;
 		enableProgress: boolean;
@@ -184,6 +185,7 @@ export class ConfigManager {
 			},
 			analysis: {
 				defaultModel: "gpt-4.1", // Uses Chain-of-Thought reasoning internally
+				availableModels: ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"],
 				maxSteps: 20,
 				timeout: 300000, // 5 minutes
 				enableProgress: true,
@@ -219,6 +221,13 @@ export class ConfigManager {
 	 */
 	getDefaultModel(): string {
 		return this.config.analysis.defaultModel;
+	}
+
+	/**
+	 * Get available LLM models
+	 */
+	getAvailableModels(): string[] {
+		return this.config.analysis.availableModels;
 	}
 
 	/**

@@ -4,7 +4,11 @@ import { Cell, ExecutionResult, ICodeExecutor } from "./types";
 async function runNotebookStep(
 	stepId: string,
 	code: string,
-	update: (payload: { output: string | null; error: string | null }) => void,
+	update: (payload: {
+		output: string | null;
+		error: string | null;
+		isStream?: boolean;
+	}) => void,
 	workspacePath?: string
 ) {
 	try {
@@ -23,6 +27,26 @@ async function runNotebookStep(
 			return;
 		}
 
+		// Hook streaming output listener to update in real-time
+		let accumulatedOutput = "";
+		const streamHandler = (data: any) => {
+			try {
+				if (data && data.type === "stream" && typeof data.code === "string") {
+					accumulatedOutput = data.code;
+					update({ output: accumulatedOutput, error: null, isStream: true });
+				}
+			} catch (_) {
+				// ignore handler errors
+			}
+		};
+
+		// Subscribe to streaming events
+		if (window.electronAPI && window.electronAPI.onJupyterCodeWriting) {
+			// @ts-ignore - preload provides this method
+			window.electronAPI.onJupyterCodeWriting(streamHandler);
+		}
+
+		// Execute the code (final result will be handled below)
 		// @ts-ignore
 		const result = await window.electronAPI.executeJupyterCode(
 			code,
@@ -32,14 +56,36 @@ async function runNotebookStep(
 		console.log(`Jupyter execution result:`, result);
 
 		if (result.success) {
-			update({ output: result.output || null, error: null });
+			update({
+				output: result.output || accumulatedOutput || null,
+				error: null,
+				isStream: false,
+			});
 		} else {
-			update({ output: null, error: result.error || "Execution failed" });
+			update({
+				output: accumulatedOutput || null,
+				error: result.error || "Execution failed",
+				isStream: false,
+			});
 		}
 	} catch (error: unknown) {
 		console.error(`Critical error in runNotebookStep for ${stepId}:`, error);
-		const errMsg = ErrorUtils.handleError(`Error executing notebook step ${stepId}`, error);
-		update({ output: null, error: errMsg });
+		const errMsg = ErrorUtils.handleError(
+			`Error executing notebook step ${stepId}`,
+			error
+		);
+		update({ output: null, error: errMsg, isStream: false });
+	} finally {
+		// Ensure we remove any streaming listeners we added
+		try {
+			if (window.electronAPI && window.electronAPI.removeAllListeners) {
+				// Remove all to avoid listener buildup (no other consumers found)
+				// @ts-ignore
+				window.electronAPI.removeAllListeners("jupyter-code-writing");
+			}
+		} catch (_) {
+			// ignore cleanup errors
+		}
 	}
 }
 
@@ -55,7 +101,9 @@ export class CellExecutionService implements ICodeExecutor {
 	}
 
 	updateWorkspacePath(newWorkspacePath: string) {
-		console.log(`CellExecutionService: Updating workspace path from ${this.workspacePath} to ${newWorkspacePath}`);
+		console.log(
+			`CellExecutionService: Updating workspace path from ${this.workspacePath} to ${newWorkspacePath}`
+		);
 		this.workspacePath = newWorkspacePath;
 	}
 
@@ -66,8 +114,15 @@ export class CellExecutionService implements ICodeExecutor {
 		console.log(
 			`CellExecutionService: Executing cell with analysis: ${cell.title}`
 		);
-		console.log(`CellExecutionService: Code length: ${cell.code.length} characters`);
-		console.log(`CellExecutionService: First 200 chars of code: ${cell.code.substring(0, 200)}...`);
+		console.log(
+			`CellExecutionService: Code length: ${cell.code.length} characters`
+		);
+		console.log(
+			`CellExecutionService: First 200 chars of code: ${cell.code.substring(
+				0,
+				200
+			)}...`
+		);
 		console.log(`CellExecutionService: Workspace path: ${this.workspacePath}`);
 
 		// Update cell status to running
@@ -83,12 +138,21 @@ export class CellExecutionService implements ICodeExecutor {
 			const executionPromise = runNotebookStep(
 				cell.id,
 				cell.code,
-				(payload: { output: string | null; error: string | null }) => {
-					const newStatus = payload.error ? "failed" : "completed";
+				(payload: {
+					output: string | null;
+					error: string | null;
+					isStream?: boolean;
+				}) => {
+					// During streaming, keep status as running; mark failed on error; final completion handled below
+					const status = payload.error
+						? "failed"
+						: payload.isStream
+						? "running"
+						: "completed";
 					onProgress?.({
 						output: payload.output ?? undefined,
 						hasError: !!payload.error,
-						status: newStatus,
+						status,
 					});
 
 					// Store the final output and error for analysis
@@ -104,7 +168,7 @@ export class CellExecutionService implements ICodeExecutor {
 			// Add timeout handling (30 seconds for code execution)
 			const timeoutPromise = new Promise<void>((_, reject) => {
 				setTimeout(() => {
-					reject(new Error('Code execution timeout after 30 seconds'));
+					reject(new Error("Code execution timeout after 30 seconds"));
 				}, 30000);
 			});
 
@@ -178,7 +242,7 @@ export class CellExecutionService implements ICodeExecutor {
 			"Execution timeout",
 			"timeout",
 			"TimeoutError",
-			"execution time exceeded"
+			"execution time exceeded",
 		];
 
 		const hasTimeoutError = timeoutErrors.some((errorType) =>

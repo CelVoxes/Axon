@@ -135,7 +135,7 @@ const MetaItem = styled.div`
 	font-size: ${typography.base};
 `;
 
-const DatasetDescription = styled.p`
+const DatasetDescription = styled.div`
 	color: #ccc;
 	margin: 0;
 	font-size: ${typography.base};
@@ -282,7 +282,6 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 
 	// Ensure datasets is always an array
 	const safeDatasets = Array.isArray(datasets) ? datasets : [];
-	
 
 	useEffect(() => {
 		if (isOpen && !wasOpen && safeDatasets.length > 0) {
@@ -427,10 +426,10 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 											{dataset.title || `Dataset ${dataset.id}`}
 										</DatasetTitle>
 										{dataset.similarity_score !== undefined && (
-									<DatasetId>
-										{(dataset.similarity_score * 100).toFixed(1)}% match
-									</DatasetId>
-								)}
+											<DatasetId>
+												{(dataset.similarity_score * 100).toFixed(1)}% match
+											</DatasetId>
+										)}
 									</DatasetHeader>
 
 									<DatasetMeta>
@@ -514,7 +513,7 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 													fontFamily: "monospace",
 												}}
 											>
-												📁 {dataset.url || 'URL not available'}
+												📁 {dataset.url || "URL not available"}
 											</div>
 										)}
 									</DatasetDescription>

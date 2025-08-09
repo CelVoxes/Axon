@@ -10,7 +10,7 @@ import os
 import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
-from .config import SearchConfig
+from .config import SearchConfig, DEFAULT_ORGANISM
 
 # Load environment variables from .env file
 env_path = Path(__file__).parent.parent / '.env'
@@ -102,6 +102,7 @@ class CodeGenerationRequest(BaseModel):
     task_description: str
     language: str = "python"
     context: Optional[str] = None
+    model: Optional[str] = None
 
 
 class CodeGenerationResponse(BaseModel):
@@ -344,7 +345,7 @@ async def llm_search_datasets(request: LLMSearchRequest):
                     search_results = await cellx_client.find_similar_datasets(
                         query=term,
                         limit=per_term_limit,
-                        organism=request.organism or SearchConfig.DEFAULT_ORGANISM
+                        organism=request.organism or DEFAULT_ORGANISM
                     )
                     
                     if search_results:
@@ -426,7 +427,16 @@ async def simplify_query(request: QuerySimplificationRequest):
 async def generate_code(request: dict):
     """Generate code for a given task."""
     try:
-        llm_service = get_llm_service()
+        # Support per-request model override
+        model = request.get("model")
+        if model:
+            llm_service = get_llm_service()
+            # Recreate provider with the selected model if possible
+            # Note: For simplicity, we create a new service instance when model is provided
+            from .llm_service import LLMService
+            llm_service = LLMService(provider="openai", model=model)
+        else:
+            llm_service = get_llm_service()
         task_description = request.get("task_description", "")
         language = request.get("language", "python")
         context = request.get("context", "")
@@ -455,7 +465,13 @@ async def generate_code(request: dict):
 async def generate_code_stream(request: dict):
     """Generate code with streaming for a given task."""
     try:
-        llm_service = get_llm_service()
+        # Support per-request model override
+        model = request.get("model")
+        if model:
+            from .llm_service import LLMService
+            llm_service = LLMService(provider="openai", model=model)
+        else:
+            llm_service = get_llm_service()
         task_description = request.get("task_description", "")
         language = request.get("language", "python")
         context = request.get("context", "")
@@ -1166,31 +1182,20 @@ async def search_cellxcensus_by_cell_type(
     organism: Optional[str] = None,
     limit: int = SearchConfig.get_search_limit()
 ):
-    """Find CellxCensus datasets related to a specific cell type.
-    
-    Args:
-        cell_type: Cell type name
-        organism: Organism filter ('Homo sapiens' or 'Mus musculus')
-        limit: Maximum results
-        
-    Returns:
-        Cell type-related datasets
-    """
+    """Find datasets by treating the cell type as a query term."""
     try:
         client = get_cellxcensus_client()
-        datasets = await client.search_by_cell_type(
-            cell_type=cell_type,
-            organism=organism,
-            limit=limit
+        datasets = await client.find_similar_datasets(
+            query=cell_type,
+            limit=limit,
+            organism=organism or DEFAULT_ORGANISM,
         )
-        
         return {
             "cell_type": cell_type,
-            "organism": organism,
+            "organism": organism or DEFAULT_ORGANISM,
             "datasets": datasets,
-            "count": len(datasets)
+            "count": len(datasets),
         }
-        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"CellxCensus cell type search failed: {str(e)}")
 
@@ -1201,31 +1206,20 @@ async def search_cellxcensus_by_tissue(
     organism: Optional[str] = None,
     limit: int = SearchConfig.get_search_limit()
 ):
-    """Find CellxCensus datasets related to a specific tissue.
-    
-    Args:
-        tissue: Tissue name
-        organism: Organism filter
-        limit: Maximum results
-        
-    Returns:
-        Tissue-related datasets
-    """
+    """Find datasets by treating the tissue as a query term."""
     try:
         client = get_cellxcensus_client()
-        datasets = await client.search_by_tissue(
-            tissue=tissue,
-            organism=organism,
-            limit=limit
+        datasets = await client.find_similar_datasets(
+            query=tissue,
+            limit=limit,
+            organism=organism or DEFAULT_ORGANISM,
         )
-        
         return {
             "tissue": tissue,
-            "organism": organism,
+            "organism": organism or DEFAULT_ORGANISM,
             "datasets": datasets,
-            "count": len(datasets)
+            "count": len(datasets),
         }
-        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"CellxCensus tissue search failed: {str(e)}")
 
@@ -1236,31 +1230,20 @@ async def search_cellxcensus_by_disease(
     organism: Optional[str] = None,
     limit: int = SearchConfig.get_search_limit()
 ):
-    """Find CellxCensus datasets related to a specific disease.
-    
-    Args:
-        disease: Disease name
-        organism: Organism filter
-        limit: Maximum results
-        
-    Returns:
-        Disease-related datasets
-    """
+    """Find datasets by treating the disease as a query term."""
     try:
         client = get_cellxcensus_client()
-        datasets = await client.search_by_disease(
-            disease=disease,
-            organism=organism,
-            limit=limit
+        datasets = await client.find_similar_datasets(
+            query=disease,
+            limit=limit,
+            organism=organism or DEFAULT_ORGANISM,
         )
-        
         return {
             "disease": disease,
-            "organism": organism,
+            "organism": organism or DEFAULT_ORGANISM,
             "datasets": datasets,
-            "count": len(datasets)
+            "count": len(datasets),
         }
-        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"CellxCensus disease search failed: {str(e)}")
 
@@ -1275,46 +1258,14 @@ class DatasetDataRequest(BaseModel):
 
 @app.post("/cellxcensus/dataset/data")
 async def get_cellxcensus_dataset_data(request: DatasetDataRequest):
-    """Get expression data for a specific CellxCensus dataset.
-    
-    Args:
-        request: Dataset data request parameters
-        
-    Returns:
-        Dataset information and download instructions
-    """
+    """Return minimal dataset info stub. Full data fetch not implemented in SimpleCellxCensusClient."""
     try:
-        client = get_cellxcensus_client()
-        adata = await client.get_dataset_data(
-            dataset_id=request.dataset_id,
-            organism=request.organism,
-            cell_type=request.cell_type,
-            tissue=request.tissue,
-            genes=request.genes
-        )
-        
-        if adata:
-            # Return metadata about the data instead of the actual data
-            # (which would be too large for HTTP response)
-            return {
-                "dataset_id": request.dataset_id,
-                "shape": {
-                    "n_cells": adata.n_obs,
-                    "n_genes": adata.n_vars
-                },
-                "organism": request.organism,
-                "filters_applied": {
-                    "cell_type": request.cell_type,
-                    "tissue": request.tissue,
-                    "genes": request.genes
-                },
-                "obs_columns": list(adata.obs.columns),
-                "var_columns": list(adata.var.columns),
-                "message": "Data successfully retrieved. Use cellxgene_census.get_anndata() to access the full dataset programmatically."
-            }
-        else:
-            raise HTTPException(status_code=404, detail="Dataset not found or no data matching filters")
-        
+        # For now, provide a stub response indicating where to fetch the h5ad
+        return {
+            "dataset_id": request.dataset_id,
+            "organism": request.organism,
+            "message": "Use dataset_version_id.h5ad URL from /cellxcensus/search results to download and load with anndata.read_h5ad."
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get dataset data: {str(e)}")
 

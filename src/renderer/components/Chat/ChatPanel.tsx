@@ -238,6 +238,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	useEffect(() => {
 		let isMounted = true;
 
+		const updateGlobalStreamingFlag = () => {
+			// Toggle global streaming based on active streams
+			analysisDispatch({
+				type: "SET_STREAMING",
+				payload: activeStreams.current.size > 0,
+			});
+		};
+
 		const handleCodeGenerationStarted = (event: Event) => {
 			if (!isMounted) return;
 			const customEvent = event as CustomEvent<CodeGenerationStartedEvent>;
@@ -256,6 +264,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					isStreaming: true,
 				},
 			});
+
+			// Mark global streaming as active
+			updateGlobalStreamingFlag();
 		};
 
 		const handleCodeGenerationChunk = (event: Event) => {
@@ -297,6 +308,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 				// Clean up
 				activeStreams.current.delete(stepId);
+				updateGlobalStreamingFlag();
 			}
 		};
 
@@ -319,6 +331,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					},
 				});
 				activeStreams.current.delete(stepId);
+				updateGlobalStreamingFlag();
 			}
 		};
 

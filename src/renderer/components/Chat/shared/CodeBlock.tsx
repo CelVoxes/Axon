@@ -21,7 +21,8 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 	const [isExpanded, setIsExpanded] = useState(isStreaming);
 	const [copied, setCopied] = useState(false);
 	const [showFullCode, setShowFullCode] = useState(false);
-	const preRef = useRef<HTMLPreElement | null>(null);
+	// The scrollable container is the wrapper div with class `code-content`, not the <pre>
+	const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 	const autoScrollRef = useRef(true);
 
 	// Auto-expand when streaming starts
@@ -36,7 +37,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 
 	// Track user scroll to pause autoscroll when scrolled up
 	useEffect(() => {
-		const el = preRef.current;
+		const el = scrollContainerRef.current;
 		if (!el) return;
 		const onScroll = () => {
 			const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
@@ -50,7 +51,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 	useEffect(() => {
 		if (!isExpanded) return;
 		if (!isStreaming && !autoScrollRef.current) return;
-		const el = preRef.current;
+		const el = scrollContainerRef.current;
 		if (!el) return;
 		if (autoScrollRef.current) el.scrollTop = el.scrollHeight;
 	}, [code, isStreaming, isExpanded]);
@@ -116,8 +117,11 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 				</div>
 			</div>
 			{isExpanded && (
-				<div className={`code-content ${isStreaming ? "streaming" : ""}`}>
-					<pre ref={preRef}>
+				<div
+					className={`code-content ${isStreaming ? "streaming" : ""}`}
+					ref={scrollContainerRef}
+				>
+					<pre>
 						<code className={`language-${language}`}>{displayCode}</code>
 					</pre>
 					{isLongCode && (

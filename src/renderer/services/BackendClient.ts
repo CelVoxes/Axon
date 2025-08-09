@@ -406,12 +406,14 @@ export class BackendClient implements IBackendClient {
 		task_description: string;
 		language?: string;
 		context?: string;
+		model?: string;
 	}): Promise<string> {
 		try {
 			const response = await axios.post(`${this.baseUrl}/llm/code`, {
 				task_description: request.task_description,
 				language: request.language || "python",
 				context: request.context,
+				model: request.model,
 			});
 			return response.data.code;
 		} catch (error) {

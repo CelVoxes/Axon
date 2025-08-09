@@ -354,6 +354,7 @@ General requirements:
 					task_description: request.stepDescription,
 					language: "python",
 					context: enhancedContext,
+					model: ConfigManager.getInstance().getDefaultModel(),
 				},
 				chunkCallback
 			);
