@@ -252,6 +252,7 @@ class CellxCensusSearch:
             # Create dataset entry with rich searchable content
             dataset = {
                 'id': row['dataset_id'],
+                'version_id': row['dataset_version_id'],
                 'title': title,
                 'description': " | ".join(description_parts),
                 'organism': organism or "Unknown", 
@@ -261,7 +262,7 @@ class CellxCensusSearch:
                 'collection_name': collection_name,
                 'dataset_title': dataset_title,
                 'citation': citation,
-                'url': f"https://datasets.cellxgene.cziscience.com/{row['dataset_id']}.h5ad",
+                'url': f"https://datasets.cellxgene.cziscience.com/{row['dataset_version_id']}.h5ad",
                 'similarity_score': 0.0  # Will be calculated later
             }
             
