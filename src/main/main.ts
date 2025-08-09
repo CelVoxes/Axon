@@ -1449,7 +1449,32 @@ export class AxonApp {
 					return new Promise((resolve) => {
 						let output = "";
 						let errorOutput = "";
-						let executionTimeoutId: NodeJS.Timeout;
+						let executionTimeoutId: NodeJS.Timeout | null = null;
+						// Allow configuring idle timeout via store or env; 0/undefined disables timeout
+						const storeIdleMs = store.get("executionIdleTimeoutMs") as any as
+							| number
+							| undefined;
+						const envIdleMs = process.env.EXECUTION_IDLE_TIMEOUT_MS
+							? parseInt(process.env.EXECUTION_IDLE_TIMEOUT_MS, 10)
+							: undefined;
+						const idleTimeoutMs =
+							Number.isFinite(storeIdleMs as any) && (storeIdleMs as any) > 0
+								? (storeIdleMs as number)
+								: Number.isFinite(envIdleMs as any) && (envIdleMs as any) > 0
+								? (envIdleMs as number)
+								: 0; // 0 means disabled
+
+						const resetExecutionTimeout = () => {
+							if (!idleTimeoutMs || idleTimeoutMs <= 0) return;
+							if (executionTimeoutId) clearTimeout(executionTimeoutId);
+							executionTimeoutId = setTimeout(() => {
+								console.log("Jupyter execution idle timeout");
+								try {
+									ws.close();
+								} catch (_) {}
+								resolve({ success: false, error: "Execution idle timeout" });
+							}, idleTimeoutMs);
+						};
 
 						// Add connection timeout
 						const connectionTimeout = setTimeout(() => {
@@ -1461,12 +1486,8 @@ export class AxonApp {
 							});
 						}, 10000);
 
-						// Set a timeout for the execution
-						executionTimeoutId = setTimeout(() => {
-							console.log("Jupyter execution timeout");
-							ws.close();
-							resolve({ success: false, error: "Execution timeout" });
-						}, 30000); // 30 second timeout
+						// Initialize idle timeout (will be refreshed on activity)
+						resetExecutionTimeout();
 
 						ws.on("open", () => {
 							console.log("Jupyter WebSocket connection opened.");
@@ -1499,7 +1520,7 @@ export class AxonApp {
 
 						ws.on("error", (error: any) => {
 							console.error("WebSocket error:", error);
-							clearTimeout(executionTimeoutId);
+							if (executionTimeoutId) clearTimeout(executionTimeoutId);
 							resolve({
 								success: false,
 								error: `WebSocket error: ${error.message}`,
@@ -1509,7 +1530,7 @@ export class AxonApp {
 						ws.on("close", (code: any, reason: any) => {
 							console.log(`WebSocket closed: ${code} - ${reason}`);
 							if (!output && !errorOutput) {
-								clearTimeout(executionTimeoutId);
+								if (executionTimeoutId) clearTimeout(executionTimeoutId);
 								resolve({
 									success: false,
 									error: `WebSocket closed unexpectedly: ${reason}`,
@@ -1531,6 +1552,8 @@ export class AxonApp {
 									timestamp: new Date().toISOString(),
 									type: "stream",
 								});
+								// Refresh idle timeout on activity
+								resetExecutionTimeout();
 							} else if (
 								msg.parent_header &&
 								msg.header.msg_type === "execute_reply"
@@ -1538,18 +1561,20 @@ export class AxonApp {
 								console.log(`Execute reply:`, msg.content);
 								if (msg.content.status === "ok") {
 									console.log(`Execution successful, output: ${output}`);
-									clearTimeout(executionTimeoutId);
+									if (executionTimeoutId) clearTimeout(executionTimeoutId);
 									resolve({ success: true, output });
 								} else {
 									errorOutput += msg.content.evalue;
 									console.log(`Execution failed, error: ${errorOutput}`);
-									clearTimeout(executionTimeoutId);
+									if (executionTimeoutId) clearTimeout(executionTimeoutId);
 									resolve({ success: false, error: errorOutput });
 								}
 								ws.close();
 							} else if (msg.parent_header && msg.header.msg_type === "error") {
 								errorOutput += msg.content.evalue;
 								console.log(`Execution error: ${msg.content.evalue}`);
+								// Refresh idle timeout on any kernel error message
+								resetExecutionTimeout();
 							}
 						});
 

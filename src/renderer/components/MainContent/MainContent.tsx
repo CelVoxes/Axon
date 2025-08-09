@@ -101,11 +101,38 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 				const result = await electronAPI.storeGet("recentWorkspaces");
 
 				if (result.success && result.data) {
-					const filtered = (result.data || [])
-						.filter((w: any) => typeof w === "string" && w.length > 0)
-						.slice(0, 3);
+					const raw: string[] = (result.data || []).filter(
+						(w: any) => typeof w === "string" && w.length > 0
+					);
 
-					setRecentWorkspaces(filtered);
+					// Deduplicate while preserving order
+					const unique: string[] = [];
+					for (const p of raw) {
+						if (!unique.includes(p)) unique.push(p);
+					}
+
+					// Validate paths exist; remove any that no longer exist
+					const existence = await Promise.all(
+						unique.map(async (p) => {
+							const res = await electronAPI.directoryExists(p);
+							return res.success && res.data === true;
+						})
+					);
+					const existing = unique.filter((_, idx) => existence[idx]);
+
+					const finalList = existing.slice(0, 3);
+					setRecentWorkspaces(finalList);
+
+					// Persist cleaned list if it changed
+					const changed =
+						JSON.stringify(finalList) !== JSON.stringify(raw.slice(0, 3));
+					if (changed) {
+						try {
+							await electronAPI.storeSet("recentWorkspaces", finalList);
+						} catch (err) {
+							console.warn("Failed to update recent workspaces store:", err);
+						}
+					}
 				} else if (!result.success) {
 					console.warn("Failed to load recent workspaces:", result.error);
 				}
@@ -237,6 +264,28 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 				return;
 			}
 		}
+
+		// Validate provided path exists; if not, prune from recents and abort
+		try {
+			const exists = await electronAPI.directoryExists(path);
+			if (!exists) {
+				// Remove stale entry from recentWorkspaces and persist
+				setRecentWorkspaces((prev: string[]) => {
+					const updated = prev.filter((w) => w !== path);
+					electronAPI
+						.storeSet("recentWorkspaces", updated)
+						.catch((err) =>
+							console.warn("Failed to persist cleaned recents:", err)
+						);
+					return updated;
+				});
+				console.warn("Selected workspace no longer exists:", path);
+				return;
+			}
+		} catch (e) {
+			console.warn("Failed to validate workspace path:", e);
+		}
+
 		workspaceDispatch({ type: "SET_WORKSPACE", payload: path });
 		// Persist as last opened workspace for auto-restore
 		try {

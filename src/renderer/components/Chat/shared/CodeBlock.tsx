@@ -1,4 +1,10 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, {
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState,
+	useCallback,
+} from "react";
 import { FiCopy, FiChevronDown, FiChevronUp } from "react-icons/fi";
 
 export interface CodeBlockProps {
@@ -40,7 +46,8 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 		const el = scrollContainerRef.current;
 		if (!el) return;
 		const onScroll = () => {
-			const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+			// Larger threshold to reduce oscillation near the bottom
+			const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
 			autoScrollRef.current = nearBottom;
 		};
 		el.addEventListener("scroll", onScroll);
@@ -48,12 +55,17 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 	}, []);
 
 	// Auto-scroll as content streams in
-	useEffect(() => {
+	useLayoutEffect(() => {
 		if (!isExpanded) return;
 		if (!isStreaming && !autoScrollRef.current) return;
 		const el = scrollContainerRef.current;
 		if (!el) return;
-		if (autoScrollRef.current) el.scrollTop = el.scrollHeight;
+		if (autoScrollRef.current) {
+			// Defer to next frame to avoid layout thrash
+			requestAnimationFrame(() => {
+				el.scrollTop = el.scrollHeight;
+			});
+		}
 	}, [code, isStreaming, isExpanded]);
 
 	const copyToClipboard = useCallback(async () => {
@@ -67,11 +79,13 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 		}
 	}, [code]);
 
-	const isLongCode = code.length > 1000;
-	const displayCode =
-		isLongCode && !showFullCode
-			? `${code.substring(0, 1000)}\n\n... (truncated)`
-			: code;
+	// Do not truncate while streaming to avoid contradicting live generation
+	const isLongCode = !isStreaming && code.length > 1000;
+	const displayCode = isStreaming
+		? code
+		: isLongCode && !showFullCode
+		? `${code.substring(0, 1000)}\n\n... (truncated)`
+		: code;
 
 	return (
 		<div className="expandable-code-block" style={{ margin: "12px 0" }}>
@@ -120,11 +134,19 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 				<div
 					className={`code-content ${isStreaming ? "streaming" : ""}`}
 					ref={scrollContainerRef}
+					style={{
+						// Prevent browser scroll anchoring jitter while content grows
+						// eslint-disable-next-line @typescript-eslint/no-explicit-any
+						...({ overflowAnchor: "none" } as any),
+						// Avoid min-height transitions causing bounce
+						transition: "none",
+						willChange: "scroll-position",
+					}}
 				>
-					<pre>
+					<pre style={{ margin: 0, padding: 0 }}>
 						<code className={`language-${language}`}>{displayCode}</code>
 					</pre>
-					{isLongCode && (
+					{isLongCode && !isStreaming && (
 						<div className="code-actions" style={{ padding: "8px 12px" }}>
 							<button
 								className="show-more-button"

@@ -165,14 +165,9 @@ export class CellExecutionService implements ICodeExecutor {
 				this.workspacePath
 			);
 
-			// Add timeout handling (30 seconds for code execution)
-			const timeoutPromise = new Promise<void>((_, reject) => {
-				setTimeout(() => {
-					reject(new Error("Code execution timeout after 30 seconds"));
-				}, 30000);
-			});
-
-			await Promise.race([executionPromise, timeoutPromise]);
+			// Await execution to complete. Timeout is managed in the main process via
+			// an optional idle-timeout that resets on streamed output.
+			await executionPromise;
 
 			if (hasError) {
 				console.log(
@@ -239,14 +234,15 @@ export class CellExecutionService implements ICodeExecutor {
 
 		// Don't retry timeout errors as they likely indicate problematic code
 		const timeoutErrors = [
-			"Execution timeout",
+			"idle timeout",
+			"execution timeout",
 			"timeout",
 			"TimeoutError",
 			"execution time exceeded",
 		];
 
 		const hasTimeoutError = timeoutErrors.some((errorType) =>
-			errorOutput.toLowerCase().includes(errorType.toLowerCase())
+			errorOutput.toLowerCase().includes(errorType)
 		);
 
 		if (hasTimeoutError) {

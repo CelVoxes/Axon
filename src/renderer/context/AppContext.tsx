@@ -115,6 +115,12 @@ function appReducer(state: AppState, action: AppAction): AppState {
 				openFiles: [],
 				activeFile: null,
 				fileTree: [],
+				// Clear chat-related state immediately on workspace switch; it will be
+				// restored (or stay empty) by the loader effect below.
+				messages: [],
+				currentMessage: "",
+				isStreaming: false,
+				analysisStatus: "",
 			};
 
 		case "SET_FILE_TREE":
@@ -266,7 +272,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 					dispatch({ type: "SET_CHAT_MESSAGES", payload: [] as any });
 				}
 			} catch (e) {
-				// noop
+				// On any error during restore, ensure we clear chat so previous
+				// workspace conversations do not linger visually.
+				dispatch({ type: "SET_CHAT_MESSAGES", payload: [] as any });
 			}
 		})();
 	}, [state.currentWorkspace]);
