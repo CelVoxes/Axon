@@ -838,30 +838,47 @@ export class AxonApp {
 				);
 			}
 
-			// Install Jupyter if not already installed
-			console.log("Installing Jupyter...");
-			await new Promise<void>((resolve, reject) => {
-				const installProcess = spawn(pipPath, [
-					"install",
-					"jupyter",
-					"notebook",
-					"ipykernel",
-				]);
-
-				installProcess.on("error", (error: Error) => {
-					console.error("Error installing Jupyter:", error);
-					reject(error);
+			// Install Jupyter only if missing to avoid repeated slow installs
+			const requiredPackages = ["jupyter", "notebook", "ipykernel"];
+			const isPkgInstalled = async (pkg: string): Promise<boolean> => {
+				return await new Promise<boolean>((resolve) => {
+					const p = spawn(pipPath, ["show", pkg], { stdio: "pipe" });
+					p.on("close", (code) => resolve(code === 0));
+					p.on("error", () => resolve(false));
 				});
+			};
+			const missingPkgs: string[] = [];
+			for (const pkg of requiredPackages) {
+				// eslint-disable-next-line no-await-in-loop
+				const installed = await isPkgInstalled(pkg);
+				if (!installed) missingPkgs.push(pkg);
+			}
+			if (missingPkgs.length > 0) {
+				console.log(`Installing Jupyter packages: ${missingPkgs.join(", ")}`);
+				await new Promise<void>((resolve, reject) => {
+					const installProcess = spawn(pipPath, ["install", ...missingPkgs]);
 
-				installProcess.on("close", (code) => {
-					if (code === 0) {
-						console.log("Jupyter installed successfully");
-						resolve();
-					} else {
-						reject(new Error(`Failed to install Jupyter, exit code: ${code}`));
-					}
+					installProcess.on("error", (error: Error) => {
+						console.error("Error installing Jupyter packages:", error);
+						reject(error);
+					});
+
+					installProcess.on("close", (code) => {
+						if (code === 0) {
+							console.log("Jupyter packages installed successfully");
+							resolve();
+						} else {
+							reject(
+								new Error(`Failed to install packages, exit code: ${code}`)
+							);
+						}
+					});
 				});
-			});
+			} else {
+				console.log(
+					"Skipping Jupyter install - required packages already present"
+				);
+			}
 
 			// Ensure a workspace-local kernelspec exists before starting the server
 			const kernelName = this.ensureWorkspaceKernelSpec(
@@ -909,27 +926,53 @@ export class AxonApp {
 				this.workspaceKernelMap.clear();
 			});
 
-			// Wait for Jupyter to start
+			// Wait for Jupyter to start (configurable timeout)
 			await new Promise<void>((resolve, reject) => {
+				const storeTimeout = store.get("jupyterStartupTimeoutMs") as any as
+					| number
+					| undefined;
+				const envTimeout = process.env.JUPYTER_STARTUP_TIMEOUT_MS
+					? parseInt(process.env.JUPYTER_STARTUP_TIMEOUT_MS, 10)
+					: undefined;
+				const startupTimeoutMs =
+					Number.isFinite(storeTimeout as any) && (storeTimeout as any) > 0
+						? (storeTimeout as number)
+						: Number.isFinite(envTimeout as any) && (envTimeout as any) > 0
+						? (envTimeout as number)
+						: 60000; // default 60s
+
 				const timeout = setTimeout(() => {
 					reject(new Error("Jupyter startup timeout"));
-				}, 30000);
+				}, startupTimeoutMs);
 
-				const checkInterval = setInterval(async () => {
+				const checkReady = async () => {
 					try {
-						const response = await fetch(
+						// Prefer status endpoint; fall back to sessions if status is unavailable
+						const statusResp = await fetch(
 							`http://127.0.0.1:${this.jupyterPort}/api/status`
 						);
-						if (response.ok) {
+						if (statusResp.ok) {
 							clearTimeout(timeout);
-							clearInterval(checkInterval);
-							console.log("Jupyter server is ready");
+							console.log("Jupyter server is ready (status)");
 							resolve();
+							return;
 						}
-					} catch (error) {
-						// Server not ready yet, continue waiting
-					}
-				}, 1000);
+					} catch (_) {}
+					try {
+						const sessionsResp = await fetch(
+							`http://127.0.0.1:${this.jupyterPort}/api/sessions`
+						);
+						if (sessionsResp.ok) {
+							clearTimeout(timeout);
+							console.log("Jupyter server is ready (sessions)");
+							resolve();
+							return;
+						}
+					} catch (_) {}
+					// Not ready yet; schedule another check
+					setTimeout(checkReady, 1000);
+				};
+				checkReady();
 			});
 
 			// Note the workspace the server is associated with and reset kernel cache
