@@ -250,6 +250,8 @@ class CellxCensusSearch:
             platform = self._infer_platform_from_metadata(citation, collection_name, dataset_title)
             
             # Create dataset entry with rich searchable content
+            generated_url = f"https://datasets.cellxgene.cziscience.com/{row['dataset_version_id']}.h5ad"
+            
             dataset = {
                 'id': row['dataset_id'],
                 'version_id': row['dataset_version_id'],
@@ -262,12 +264,12 @@ class CellxCensusSearch:
                 'collection_name': collection_name,
                 'dataset_title': dataset_title,
                 'citation': citation,
-                'url': f"https://datasets.cellxgene.cziscience.com/{row['dataset_version_id']}.h5ad",
+                'url': generated_url,
                 'similarity_score': 0.0  # Will be calculated later
             }
             
             datasets.append(dataset)
-        
+
         print(f"✅ Converted {len(datasets)} datasets with extracted keywords")
         return datasets
     

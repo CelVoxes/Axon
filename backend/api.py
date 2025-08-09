@@ -303,7 +303,7 @@ async def search_datasets_stream(request: SearchRequest):
 
 @app.post("/search/llm", response_model=LLMSearchResponse)
 async def llm_search_datasets(request: LLMSearchRequest):
-    """Find GEO datasets using LLM-generated search terms.
+    """Find CellxCensus datasets using LLM-generated search terms (primary).
     
     Args:
         request: Search parameters with LLM processing
@@ -312,7 +312,7 @@ async def llm_search_datasets(request: LLMSearchRequest):
         Search results with LLM-generated terms and search steps
     """
     try:
-        geo_client = get_geo_client()
+        cellx_client = get_cellxcensus_client()
         llm_service = get_llm_service()
         
         all_datasets = []
@@ -337,14 +337,14 @@ async def llm_search_datasets(request: LLMSearchRequest):
             # Try each LLM-generated term
             for term in llm_search_terms:
                 try:
-                    search_steps.append(f"Searching for: {term}")
-                    
-                    # Use GEO search for reliable results (CellxCensus is too slow)
-                    geo_client = get_geo_client()
-                    search_results = await geo_client.find_similar_datasets(
+                    search_steps.append(f"Searching CellxCensus for: {term}")
+
+                    # Use CellxCensus as primary source
+                    per_term_limit = max(1, request.limit // max(1, len(llm_search_terms)))
+                    search_results = await cellx_client.find_similar_datasets(
                         query=term,
-                        limit=request.limit // len(llm_search_terms),
-                        organism=request.organism
+                        limit=per_term_limit,
+                        organism=request.organism or SearchConfig.DEFAULT_ORGANISM
                     )
                     
                     if search_results:
@@ -390,9 +390,10 @@ async def llm_search_datasets(request: LLMSearchRequest):
                 title=dataset.get("title", ""),
                 description=dataset.get("description", ""),
                 organism=dataset.get("organism", "Unknown"),
-                sample_count=dataset.get("sample_count", "0"),
+                sample_count=str(dataset.get("sample_count", "0")),
                 platform=dataset.get("platform", "Unknown"),
-                similarity_score=dataset.get("similarity_score", 0.0)
+                similarity_score=dataset.get("similarity_score", 0.0),
+                source=dataset.get("source", "CellxCensus")
             ))
         
         return LLMSearchResponse(
@@ -1138,7 +1139,9 @@ async def search_cellxcensus_datasets_stream(request: SearchRequest):
                     "organism": dataset.get("organism", "Unknown"),
                     "sample_count": dataset.get("sample_count", "0"),
                     "platform": dataset.get("platform", "Unknown"),
-                    "similarity_score": dataset.get("similarity_score", 0.0)
+                    "similarity_score": dataset.get("similarity_score", 0.0),
+                    "source": dataset.get("source", "CellxCensus"),
+                    "url": dataset.get("url", "")
                 })
             
             yield f"data: {json.dumps({'type': 'results', 'datasets': results})}\n\n"

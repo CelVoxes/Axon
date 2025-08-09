@@ -1,5 +1,4 @@
 import { BackendClient } from "./BackendClient";
-import { CELLXCENSUS_DATASET_BASE } from "../utils/Constants";
 import { EventManager } from "../utils/EventManager";
 import {
 	CodeGenerationStartedEvent,
@@ -531,7 +530,7 @@ print("Step completed successfully!")
 	): string {
 		const datasetIds = datasets.map((d) => d.id).join(", ");
 
-		// Simplified: minimal download by dataset id (prefer provided URL; derive CellxCensus if missing)
+		// Simplified: minimal download by dataset id (use provided URL only; never derive)
 		let datasetLoadingCode = [
 			"from pathlib import Path",
 			"import requests",
@@ -539,15 +538,7 @@ print("Step completed successfully!")
 			"data_dir.mkdir(exist_ok=True)",
 			...datasets
 				.map((dataset) => {
-					const src: string | undefined = (dataset as any).source;
-					let url: string | undefined = (dataset as any).url;
-					if (
-						!url &&
-						(src === "CellxCensus" ||
-							(typeof dataset.id === "string" && dataset.id.includes("-")))
-					) {
-						url = `${CELLXCENSUS_DATASET_BASE}/${dataset.id}.h5ad`;
-					}
+					const url: string | undefined = (dataset as any).url;
 					if (!url) {
 						return `print("No URL for dataset: ${
 							dataset.title || dataset.id

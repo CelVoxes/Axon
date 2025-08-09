@@ -282,6 +282,7 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 
 	// Ensure datasets is always an array
 	const safeDatasets = Array.isArray(datasets) ? datasets : [];
+	
 
 	useEffect(() => {
 		if (isOpen && !wasOpen && safeDatasets.length > 0) {
@@ -425,7 +426,11 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 										<DatasetTitle>
 											{dataset.title || `Dataset ${dataset.id}`}
 										</DatasetTitle>
-										<DatasetId>{dataset.id}</DatasetId>
+										{dataset.similarity_score !== undefined && (
+									<DatasetId>
+										{(dataset.similarity_score * 100).toFixed(1)}% match
+									</DatasetId>
+								)}
 									</DatasetHeader>
 
 									<DatasetMeta>
@@ -509,8 +514,7 @@ export const DatasetSelectionModal: React.FC<DatasetSelectionModalProps> = ({
 													fontFamily: "monospace",
 												}}
 											>
-												📁 https://datasets.cellxgene.cziscience.com/
-												{dataset.id}.h5ad
+												📁 {dataset.url || 'URL not available'}
 											</div>
 										)}
 									</DatasetDescription>

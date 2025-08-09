@@ -1,5 +1,4 @@
 import { BackendClient } from "./BackendClient";
-import { CELLXCENSUS_DATASET_BASE } from "../utils/Constants";
 import {
 	Dataset,
 	AnalysisPlan,
@@ -467,17 +466,9 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		for (const d of datasets) {
 			const source = (d as any).source || "Unknown";
 			const providedUrl = (d as any).url || "";
-			// Derive CellxCensus URL only when url missing and id looks like UUID or source is CellxCensus
-			const shouldDerive =
-				!providedUrl &&
-				(source === "CellxCensus" ||
-					(typeof d.id === "string" && d.id.includes("-")));
-			const derivedUrl = shouldDerive
-				? `${CELLXCENSUS_DATASET_BASE}/${d.id}.h5ad`
-				: providedUrl;
 			const safeTitle = (d.title || d.id).replace(/"/g, '\\"');
 			lines.push(
-				`    {"id": "${d.id}", "title": "${safeTitle}", "source": "${source}", "url": "${derivedUrl}"},`
+				`    {"id": "${d.id}", "title": "${safeTitle}", "source": "${source}", "url": "${providedUrl}"},`
 			);
 		}
 		lines.push("]");

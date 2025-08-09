@@ -1,7 +1,6 @@
 import { BackendClient } from "./BackendClient";
 import { CellExecutionService } from "./CellExecutionService";
 import { CodeGenerationService } from "./CodeGenerationService";
-import { CELLXCENSUS_DATASET_BASE } from "../utils/Constants";
 
 export interface CodeQualityResult {
 	isValid: boolean;
@@ -355,19 +354,7 @@ print("Code placeholder - original code was empty or only contained markdown")`;
 		// Ensure critical imports based on code usage (Path, requests, urlparse, etc.)
 		cleanedCode = this.ensureCriticalImports(cleanedCode);
 
-		// If code defines a `datasets` list/dict without URLs, inject safe URL derivation
-		if (
-			/\bdatasets\s*=\s*\[/m.test(cleanedCode) ||
-			/\bdatasets\s*=\s*\{/m.test(cleanedCode)
-		) {
-			const derivationPrelude = `\n# --- Auto-derivation of dataset URLs when missing ---\ndef _axon_derive_url(rec):\n    try:\n        url = rec.get('url') if isinstance(rec, dict) else None\n        if url:\n            return url\n        idv = rec.get('id', '') if isinstance(rec, dict) else ''\n        src = (rec.get('source') or '').strip() if isinstance(rec, dict) else ''\n        # Derive CellxCensus by UUID-like id or explicit source\n        if src == 'CellxCensus' or ('-' in idv and len(idv) >= 8):\n            rec['url'] = f"${CELLXCENSUS_DATASET_BASE}/{idv}.h5ad"\n            rec['format'] = rec.get('format') or 'h5ad'\n            return rec['url']\n        # Derive GEO page links for GSE/GSM ids\n        if idv.startswith('GSE') or idv.startswith('GSM'):\n            rec['url'] = f"https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc={idv}"\n            rec['format'] = rec.get('format') or 'unknown'\n            return rec['url']\n    except Exception:\n        return None\n    return None\n\ntry:\n    _ds_iter = datasets if isinstance(datasets, (list, tuple)) else []\n    for _d in _ds_iter:\n        if isinstance(_d, dict):\n            _axon_derive_url(_d)\nexcept Exception:\n    pass\n# --- End auto-derivation ---\n`;
-			// Prefer inserting immediately after the datasets literal so derivation runs before usage
-			const inserted = this.insertAfterDatasetsDefinition(
-				cleanedCode,
-				derivationPrelude
-			);
-			cleanedCode = inserted;
-		}
+		// We no longer derive dataset URLs automatically; rely strictly on provided URLs from selection
 
 		// Add error handling if requested and missing
 		if (options.addErrorHandling && !this.hasErrorHandling(cleanedCode)) {
