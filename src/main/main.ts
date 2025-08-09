@@ -931,26 +931,60 @@ export class AxonApp {
 				const pythonPath = await this.findPythonPath();
 				const venvPath = path.join(workspacePath, "venv");
 
-				// Create virtual environment
+				// Create virtual environment with timeout and better error handling
+				console.log(`Creating virtual environment with Python: ${pythonPath}`);
+				console.log(`Target venv path: ${venvPath}`);
+				
 				const createVenvProcess = spawn(pythonPath, ["-m", "venv", venvPath], {
 					cwd: workspacePath,
 					stdio: "pipe",
 				});
 
+				// Add timeout for virtual environment creation
 				await new Promise<void>((resolve, reject) => {
+					let stdout = "";
+					let stderr = "";
+					
+					// Set timeout for the operation
+					const timeout = setTimeout(() => {
+						console.error("Virtual environment creation timed out after 60 seconds");
+						createVenvProcess.kill("SIGKILL");
+						reject(new Error("Virtual environment creation timed out"));
+					}, 60000); // 60 second timeout
+					
+					createVenvProcess.stdout?.on("data", (data) => {
+						stdout += data.toString();
+						console.log(`[venv stdout]: ${data.toString().trim()}`);
+					});
+					
+					createVenvProcess.stderr?.on("data", (data) => {
+						stderr += data.toString();
+						console.log(`[venv stderr]: ${data.toString().trim()}`);
+					});
+					
 					createVenvProcess.on("close", (code) => {
+						clearTimeout(timeout);
+						console.log(`Virtual environment creation completed with code: ${code}`);
+						
 						if (code === 0) {
 							console.log("Virtual environment created successfully");
 							resolve();
 						} else {
+							console.error(`venv stdout: ${stdout}`);
+							console.error(`venv stderr: ${stderr}`);
 							reject(
 								new Error(
-									`Failed to create virtual environment, exit code: ${code}`
+									`Failed to create virtual environment, exit code: ${code}. stderr: ${stderr}`
 								)
 							);
 						}
 					});
-					createVenvProcess.on("error", reject);
+					
+					createVenvProcess.on("error", (error) => {
+						clearTimeout(timeout);
+						console.error("Virtual environment creation process error:", error);
+						reject(error);
+					});
 				});
 
 				// Determine the pip path in the virtual environment
@@ -982,25 +1016,69 @@ export class AxonApp {
 					timestamp: new Date().toISOString(),
 				});
 
+				console.log(`Installing packages: ${basicPackages.join(", ")}`);
+				console.log(`Using pip at: ${pipPath}`);
+				
 				const installProcess = spawn(pipPath, ["install", ...basicPackages], {
 					cwd: workspacePath,
 					stdio: "pipe",
 				});
 
 				await new Promise<void>((resolve, reject) => {
+					let stdout = "";
+					let stderr = "";
+					
+					// Set timeout for package installation (longer since it involves downloading)
+					const timeout = setTimeout(() => {
+						console.error("Package installation timed out after 5 minutes");
+						installProcess.kill("SIGKILL");
+						reject(new Error("Package installation timed out"));
+					}, 300000); // 5 minute timeout
+					
+					installProcess.stdout?.on("data", (data) => {
+						const output = data.toString();
+						stdout += output;
+						console.log(`[pip stdout]: ${output.trim()}`);
+						
+						// Send progress updates for key installation events
+						if (output.includes("Downloading") || output.includes("Installing")) {
+							this.mainWindow?.webContents.send("virtual-env-status", {
+								status: "installing",
+								message: output.trim(),
+								timestamp: new Date().toISOString(),
+							});
+						}
+					});
+					
+					installProcess.stderr?.on("data", (data) => {
+						const output = data.toString();
+						stderr += output;
+						console.log(`[pip stderr]: ${output.trim()}`);
+					});
+					
 					installProcess.on("close", (code) => {
+						clearTimeout(timeout);
+						console.log(`Package installation completed with code: ${code}`);
+						
 						if (code === 0) {
 							console.log("Jupyter infrastructure installed successfully");
 							resolve();
 						} else {
+							console.error(`pip stdout: ${stdout}`);
+							console.error(`pip stderr: ${stderr}`);
 							reject(
 								new Error(
-									`Failed to install Jupyter infrastructure, exit code: ${code}`
+									`Failed to install Jupyter infrastructure, exit code: ${code}. stderr: ${stderr}`
 								)
 							);
 						}
 					});
-					installProcess.on("error", reject);
+					
+					installProcess.on("error", (error) => {
+						clearTimeout(timeout);
+						console.error("Package installation process error:", error);
+						reject(error);
+					});
 				});
 
 				// ipykernel is already included in basicPackages; avoid duplicate installation

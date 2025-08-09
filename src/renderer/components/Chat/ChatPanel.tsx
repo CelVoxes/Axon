@@ -10,6 +10,11 @@ import { DatasetSelectionModal } from "./DatasetSelectionModal";
 import { ChatMessage } from "./ChatMessage";
 import { FiMinimize2, FiMaximize2, FiSquare } from "react-icons/fi";
 import { CodeBlock } from "./shared/CodeBlock";
+import { Composer } from "./Composer";
+import { ProcessingIndicator } from "./Status/ProcessingIndicator";
+import { ValidationErrors } from "./Status/ValidationErrors";
+import { SearchProgress as SearchProgressView } from "./Status/SearchProgress";
+import { EnvironmentStatus } from "./Status/EnvironmentStatus";
 import { AutonomousAgent } from "../../services/AutonomousAgent";
 
 import {
@@ -1462,156 +1467,26 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					</div>
 				))}
 
-				{/* Processing indicator with animated dots */}
-				{isProcessing && (
-					<div className="processing-indicator">
-						<div className="processing-content">
-							<span className="processing-text">
-								{analysisState.analysisStatus ||
-									progressMessage ||
-									"Processing"}
-							</span>
-							<span className="loading-dots">
-								<span>.</span>
-								<span>.</span>
-								<span>.</span>
-							</span>
-						</div>
-					</div>
-				)}
+                {isProcessing && (
+                    <ProcessingIndicator
+                        text={
+                            analysisState.analysisStatus ||
+                            progressMessage ||
+                            "Processing"
+                        }
+                    />
+                )}
 
-				{/* Validation Errors Display */}
-				{validationErrors.length > 0 && (
-					<div className="validation-errors-indicator">
-						<div className="validation-errors-header">
-							<div className="validation-errors-title">
-								<span>Code Validation Errors</span>
-								<div className="error-dot"></div>
-							</div>
-						</div>
-						<div className="validation-errors-details">
-							{validationErrors.map((error, index) => (
-								<div key={index} className="validation-error-item">
-									<span className="error-number">{index + 1}.</span>
-									<span className="error-message">{error}</span>
-								</div>
-							))}
-						</div>
-					</div>
-				)}
+                <ValidationErrors errors={validationErrors} />
 
-				{/* Simple Search Progress Indicator */}
-				{searchProgress && (
-					<div
-						style={{
-							background: "#2d2d30",
-							border: "1px solid #3c3c3c",
-							borderRadius: "8px",
-							margin: "0",
-							padding: "12px",
-							color: "white",
-						}}
-					>
-						<div
-							style={{
-								display: "flex",
-								alignItems: "center",
-								justifyContent: "space-between",
-								marginBottom: "8px",
-							}}
-						>
-							<span style={{ fontWeight: "bold" }}>Search Progress</span>
-							<span style={{ color: "#007acc" }}>
-								{searchProgress.progress}%
-							</span>
-						</div>
+                <SearchProgressView progress={searchProgress} />
 
-						<div style={{ marginBottom: "8px" }}>
-							<strong>Step:</strong> {searchProgress.step || "Processing"}
-						</div>
-
-						<div style={{ marginBottom: "8px" }}>
-							<strong>Message:</strong> {searchProgress.message}
-						</div>
-
-						{searchProgress.currentTerm && (
-							<div style={{ marginBottom: "8px" }}>
-								<strong>Search Term:</strong> {searchProgress.currentTerm}
-							</div>
-						)}
-
-						{searchProgress.datasetsFound !== undefined && (
-							<div style={{ marginBottom: "8px" }}>
-								<strong>Datasets Found:</strong> {searchProgress.datasetsFound}
-							</div>
-						)}
-
-						<div
-							style={{
-								width: "100%",
-								height: "8px",
-								background: "#1e1e1e",
-								borderRadius: "4px",
-								overflow: "hidden",
-							}}
-						>
-							<div
-								style={{
-									width: `${searchProgress.progress}%`,
-									height: "100%",
-									background: "#007acc",
-									transition: "width 0.3s ease",
-								}}
-							></div>
-						</div>
-					</div>
-				)}
-
-				{/* Status display for analysis progress */}
-				{(virtualEnvStatus || isAutoExecuting) && (
-					<div className="status-display">
-						{/* Virtual Environment Status */}
-						{virtualEnvStatus && (
-							<div className="status-item virtual-env-status">
-								<div
-									className="status-header"
-									onClick={() => setShowVirtualEnvLog(!showVirtualEnvLog)}
-									style={{ cursor: "pointer" }}
-								>
-									<span>Virtual Environment</span>
-									<div className="pulse-dot"></div>
-									<span className="expand-arrow">
-										{showVirtualEnvLog ? "▼" : "▶"}
-									</span>
-								</div>
-								{showVirtualEnvLog && (
-									<div className="status-details">
-										<div className="status-log">
-											<div className="log-content">{virtualEnvStatus}</div>
-										</div>
-									</div>
-								)}
-							</div>
-						)}
-
-						{/* Auto-Execution Status */}
-						{isAutoExecuting && (
-							<div className="status-item auto-execution-status">
-								<div className="status-header">
-									<span>Auto-Execution Pipeline</span>
-									<div className="pulse-dot"></div>
-								</div>
-								<div className="status-details">
-									<div className="status-log">
-										<div className="log-content">
-											Executing analysis steps automatically...
-										</div>
-									</div>
-								</div>
-							</div>
-						)}
-					</div>
-				)}
+                <EnvironmentStatus
+                    virtualEnvStatus={virtualEnvStatus}
+                    showLog={showVirtualEnvLog}
+                    onToggleLog={() => setShowVirtualEnvLog(!showVirtualEnvLog)}
+                    isAutoExecuting={isAutoExecuting}
+                />
 
 				{/* Loading dots at the end of chat */}
 				{isProcessing && (
@@ -1625,39 +1500,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				<div ref={messagesEndRef} />
 			</div>
 
-			<div className="chat-input-container">
-				<textarea
-					value={inputValue}
-					onChange={handleTextareaChange}
-					onKeyPress={handleKeyPress}
-					placeholder="Plan, analyze, or ask me anything"
-					disabled={isLoading}
-					rows={2}
-				/>
-
-				<button
-					onClick={isProcessing ? handleStopProcessing : handleSendMessage}
-					disabled={!isProcessing && (!inputValue.trim() || isLoading)}
-					className={`send-button ${isProcessing ? "stop-mode" : ""}`}
-					title={isProcessing ? "Stop" : "Send"}
-				>
-					{isProcessing ? (
-						<FiSquare size={16} />
-					) : isLoading ? (
-						<div className="loading-dots">
-							<span>•</span>
-							<span>•</span>
-							<span>•</span>
-						</div>
-					) : (
-						<span
-							style={{ fontSize: "10px", fontWeight: "900", color: "#2d2d30" }}
-						>
-							▶
-						</span>
-					)}
-				</button>
-			</div>
+            <Composer
+                value={inputValue}
+                onChange={setInputValue}
+                onSend={handleSendMessage}
+                onStop={handleStopProcessing}
+                isProcessing={isProcessing}
+                isLoading={isLoading}
+            />
 
 			{/* Suggestion Buttons */}
 			{suggestionButtons.length > 0 && (
