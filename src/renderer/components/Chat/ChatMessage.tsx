@@ -1,9 +1,9 @@
 import React from "react";
 import styled, { keyframes } from "styled-components";
 import ReactMarkdown from "react-markdown";
-import { FiCopy, FiChevronDown, FiChevronUp } from "react-icons/fi";
 import { typography } from "../../styles/design-system";
 import { Message } from "../../context/AppContext";
+import { CodeBlock } from "./shared/CodeBlock";
 
 interface ChatMessageProps {
 	message: Message;
@@ -226,162 +226,7 @@ const formatTimestamp = (timestamp: Date): string => {
 	return timestamp.toLocaleDateString();
 };
 
-// Expandable Code Block Component for ReactMarkdown
-interface ExpandableCodeProps {
-	language?: string;
-	children?: React.ReactNode;
-	messageId: string;
-	blockIndex: number;
-	isStreaming?: boolean;
-	previousCodeBlocks?: string;
-}
-
-const ExpandableCodeBlock: React.FC<ExpandableCodeProps> = ({
-	language = "text",
-	children,
-	messageId,
-	blockIndex,
-	isStreaming = false,
-	previousCodeBlocks,
-}) => {
-	const [isExpanded, setIsExpanded] = React.useState(false);
-	const [copied, setCopied] = React.useState(false);
-	const containerRef = React.useRef<HTMLDivElement | null>(null);
-	const preRef = React.useRef<HTMLPreElement | null>(null);
-	const autoScrollRef = React.useRef(true);
-	const code = String(children || "").trim();
-	const blockId = `${messageId}-code-${blockIndex}`;
-
-	const copyToClipboard = async () => {
-		try {
-			await navigator.clipboard.writeText(code);
-			setCopied(true);
-			setTimeout(() => setCopied(false), 2000);
-		} catch (error) {
-			console.error("Failed to copy code:", error);
-		}
-	};
-
-	const isLongCode = code.length > 500;
-	const shouldAutoExpand =
-		code.length <= 200 || (isStreaming && code.length > 0);
-
-	React.useEffect(() => {
-		setIsExpanded(shouldAutoExpand);
-	}, [shouldAutoExpand, isStreaming, code.length]);
-
-	// Track user scroll on the scrolling container (code-content), not the <pre>
-	React.useEffect(() => {
-		const el = containerRef.current;
-		if (!el) return;
-		const onScroll = () => {
-			const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-			autoScrollRef.current = nearBottom;
-		};
-		el.addEventListener("scroll", onScroll);
-		return () => el.removeEventListener("scroll", onScroll);
-	}, []);
-
-	// Auto-scroll as content streams in (scroll the container with overflow)
-	React.useEffect(() => {
-		if (!isExpanded) return;
-		if (!isStreaming && !autoScrollRef.current) return;
-		const scroller = containerRef.current;
-		if (!scroller) return;
-		if (autoScrollRef.current) {
-			scroller.scrollTop = scroller.scrollHeight;
-		}
-	}, [code, isStreaming, isExpanded]);
-
-	return (
-		<div className="expandable-code-block" style={{ margin: "12px 0" }}>
-			<div
-				className="code-header"
-				onClick={() => setIsExpanded(!isExpanded)}
-				style={{ cursor: "pointer" }}
-			>
-				<div className="code-header-left">
-					<span className="code-title">Code</span>
-					<span className="code-language">
-						{language}
-						{isStreaming && (
-							<span style={{ color: "#0ea5e9", marginLeft: 4 }}>●</span>
-						)}
-						{previousCodeBlocks && previousCodeBlocks.length > 0 && (
-							<span
-								style={{ color: "#10b981", marginLeft: 4 }}
-								title={`References previous code blocks`}
-							>
-								🔗
-							</span>
-						)}
-					</span>
-					<span className="code-size-indicator">{code.length} chars</span>
-				</div>
-				<div className="code-header-right">
-					<button
-						className="copy-button"
-						onClick={(e) => {
-							e.stopPropagation();
-							copyToClipboard();
-						}}
-						title="Copy code"
-					>
-						<FiCopy size={14} />
-						{copied && <span style={{ marginLeft: 4, fontSize: 12 }}>✅</span>}
-					</button>
-					{isExpanded ? <FiChevronUp size={16} /> : <FiChevronDown size={16} />}
-				</div>
-			</div>
-			{isExpanded && (
-				<>
-					{previousCodeBlocks && previousCodeBlocks.length > 0 && (
-						<div
-							className="code-context"
-							style={{
-								background: "#2a2a2a",
-								borderBottom: "1px solid #333",
-								padding: "8px 12px",
-								fontSize: typography.xs,
-								color: "#888",
-								fontStyle: "italic",
-							}}
-						>
-							<span>📋 Context from previous code blocks available</span>
-						</div>
-					)}
-					<div className="code-content" ref={containerRef}>
-						<pre
-							ref={preRef}
-							style={{
-								margin: 0,
-								background: "#1e1e1e",
-								fontSize: typography.xs,
-								lineHeight: "1.4",
-								overflow: "auto",
-								fontFamily: "'Monaco', 'Menlo', 'Ubuntu Mono', monospace",
-								whiteSpace: "pre-wrap",
-								wordWrap: "break-word",
-							}}
-						>
-							<code
-								className={`language-${language}`}
-								style={{
-									background: "transparent",
-									color: "#e5e7eb",
-									fontSize: "inherit",
-									fontFamily: "inherit",
-								}}
-							>
-								{code}
-							</code>
-						</pre>
-					</div>
-				</>
-			)}
-		</div>
-	);
-};
+// Use shared CodeBlock in markdown code renderer
 
 export const ChatMessage: React.FC<ChatMessageProps> = ({
 	message,
@@ -584,27 +429,16 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 										return null;
 									}
 
-									// Use a stable index based on the current code block position in the content
-									const currentIndex = codeBlockCounter;
-
-									// Get context from previously generated code blocks
-									const previousCodeBlocks = Array.from(codeBlocks.entries())
-										.filter(([index]) => index < currentIndex)
-										.map(([index, code]) => `Code Block ${index + 1}:\n${code}`)
-										.join("\n\n");
-
+									// Use shared CodeBlock; auto-expansion behavior handled internally
 									return (
-										<ExpandableCodeBlock
+										<CodeBlock
+											code={String(children || "").trim()}
 											language={language}
-											messageId={message.id}
-											blockIndex={currentIndex}
+											title="Code"
 											isStreaming={
 												message.isStreaming || message.status === "pending"
 											}
-											previousCodeBlocks={previousCodeBlocks}
-										>
-											{children}
-										</ExpandableCodeBlock>
+										/>
 									);
 								},
 								pre: ({ children }) => {
