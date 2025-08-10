@@ -936,6 +936,8 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 								initialOutput={currentCellState.output}
 								language={cell.cell_type === "markdown" ? "markdown" : "python"}
 								workspacePath={workspacePath}
+								filePath={filePath}
+								cellIndex={index}
 								onExecute={(code, output) => {
 									updateCellCode(index, code);
 									updateCellOutput(index, output);

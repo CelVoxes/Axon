@@ -419,22 +419,33 @@ General requirements:
 				"🎯 CodeGenerationService: Error in streaming method:",
 				error
 			);
+			const message = error instanceof Error ? error.message : String(error);
 			console.error("🎯 Error details:", {
-				message: error instanceof Error ? error.message : String(error),
+				message,
 				stack: error instanceof Error ? error.stack : undefined,
 				stepDescription: request.stepDescription,
 			});
 
-			// Emit failure event
+			// Detect user cancellation and avoid fallback generation
+			const isAborted =
+				(error instanceof Error && error.name === "AbortError") ||
+				/abort|aborted|cancel/i.test(message);
+
+			// Emit failure or cancellation event
 			EventManager.dispatchEvent("code-generation-failed", {
 				stepId,
 				stepDescription: request.stepDescription,
-				error: error instanceof Error ? error.message : String(error),
+				error: isAborted ? "Cancelled by user" : message,
 				timestamp: Date.now(),
 			} as CodeGenerationFailedEvent);
 
 			// Clean up tracking
 			this.activeGenerations.delete(stepId);
+
+			if (isAborted) {
+				// Respect user stop; do not attempt fallback
+				return { code: "", success: false, error: "Cancelled" };
+			}
 
 			// Fallback to non-streaming method
 			console.log("🎯 Falling back to non-streaming method");

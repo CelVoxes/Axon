@@ -528,41 +528,42 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			Boolean((d as any).localPath)
 		);
 
+		// Minimal cell: load the first local dataset into variable `data`
 		lines.push("from pathlib import Path");
-		lines.push("import os");
-		lines.push("");
-		lines.push("print('Preparing local datasets...')");
-		lines.push("local_datasets = {}");
-		lines.push("");
-		for (const d of localDatasets as any[]) {
-			const safeTitle = (d.title || d.id).replace(/"/g, '\\"');
-			const safePath = (d.localPath || "")
-				.replace(/\\/g, "\\\\")
-				.replace(/"/g, '\\"');
-			const isDir = Boolean(d.isLocalDirectory);
-			lines.push(`# ${safeTitle}`);
-			lines.push(`_path = Path("${safePath}")`);
-			lines.push("exists = _path.exists()");
-			lines.push(
-				`print(f"- ${safeTitle}: {'directory' if ${isDir} else 'file'} -> {str(_path)} | exists: {exists}")`
-			);
-			if (isDir) {
-				// Heuristics for 10x-style data folders
-				lines.push("mtx = (_path / 'matrix.mtx').exists()");
-				lines.push(
-					"features = (_path / 'features.tsv').exists() or (_path / 'genes.tsv').exists()"
-				);
-				lines.push("barcodes = (_path / 'barcodes.tsv').exists()");
-				lines.push(
-					"print('  contains 10x markers:' , 'matrix.mtx' if mtx else '-', 'features/genes' if features else '-', 'barcodes.tsv' if barcodes else '-')"
-				);
-			}
-			lines.push(`local_datasets["${d.id}"] = str(_path)`);
-			lines.push("");
+		lines.push("data = None");
+		if (localDatasets.length === 0) {
+			lines.push("print('No local datasets selected')");
+			lines.push("# data remains None");
+			return lines.join("\n");
 		}
-		lines.push(
-			"print('Local dataset mapping prepared for later steps (variable: local_datasets)')"
-		);
+
+		const first = localDatasets[0] as any;
+		const firstPath = (first.localPath || "")
+			.replace(/\\/g, "\\\\")
+			.replace(/"/g, '\\"');
+
+		lines.push(`# Loading: ${(first.title || first.id).replace(/"/g, '\\"')}`);
+		lines.push(`_path = Path("${firstPath}")`);
+		lines.push("try:");
+		lines.push("    if _path.is_dir():");
+		lines.push("        import scanpy as sc");
+		lines.push("        data = sc.read_10x_mtx(str(_path))");
+		lines.push("    else:");
+		lines.push("        p = str(_path).lower()");
+		lines.push("        if p.endswith('.h5ad'):");
+		lines.push("            import anndata as ad");
+		lines.push("            data = ad.read_h5ad(str(_path))");
+		lines.push("        elif p.endswith('.csv'):");
+		lines.push("            import pandas as pd");
+		lines.push("            data = pd.read_csv(str(_path))");
+		lines.push("        elif p.endswith('.tsv') or p.endswith('.txt'):");
+		lines.push("            import pandas as pd");
+		lines.push("            data = pd.read_csv(str(_path), sep='\t')");
+		lines.push("        else:");
+		lines.push("            print(f'Unsupported format: {str(_path)}')");
+		lines.push("    print('Loaded local dataset into variable \"data\"')");
+		lines.push("except Exception as e:");
+		lines.push("    print(f'Error loading local dataset: {e}')");
 		lines.push("");
 		return lines.join("\n");
 	}
@@ -911,10 +912,19 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		workspaceDir: string
 	): Promise<boolean> {
 		try {
+			if (this.shouldStopAnalysis) {
+				this.updateStatus("Analysis cancelled");
+				return false;
+			}
 			// Step 1: Ensure environment is ready and executor workspace is correct
 			await this.ensureEnvironmentReady(workspaceDir);
 			this.workspacePath = workspaceDir;
 			this.codeExecutor.updateWorkspacePath(this.workspacePath);
+
+			if (this.shouldStopAnalysis) {
+				this.updateStatus("Analysis cancelled");
+				return false;
+			}
 
 			// Step 2: Generate, lint and add package installation code
 			const packageCode =
@@ -942,6 +952,11 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				);
 			}
 
+			if (this.shouldStopAnalysis) {
+				this.updateStatus("Analysis cancelled");
+				return false;
+			}
+
 			// Step 3: Data preparation
 			const remoteDatasets = datasets.filter(
 				(d: any) => Boolean((d as any).url) && !Boolean((d as any).localPath)
@@ -951,6 +966,11 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			);
 
 			// 3a) If there are any remote datasets with URLs, add deterministic download cell
+			if (this.shouldStopAnalysis) {
+				this.updateStatus("Analysis cancelled");
+				return false;
+			}
+
 			if (remoteDatasets.length > 0) {
 				const rawDataDownloadCode =
 					this.buildDeterministicDataDownloadCode(remoteDatasets);
@@ -1007,6 +1027,10 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 
 			// Step 4: Generate and add analysis step codes
 			for (let i = 0; i < analysisSteps.length; i++) {
+				if (this.shouldStopAnalysis) {
+					this.updateStatus("Analysis cancelled");
+					return false;
+				}
 				const step = analysisSteps[i];
 				const stepCode = await this.generateAndTestStepCode(
 					step,

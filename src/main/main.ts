@@ -1381,6 +1381,75 @@ export class AxonApp {
 			}
 		});
 
+		// Interrupt currently running execution on the active kernel for a workspace
+		ipcMain.handle(
+			"jupyter-interrupt",
+			async (_: any, workspacePath?: string) => {
+				try {
+					if (!this.jupyterProcess) {
+						return { success: false, error: "Jupyter is not running" };
+					}
+
+					const wsPath =
+						workspacePath || this.currentJupyterWorkspace || process.cwd();
+					let kernelId: string | undefined = undefined;
+
+					// Try to find kernelId from workspace map with normalized path
+					try {
+						const target = path.resolve(wsPath);
+						for (const [key, id] of this.workspaceKernelMap.entries()) {
+							if (path.resolve(key) === target) {
+								kernelId = id;
+								break;
+							}
+						}
+					} catch {}
+
+					// Fallback to any running kernel if specific mapping not found
+					if (!kernelId) {
+						try {
+							const listResponse = await fetch(
+								`http://127.0.0.1:${this.jupyterPort}/api/kernels`
+							);
+							const kernels: any[] = listResponse.ok
+								? await listResponse.json()
+								: [];
+							kernelId = kernels?.[0]?.id;
+						} catch {}
+					}
+
+					if (!kernelId) {
+						return { success: false, error: "No active kernel found" };
+					}
+
+					try {
+						const resp = await fetch(
+							`http://127.0.0.1:${this.jupyterPort}/api/kernels/${kernelId}/interrupt`,
+							{ method: "POST" }
+						);
+						if (!resp.ok) {
+							const text = await resp.text().catch(() => "");
+							return {
+								success: false,
+								error: `Interrupt failed: ${resp.status} ${text}`,
+							};
+						}
+						return { success: true };
+					} catch (e: any) {
+						return {
+							success: false,
+							error: e instanceof Error ? e.message : String(e),
+						};
+					}
+				} catch (error) {
+					return {
+						success: false,
+						error: error instanceof Error ? error.message : String(error),
+					};
+				}
+			}
+		);
+
 		ipcMain.handle(
 			"jupyter-execute",
 			async (_, code: string, workspacePath?: string) => {

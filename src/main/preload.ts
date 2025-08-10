@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	checkJupyterStatus: () => ipcRenderer.invoke("jupyter-status"),
 	executeJupyterCode: (code: string, workspacePath?: string) =>
 		ipcRenderer.invoke("jupyter-execute", code, workspacePath),
+	interruptJupyter: (workspacePath?: string) =>
+		ipcRenderer.invoke("jupyter-interrupt", workspacePath),
 	createVirtualEnv: (workspacePath: string) =>
 		ipcRenderer.invoke("create-virtual-env", workspacePath),
 	installPackages: (workspacePath: string, packages: string[]) =>
@@ -119,6 +121,9 @@ export interface ElectronAPI {
 		code: string,
 		workspacePath?: string
 	) => Promise<{ success: boolean; output?: string; error?: string }>;
+	interruptJupyter: (
+		workspacePath?: string
+	) => Promise<{ success: boolean; error?: string }>;
 	createVirtualEnv: (workspacePath: string) => Promise<{
 		success: boolean;
 		venvPath?: string;

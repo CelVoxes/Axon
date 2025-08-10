@@ -20,6 +20,7 @@ const log = Logger.createLogger("backendClient");
 export class BackendClient implements IBackendClient {
 	private baseUrl: string;
 	private onProgress?: (progress: SearchProgress) => void;
+	private abortControllers: Set<AbortController> = new Set();
 
 	constructor(baseUrl: string = "http://localhost:8000") {
 		this.baseUrl = baseUrl;
@@ -271,6 +272,8 @@ export class BackendClient implements IBackendClient {
 		onResults?: (datasets: GEODataset[]) => void,
 		onError?: (error: string) => void
 	): Promise<GEODataset[]> {
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
 		try {
 			const response = await fetch(
 				`${this.baseUrl}/cellxcensus/search/stream`,
@@ -284,6 +287,7 @@ export class BackendClient implements IBackendClient {
 						limit: query.limit || 50,
 						organism: query.organism,
 					}),
+					signal: controller.signal,
 				}
 			);
 
@@ -314,6 +318,8 @@ export class BackendClient implements IBackendClient {
 		} catch (error) {
 			console.error("BackendClient: Error in streaming search:", error);
 			throw error;
+		} finally {
+			this.abortControllers.delete(controller);
 		}
 	}
 
@@ -604,6 +610,8 @@ export class BackendClient implements IBackendClient {
 		console.log("🚀 BackendClient.generateCodeStream: Starting stream request");
 		console.log("🚀 Streaming endpoint:", `${this.baseUrl}/llm/code/stream`);
 
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
 		try {
 			const response = await fetch(`${this.baseUrl}/llm/code/stream`, {
 				method: "POST",
@@ -611,6 +619,7 @@ export class BackendClient implements IBackendClient {
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify(request),
+				signal: controller.signal,
 			});
 
 			const code = await readDataStream(response, onChunk);
@@ -629,6 +638,20 @@ export class BackendClient implements IBackendClient {
 				request: request,
 			});
 			throw error;
+		} finally {
+			this.abortControllers.delete(controller);
+		}
+	}
+
+	abortAllRequests(): void {
+		try {
+			this.abortControllers.forEach((c) => {
+				try {
+					c.abort();
+				} catch (_) {}
+			});
+		} finally {
+			this.abortControllers.clear();
 		}
 	}
 

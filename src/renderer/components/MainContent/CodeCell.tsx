@@ -12,6 +12,7 @@ import {
 	FiDownload,
 	FiEye,
 	FiEyeOff,
+	FiMessageSquare,
 } from "react-icons/fi";
 import { CellExecutionService } from "../../services/CellExecutionService";
 import { ActionButton } from "@components/shared/StyledComponents";
@@ -21,6 +22,7 @@ import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
 import hljs from "highlight.js";
 import { typography } from "../../styles/design-system";
+import { EventManager } from "../../utils/EventManager";
 
 const CellContainer = styled.div<{ $accentColor?: string }>`
 	margin: 16px 0;
@@ -305,6 +307,10 @@ interface CodeCellProps {
 	onExecute?: (code: string, output: string) => void;
 	onCodeChange?: (code: string) => void;
 	onDelete?: () => void;
+	/** Optional: backing file path for this cell (when editing a .ipynb) */
+	filePath?: string;
+	/** Optional: index of this cell within the notebook (when editing a .ipynb) */
+	cellIndex?: number;
 }
 
 export const CodeCell: React.FC<CodeCellProps> = ({
@@ -315,6 +321,8 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 	onExecute,
 	onCodeChange,
 	onDelete,
+	filePath,
+	cellIndex,
 }) => {
 	const [code, setCode] = useState(initialCode);
 	const [output, setOutput] = useState<string>(initialOutput);
@@ -322,6 +330,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 	const [hasError, setHasError] = useState(false);
 	const [copied, setCopied] = useState(false);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	const monacoEditorRef = useRef<any>(null);
 
 	// Initialize CellExecutionService
 	const cellExecutionService = useMemo(() => {
@@ -415,6 +424,46 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		}
 	};
 
+	const askChatToEditSelection = () => {
+		let selectedText = "";
+		if (language === "markdown") {
+			const el = textareaRef.current;
+			if (el) {
+				const start = el.selectionStart ?? 0;
+				const end = el.selectionEnd ?? 0;
+				selectedText = code.substring(
+					Math.min(start, end),
+					Math.max(start, end)
+				);
+			}
+		} else if (monacoEditorRef.current) {
+			try {
+				const editor = monacoEditorRef.current;
+				const selection = editor.getSelection && editor.getSelection();
+				if (selection && editor.getModel) {
+					const model = editor.getModel();
+					if (model && model.getValueInRange) {
+						selectedText = model.getValueInRange(selection) || "";
+					}
+				}
+			} catch (_) {
+				// ignore selection errors
+			}
+		}
+
+		// Fallback to entire code if no explicit selection
+		if (!selectedText || selectedText.trim().length === 0) {
+			selectedText = code;
+		}
+
+		EventManager.dispatchEvent("chat-edit-selection", {
+			filePath,
+			cellIndex,
+			selectedText,
+			language,
+		});
+	};
+
 	const clearOutput = () => {
 		setOutput("");
 		setHasError(false);
@@ -441,6 +490,13 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 							<ActionButton onClick={copyCode} $variant="secondary">
 								{copied ? <FiCheck size={12} /> : <FiCopy size={12} />}
 								{copied ? "Copied" : "Copy"}
+							</ActionButton>
+							<ActionButton
+								onClick={askChatToEditSelection}
+								$variant="secondary"
+							>
+								<FiMessageSquare size={12} />
+								Ask Chat
 							</ActionButton>
 							<ActionButton
 								onClick={executeCode}
@@ -499,6 +555,9 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 							onChange={handleEditorChange}
 							language={language === "python" ? "python" : "plaintext"}
 							theme="vs-dark"
+							onMount={(editor) => {
+								monacoEditorRef.current = editor;
+							}}
 							options={{
 								fontSize: 13,
 								minimap: { enabled: false },

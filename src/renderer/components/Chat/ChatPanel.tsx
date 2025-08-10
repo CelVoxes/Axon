@@ -29,7 +29,7 @@ import {
 	DataTypeSuggestions,
 } from "../../services/AnalysisOrchestrationService";
 import { ExamplesComponent } from "./AnalysisSuggestionsComponent";
-import { EventManager } from "../../utils/EventManager";
+// EventManager already imported above; avoid duplicate imports
 import { AsyncUtils } from "../../utils/AsyncUtils";
 import {
 	CodeGenerationStartedEvent,
@@ -39,6 +39,7 @@ import {
 	CodeValidationErrorEvent,
 	Dataset,
 } from "../../services/types";
+import { EventManager } from "../../utils/EventManager";
 
 // Removed duplicated local code rendering. Use shared CodeBlock instead.
 
@@ -132,6 +133,27 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [workspaceMentionItems, setWorkspaceMentionItems] = useState<any[]>([]);
 	const [activeLocalIndex, setActiveLocalIndex] = useState<number>(-1);
 	const [activeWorkspaceIndex, setActiveWorkspaceIndex] = useState<number>(-1);
+
+	// Prefill composer when user triggers chat-edit-selection from an editor
+	useEffect(() => {
+		const cleanup = EventManager.createManagedListener(
+			"chat-edit-selection",
+			(event) => {
+				const detail = event.detail || {};
+				const snippet: string = String(detail.selectedText || "");
+				const lang: string = String(detail.language || "python");
+				const prefix = `Please edit the selected ${lang} code.\n`;
+				const fenced = "\n```" + lang + "\n" + snippet + "\n```\n";
+				setInputValue(prefix + fenced);
+				// Ensure chat opens and is focused
+				if (!uiState.showChatPanel || uiState.chatCollapsed) {
+					uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
+					uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
+				}
+			}
+		);
+		return cleanup;
+	}, [uiDispatch, uiState.showChatPanel, uiState.chatCollapsed]);
 
 	// Initialize local dataset registry
 	useEffect(() => {
@@ -1576,6 +1598,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	// Intent detection moved to useChatIntent hook
 
 	const handleStopProcessing = () => {
+		try {
+			// Abort any in-flight backend streams (dataset search, code generation)
+			backendClient && (backendClient as any).abortAllRequests?.();
+		} catch {}
+
+		try {
+			// Signal agent to stop further steps
+			agentInstance?.stopAnalysis?.();
+		} catch {}
+
+		try {
+			// Interrupt any running Jupyter cell execution for the current workspace
+			const ws = workspaceState.currentWorkspace;
+			if (ws) {
+				// fire and forget
+				void electronAPI.interruptJupyter(ws);
+			}
+		} catch {}
+
 		setIsLoading(false);
 		setIsProcessing(false);
 		setProgressMessage("");

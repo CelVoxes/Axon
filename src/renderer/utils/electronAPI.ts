@@ -151,9 +151,7 @@ export const electronAPI = {
 	/**
 	 * Safely get file info (size, timestamps, isDirectory)
 	 */
-	async getFileInfo(
-		filePath: string
-	): Promise<{
+	async getFileInfo(filePath: string): Promise<{
 		success: boolean;
 		data?: {
 			size: number;
@@ -212,5 +210,14 @@ export const electronAPI = {
 		workspacePath?: string
 	): Promise<{ success: boolean; data?: any; error?: string }> {
 		return safeElectronAPICall<any>("executeJupyterCode", code, workspacePath);
+	},
+
+	/**
+	 * Safely interrupt currently running Jupyter cell (if any)
+	 */
+	async interruptJupyter(
+		workspacePath?: string
+	): Promise<{ success: boolean; error?: string }> {
+		return safeElectronAPICall<any>("interruptJupyter", workspacePath);
 	},
 };
