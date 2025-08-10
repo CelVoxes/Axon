@@ -34,7 +34,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 	const autoScrollRef = useRef(true);
 	const codeRef = useRef<HTMLElement | null>(null);
 
-// Full build of highlight.js includes common languages; no manual registration needed
+	// Full build of highlight.js includes common languages; no manual registration needed
 
 	// Auto-expand when streaming starts
 	useEffect(() => {
@@ -78,6 +78,8 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 		if (isStreaming) return;
 		if (codeRef.current) {
 			try {
+				// If this element was highlighted before, remove the marker so we can re-highlight cleanly
+				codeRef.current.removeAttribute("data-highlighted");
 				hljs.highlightElement(codeRef.current);
 			} catch (e) {
 				// eslint-disable-next-line no-console

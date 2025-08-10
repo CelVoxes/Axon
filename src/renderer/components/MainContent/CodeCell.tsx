@@ -65,21 +65,21 @@ const CellActions = styled.div`
 // Using shared ActionButton component
 
 const CodeInput = styled.textarea`
-  width: 100%;
-  min-height: 120px;
-  background: #1e1e1e;
-  border: none;
-  color: #d4d4d4;
-  font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
-  font-size: ${typography.sm};
-  line-height: 1.4;
-  padding: 16px;
-  resize: vertical;
-  outline: none;
+	width: 100%;
+	min-height: 120px;
+	background: #1e1e1e;
+	border: none;
+	color: #d4d4d4;
+	font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+	font-size: ${typography.sm};
+	line-height: 1.4;
+	padding: 16px;
+	resize: vertical;
+	outline: none;
 
-  &::placeholder {
-    color: #858585;
-  }
+	&::placeholder {
+		color: #858585;
+	}
 `;
 
 const OutputContainer = styled.div`
@@ -328,7 +328,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		return workspacePath ? new CellExecutionService(workspacePath) : null;
 	}, [workspacePath]);
 
-  // Using full highlight.js build; no manual registration needed
+	// Using full highlight.js build; no manual registration needed
 
 	// Accent color based on content
 	const accentColor = useMemo(() => {
@@ -344,7 +344,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		return "#404040";
 	}, [code, output, hasError, language]);
 
-  const executeCode = async () => {
+	const executeCode = async () => {
 		if (!code.trim() || language === "markdown" || !cellExecutionService)
 			return;
 
@@ -392,18 +392,18 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		}
 	};
 
-  const handleCodeChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    // Normalize CRLF to LF so markdown newlines render consistently
-    const newCode = e.target.value.replace(/\r\n/g, "\n");
-    setCode(newCode);
-    onCodeChange?.(newCode);
-  };
+	const handleCodeChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+		// Normalize CRLF to LF so markdown newlines render consistently
+		const newCode = e.target.value.replace(/\r\n/g, "\n");
+		setCode(newCode);
+		onCodeChange?.(newCode);
+	};
 
-  const handleEditorChange = (value?: string) => {
-    const normalized = (value ?? "").replace(/\r\n/g, "\n");
-    setCode(normalized);
-    onCodeChange?.(normalized);
-  };
+	const handleEditorChange = (value?: string) => {
+		const normalized = (value ?? "").replace(/\r\n/g, "\n");
+		setCode(normalized);
+		onCodeChange?.(normalized);
+	};
 
 	const copyCode = async () => {
 		try {
@@ -481,35 +481,35 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 							</OutputActions>
 						</OutputHeader>
 						<RichTextOutput>
-                    <ReactMarkdown
-                                remarkPlugins={[remarkGfm]}
-                                rehypePlugins={[rehypeHighlight as unknown as never]}
-                            >
+							<ReactMarkdown
+								remarkPlugins={[remarkGfm]}
+								rehypePlugins={[rehypeHighlight as unknown as never]}
+							>
 								{code || ""}
 							</ReactMarkdown>
 						</RichTextOutput>
 					</OutputContainer>
 				</>
-      ) : (
+			) : (
 				<>
-          <div style={{ borderTop: "1px solid #404040" }}>
-            <Editor
-              height="260px"
-              value={code}
-              onChange={handleEditorChange}
-              language={language === "python" ? "python" : "plaintext"}
-              theme="vs-dark"
-              options={{
-                fontSize: 13,
-                minimap: { enabled: false },
-                scrollBeyondLastLine: false,
-                wordWrap: "on",
-                automaticLayout: true,
-                tabSize: 4,
-                renderWhitespace: "selection",
-              }}
-            />
-          </div>
+					<div style={{ borderTop: "1px solid #404040" }}>
+						<Editor
+							height="260px"
+							value={code}
+							onChange={handleEditorChange}
+							language={language === "python" ? "python" : "plaintext"}
+							theme="vs-dark"
+							options={{
+								fontSize: 13,
+								minimap: { enabled: false },
+								scrollBeyondLastLine: false,
+								wordWrap: "on",
+								automaticLayout: true,
+								tabSize: 4,
+								renderWhitespace: "selection",
+							}}
+						/>
+					</div>
 					{output && <OutputRenderer output={output} hasError={hasError} />}
 				</>
 			)}
@@ -654,6 +654,8 @@ const OutputRenderer: React.FC<{ output: string; hasError: boolean }> = ({
 		if (!showRaw) return;
 		if (!outputRef.current) return;
 		try {
+			// Remove previous highlight marker so re-highlighting doesn't warn
+			outputRef.current.removeAttribute("data-highlighted");
 			hljs.highlightElement(outputRef.current);
 		} catch (e) {
 			// eslint-disable-next-line no-console

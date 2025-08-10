@@ -961,28 +961,6 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 						</React.Fragment>
 					);
 				})}
-
-				{/* Add cell buttons at the bottom */}
-				<div
-					style={{
-						marginTop: "16px",
-						display: "flex",
-						gap: "8px",
-						justifyContent: "center",
-					}}
-				>
-					<ActionButton onClick={() => addCell("code")} $variant="primary">
-						<FiPlus size={12} />
-						Add Code Cell
-					</ActionButton>
-					<ActionButton
-						onClick={() => addCell("markdown")}
-						$variant="secondary"
-					>
-						<FiPlus size={12} />
-						Add Markdown Cell
-					</ActionButton>
-				</div>
 			</NotebookContainer>
 		);
 	};

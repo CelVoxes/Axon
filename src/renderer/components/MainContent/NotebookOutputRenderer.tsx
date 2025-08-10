@@ -386,7 +386,7 @@ export const NotebookOutputRenderer: React.FC<NotebookOutputRendererProps> = ({
 }) => {
 	const codeRef = useRef<HTMLElement | null>(null);
 
-  // Using full highlight.js build; no manual registration needed
+	// Using full highlight.js build; no manual registration needed
 
 	const [isCollapsed, setIsCollapsed] = useState(false);
 	const [showRaw, setShowRaw] = useState(true);
@@ -402,6 +402,8 @@ export const NotebookOutputRenderer: React.FC<NotebookOutputRendererProps> = ({
 		if (!showRaw) return;
 		if (!codeRef.current) return;
 		try {
+			// Clear previous highlight marker to avoid re-highlight warnings
+			codeRef.current.removeAttribute("data-highlighted");
 			hljs.highlightElement(codeRef.current);
 		} catch (e) {
 			// eslint-disable-next-line no-console
@@ -861,10 +863,10 @@ const renderChart = (data: string) => {
 const renderMarkdown = (data: string) => {
 	return (
 		<RichTextOutput>
-            <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeHighlight as unknown as never]}
-            >
+			<ReactMarkdown
+				remarkPlugins={[remarkGfm]}
+				rehypePlugins={[rehypeHighlight as unknown as never]}
+			>
 				{data}
 			</ReactMarkdown>
 		</RichTextOutput>
