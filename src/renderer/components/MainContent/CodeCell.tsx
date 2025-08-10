@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from "react";
+import Editor from "@monaco-editor/react";
 import styled from "styled-components";
 import {
 	FiPlay,
@@ -18,6 +19,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
+import hljs from "highlight.js";
 import { typography } from "../../styles/design-system";
 
 const CellContainer = styled.div<{ $accentColor?: string }>`
@@ -63,21 +65,21 @@ const CellActions = styled.div`
 // Using shared ActionButton component
 
 const CodeInput = styled.textarea`
-	width: 100%;
-	min-height: 120px;
-	background: #1e1e1e;
-	border: none;
-	color: #d4d4d4;
-	font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
-	font-size: ${typography.sm};
-	line-height: 1.4;
-	padding: 16px;
-	resize: vertical;
-	outline: none;
+  width: 100%;
+  min-height: 120px;
+  background: #1e1e1e;
+  border: none;
+  color: #d4d4d4;
+  font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+  font-size: ${typography.sm};
+  line-height: 1.4;
+  padding: 16px;
+  resize: vertical;
+  outline: none;
 
-	&::placeholder {
-		color: #858585;
-	}
+  &::placeholder {
+    color: #858585;
+  }
 `;
 
 const OutputContainer = styled.div`
@@ -114,6 +116,10 @@ const OutputContent = styled.div`
 	font-size: ${typography.base};
 	line-height: 1.4;
 	color: #d4d4d4;
+	pre code {
+		font-family: inherit;
+		font-size: ${typography.sm};
+	}
 `;
 
 const ErrorOutput = styled(OutputContent)`
@@ -322,6 +328,8 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		return workspacePath ? new CellExecutionService(workspacePath) : null;
 	}, [workspacePath]);
 
+  // Using full highlight.js build; no manual registration needed
+
 	// Accent color based on content
 	const accentColor = useMemo(() => {
 		if (hasError || /traceback|error|exception/i.test(output)) return "#ff6b6b";
@@ -336,7 +344,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		return "#404040";
 	}, [code, output, hasError, language]);
 
-	const executeCode = async () => {
+  const executeCode = async () => {
 		if (!code.trim() || language === "markdown" || !cellExecutionService)
 			return;
 
@@ -384,12 +392,18 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		}
 	};
 
-	const handleCodeChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-		// Normalize CRLF to LF so markdown newlines render consistently
-		const newCode = e.target.value.replace(/\r\n/g, "\n");
-		setCode(newCode);
-		onCodeChange?.(newCode);
-	};
+  const handleCodeChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    // Normalize CRLF to LF so markdown newlines render consistently
+    const newCode = e.target.value.replace(/\r\n/g, "\n");
+    setCode(newCode);
+    onCodeChange?.(newCode);
+  };
+
+  const handleEditorChange = (value?: string) => {
+    const normalized = (value ?? "").replace(/\r\n/g, "\n");
+    setCode(normalized);
+    onCodeChange?.(normalized);
+  };
 
 	const copyCode = async () => {
 		try {
@@ -467,23 +481,35 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 							</OutputActions>
 						</OutputHeader>
 						<RichTextOutput>
-							<ReactMarkdown
-								remarkPlugins={[remarkGfm]}
-								rehypePlugins={[rehypeHighlight]}
-							>
+                    <ReactMarkdown
+                                remarkPlugins={[remarkGfm]}
+                                rehypePlugins={[rehypeHighlight as unknown as never]}
+                            >
 								{code || ""}
 							</ReactMarkdown>
 						</RichTextOutput>
 					</OutputContainer>
 				</>
-			) : (
+      ) : (
 				<>
-					<CodeInput
-						ref={textareaRef}
-						value={code}
-						onChange={handleCodeChange}
-						placeholder={`Enter your ${language} code here...`}
-					/>
+          <div style={{ borderTop: "1px solid #404040" }}>
+            <Editor
+              height="260px"
+              value={code}
+              onChange={handleEditorChange}
+              language={language === "python" ? "python" : "plaintext"}
+              theme="vs-dark"
+              options={{
+                fontSize: 13,
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+                wordWrap: "on",
+                automaticLayout: true,
+                tabSize: 4,
+                renderWhitespace: "selection",
+              }}
+            />
+          </div>
 					{output && <OutputRenderer output={output} hasError={hasError} />}
 				</>
 			)}
@@ -621,6 +647,20 @@ const OutputRenderer: React.FC<{ output: string; hasError: boolean }> = ({
 		URL.revokeObjectURL(url);
 	};
 
+	const outputRef = useRef<HTMLElement | null>(null);
+
+	// Highlight raw output when visible
+	useEffect(() => {
+		if (!showRaw) return;
+		if (!outputRef.current) return;
+		try {
+			hljs.highlightElement(outputRef.current);
+		} catch (e) {
+			// eslint-disable-next-line no-console
+			console.error("Highlight.js error:", e);
+		}
+	}, [showRaw, output, parsed]);
+
 	if (hasError) {
 		return (
 			<ErrorOutput>
@@ -629,7 +669,14 @@ const OutputRenderer: React.FC<{ output: string; hasError: boolean }> = ({
 					<StatItem>{outputLength} characters</StatItem>
 					<StatItem>{lineCount} lines</StatItem>
 				</OutputStats>
-				<pre>{output}</pre>
+				<pre>
+					<code
+						ref={outputRef as unknown as React.RefObject<HTMLElement>}
+						className="language-python"
+					>
+						{output}
+					</code>
+				</pre>
 			</ErrorOutput>
 		);
 	}
@@ -685,21 +732,28 @@ const OutputRenderer: React.FC<{ output: string; hasError: boolean }> = ({
 
 			<CollapsibleOutput $isCollapsed={isCollapsed && !showRaw}>
 				{showRaw ? (
-					<pre>{output}</pre>
+					<pre>
+						<code
+							ref={outputRef as unknown as React.RefObject<HTMLElement>}
+							className={
+								parsed.type === "json" ? "language-json" : "language-python"
+							}
+						>
+							{parsed.type === "json"
+								? JSON.stringify(parsed.data, null, 2)
+								: output}
+						</code>
+					</pre>
 				) : (
 					<>
 						{parsed.type === "dataframe" && renderDataFrame(parsed.data)}
 						{parsed.type === "image" && renderImage(parsed.data)}
 						{parsed.type === "markdown" && renderMarkdown(parsed.data)}
 						{parsed.type === "json" && (
-							<pre
-								style={{
-									background: "#1e1e1e",
-									padding: "12px",
-									borderRadius: "6px",
-								}}
-							>
-								{JSON.stringify(parsed.data, null, 2)}
+							<pre>
+								<code className="language-json">
+									{JSON.stringify(parsed.data, null, 2)}
+								</code>
 							</pre>
 						)}
 						{parsed.type === "text" && <pre>{parsed.data}</pre>}

@@ -201,6 +201,7 @@ textarea:focus {
 	gap: 12px;
 	min-height: 0; /* Important for flex child scrolling */
 	max-width: 100%;
+	padding-bottom: 120px; /* keep composer visible under mention menu */
 }
 
 .welcome-message {
@@ -1357,7 +1358,7 @@ textarea:focus {
 	overflow-x: auto;
 	min-height: 60px; /* Prevent layout shifts during streaming */
 	/* Remove min-height transition to prevent scroll jitter */
-	transition: none;
+	transition: background-color 0.2s ease, border-color 0.2s ease;
 	/* Disable scroll anchoring to avoid bouncing */
 	overflow-anchor: none;
 }

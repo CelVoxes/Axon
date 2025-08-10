@@ -7,6 +7,14 @@ export interface ElectronAPI {
 		dirPath: string
 	) => Promise<Array<{ name: string; isDirectory: boolean; path: string }>>;
 	openFile: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+	getFileInfo: (
+		filePath: string
+	) => Promise<{
+		size: number;
+		created: string | Date;
+		modified: string | Date;
+		isDirectory: boolean;
+	}>;
 	deleteFile: (
 		filePath: string
 	) => Promise<{ success: boolean; error?: string }>;

@@ -1,8 +1,9 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
+import hljs from "highlight.js";
 import styled from "styled-components";
 import {
 	FiCopy,
@@ -383,6 +384,10 @@ export const NotebookOutputRenderer: React.FC<NotebookOutputRendererProps> = ({
 	hasError = false,
 	outputType,
 }) => {
+	const codeRef = useRef<HTMLElement | null>(null);
+
+  // Using full highlight.js build; no manual registration needed
+
 	const [isCollapsed, setIsCollapsed] = useState(false);
 	const [showRaw, setShowRaw] = useState(true);
 	const [isFullscreen, setIsFullscreen] = useState(false);
@@ -391,6 +396,18 @@ export const NotebookOutputRenderer: React.FC<NotebookOutputRendererProps> = ({
 		() => parseOutput(output, outputType),
 		[output, outputType]
 	);
+
+	// Apply highlighting when showing raw code
+	useEffect(() => {
+		if (!showRaw) return;
+		if (!codeRef.current) return;
+		try {
+			hljs.highlightElement(codeRef.current);
+		} catch (e) {
+			// eslint-disable-next-line no-console
+			console.error("Highlight.js error:", e);
+		}
+	}, [showRaw, output]);
 	const outputLength = output.length;
 	const lineCount = output.split("\n").length;
 
@@ -421,7 +438,28 @@ export const NotebookOutputRenderer: React.FC<NotebookOutputRendererProps> = ({
 
 	const renderContent = () => {
 		if (showRaw) {
-			return <CodeBlock>{output}</CodeBlock>;
+			// Try to infer language for nicer highlighting
+			const inferredLanguage = (() => {
+				if (parsed.type === "json") return "json";
+				if (parsed.type === "markdown") return undefined;
+				if (/^\s*\{[\s\S]*\}\s*$/.test(output)) return "json";
+				return "python"; // default guess for notebook context
+			})();
+
+			return (
+				<CodeBlock>
+					<code
+						ref={codeRef as unknown as React.RefObject<HTMLElement>}
+						className={
+							inferredLanguage ? `language-${inferredLanguage}` : undefined
+						}
+					>
+						{parsed.type === "json"
+							? JSON.stringify(parsed.data, null, 2)
+							: output}
+					</code>
+				</CodeBlock>
+			);
 		}
 
 		switch (parsed.type) {
@@ -823,10 +861,10 @@ const renderChart = (data: string) => {
 const renderMarkdown = (data: string) => {
 	return (
 		<RichTextOutput>
-			<ReactMarkdown
-				remarkPlugins={[remarkGfm]}
-				rehypePlugins={[rehypeHighlight]}
-			>
+            <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeHighlight as unknown as never]}
+            >
 				{data}
 			</ReactMarkdown>
 		</RichTextOutput>

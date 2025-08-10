@@ -12,11 +12,17 @@ import { ChatMessage } from "./ChatMessage";
 import { FiMinimize2, FiMaximize2 } from "react-icons/fi";
 import { CodeBlock } from "./shared/CodeBlock";
 import { Composer } from "./Composer";
+import { MentionSuggestions } from "./MentionSuggestions";
 import { ProcessingIndicator } from "./Status/ProcessingIndicator";
 import { ValidationErrors } from "./Status/ValidationErrors";
 import { SearchProgress as SearchProgressView } from "./Status/SearchProgress";
 import { EnvironmentStatus } from "./Status/EnvironmentStatus";
 import { AutonomousAgent } from "../../services/AutonomousAgent";
+import {
+	LocalDatasetRegistry,
+	LocalDatasetEntry,
+} from "../../services/LocalDatasetRegistry";
+import { electronAPI } from "../../utils/electronAPI";
 
 import {
 	AnalysisOrchestrationService,
@@ -72,6 +78,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [selectedDatasets, setSelectedDatasets] = useState<any[]>([]);
 	const [currentSuggestions, setCurrentSuggestions] =
 		useState<DataTypeSuggestions | null>(null);
+	const localRegistryRef = useRef<LocalDatasetRegistry | null>(null);
 
 	// Global code context to track all generated code across the conversation
 	const [globalCodeContext, setGlobalCodeContext] = useState<
@@ -120,6 +127,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const chatContainerRef = useRef<HTMLDivElement>(null);
 	const chatAutoScrollRef = useRef<boolean>(true);
+	const [mentionOpen, setMentionOpen] = useState(false);
+	const [mentionQuery, setMentionQuery] = useState("");
+	const [workspaceMentionItems, setWorkspaceMentionItems] = useState<any[]>([]);
+	const [activeLocalIndex, setActiveLocalIndex] = useState<number>(-1);
+	const [activeWorkspaceIndex, setActiveWorkspaceIndex] = useState<number>(-1);
+
+	// Initialize local dataset registry
+	useEffect(() => {
+		const registry = new LocalDatasetRegistry();
+		localRegistryRef.current = registry;
+		registry
+			.load()
+			.catch((e) => console.warn("Failed to load local dataset registry", e));
+	}, []);
 
 	// Track scroll position of chat container to avoid jiggling when user scrolls up
 	useEffect(() => {
@@ -513,10 +534,76 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		}
 	};
 
+	// Merge datasets by id
+	const mergeSelectedDatasets = useCallback((existing: any[], added: any[]) => {
+		const byId = new Map<string, any>();
+		existing.forEach((d) => d?.id && byId.set(d.id, d));
+		added.forEach((d) => d?.id && byId.set(d.id, d));
+		return Array.from(byId.values());
+	}, []);
+
+	// File/folder picker to attach local data
+	const handleAttachLocalData = useCallback(async () => {
+		try {
+			const result = await electronAPI.showOpenDialog({
+				title: "Select data files or folders",
+				properties: ["openFile", "openDirectory", "multiSelections"],
+			});
+			if (!result.success || result.data?.canceled) return;
+			const filePaths: string[] = result.data.filePaths || [];
+			if (!filePaths.length) return;
+			const registry = localRegistryRef.current;
+			if (!registry) return;
+			const added: LocalDatasetEntry[] = [];
+			for (const p of filePaths) {
+				// eslint-disable-next-line no-await-in-loop
+				const entry = await registry.addFromPath(p);
+				if (entry) added.push(entry);
+			}
+			if (added.length > 0) {
+				setSelectedDatasets((prev) => mergeSelectedDatasets(prev, added));
+				const names = added.map((d) => d.title).join(", ");
+				addMessage(`Attached local data: ${names}`, false);
+			}
+		} catch (e) {
+			console.error("Attach local data failed", e);
+			addMessage("Failed to attach local data", false);
+		}
+	}, [addMessage, mergeSelectedDatasets]);
+
+	// Resolve @mentions like @data.csv to indexed local datasets
+	const resolveAtMentions = useCallback((text: string): LocalDatasetEntry[] => {
+		const registry = localRegistryRef.current;
+		if (!registry) return [];
+		const tokens = Array.from(text.matchAll(/@([^\s@]+)/g)).map((m) => m[1]);
+		if (!tokens.length) return [];
+		const resolved: LocalDatasetEntry[] = [];
+		for (const t of tokens) {
+			const matches = registry.resolveMention(t);
+			for (const m of matches) resolved.push(m);
+		}
+		const byId = new Map<string, LocalDatasetEntry>();
+		resolved.forEach((d) => byId.set(d.id, d));
+		return Array.from(byId.values());
+	}, []);
+
 	const handleSendMessage = useCallback(async () => {
 		if (!inputValue.trim() || isLoading) return;
 
 		const userMessage = inputValue.trim();
+		// Resolve @mentions to local datasets and auto-attach
+		const mentionDatasets = resolveAtMentions(userMessage);
+		if (mentionDatasets.length > 0) {
+			setSelectedDatasets((prev) =>
+				mergeSelectedDatasets(prev, mentionDatasets)
+			);
+			addMessage(
+				`Using local data from mentions: ${mentionDatasets
+					.map((d) => d.alias || d.title)
+					.join(", ")}`,
+				false
+			);
+		}
 		addMessage(userMessage, true);
 		setInputValue("");
 		setIsLoading(true);
@@ -725,7 +812,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							"• **Ask me to analyze data** (e.g., 'Assess transcriptional subtypes of AML')\n" +
 							"• **Search for datasets** (e.g., 'Find AML gene expression data')\n" +
 							"• **Ask for specific analysis** (e.g., 'Perform differential expression analysis')\n\n" +
-							"What would you like to do?",
+							"You can also attach your own data by mentioning files/folders like @data.csv or @my_folder.",
 						false
 					);
 				}
@@ -1294,13 +1381,146 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	};
 
 	const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-		setInputValue(e.target.value);
+		const next = e.target.value;
+		setInputValue(next);
+		// Basic mention detection: open menu after '@' and while token is current
+		const caret = e.target.selectionStart || next.length;
+		const uptoCaret = next.slice(0, caret);
+		const match = uptoCaret.match(/@([^\s@]*)$/);
+		if (match) {
+			setMentionOpen(true);
+			setMentionQuery(match[1] || "");
+		} else if (mentionOpen) {
+			setMentionOpen(false);
+			setMentionQuery("");
+		}
 
 		// Auto-resize textarea
 		const textarea = e.target;
 		textarea.style.height = "auto";
 		textarea.style.height = Math.min(textarea.scrollHeight, 120) + "px";
 	};
+
+	// Ensure first item is highlighted when menu opens or updates
+	useEffect(() => {
+		if (mentionOpen) {
+			if (workspaceMentionItems.length > 0) {
+				setActiveWorkspaceIndex(0);
+			} else {
+				setActiveWorkspaceIndex(-1);
+			}
+			if ((localRegistryRef.current?.list() || []).length > 0) {
+				setActiveLocalIndex(0);
+			} else {
+				setActiveLocalIndex(-1);
+			}
+		}
+	}, [mentionOpen]);
+
+	useEffect(() => {
+		if (!mentionOpen) return;
+		if (workspaceMentionItems.length === 0) {
+			setActiveWorkspaceIndex(-1);
+		} else if (
+			activeWorkspaceIndex < 0 ||
+			activeWorkspaceIndex >= workspaceMentionItems.length
+		) {
+			setActiveWorkspaceIndex(0);
+		}
+	}, [workspaceMentionItems, mentionOpen]);
+
+	useEffect(() => {
+		if (!mentionOpen) return;
+		// Reset highlight on query change
+		if (workspaceMentionItems.length > 0) {
+			setActiveWorkspaceIndex(0);
+		}
+	}, [mentionQuery]);
+
+	const chooseWorkspaceMention = useCallback(
+		async (index: number, sendAfter: boolean) => {
+			if (index < 0 || index >= workspaceMentionItems.length) return;
+			const item = workspaceMentionItems[index];
+			const registry = localRegistryRef.current;
+			let entry: any = item;
+			if (registry && item.localPath) {
+				try {
+					const added = await registry.addFromPath(item.localPath);
+					if (added) entry = added as any;
+				} catch {
+					// ignore add failure; we'll still insert alias text
+				}
+			}
+			setSelectedDatasets((prev) => mergeSelectedDatasets(prev, [entry]));
+			const alias =
+				entry.alias || (entry.title || entry.id).replace(/\s+/g, "_");
+			const nextInput = inputValue.replace(/@([^\s@]*)$/, `@${alias}`) + " ";
+			setInputValue(nextInput);
+			setMentionOpen(false);
+			setMentionQuery("");
+			setWorkspaceMentionItems([]);
+			setActiveWorkspaceIndex(-1);
+			setActiveLocalIndex(-1);
+			if (sendAfter) {
+				// No longer sending automatically on Enter selection per UX
+			}
+		},
+		[
+			workspaceMentionItems,
+			inputValue,
+			mergeSelectedDatasets,
+			handleSendMessage,
+		]
+	);
+
+	const handleComposerKeyDown = useCallback(
+		(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+			if (!mentionOpen) return;
+			const total = workspaceMentionItems.length;
+			// Navigate within mention list
+			if (e.key === "ArrowDown") {
+				e.preventDefault();
+				if (total > 0) {
+					setActiveWorkspaceIndex((prev) => {
+						const next = prev < 0 ? 0 : Math.min(prev + 1, total - 1);
+						return next;
+					});
+				}
+				return;
+			}
+			if (e.key === "ArrowUp") {
+				e.preventDefault();
+				if (total > 0) {
+					setActiveWorkspaceIndex((prev) => {
+						const next = prev <= 0 ? 0 : prev - 1;
+						return next;
+					});
+				}
+				return;
+			}
+			if (e.key === "Enter") {
+				e.preventDefault();
+				const index = activeWorkspaceIndex >= 0 ? activeWorkspaceIndex : 0;
+				void chooseWorkspaceMention(index, false);
+				return;
+			}
+			if (e.key === "Escape") {
+				e.preventDefault();
+				setMentionOpen(false);
+				setMentionQuery("");
+				setWorkspaceMentionItems([]);
+				setActiveWorkspaceIndex(-1);
+				setActiveLocalIndex(-1);
+				return;
+			}
+		},
+		[
+			mentionOpen,
+			workspaceMentionItems.length,
+			activeWorkspaceIndex,
+			chooseWorkspaceMention,
+		]
+	);
 
 	const toggleChat = () => {
 		uiDispatch({
@@ -1318,19 +1538,81 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		addMessage("Processing stopped by user.", false);
 	};
 
-	return (
-		<div className={`chat-panel ${className || ""}`}>
-			<div className="chat-header">
-				<h3></h3>
-				<button
-					onClick={toggleChat}
-					className="chat-toggle-button"
-					title={uiState.chatCollapsed ? "Expand Chat" : "Collapse Chat"}
-				>
-					{uiState.chatCollapsed ? <FiMaximize2 /> : <FiMinimize2 />}
-				</button>
-			</div>
+	// Composer change handler with @-mention detection
+	const handleComposerChange = useCallback(
+		(next: string) => {
+			setInputValue(next);
+			const match = next.match(/@([^\s@]*)$/);
+			if (match) {
+				setMentionOpen(true);
+				setMentionQuery(match[1] || "");
+				(async () => {
+					try {
+						if (!workspaceState.currentWorkspace) {
+							setWorkspaceMentionItems([]);
+							return;
+						}
+						const wsRoot = workspaceState.currentWorkspace;
+						const token = match[1] || "";
+						const parts = token.split("/");
+						const dirRel =
+							parts.length > 1
+								? parts.slice(0, -1).filter(Boolean).join("/")
+								: "";
+						const search = (parts.slice(-1)[0] || "").toLowerCase();
 
+						const maxDepth = 3;
+						const maxResults = 200;
+						const queue: Array<{ full: string; rel: string; depth: number }> =
+							[];
+						const startFull = dirRel ? `${wsRoot}/${dirRel}` : wsRoot;
+						const startRel = dirRel || "";
+						queue.push({ full: startFull, rel: startRel, depth: 0 });
+						const results: any[] = [];
+
+						while (queue.length > 0 && results.length < maxResults) {
+							const node = queue.shift()!;
+							let res: any = await window.electronAPI.listDirectory(node.full);
+							const entries = Array.isArray(res) ? res : res?.data || [];
+							for (const e of entries) {
+								const relAlias = node.rel ? `${node.rel}/${e.name}` : e.name;
+								if (!search || e.name.toLowerCase().includes(search)) {
+									results.push({
+										id: `ws-${e.path}`,
+										title: e.name,
+										source: "Workspace",
+										localPath: e.path,
+										isLocalDirectory: !!e.isDirectory,
+										alias: relAlias,
+									});
+									if (results.length >= maxResults) break;
+								}
+								if (e.isDirectory && node.depth < maxDepth) {
+									queue.push({
+										full: e.path,
+										rel: relAlias,
+										depth: node.depth + 1,
+									});
+								}
+							}
+						}
+
+						setWorkspaceMentionItems(results);
+					} catch {
+						setWorkspaceMentionItems([]);
+					}
+				})();
+			} else if (mentionOpen) {
+				setMentionOpen(false);
+				setMentionQuery("");
+				setWorkspaceMentionItems([]);
+			}
+		},
+		[mentionOpen, workspaceState.currentWorkspace]
+	);
+
+	const MessagesView = React.useMemo(() => {
+		return (
 			<div className="chat-messages" ref={chatContainerRef}>
 				{analysisState.messages.map((message: any) => (
 					<div key={message.id}>
@@ -1345,21 +1627,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 									language={message.codeLanguage || "python"}
 									title={message.codeTitle || "Generated Code"}
 									isStreaming={message.status === "pending"}
-								/>
-							</div>
-						)}
-						{message.suggestions && (
-							<div style={{ marginTop: "8px" }}>
-								<ExamplesComponent
-									onExampleSelect={(example) => {
-										setInputValue(example);
-										setTimeout(() => {
-											const form = document.querySelector("form");
-											if (form) {
-												form.requestSubmit();
-											}
-										}, 10);
-									}}
 								/>
 							</div>
 						)}
@@ -1396,14 +1663,84 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 				<div ref={messagesEndRef} />
 			</div>
+		);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [
+		analysisState.messages,
+		isProcessing,
+		progressMessage,
+		validationErrors,
+		searchProgress,
+		virtualEnvStatus,
+		showVirtualEnvLog,
+		isAutoExecuting,
+	]);
+
+	return (
+		<div className={`chat-panel ${className || ""}`}>
+			<div className="chat-header">
+				<h3></h3>
+				<div style={{ display: "flex", gap: 8 }}>
+					<button
+						onClick={toggleChat}
+						className="chat-toggle-button"
+						title={uiState.chatCollapsed ? "Expand Chat" : "Collapse Chat"}
+					>
+						{uiState.chatCollapsed ? <FiMaximize2 /> : <FiMinimize2 />}
+					</button>
+				</div>
+			</div>
+
+			{MessagesView}
 
 			<Composer
 				value={inputValue}
-				onChange={setInputValue}
+				onChange={handleComposerChange}
 				onSend={handleSendMessage}
 				onStop={handleStopProcessing}
 				isProcessing={isProcessing}
 				isLoading={isLoading}
+				onKeyDown={handleComposerKeyDown}
+			/>
+
+			{/* @ mention suggestions menu */}
+			<MentionSuggestions
+				isOpen={mentionOpen}
+				items={localRegistryRef.current?.list() || []}
+				workspaceItems={workspaceMentionItems}
+				query={mentionQuery}
+				hideLocal={true}
+				hideFolders={false}
+				activeWorkspaceIndex={activeWorkspaceIndex}
+				activeLocalIndex={activeLocalIndex}
+				onSelect={(item) => {
+					const alias =
+						item.alias || (item.title || item.id).replace(/\s+/g, "_");
+					setSelectedDatasets((prev) =>
+						mergeSelectedDatasets(prev, [item] as any)
+					);
+					setInputValue(
+						(prev) => prev.replace(/@([^\s@]*)$/, `@${alias}`) + " "
+					);
+					setMentionOpen(false);
+					setMentionQuery("");
+				}}
+				onSelectWorkspace={async (item) => {
+					const registry = localRegistryRef.current;
+					let entry: any = item;
+					if (registry) {
+						const added = await registry.addFromPath(item.localPath);
+						if (added) entry = added as any;
+					}
+					setSelectedDatasets((prev) => mergeSelectedDatasets(prev, [entry]));
+					const alias =
+						entry.alias || (entry.title || entry.id).replace(/\s+/g, "_");
+					setInputValue(
+						(prev) => prev.replace(/@([^\s@]*)$/, `@${alias}`) + " "
+					);
+					setMentionOpen(false);
+					setMentionQuery("");
+				}}
 			/>
 
 			{/* Suggestion Buttons */}

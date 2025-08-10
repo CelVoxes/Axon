@@ -15,6 +15,12 @@ export interface Dataset {
 	fileFormat?: string;
 	columns?: string[];
 	dimensions?: number[];
+	/** Optional human-friendly handle for local mentions like @data.csv */
+	alias?: string;
+	/** Absolute filesystem path if this is a local dataset (file or directory) */
+	localPath?: string;
+	/** True if localPath points to a directory (e.g., a 10x folder) */
+	isLocalDirectory?: boolean;
 }
 
 export interface DataTypeAnalysis {

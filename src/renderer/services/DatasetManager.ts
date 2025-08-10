@@ -27,7 +27,7 @@ export class DatasetManager {
 	 */
 	async analyzeDataTypes(datasets: Dataset[]): Promise<string[]> {
 		const dataTypes: string[] = [];
-		
+
 		for (const dataset of datasets) {
 			if (dataset.dataType) {
 				dataTypes.push(dataset.dataType);
@@ -37,7 +37,7 @@ export class DatasetManager {
 				dataTypes.push(inferredType);
 			}
 		}
-		
+
 		// Remove duplicates
 		return Array.from(new Set(dataTypes));
 	}
@@ -108,18 +108,26 @@ export class DatasetManager {
 		workspaceDir: string
 	): Promise<string[]> {
 		try {
-			// Use listDirectory to get files
+			// If dataset directly references a local path, honor it
+			if ((dataset as any).localPath) {
+				return [(dataset as any).localPath as string];
+			}
+
+			// Otherwise search the workspace directory heuristically
 			const files = await window.electronAPI.listDirectory(workspaceDir);
+			const normalizedTitle = (dataset.title || "")
+				.toLowerCase()
+				.replace(/\s+/g, "_");
 			return files
 				.filter((file) => !file.isDirectory)
 				.map((file) => file.path)
-				.filter(
-					(filePath: string) =>
-						filePath.toLowerCase().includes(dataset.id.toLowerCase()) ||
-						filePath
-							.toLowerCase()
-							.includes(dataset.title.toLowerCase().replace(/\s+/g, "_"))
-				);
+				.filter((filePath: string) => {
+					const lc = filePath.toLowerCase();
+					return (
+						(!!dataset.id && lc.includes(dataset.id.toLowerCase())) ||
+						(!!normalizedTitle && lc.includes(normalizedTitle))
+					);
+				});
 		} catch (error) {
 			console.error("Error finding dataset files:", error);
 			return [];
@@ -128,7 +136,13 @@ export class DatasetManager {
 
 	async analyzeFileType(filePath: string): Promise<FileAnalysis> {
 		try {
-			const content = await window.electronAPI.readFile(filePath);
+			// For large/binary files, avoid reading whole content unnecessarily
+			let content = "";
+			try {
+				content = await window.electronAPI.readFile(filePath);
+			} catch (_) {
+				// If cannot read as text, continue with extension-based detection
+			}
 			const lines = content.split("\n").slice(0, 10); // Check first 10 lines
 
 			// Detect format
@@ -142,7 +156,11 @@ export class DatasetManager {
 			else if (filePath.endsWith(".vcf")) format = "vcf";
 			else if (filePath.endsWith(".h5ad"))
 				format = "h5ad"; // AnnData format for single-cell
-			else if (filePath.endsWith(".mtx")) format = "mtx"; // Matrix market format
+			else if (filePath.endsWith(".mtx"))
+				format = "mtx"; // Matrix market format
+			else if (filePath.endsWith(".h5") || filePath.endsWith(".hdf5"))
+				format = "h5";
+			else if (filePath.endsWith(".loom")) format = "loom";
 
 			// Detect data type based on content patterns
 			let dataType = "unknown";
@@ -195,6 +213,8 @@ export class DatasetManager {
 				dataType = "alignment_data";
 			} else if (format === "vcf") {
 				dataType = "variant_data";
+			} else if (format === "h5" || format === "loom") {
+				dataType = "single_cell_expression";
 			}
 
 			return { dataType, format };
@@ -385,7 +405,9 @@ export class DatasetManager {
 				steps.push({ description: "Perform quality control" });
 				steps.push({ description: "Normalize the data" });
 				steps.push({ description: "Perform differential expression analysis" });
-				steps.push({ description: "Visualize results with heatmaps and volcano plots" });
+				steps.push({
+					description: "Visualize results with heatmaps and volcano plots",
+				});
 				break;
 
 			default:

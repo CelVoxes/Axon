@@ -61,6 +61,8 @@ export class WorkspaceManager {
 
 			// Create workspace directories
 			await window.electronAPI.createDirectory(workspacePath);
+			// Proactively refresh file tree in case listeners are not attached yet
+			window.dispatchEvent(new Event("refreshFileTree"));
 
 			return workspacePath;
 		} catch (error) {
@@ -247,11 +249,12 @@ export class WorkspaceManager {
 
 				if (!exists) {
 					this.updateStatus(`Creating directory: ${dir}`);
-					// Note: We'd need to add a createDirectory method to electronAPI
-					// For now, we'll just log that it's missing
-					console.warn(
-						`Directory ${dirPath} does not exist and needs to be created`
-					);
+					try {
+						await window.electronAPI.createDirectory(dirPath);
+						window.dispatchEvent(new Event("refreshFileTree"));
+					} catch (e) {
+						console.warn(`Failed to create directory ${dirPath}:`, e);
+					}
 				}
 			}
 

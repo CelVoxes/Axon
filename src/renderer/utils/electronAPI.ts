@@ -149,6 +149,24 @@ export const electronAPI = {
 	},
 
 	/**
+	 * Safely get file info (size, timestamps, isDirectory)
+	 */
+	async getFileInfo(
+		filePath: string
+	): Promise<{
+		success: boolean;
+		data?: {
+			size: number;
+			created: string | Date;
+			modified: string | Date;
+			isDirectory: boolean;
+		};
+		error?: string;
+	}> {
+		return safeElectronAPICall<any>("getFileInfo", filePath);
+	},
+
+	/**
 	 * Safely delete a file
 	 */
 	async deleteFile(

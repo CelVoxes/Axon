@@ -213,6 +213,8 @@ export class CodeGenerationService implements ICodeGenerator {
 			.map((d) => {
 				const url = (d as any).url || "";
 				const source = (d as any).source || "Unknown";
+				const localPath = (d as any).localPath || "";
+				const isLocal = !!localPath;
 				const format = url
 					? url.toLowerCase().endsWith(".h5ad")
 						? "h5ad"
@@ -223,7 +225,7 @@ export class CodeGenerationService implements ICodeGenerator {
 						: url.toLowerCase().endsWith(".txt")
 						? "txt"
 						: "unknown"
-					: "unknown";
+					: (d as any).fileFormat || (isLocal ? "local" : "unknown");
 				const sampleCount = (d as any).sample_count;
 				const sampleStr =
 					sampleCount !== undefined && sampleCount !== null
@@ -234,6 +236,7 @@ export class CodeGenerationService implements ICodeGenerator {
   organism: ${d.organism || "Unknown"}
   source: ${source}
   url: ${url || "(none provided)"}
+  localPath: ${localPath || "(none)"}
   format: ${format}${sampleStr}`;
 			})
 			.join("\n\n");
@@ -257,6 +260,10 @@ Dataset handling constraints:
 - For format=csv/tsv/txt: use pandas read_csv with the appropriate separator.
 - Validate HTTP status codes, content-type, and file size before saving.
 - Add robust error handling; continue if a specific dataset fails.
+
+Local datasets:
+- If localPath is provided, prefer loading from that path instead of downloading.
+- For localPath directories that look like 10x MTX (matrix.mtx, barcodes.tsv, features.tsv), use scanpy.read_10x_mtx.
 
 General requirements:
 - Use proper error handling with try-except blocks
@@ -540,17 +547,18 @@ print("Step completed successfully!")
 			...datasets
 				.map((dataset) => {
 					const url: string | undefined = (dataset as any).url;
+					const localPath: string | undefined = (dataset as any).localPath;
+					const title = dataset.title || dataset.id;
+					if (localPath) {
+						return `print(f"Using local dataset: ${title} -> ${localPath}")\nlocal_path = Path(r"${localPath}")\nif not local_path.exists():\n    print(f"Warning: local path not found for ${title}: ${localPath}")`;
+					}
 					if (!url) {
-						return `print("No URL for dataset: ${
-							dataset.title || dataset.id
-						}")`;
+						return `print("No URL or localPath for dataset: ${title}")`;
 					}
 					const filename = url.toLowerCase().endsWith(".h5ad")
 						? `${dataset.id}.h5ad`
 						: `${dataset.id}.data`;
-					return `from pathlib import Path\n_title = "${
-						dataset.title || dataset.id
-					}"\n_dest = data_dir / "${filename}"\nif Path(_dest).exists():\n    print("Using existing:", str(_dest))\nelse:\n    print("Downloading:", _title)\n    resp = requests.get("${url}", headers={"User-Agent": "Mozilla/5.0"}, timeout=60)\n    resp.raise_for_status()\n    open(_dest, 'wb').write(resp.content)\n    print("Saved:", str(_dest))`;
+					return `from pathlib import Path\n_title = "${title}"\n_dest = data_dir / "${filename}"\nif Path(_dest).exists():\n    print("Using existing:", str(_dest))\nelse:\n    print("Downloading:", _title)\n    resp = requests.get("${url}", headers={"User-Agent": "Mozilla/5.0"}, timeout=60)\n    resp.raise_for_status()\n    open(_dest, 'wb').write(resp.content)\n    print("Saved:", str(_dest))`;
 				})
 				.filter(Boolean),
 		].join("\n");

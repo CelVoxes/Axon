@@ -7,13 +7,23 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	readFile: (filePath: string) => ipcRenderer.invoke("fs-read-file", filePath),
 	writeFile: (filePath: string, content: string) =>
 		ipcRenderer.invoke("fs-write-file", filePath, content),
-	createDirectory: (dirPath: string) =>
-		ipcRenderer.invoke("fs-create-directory", dirPath),
+	createDirectory: async (dirPath: string) => {
+		const result = await ipcRenderer.invoke("fs-create-directory", dirPath);
+		try {
+			// Notify renderer UI to refresh file tree
+			window.dispatchEvent(new Event("refreshFileTree"));
+		} catch {
+			// ignore
+		}
+		return result;
+	},
 	directoryExists: (dirPath: string) =>
 		ipcRenderer.invoke("directory-exists", dirPath),
 	listDirectory: (dirPath: string) =>
 		ipcRenderer.invoke("fs-list-directory", dirPath),
 	openFile: (filePath: string) => ipcRenderer.invoke("open-file", filePath),
+	getFileInfo: (filePath: string) =>
+		ipcRenderer.invoke("get-file-info", filePath),
 
 	// Jupyter operations
 	startJupyter: (workingDir: string) =>

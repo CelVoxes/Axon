@@ -10,6 +10,7 @@ interface ComposerProps {
 	isProcessing: boolean;
 	isLoading: boolean;
 	disabled?: boolean;
+	onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
 }
 
 export const Composer: React.FC<ComposerProps> = ({
@@ -20,6 +21,7 @@ export const Composer: React.FC<ComposerProps> = ({
 	isProcessing,
 	isLoading,
 	disabled,
+	onKeyDown,
 }) => {
 	const [model, setModel] = React.useState<string>(
 		ConfigManager.getInstance().getDefaultModel()
@@ -30,9 +32,10 @@ export const Composer: React.FC<ComposerProps> = ({
 	);
 
 	const [showModelMenu, setShowModelMenu] = React.useState(false);
+	const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+	const rafIdRef = React.useRef<number | null>(null);
 
 	const applyModel = (next: string) => {
-		console.log("[Composer] applyModel ->", next);
 		setModel(next);
 		ConfigManager.getInstance().setValue(
 			"analysis",
@@ -41,41 +44,52 @@ export const Composer: React.FC<ComposerProps> = ({
 		);
 	};
 
-	// Debug: log lifecycle and state changes
-	React.useEffect(() => {
-		console.log("[Composer] mounted");
-	}, []);
-
-	React.useEffect(() => {
-		console.log("[Composer] showModelMenu:", showModelMenu);
-	}, [showModelMenu]);
-
 	// Note: do not auto-close on outside click to avoid conflicts with
 	// React synthetic event ordering. Menu closes on selection or toggle.
-	const handleKeyPress = (e: React.KeyboardEvent) => {
+	const handleKeyDownInternal = (
+		e: React.KeyboardEvent<HTMLTextAreaElement>
+	) => {
+		// First allow parent to intercept (e.g., mention navigation)
+		if (onKeyDown) {
+			onKeyDown(e);
+		}
+		if (e.defaultPrevented) return;
 		if (e.key === "Enter" && !e.shiftKey) {
 			e.preventDefault();
 			onSend();
 		}
 	};
 
-	const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-		onChange(e.target.value);
-		// Auto-resize textarea
-		const textarea = e.target;
-		textarea.style.height = "auto";
-		textarea.style.height = Math.min(textarea.scrollHeight, 120) + "px";
-	};
+	const handleTextareaChange = React.useCallback(
+		(e: React.ChangeEvent<HTMLTextAreaElement>) => {
+			onChange(e.target.value);
+			const el = textareaRef.current || e.target;
+			if (rafIdRef.current) {
+				cancelAnimationFrame(rafIdRef.current);
+			}
+			rafIdRef.current = requestAnimationFrame(() => {
+				const maxHeight = 120;
+				// Measure first without forcing multiple reflows
+				el.style.height = "auto";
+				const next = Math.min(el.scrollHeight, maxHeight);
+				if (el.style.height !== `${next}px`) {
+					el.style.height = `${next}px`;
+				}
+			});
+		},
+		[onChange]
+	);
 
 	return (
 		<div className="chat-input-container">
 			<textarea
 				value={value}
 				onChange={handleTextareaChange}
-				onKeyPress={handleKeyPress}
+				onKeyDown={handleKeyDownInternal}
 				placeholder="Plan, analyze, or ask me anything"
 				disabled={!!disabled || isLoading}
 				rows={2}
+				ref={textareaRef}
 			/>
 
 			<div className="chat-controls">

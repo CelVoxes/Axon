@@ -414,14 +414,21 @@ export class NotebookService {
 		try {
 			// Create Jupyter notebook structure
 			const notebook = {
-				cells: cells.map((cell, index) => ({
-					id: cell.id || `cell-${index}`,
-					cell_type: cell.language === "markdown" ? "markdown" : "code",
-					source: cell.code.split("\n"),
-					metadata: {},
-					outputs: [],
-					execution_count: null,
-				})),
+				cells: cells.map((cell, index) => {
+					const normalized = cell.code.replace(/\r\n/g, "\n");
+					const parts = normalized.split("\n");
+					const source = parts.map((line, i) =>
+						i < parts.length - 1 ? `${line}\n` : line
+					);
+					return {
+						id: cell.id || `cell-${index}`,
+						cell_type: cell.language === "markdown" ? "markdown" : "code",
+						source,
+						metadata: {},
+						outputs: [],
+						execution_count: null,
+					};
+				}),
 				metadata: {
 					kernelspec: {
 						display_name: "Python 3",

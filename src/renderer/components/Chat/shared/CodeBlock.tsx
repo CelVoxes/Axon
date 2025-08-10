@@ -5,13 +5,7 @@ import React, {
 	useState,
 	useCallback,
 } from "react";
-import hljs from "highlight.js/lib/core";
-import python from "highlight.js/lib/languages/python";
-import javascript from "highlight.js/lib/languages/javascript";
-import typescript from "highlight.js/lib/languages/typescript";
-import json from "highlight.js/lib/languages/json";
-import bash from "highlight.js/lib/languages/bash";
-import sql from "highlight.js/lib/languages/sql";
+import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
 import { FiCopy, FiChevronDown, FiChevronUp } from "react-icons/fi";
 
@@ -40,15 +34,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 	const autoScrollRef = useRef(true);
 	const codeRef = useRef<HTMLElement | null>(null);
 
-	// Register languages once
-	useEffect(() => {
-		hljs.registerLanguage("python", python);
-		hljs.registerLanguage("javascript", javascript);
-		hljs.registerLanguage("typescript", typescript);
-		hljs.registerLanguage("json", json);
-		hljs.registerLanguage("bash", bash);
-		hljs.registerLanguage("sql", sql);
-	}, []);
+// Full build of highlight.js includes common languages; no manual registration needed
 
 	// Auto-expand when streaming starts
 	useEffect(() => {
@@ -87,8 +73,9 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 		}
 	}, [code, isStreaming, isExpanded]);
 
-	// Highlight code when content changes
+	// Highlight code when content changes; skip during streaming to avoid jank
 	useEffect(() => {
+		if (isStreaming) return;
 		if (codeRef.current) {
 			try {
 				hljs.highlightElement(codeRef.current);
@@ -97,7 +84,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 				console.error("Highlight.js error:", e);
 			}
 		}
-	}, [code, language, isExpanded]);
+	}, [code, language, isExpanded, isStreaming]);
 
 	const copyToClipboard = useCallback(async () => {
 		try {
