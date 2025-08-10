@@ -1,6 +1,9 @@
 import React from "react";
 import styled from "styled-components";
-import { ActionButton, LoadingMessage } from "../shared/StyledComponents";
+import {
+	ActionButton,
+	LoadingMessage,
+} from "@components/shared/StyledComponents";
 import { typography } from "../../styles/design-system";
 
 const JupyterContainer = styled.div`

@@ -19,6 +19,7 @@ import { NotebookGenerationOptions } from "./NotebookService";
 import { AsyncUtils } from "../utils/AsyncUtils";
 import { AnalysisOrchestrationService } from "./AnalysisOrchestrationService";
 import { ConfigManager } from "./ConfigManager";
+import { EventManager } from "../utils/EventManager";
 
 interface AnalysisStep {
 	id: string;
@@ -854,37 +855,46 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		workspaceDir: string
 	): Promise<boolean> {
 		try {
-			// Step 1: Ensure environment is ready
+			// Step 1: Ensure environment is ready and executor workspace is correct
 			await this.ensureEnvironmentReady(workspaceDir);
+			this.workspacePath = workspaceDir;
+			this.codeExecutor.updateWorkspacePath(this.workspacePath);
 
-			// Step 2: Generate and add package installation code
+			// Step 2: Generate, lint and add package installation code
 			const packageCode =
 				await this.environmentManager.generatePackageInstallationCode(
 					datasets,
 					analysisSteps
 				);
-			// Validate and gently test package cell to ensure syntax correctness
+			// Validate (lint/clean) without executing; execution will happen after adding to notebook
 			const packageTestResult = await this.codeQualityService.validateAndTest(
 				packageCode,
 				"package-install",
-				{ stepTitle: "Package installation" }
+				{ stepTitle: "Package installation", skipExecution: true }
 			);
-			await this.notebookService.addCodeCell(
-				notebookPath,
-				this.codeQualityService.getBestCode(packageTestResult)
-			);
+			{
+				const finalPackageCode =
+					this.codeQualityService.getBestCode(packageTestResult);
+				await this.notebookService.addCodeCell(notebookPath, finalPackageCode);
+				this.updateStatus("Package installation cell added");
 
-			this.updateStatus("Package installation cell added");
+				// Execute the just-added cell with real-time streaming to notebook
+				await this.executeAndStreamNotebookCell(
+					notebookPath,
+					finalPackageCode,
+					"Package installation"
+				);
+			}
 
 			// Step 3: Deterministic data download (bypass LLM for reliability)
 			const rawDataDownloadCode =
 				this.buildDeterministicDataDownloadCode(datasets);
-			// Validate and lightly clean to ensure imports and structure
+			// Validate and lightly clean to ensure imports and structure, skip execution here
 			const dataDownloadValidation =
 				await this.codeQualityService.validateAndTest(
 					rawDataDownloadCode,
 					"data-download",
-					{ stepTitle: "Data download" }
+					{ stepTitle: "Data download", skipExecution: true }
 				);
 			const finalDataDownloadCode = this.codeQualityService.getBestCode(
 				dataDownloadValidation
@@ -899,6 +909,13 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 
 			this.updateStatus("Data download cell added");
 
+			// Execute the data download cell and stream output into the notebook
+			await this.executeAndStreamNotebookCell(
+				notebookPath,
+				finalDataDownloadCode,
+				"Data download"
+			);
+
 			// Step 4: Generate and add analysis step codes
 			for (let i = 0; i < analysisSteps.length; i++) {
 				const step = analysisSteps[i];
@@ -909,11 +926,24 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 					workspaceDir,
 					i + 2
 				);
+				// Add code cell to notebook
 				await this.notebookService.addCodeCell(notebookPath, stepCode);
 
 				this.updateStatus(
 					`Added analysis step ${i + 1} of ${analysisSteps.length}`
 				);
+
+				// Execute and stream this step's output in real time; auto-fix on failure
+				const result = await this.executeAndStreamNotebookCell(
+					notebookPath,
+					stepCode,
+					step.description
+				);
+
+				// Update global context with the final executed code if it differs (e.g., after auto-fix)
+				if (result && typeof result.analysis === "object") {
+					// no-op: reserved for future richer analysis handling
+				}
 
 				// Small delay between steps
 				if (i < analysisSteps.length - 1) {
@@ -958,7 +988,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		// Store generated code in global context
 		this.addCodeToContext(stepId, genResult.code);
 
-		// Validate, clean (strip ```python fences), auto-fix, and lightly execute
+		// Validate, clean (strip ```python fences), auto-fix; DEFER EXECUTION to after appending to notebook
 		try {
 			const quality = await this.codeQualityService.validateAndTest(
 				genResult.code,
@@ -966,6 +996,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				{
 					stepTitle: step.description,
 					globalCodeContext: this.getGlobalCodeContext(),
+					skipExecution: true,
 				}
 			);
 			return this.codeQualityService.getBestCode(quality);
@@ -977,6 +1008,78 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			// Fall back to raw generated code
 			return genResult.code;
 		}
+	}
+
+	/**
+	 * Execute the most recently added cell's code, streaming output into the notebook UI in real time.
+	 * If execution fails and is retryable, attempt an auto-fix, update the same cell's code, and retry once.
+	 */
+	private async executeAndStreamNotebookCell(
+		notebookPath: string,
+		code: string,
+		stepDescription: string
+	) {
+		// Stream handler: update the last cell's output in the notebook file/UI
+		const onProgress = (updates: any) => {
+			if (updates && typeof updates.output === "string") {
+				EventManager.dispatchEvent("update-notebook-cell", {
+					filePath: notebookPath,
+					cellIndex: -1, // -1 denotes last-added cell
+					output: updates.output,
+					status: updates.status || (updates.hasError ? "failed" : "running"),
+				});
+			}
+		};
+
+		// First execution
+		const firstResult = await this.codeExecutor.executeCell(
+			`nbcell-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+			code,
+			onProgress
+		);
+
+		if (firstResult.status === "completed") {
+			return firstResult;
+		}
+
+		// Attempt auto-fix if retry is advisable
+		const errorOutput = firstResult.output || "";
+		const canRetry = Boolean(firstResult.shouldRetry) && errorOutput.length > 0;
+		if (!canRetry) {
+			return firstResult;
+		}
+
+		this.updateStatus("Attempting auto-fix based on execution error...");
+		const refactored = await this.codeQualityService.generateRefactoredCode(
+			code,
+			errorOutput,
+			stepDescription,
+			this.workspacePath
+		);
+
+		const prepared = this.codeQualityService.cleanAndPrepareCode(refactored, {
+			addImports: true,
+			addErrorHandling: true,
+			addDirectoryCreation: true,
+			stepDescription,
+			globalCodeContext: this.getGlobalCodeContext(),
+		});
+
+		// Update the same (last) notebook cell's code before re-executing
+		await this.notebookService.updateCellCode(notebookPath, -1, prepared);
+		this.addCodeToContext(
+			`auto-fix-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+			prepared
+		);
+
+		// Re-execute with streaming
+		const secondResult = await this.codeExecutor.executeCell(
+			`nbcell-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+			prepared,
+			onProgress
+		);
+
+		return secondResult;
 	}
 
 	/**

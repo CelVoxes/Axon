@@ -1,4 +1,8 @@
 import React, { useState, useMemo, useEffect } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
+import "highlight.js/styles/github-dark.css";
 import styled from "styled-components";
 import {
 	FiCopy,
@@ -10,7 +14,7 @@ import {
 	FiMaximize2,
 	FiMinimize2,
 } from "react-icons/fi";
-import { ActionButton } from "../shared/StyledComponents";
+import { ActionButton } from "@components/shared/StyledComponents";
 import { typography } from "../../styles/design-system";
 
 const OutputContainer = styled.div`
@@ -585,9 +589,7 @@ export const NotebookOutputRenderer: React.FC<NotebookOutputRendererProps> = ({
 							</ActionButton>
 						</OutputActions>
 					</OutputHeader>
-					<FullscreenContent>
-						{renderContent()}
-					</FullscreenContent>
+					<FullscreenContent>{renderContent()}</FullscreenContent>
 				</FullscreenModal>
 			) : (
 				<CollapsibleOutput
@@ -764,7 +766,7 @@ const renderDataFrame = (data: string) => {
 				<TableHeader>
 					{headers.map((header, index) => (
 						<TableCell key={index} $isHeader $width={columnWidths[index]}>
-							{header || ''}
+							{header || ""}
 						</TableCell>
 					))}
 				</TableHeader>
@@ -772,7 +774,7 @@ const renderDataFrame = (data: string) => {
 					<TableRow key={rowIndex}>
 						{headers.map((_, cellIndex) => (
 							<TableCell key={cellIndex} $width={columnWidths[cellIndex]}>
-								{row[cellIndex] || ''}
+								{row[cellIndex] || ""}
 							</TableCell>
 						))}
 					</TableRow>
@@ -780,7 +782,7 @@ const renderDataFrame = (data: string) => {
 			</DataTable>
 		);
 	} catch (error) {
-		console.error('Error rendering DataFrame:', error);
+		console.error("Error rendering DataFrame:", error);
 		return <CodeBlock>{data}</CodeBlock>;
 	}
 };
@@ -819,42 +821,16 @@ const renderChart = (data: string) => {
 };
 
 const renderMarkdown = (data: string) => {
-	// Enhanced markdown to HTML conversion with better error handling
-	try {
-		const html = data
-			// Code blocks first (to avoid conflicts)
-			.replace(/```([\w]*)?\n([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>')
-			// Headers (in order of specificity)
-			.replace(/^#### (.*$)/gm, '<h4>$1</h4>')
-			.replace(/^### (.*$)/gm, '<h3>$1</h3>')
-			.replace(/^## (.*$)/gm, '<h2>$1</h2>')
-			.replace(/^# (.*$)/gm, '<h1>$1</h1>')
-			// Bold and italic
-			.replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
-			.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-			.replace(/\*(.*?)\*/g, '<em>$1</em>')
-			// Inline code
-			.replace(/`([^`]+)`/g, '<code>$1</code>')
-			// Links
-			.replace(
-				/\[([^\]]+)\]\(([^)]+)\)/g,
-				'<a href="$2" target="_blank" rel="noopener noreferrer" style="color: #007acc; text-decoration: underline;">$1</a>'
-			)
-			// Lists
-			.replace(/^\* (.+)$/gm, '<li>$1</li>')
-			.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>')
-			.replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
-			// Line breaks
-			.replace(/\n\n/g, '</p><p>')
-			.replace(/\n/g, '<br/>')
-			// Wrap in paragraphs if not already in block elements
-			.replace(/^(?!<[h1-6ul])/gm, '<p>');
-
-		return <RichTextOutput dangerouslySetInnerHTML={{ __html: html }} />;
-	} catch (error) {
-		console.error('Error rendering markdown:', error);
-		return <CodeBlock>{data}</CodeBlock>;
-	}
+	return (
+		<RichTextOutput>
+			<ReactMarkdown
+				remarkPlugins={[remarkGfm]}
+				rehypePlugins={[rehypeHighlight]}
+			>
+				{data}
+			</ReactMarkdown>
+		</RichTextOutput>
+	);
 };
 
 const renderJSON = (data: any) => {

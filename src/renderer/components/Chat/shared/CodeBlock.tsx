@@ -5,6 +5,14 @@ import React, {
 	useState,
 	useCallback,
 } from "react";
+import hljs from "highlight.js/lib/core";
+import python from "highlight.js/lib/languages/python";
+import javascript from "highlight.js/lib/languages/javascript";
+import typescript from "highlight.js/lib/languages/typescript";
+import json from "highlight.js/lib/languages/json";
+import bash from "highlight.js/lib/languages/bash";
+import sql from "highlight.js/lib/languages/sql";
+import "highlight.js/styles/github-dark.css";
 import { FiCopy, FiChevronDown, FiChevronUp } from "react-icons/fi";
 
 export interface CodeBlockProps {
@@ -30,6 +38,17 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 	// The scrollable container is the wrapper div with class `code-content`, not the <pre>
 	const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 	const autoScrollRef = useRef(true);
+	const codeRef = useRef<HTMLElement | null>(null);
+
+	// Register languages once
+	useEffect(() => {
+		hljs.registerLanguage("python", python);
+		hljs.registerLanguage("javascript", javascript);
+		hljs.registerLanguage("typescript", typescript);
+		hljs.registerLanguage("json", json);
+		hljs.registerLanguage("bash", bash);
+		hljs.registerLanguage("sql", sql);
+	}, []);
 
 	// Auto-expand when streaming starts
 	useEffect(() => {
@@ -68,6 +87,18 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 		}
 	}, [code, isStreaming, isExpanded]);
 
+	// Highlight code when content changes
+	useEffect(() => {
+		if (codeRef.current) {
+			try {
+				hljs.highlightElement(codeRef.current);
+			} catch (e) {
+				// eslint-disable-next-line no-console
+				console.error("Highlight.js error:", e);
+			}
+		}
+	}, [code, language, isExpanded]);
+
 	const copyToClipboard = useCallback(async () => {
 		try {
 			await navigator.clipboard.writeText(code);
@@ -88,30 +119,22 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 		: code;
 
 	return (
-		<div className="expandable-code-block" style={{ margin: "12px 0" }}>
+		<div className="expandable-code-block">
 			<div
-				className="code-header"
+				className={`code-header ${isStreaming ? "non-interactive" : ""}`}
 				onClick={handleToggle}
-				style={{ cursor: isStreaming ? "default" : "pointer" }}
 			>
 				<div className="code-header-left">
 					{title && <span className="code-title">{title}</span>}
-					<span className="code-language" style={{ marginLeft: 8 }}>
+					<span className="code-language">
 						{language}
 						{isStreaming && (
-							<span className="streaming-indicator" style={{ marginLeft: 4 }}>
-								●
-							</span>
+							<span className="pulse-dot" aria-label="Streaming" />
 						)}
 					</span>
-					<span className="code-size-indicator" style={{ marginLeft: 8 }}>
-						{code.length} chars
-					</span>
+					<span className="code-size-indicator">{code.length} chars</span>
 				</div>
-				<div
-					className="code-header-right"
-					style={{ display: "flex", gap: 8, alignItems: "center" }}
-				>
+				<div className="code-header-right">
 					<button
 						className="copy-button"
 						onClick={(e) => {
@@ -121,11 +144,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 						title="Copy code"
 					>
 						<FiCopy size={14} />
-						{copied && (
-							<span className="copied-tooltip" style={{ marginLeft: 6 }}>
-								Copied!
-							</span>
-						)}
+						{copied && <span className="copied-tooltip">Copied!</span>}
 					</button>
 					{isExpanded ? <FiChevronUp size={16} /> : <FiChevronDown size={16} />}
 				</div>
@@ -134,17 +153,14 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 				<div
 					className={`code-content ${isStreaming ? "streaming" : ""}`}
 					ref={scrollContainerRef}
-					style={{
-						// Prevent browser scroll anchoring jitter while content grows
-						// eslint-disable-next-line @typescript-eslint/no-explicit-any
-						...({ overflowAnchor: "none" } as any),
-						// Avoid min-height transitions causing bounce
-						transition: "none",
-						willChange: "scroll-position",
-					}}
 				>
-					<pre style={{ margin: 0, padding: 0 }}>
-						<code className={`language-${language}`}>{displayCode}</code>
+					<pre>
+						<code
+							ref={codeRef as unknown as React.RefObject<HTMLElement>}
+							className={`language-${language}`}
+						>
+							{displayCode}
+						</code>
 					</pre>
 					{isLongCode && !isStreaming && (
 						<div className="code-actions" style={{ padding: "8px 12px" }}>

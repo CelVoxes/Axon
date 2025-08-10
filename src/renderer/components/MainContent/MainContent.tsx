@@ -8,7 +8,7 @@ import {
 	ActionButton,
 	StatusIndicator,
 	EmptyState,
-} from "../shared/StyledComponents";
+} from "@components/shared/StyledComponents";
 import { electronAPI } from "../../utils/electronAPI";
 import { typography } from "../../styles/design-system";
 

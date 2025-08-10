@@ -13,12 +13,17 @@ import {
 	FiEyeOff,
 } from "react-icons/fi";
 import { CellExecutionService } from "../../services/CellExecutionService";
-import { ActionButton } from "../shared/StyledComponents";
+import { ActionButton } from "@components/shared/StyledComponents";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
+import "highlight.js/styles/github-dark.css";
 import { typography } from "../../styles/design-system";
 
-const CellContainer = styled.div`
+const CellContainer = styled.div<{ $accentColor?: string }>`
 	margin: 16px 0;
 	border: 1px solid #404040;
+	border-left: 4px solid ${(props) => props.$accentColor || "transparent"};
 	border-radius: 8px;
 	overflow: hidden;
 	background: #1e1e1e;
@@ -317,6 +322,20 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		return workspacePath ? new CellExecutionService(workspacePath) : null;
 	}, [workspacePath]);
 
+	// Accent color based on content
+	const accentColor = useMemo(() => {
+		if (hasError || /traceback|error|exception/i.test(output)) return "#ff6b6b";
+		if (language === "markdown") return "#3b82f6"; // blue for markdown
+		const lower = code.toLowerCase();
+		if (/matplotlib|plt\.|seaborn|sns\.|plot|chart|figure/.test(lower))
+			return "#a855f7"; // purple for viz
+		if (/sklearn|xgboost|lightgbm|fit\(|predict\(|model/.test(lower))
+			return "#f59e0b"; // orange for ml
+		if (/pandas|dataframe|read_csv|read_table|read_parquet/.test(lower))
+			return "#0ea5e9"; // cyan for data
+		return "#404040";
+	}, [code, output, hasError, language]);
+
 	const executeCode = async () => {
 		if (!code.trim() || language === "markdown" || !cellExecutionService)
 			return;
@@ -366,7 +385,8 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 	};
 
 	const handleCodeChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-		const newCode = e.target.value;
+		// Normalize CRLF to LF so markdown newlines render consistently
+		const newCode = e.target.value.replace(/\r\n/g, "\n");
 		setCode(newCode);
 		onCodeChange?.(newCode);
 	};
@@ -395,7 +415,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 	}, [code]);
 
 	return (
-		<CellContainer>
+		<CellContainer $accentColor={accentColor}>
 			<CellHeader>
 				<CellType>
 					<ExecutionIndicator $hasOutput={!!output} />
@@ -427,18 +447,35 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 				</CellActions>
 			</CellHeader>
 
+			{/* Editable Markdown and Code with live preview for Markdown */}
 			{language === "markdown" ? (
-				<div
-					style={{
-						padding: "16px",
-						color: "#ffffff",
-						fontSize: "14px",
-						lineHeight: "1.6",
-						whiteSpace: "pre-wrap",
-					}}
-				>
-					{code}
-				</div>
+				<>
+					<CodeInput
+						ref={textareaRef}
+						value={code}
+						onChange={handleCodeChange}
+						placeholder="Enter your markdown here..."
+					/>
+					<OutputContainer>
+						<OutputHeader>
+							<OutputTitle>📝 Preview</OutputTitle>
+							<OutputActions>
+								<ActionButton onClick={copyCode} $variant="secondary">
+									{copied ? <FiCheck size={12} /> : <FiCopy size={12} />}
+									{copied ? "Copied" : "Copy"}
+								</ActionButton>
+							</OutputActions>
+						</OutputHeader>
+						<RichTextOutput>
+							<ReactMarkdown
+								remarkPlugins={[remarkGfm]}
+								rehypePlugins={[rehypeHighlight]}
+							>
+								{code || ""}
+							</ReactMarkdown>
+						</RichTextOutput>
+					</OutputContainer>
+				</>
 			) : (
 				<>
 					<CodeInput
@@ -447,7 +484,6 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 						onChange={handleCodeChange}
 						placeholder={`Enter your ${language} code here...`}
 					/>
-
 					{output && <OutputRenderer output={output} hasError={hasError} />}
 				</>
 			)}

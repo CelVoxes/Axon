@@ -3,7 +3,7 @@ import styled from "styled-components";
 import Editor from "@monaco-editor/react";
 import { CodeCell } from "./CodeCell";
 import { FiPlus, FiTrash2 } from "react-icons/fi";
-import { ActionButton } from "../shared/StyledComponents";
+import { ActionButton } from "@components/shared/StyledComponents";
 import { useWorkspaceContext } from "../../context/AppContext";
 import { typography } from "../../styles/design-system";
 import { EventManager } from "../../utils/EventManager";
@@ -75,6 +75,38 @@ const NotebookActions = styled.div`
 
 // Using shared ActionButton component
 
+// Inline insert controls (top and between cells)
+const InsertButtonsRow = styled.div`
+	display: flex;
+	gap: 8px;
+	justify-content: center;
+	align-items: center;
+	margin: 8px 0;
+`;
+
+const InsertCellButton = styled.button`
+	padding: 8px 10px;
+	background: transparent;
+	border: 1px dashed #404040;
+	border-radius: 4px;
+	color: #cccccc;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	font-size: ${typography.sm};
+	transition: all 0.2s ease;
+	opacity: 0.7;
+
+	&:hover {
+		background: #2d2d30;
+		color: #ffffff;
+		border-color: #007acc;
+		opacity: 1;
+	}
+`;
+
 interface FileEditorProps {
 	filePath: string;
 }
@@ -112,6 +144,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	const [cellStates, setCellStates] = useState<
 		Array<{ code: string; output: string }>
 	>([]);
+	const [cellIds, setCellIds] = useState<string[]>([]);
 
 	// Use a ref to track the current notebook data to avoid closure issues in event handlers
 	const notebookDataRef = useRef<NotebookData | null>(null);
@@ -152,6 +185,18 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		}
 		setPendingEvents([]);
 	}, [filePath]);
+
+	// Normalize editor text to ipynb "source" array form (one string per line, keep trailing newlines)
+	const toIpynbSource = (text: string): string[] => {
+		const lines = text.split("\n");
+		return lines.map((line, idx) =>
+			idx < lines.length - 1 ? `${line}\n` : line
+		);
+	};
+
+	// Stable keys for cells to avoid React reusing wrong instances when inserting/deleting
+	const generateCellId = () =>
+		`nbcell-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 	// Function to process pending events
 	const processPendingEvents = () => {
@@ -222,7 +267,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					// Create new cell in Jupyter notebook format
 					const newCell: NotebookCell = {
 						cell_type: cellType,
-						source: [cellContent],
+						source: toIpynbSource(cellContent),
 						metadata: {},
 						execution_count: null,
 						outputs: [],
@@ -235,6 +280,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					};
 
 					setNotebookData(updatedNotebook);
+					setCellIds((prev) => [...prev, generateCellId()]);
 					setHasChanges(true);
 
 					// Auto-save the notebook and dispatch success event after completion
@@ -398,7 +444,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					const updatedCells = [...currentNotebookData.cells];
 					updatedCells[actualCellIndex] = {
 						...updatedCells[actualCellIndex],
-						source: [code],
+						source: toIpynbSource(code),
 						outputs: [], // Clear outputs when code changes
 						execution_count: null, // Reset execution count
 					};
@@ -527,6 +573,8 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					const notebook = JSON.parse(fileContent);
 					setNotebookData(notebook);
 					setContent(""); // Clear content for notebook view
+					// Initialize stable ids for each cell
+					setCellIds((notebook.cells || []).map(() => generateCellId()));
 
 					console.log(`FileEditor: Notebook data loaded for ${filePath}`);
 
@@ -550,10 +598,12 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 						}`
 					);
 					setNotebookData(null);
+					setCellIds([]);
 				}
 			} else {
 				setContent(fileContent);
 				setNotebookData(null);
+				setCellIds([]);
 			}
 
 			setHasChanges(false);
@@ -632,6 +682,61 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 		// Auto-save the notebook
 		saveNotebookToFile(updatedNotebook);
+		setCellIds((prev) => [...prev, generateCellId()]);
+	};
+
+	const addCellAt = (index: number, cellType: "code" | "markdown" = "code") => {
+		if (!notebookData) return;
+
+		const newCell: NotebookCell = {
+			cell_type: cellType,
+			source: [cellType === "markdown" ? "# New Cell\n" : "# New code cell\n"],
+			metadata: {},
+			execution_count: null,
+			outputs: [],
+		};
+
+		// Insert into notebook cells immutably
+		const updatedCells = [...notebookData.cells];
+		const safeIndex = Math.max(0, Math.min(index, updatedCells.length));
+		updatedCells.splice(safeIndex, 0, newCell);
+
+		const updatedNotebook = {
+			...notebookData,
+			cells: updatedCells,
+		};
+
+		// Shift cellStates indices at and after insertion point
+		setCellStates((prev) => {
+			const updated: any = { ...prev };
+			const indices = Object.keys(updated)
+				.map((k) => parseInt(k, 10))
+				.filter((k) => !Number.isNaN(k))
+				.sort((a, b) => b - a); // shift from bottom to top
+			indices.forEach((k) => {
+				if (k >= safeIndex) {
+					updated[k + 1] = updated[k];
+					delete updated[k];
+				}
+			});
+			// Initialize state for the inserted cell
+			updated[safeIndex] = {
+				code: newCell.source.join(""),
+				output: "",
+			};
+			return updated;
+		});
+
+		setNotebookData(updatedNotebook);
+		setHasChanges(true);
+		saveNotebookToFile(updatedNotebook);
+		// Maintain stable ids in parallel
+		setCellIds((prev) => {
+			const updated = [...prev];
+			const safeIndexAfter = Math.max(0, Math.min(safeIndex, updated.length));
+			updated.splice(safeIndexAfter, 0, generateCellId());
+			return updated;
+		});
 	};
 
 	const deleteCell = (index: number) => {
@@ -666,6 +771,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 		// Auto-save the notebook
 		saveNotebookToFile(updatedNotebook);
+		setCellIds((prev) => prev.filter((_, i) => i !== index));
 	};
 
 	const updateCellCode = (index: number, code: string) => {
@@ -683,7 +789,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					if (i === index) {
 						return {
 							...cell,
-							source: [code],
+							source: toIpynbSource(code),
 						};
 					}
 					return cell;
@@ -783,6 +889,16 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					</NotebookMetadata>
 				</NotebookHeader>
 
+				{/* Insert controls at the very top */}
+				<InsertButtonsRow>
+					<InsertCellButton onClick={() => addCellAt(0, "code")}>
+						<FiPlus size={12} /> Insert Code Cell Above
+					</InsertCellButton>
+					<InsertCellButton onClick={() => addCellAt(0, "markdown")}>
+						<FiPlus size={12} /> Insert Markdown Above
+					</InsertCellButton>
+				</InsertButtonsRow>
+
 				{notebookData.cells.map((cell, index) => {
 					const cellContent = Array.isArray(cell.source)
 						? cell.source.join("")
@@ -814,21 +930,35 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					};
 
 					return (
-						<CodeCell
-							key={index}
-							initialCode={currentCellState.code}
-							initialOutput={currentCellState.output}
-							language={cell.cell_type === "markdown" ? "markdown" : "python"}
-							workspacePath={workspacePath}
-							onExecute={(code, output) => {
-								updateCellCode(index, code);
-								updateCellOutput(index, output);
-							}}
-							onCodeChange={(code) => {
-								updateCellCode(index, code);
-							}}
-							onDelete={() => deleteCell(index)}
-						/>
+						<React.Fragment key={cellIds[index] || `cell-${index}`}>
+							<CodeCell
+								initialCode={currentCellState.code}
+								initialOutput={currentCellState.output}
+								language={cell.cell_type === "markdown" ? "markdown" : "python"}
+								workspacePath={workspacePath}
+								onExecute={(code, output) => {
+									updateCellCode(index, code);
+									updateCellOutput(index, output);
+								}}
+								onCodeChange={(code) => {
+									updateCellCode(index, code);
+								}}
+								// Ensure Markdown edits are persisted
+								onDelete={() => deleteCell(index)}
+							/>
+
+							{/* Insert controls between cells (after current index) */}
+							<InsertButtonsRow>
+								<InsertCellButton onClick={() => addCellAt(index + 1, "code")}>
+									<FiPlus size={12} /> Insert Code Cell Here
+								</InsertCellButton>
+								<InsertCellButton
+									onClick={() => addCellAt(index + 1, "markdown")}
+								>
+									<FiPlus size={12} /> Insert Markdown Here
+								</InsertCellButton>
+							</InsertButtonsRow>
+						</React.Fragment>
 					);
 				})}
 

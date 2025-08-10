@@ -511,6 +511,21 @@ textarea:focus {
 	animation: pulse 1.5s infinite;
 }
 
+/* Generic pulsing dot for status/streaming indicators */
+.pulse-dot {
+	display: inline-block;
+	width: 8px;
+	height: 8px;
+	background-color: #00ff00;
+	border-radius: 50%;
+	animation: pulse 1.5s infinite;
+}
+
+/* Contextual spacing when used next to language pill */
+.code-language .pulse-dot {
+	margin-left: 6px;
+}
+
 /* Progress message */
 .progress-message {
 	background: #2d2d30;
@@ -1267,6 +1282,10 @@ textarea:focus {
 	display: flex;
 	align-items: center;
 	gap: 12px;
+}
+
+.code-header.non-interactive {
+	cursor: default;
 }
 
 .code-title {

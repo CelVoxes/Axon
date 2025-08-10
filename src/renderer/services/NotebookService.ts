@@ -58,16 +58,22 @@ export class NotebookService {
 	async addMarkdownCell(notebookPath: string, content: string): Promise<void> {
 		// Validate content before adding
 		if (!content || !content.trim()) {
-			console.warn("NotebookService: Attempted to add empty markdown cell, skipping");
+			console.warn(
+				"NotebookService: Attempted to add empty markdown cell, skipping"
+			);
 			return;
 		}
 
-		console.log(`NotebookService: Adding markdown cell with ${content.length} characters to ${notebookPath}`);
-		
+		console.log(
+			`NotebookService: Adding markdown cell with ${content.length} characters to ${notebookPath}`
+		);
+
+		// Ensure newlines are preserved when the FileEditor converts to ipynb source
+		const normalized = content.replace(/\r\n/g, "\n");
 		EventManager.dispatchEvent("add-notebook-cell", {
 			filePath: notebookPath,
 			cellType: "markdown",
-			content: content,
+			content: normalized,
 		});
 		await EventManager.waitForEvent("notebook-cell-added");
 	}
@@ -78,12 +84,16 @@ export class NotebookService {
 	async addCodeCell(notebookPath: string, code: string): Promise<void> {
 		// Validate code content before adding
 		if (!code || !code.trim()) {
-			console.warn("NotebookService: Attempted to add empty code cell, skipping");
+			console.warn(
+				"NotebookService: Attempted to add empty code cell, skipping"
+			);
 			return;
 		}
 
-		console.log(`NotebookService: Adding code cell with ${code.length} characters to ${notebookPath}`);
-		
+		console.log(
+			`NotebookService: Adding code cell with ${code.length} characters to ${notebookPath}`
+		);
+
 		EventManager.dispatchEvent("add-notebook-cell", {
 			filePath: notebookPath,
 			cellType: "code",

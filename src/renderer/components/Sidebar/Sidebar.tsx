@@ -12,7 +12,7 @@ import {
 	FiTrash2,
 } from "react-icons/fi";
 import { useWorkspaceContext } from "../../context/AppContext";
-import { ActionButton, EmptyState } from "../shared/StyledComponents";
+import { ActionButton, EmptyState } from "@components/shared/StyledComponents";
 import {
 	formatFileSize,
 	formatDate,

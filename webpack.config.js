@@ -42,6 +42,9 @@ module.exports = (env, argv) => {
 		},
 		resolve: {
 			extensions: [".tsx", ".ts", ".js"],
+			alias: {
+				"@components": path.resolve(__dirname, "src/renderer/components"),
+			},
 			fallback: {
 				path: false,
 				fs: false,

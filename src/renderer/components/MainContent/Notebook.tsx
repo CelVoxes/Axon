@@ -17,7 +17,7 @@ import {
 	ActionButton,
 	StatusIndicator,
 	LoadingMessage,
-} from "../shared/StyledComponents";
+} from "@components/shared/StyledComponents";
 import { Cell, AnalysisStep } from "../shared/interfaces";
 import { typography } from "../../styles/design-system";
 import {
@@ -297,9 +297,16 @@ export const Notebook: React.FC<NotebookProps> = ({
 		}
 	};
 
+	const normalizeNewlines = (text?: string) =>
+		typeof text === "string" ? text.replace(/\r\n/g, "\n") : text;
+
 	const updateCell = (id: string, updates: Partial<Cell>) => {
+		const normalized: Partial<Cell> = {
+			...updates,
+			code: normalizeNewlines(updates.code),
+		};
 		setCells(
-			cells.map((cell) => (cell.id === id ? { ...cell, ...updates } : cell))
+			cells.map((cell) => (cell.id === id ? { ...cell, ...normalized } : cell))
 		);
 	};
 
@@ -676,44 +683,27 @@ export const Notebook: React.FC<NotebookProps> = ({
 											</div>
 										)}
 
-										{cell.isMarkdown ? (
-											<div
-												style={{
-													background: "#1e1e1e",
-													border: "1px solid #404040",
-													borderRadius: "8px",
-													padding: "16px",
-													color: "#ffffff",
-													fontSize: "14px",
-													lineHeight: "1.6",
+										<>
+											<CodeCell
+												key={cell.id}
+												initialCode={cell.code}
+												initialOutput={cell.output}
+												language={cell.isMarkdown ? "markdown" : cell.language}
+												workspacePath={workspacePath}
+												onExecute={(code, output) => {
+													updateCell(cell.id, { code, output });
 												}}
-											>
-												<div
-													dangerouslySetInnerHTML={{
-														__html: cell.code.replace(/\n/g, "<br/>"),
-													}}
+												onCodeChange={(code) => {
+													updateCell(cell.id, { code });
+												}}
+											/>
+											{!cell.isMarkdown && cell.output && (
+												<NotebookOutputRenderer
+													output={cell.output}
+													hasError={cell.hasError}
 												/>
-											</div>
-										) : (
-											<>
-												<CodeCell
-													key={cell.id}
-													initialCode={cell.code}
-													initialOutput={cell.output}
-													language={cell.language}
-													workspacePath={workspacePath}
-													onExecute={(code, output) => {
-														updateCell(cell.id, { code, output });
-													}}
-												/>
-												{cell.output && (
-													<NotebookOutputRenderer
-														output={cell.output}
-														hasError={cell.hasError}
-													/>
-												)}
-											</>
-										)}
+											)}
+										</>
 									</CellContainer>
 								</CellWrapper>
 
