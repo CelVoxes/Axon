@@ -614,15 +614,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					: "";
 				if (!candidatePath) continue;
 
-                try {
-                    const info = await electronAPI.getFileInfo(candidatePath);
-                    if (info?.success && info.data) {
-                        if (registry) {
-                            const entry = await registry.addFromPath(candidatePath, token);
-                            if (entry) workspaceResolved.push(entry);
-                        }
-                    }
-                } catch (_) {
+				try {
+					const info = await electronAPI.getFileInfo(candidatePath);
+					if (info?.success && info.data) {
+						if (registry) {
+							const entry = await registry.addFromPath(candidatePath, token);
+							if (entry) workspaceResolved.push(entry);
+						}
+					}
+				} catch (_) {
 					// ignore failures; not a valid path
 				}
 			}
