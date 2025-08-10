@@ -185,9 +185,9 @@ export const MentionSuggestions: React.FC<MentionSuggestionsProps> = ({
 					<Meta>No workspace matches</Meta>
 				</Item>
 			)}
-			{(workspaceItems || [])
-				.filter((d) => (hideFolders ? !d.isLocalDirectory : true))
-				.map((d, i) => (
+            {(workspaceItems || [])
+                .filter((d) => (hideFolders ? !d.isLocalDirectory : true))
+                .map((d, i) => (
 					<Item
 						key={`ws-${d.id}`}
 						onClick={() => onSelectWorkspace && onSelectWorkspace(d)}
@@ -214,16 +214,10 @@ export const MentionSuggestions: React.FC<MentionSuggestionsProps> = ({
 								</span>
 							)}
 						</span>
-						<Alias>
-							{shorten(
-								(d.alias || (d.title || d.id).replace(/\s+/g, "_")).replace(
-									/^.*\//,
-									""
-								),
-								20
-							)}
-						</Alias>
-						<Meta>{shorten((d.title || d.id).replace(/^.*\//, ""), 24)}</Meta>
+                    <Alias>
+                        {shorten(d.alias || (d.title || d.id).replace(/\s+/g, "_"), 42)}
+                    </Alias>
+                    <Meta>{shorten((d.title || d.id).replace(/^.*\//, ""), 24)}</Meta>
 					</Item>
 				))}
 		</MenuContainer>

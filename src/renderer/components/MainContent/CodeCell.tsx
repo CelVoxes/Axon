@@ -602,18 +602,16 @@ const renderImage = (data: string) => {
 };
 
 const renderMarkdown = (data: string) => {
-	// Simple markdown to HTML conversion
-	const html = data
-		.replace(/```(\w+)?\n([\s\S]*?)```/g, "<pre><code>$2</code></pre>")
-		.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-		.replace(/\*(.*?)\*/g, "<em>$1</em>")
-		.replace(/^### (.*$)/gm, "<h3>$1</h3>")
-		.replace(/^## (.*$)/gm, "<h2>$1</h2>")
-		.replace(/^# (.*$)/gm, "<h1>$1</h1>")
-		.replace(/`([^`]+)`/g, "<code>$1</code>")
-		.replace(/\n/g, "<br/>");
-
-	return <RichTextOutput dangerouslySetInnerHTML={{ __html: html }} />;
+	return (
+		<RichTextOutput>
+			<ReactMarkdown
+				remarkPlugins={[remarkGfm]}
+				rehypePlugins={[rehypeHighlight as unknown as never]}
+			>
+				{data}
+			</ReactMarkdown>
+		</RichTextOutput>
+	);
 };
 
 const OutputRenderer: React.FC<{ output: string; hasError: boolean }> = ({
@@ -652,11 +650,14 @@ const OutputRenderer: React.FC<{ output: string; hasError: boolean }> = ({
 	// Highlight raw output when visible
 	useEffect(() => {
 		if (!showRaw) return;
-		if (!outputRef.current) return;
+		const el = outputRef.current as HTMLElement | null;
+		if (!el) return;
 		try {
-			// Remove previous highlight marker so re-highlighting doesn't warn
-			outputRef.current.removeAttribute("data-highlighted");
-			hljs.highlightElement(outputRef.current);
+			// Reset to plain text first to avoid nested markup and HLJS warnings
+			el.textContent =
+				parsed.type === "json" ? JSON.stringify(parsed.data, null, 2) : output;
+			el.removeAttribute("data-highlighted");
+			hljs.highlightElement(el);
 		} catch (e) {
 			// eslint-disable-next-line no-console
 			console.error("Highlight.js error:", e);

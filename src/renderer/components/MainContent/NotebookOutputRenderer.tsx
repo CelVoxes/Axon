@@ -400,16 +400,27 @@ export const NotebookOutputRenderer: React.FC<NotebookOutputRendererProps> = ({
 	// Apply highlighting when showing raw code
 	useEffect(() => {
 		if (!showRaw) return;
-		if (!codeRef.current) return;
+		const el = codeRef.current as HTMLElement | null;
+		if (!el) return;
 		try {
-			// Clear previous highlight marker to avoid re-highlight warnings
-			codeRef.current.removeAttribute("data-highlighted");
-			hljs.highlightElement(codeRef.current);
+			// Reset to plain text first to avoid nested markup and HLJS warnings
+			const inferredLanguage = (() => {
+				if (parsed.type === "json") return "json";
+				if (parsed.type === "markdown") return undefined;
+				if (/^\s*\{[\s\S]*\}\s*$/.test(output)) return "json";
+				return "python";
+			})();
+			const text =
+				parsed.type === "json" ? JSON.stringify(parsed.data, null, 2) : output;
+			el.textContent = text;
+			el.className = inferredLanguage ? `language-${inferredLanguage}` : "";
+			el.removeAttribute("data-highlighted");
+			hljs.highlightElement(el);
 		} catch (e) {
 			// eslint-disable-next-line no-console
 			console.error("Highlight.js error:", e);
 		}
-	}, [showRaw, output]);
+	}, [showRaw, output, parsed]);
 	const outputLength = output.length;
 	const lineCount = output.split("\n").length;
 

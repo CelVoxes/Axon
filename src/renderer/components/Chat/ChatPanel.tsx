@@ -593,12 +593,52 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		const userMessage = inputValue.trim();
 		// Resolve @mentions to local datasets and auto-attach
 		const mentionDatasets = resolveAtMentions(userMessage);
-		if (mentionDatasets.length > 0) {
+
+		// Additionally resolve direct workspace/absolute path mentions like @data/file.csv or @path/to/folder
+		const tokens = Array.from(userMessage.matchAll(/@([^\s@]+)/g)).map(
+			(m) => m[1]
+		);
+		const workspaceResolved: LocalDatasetEntry[] = [];
+		if (tokens.length > 0) {
+			const wsRoot = workspaceState.currentWorkspace || "";
+			const registry = localRegistryRef.current;
+			for (const token of tokens) {
+				// Heuristic: consider anything with a slash or starting with / as a path
+				const looksLikePath = token.startsWith("/") || token.includes("/");
+				if (!looksLikePath) continue;
+
+				const candidatePath = token.startsWith("/")
+					? token
+					: wsRoot
+					? `${wsRoot}/${token}`
+					: "";
+				if (!candidatePath) continue;
+
+                try {
+                    const info = await electronAPI.getFileInfo(candidatePath);
+                    if (info?.success && info.data) {
+                        if (registry) {
+                            const entry = await registry.addFromPath(candidatePath, token);
+                            if (entry) workspaceResolved.push(entry);
+                        }
+                    }
+                } catch (_) {
+					// ignore failures; not a valid path
+				}
+			}
+		}
+
+		const allMentionDatasets = mergeSelectedDatasets(
+			mentionDatasets as any[],
+			workspaceResolved as any[]
+		);
+
+		if (allMentionDatasets.length > 0) {
 			setSelectedDatasets((prev) =>
-				mergeSelectedDatasets(prev, mentionDatasets)
+				mergeSelectedDatasets(prev, allMentionDatasets)
 			);
 			addMessage(
-				`Using local data from mentions: ${mentionDatasets
+				`Using local data from mentions: ${allMentionDatasets
 					.map((d) => d.alias || d.title)
 					.join(", ")}`,
 				false
@@ -1187,6 +1227,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					description: dataset.description || "",
 					// Pass through URL only if provided by the search source; do not invent URLs
 					url: (dataset as any).url,
+					// Preserve local dataset info (full path, folder flag, and alias) for downstream analysis
+					localPath: (dataset as any).localPath,
+					isLocalDirectory: (dataset as any).isLocalDirectory,
+					alias: (dataset as any).alias,
 				}));
 
 				// Get the original query from the last user message

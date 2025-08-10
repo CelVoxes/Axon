@@ -271,7 +271,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 									<CodeBlock
 										code={String(children || "").trim()}
 										language={language}
-										title="Code"
+										title=""
 										isStreaming={
 											message.isStreaming || message.status === "pending"
 										}

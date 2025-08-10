@@ -8,6 +8,155 @@ import React, {
 import hljs from "highlight.js";
 import "highlight.js/styles/github-dark.css";
 import { FiCopy, FiChevronDown, FiChevronUp } from "react-icons/fi";
+import styled from "styled-components";
+import {
+	colors,
+	typography,
+	borderRadius,
+	shadows,
+} from "../../../styles/design-system";
+
+const Container = styled.div`
+	border: 1px solid ${colors.gray[700]};
+	border-radius: ${borderRadius.lg};
+	margin: 12px 0;
+	overflow: hidden;
+`;
+
+const Header = styled.div<{ $disabled?: boolean }>`
+	width: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 12px;
+	background: #222;
+	cursor: ${(p) => (p.$disabled ? "default" : "pointer")};
+	text-align: left;
+
+	&:hover {
+		background: ${(p) => (p.$disabled ? colors.gray[800] : colors.gray[700])};
+	}
+`;
+
+const HeaderLeft = styled.div`
+	display: flex;
+	align-items: center;
+	gap: 10px;
+`;
+
+const Title = styled.span`
+	color: #fff;
+	font-weight: 600;
+	font-size: ${typography.base};
+`;
+
+const LanguagePill = styled.span`
+	background: ${colors.primary[600]};
+	color: #fff;
+	padding: 2px 8px;
+	border-radius: ${borderRadius.sm};
+	font-size: ${typography.xs};
+	font-weight: 600;
+	text-transform: uppercase;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+`;
+
+const SizeBadge = styled.span`
+	background: ${colors.gray[700]};
+	color: #ccc;
+	padding: 2px 6px;
+	border-radius: ${borderRadius.sm};
+	font-size: ${typography.xs};
+	font-weight: 500;
+`;
+
+const HeaderRight = styled.div`
+	display: flex;
+	align-items: center;
+	gap: 8px;
+`;
+
+const IconButton = styled.button`
+	background: transparent;
+	border: 1px solid ${colors.gray[600]};
+	border-radius: ${borderRadius.sm};
+	padding: 4px 8px;
+	color: #ddd;
+	cursor: pointer;
+	position: relative;
+	transition: all 0.15s ease;
+
+	&:hover {
+		background: ${colors.primary[600]};
+		border-color: ${colors.primary[600]};
+		color: white;
+	}
+`;
+
+const CopiedTooltip = styled.span`
+	position: absolute;
+	top: -28px;
+	right: 0;
+	background: ${colors.gray[800]};
+	color: #fff;
+	padding: 4px 8px;
+	border-radius: ${borderRadius.sm};
+	font-size: ${typography.xs};
+	box-shadow: ${shadows.sm};
+`;
+
+const Content = styled.div<{ $streaming?: boolean; $wrap?: boolean }>`
+	max-height: 420px;
+	overflow-y: auto;
+	overflow-x: auto;
+	min-height: 60px;
+	border-left: ${(p) =>
+		p.$streaming ? `3px solid ${colors.primary[600]}` : "none"};
+`;
+
+const Pre = styled.pre<{ $wrap?: boolean }>`
+	margin: 0;
+	padding: 12px;
+	background: transparent;
+	border: none;
+	white-space: ${(p) => (p.$wrap ? "pre-wrap" : "pre")};
+	word-break: ${(p) => (p.$wrap ? "break-word" : "normal")};
+`;
+
+const Code = styled.code<{ $wrap?: boolean }>`
+	font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+	font-size: ${typography.base};
+	line-height: 1.5;
+	color: #e1e4e8;
+	background: transparent;
+	white-space: inherit;
+	word-break: inherit;
+`;
+
+const FooterActions = styled.div`
+	padding: 8px 12px;
+	border-top: 1px solid ${colors.gray[700]};
+	background: ${colors.gray[800]};
+	display: flex;
+	gap: 8px;
+`;
+
+const SecondaryButton = styled.button`
+	background: ${colors.gray[700]};
+	border: 1px solid ${colors.gray[600]};
+	color: #eee;
+	padding: 6px 10px;
+	border-radius: ${borderRadius.sm};
+	font-size: ${typography.sm};
+	cursor: pointer;
+	transition: all 0.15s ease;
+
+	&:hover {
+		background: ${colors.gray[600]};
+	}
+`;
 
 export interface CodeBlockProps {
 	code: string;
@@ -76,17 +225,26 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 	// Highlight code when content changes; skip during streaming to avoid jank
 	useEffect(() => {
 		if (isStreaming) return;
-		if (codeRef.current) {
-			try {
-				// If this element was highlighted before, remove the marker so we can re-highlight cleanly
-				codeRef.current.removeAttribute("data-highlighted");
-				hljs.highlightElement(codeRef.current);
-			} catch (e) {
-				// eslint-disable-next-line no-console
-				console.error("Highlight.js error:", e);
-			}
+		const el = codeRef.current as HTMLElement | null;
+		if (!el) return;
+		try {
+			// Compute the exact text that will be shown
+			const isLong = !isStreaming && code.length > 1000;
+			const highlightText = isStreaming
+				? code
+				: isLong && !showFullCode
+				? `${code.substring(0, 1000)}\n\n... (truncated)`
+				: code;
+			// Ensure we're highlighting plain text, not HTML
+			el.textContent = highlightText;
+			el.className = `language-${language}`;
+			el.removeAttribute("data-highlighted");
+			hljs.highlightElement(el);
+		} catch (e) {
+			// eslint-disable-next-line no-console
+			console.error("Highlight.js error:", e);
 		}
-	}, [code, language, isExpanded, isStreaming]);
+	}, [code, language, isExpanded, isStreaming, showFullCode]);
 
 	const copyToClipboard = useCallback(async () => {
 		try {
@@ -107,65 +265,92 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 		? `${code.substring(0, 1000)}\n\n... (truncated)`
 		: code;
 
+	const [wrap, setWrap] = useState(true);
+
 	return (
-		<div className="expandable-code-block">
-			<div
-				className={`code-header ${isStreaming ? "non-interactive" : ""}`}
+		<Container>
+			<Header
+				role="button"
+				tabIndex={isStreaming ? -1 : 0}
 				onClick={handleToggle}
+				$disabled={isStreaming}
+				aria-disabled={isStreaming}
+				aria-expanded={isExpanded}
+				aria-label={isExpanded ? "Collapse code" : "Expand code"}
+				onKeyDown={(e) => {
+					if (isStreaming) return;
+					if (e.key === "Enter" || e.key === " ") {
+						e.preventDefault();
+						handleToggle();
+					}
+				}}
 			>
-				<div className="code-header-left">
-					{title && <span className="code-title">{title}</span>}
-					<span className="code-language">
+				<HeaderLeft>
+					{title && <Title>{title}</Title>}
+					<LanguagePill>
 						{language}
 						{isStreaming && (
 							<span className="pulse-dot" aria-label="Streaming" />
 						)}
-					</span>
-					<span className="code-size-indicator">{code.length} chars</span>
-				</div>
-				<div className="code-header-right">
-					<button
-						className="copy-button"
+					</LanguagePill>
+					<SizeBadge>{code.length} chars</SizeBadge>
+				</HeaderLeft>
+				<HeaderRight>
+					<IconButton
 						onClick={(e) => {
 							e.stopPropagation();
 							copyToClipboard();
 						}}
 						title="Copy code"
+						aria-label="Copy code"
 					>
 						<FiCopy size={14} />
-						{copied && <span className="copied-tooltip">Copied!</span>}
-					</button>
+						{copied && <CopiedTooltip>Copied!</CopiedTooltip>}
+					</IconButton>
 					{isExpanded ? <FiChevronUp size={16} /> : <FiChevronDown size={16} />}
-				</div>
-			</div>
+				</HeaderRight>
+			</Header>
 			{isExpanded && (
-				<div
-					className={`code-content ${isStreaming ? "streaming" : ""}`}
-					ref={scrollContainerRef}
-				>
-					<pre>
-						<code
-							ref={codeRef as unknown as React.RefObject<HTMLElement>}
-							className={`language-${language}`}
-						>
-							{displayCode}
-						</code>
-					</pre>
-					{isLongCode && !isStreaming && (
-						<div className="code-actions" style={{ padding: "8px 12px" }}>
-							<button
-								className="show-more-button"
+				<>
+					<Content
+						ref={scrollContainerRef}
+						$streaming={isStreaming}
+						$wrap={wrap}
+					>
+						<Pre $wrap={wrap}>
+							<Code
+								ref={codeRef as unknown as React.RefObject<HTMLElement>}
+								className={`language-${language}`}
+								$wrap={wrap}
+							>
+								{displayCode}
+							</Code>
+						</Pre>
+					</Content>
+					{!isStreaming && (
+						<FooterActions>
+							{isLongCode && (
+								<SecondaryButton
+									onClick={(e) => {
+										e.stopPropagation();
+										setShowFullCode((s) => !s);
+									}}
+								>
+									{showFullCode ? "Show Less" : "Show Full Code"}
+								</SecondaryButton>
+							)}
+							<SecondaryButton
 								onClick={(e) => {
 									e.stopPropagation();
-									setShowFullCode((s) => !s);
+									setWrap((w) => !w);
 								}}
 							>
-								{showFullCode ? "Show Less" : "Show Full Code"}
-							</button>
-						</div>
+								{wrap ? "Disable Wrap" : "Enable Wrap"}
+							</SecondaryButton>
+						</FooterActions>
 					)}
-				</div>
+				</>
 			)}
-		</div>
+		</Container>
 	);
 };

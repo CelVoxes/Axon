@@ -463,8 +463,13 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		lines.push("data_dir = Path('data')");
 		lines.push("data_dir.mkdir(exist_ok=True)");
 		lines.push("");
+		// Only include remote datasets with explicit URLs
+		const remoteDatasets = datasets.filter(
+			(d: any) => Boolean((d as any).url) && !Boolean((d as any).localPath)
+		);
+
 		lines.push("datasets = [");
-		for (const d of datasets) {
+		for (const d of remoteDatasets) {
 			const source = (d as any).source || "Unknown";
 			const providedUrl = (d as any).url || "";
 			const safeTitle = (d.title || d.id).replace(/"/g, '\\"');
@@ -507,6 +512,57 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		lines.push("        print('Failed to download', title, 'error:', str(e))");
 		lines.push("");
 		lines.push("print('Deterministic data download complete.')");
+		lines.push("");
+		return lines.join("\n");
+	}
+
+	/**
+	 * Create a lightweight, deterministic cell that verifies local dataset paths
+	 * and provides a simple mapping for later cells. This cell does not copy or
+	 * move data; it only validates availability and prints helpful diagnostics.
+	 */
+	private buildLocalDataPreparationCode(datasets: Dataset[]): string {
+		const lines: string[] = [];
+		// Filter to only datasets that have localPath provided
+		const localDatasets = datasets.filter((d: any) =>
+			Boolean((d as any).localPath)
+		);
+
+		lines.push("from pathlib import Path");
+		lines.push("import os");
+		lines.push("");
+		lines.push("print('Preparing local datasets...')");
+		lines.push("local_datasets = {}");
+		lines.push("");
+		for (const d of localDatasets as any[]) {
+			const safeTitle = (d.title || d.id).replace(/"/g, '\\"');
+			const safePath = (d.localPath || "")
+				.replace(/\\/g, "\\\\")
+				.replace(/"/g, '\\"');
+			const isDir = Boolean(d.isLocalDirectory);
+			lines.push(`# ${safeTitle}`);
+			lines.push(`_path = Path("${safePath}")`);
+			lines.push("exists = _path.exists()");
+			lines.push(
+				`print(f"- ${safeTitle}: {'directory' if ${isDir} else 'file'} -> {str(_path)} | exists: {exists}")`
+			);
+			if (isDir) {
+				// Heuristics for 10x-style data folders
+				lines.push("mtx = (_path / 'matrix.mtx').exists()");
+				lines.push(
+					"features = (_path / 'features.tsv').exists() or (_path / 'genes.tsv').exists()"
+				);
+				lines.push("barcodes = (_path / 'barcodes.tsv').exists()");
+				lines.push(
+					"print('  contains 10x markers:' , 'matrix.mtx' if mtx else '-', 'features/genes' if features else '-', 'barcodes.tsv' if barcodes else '-')"
+				);
+			}
+			lines.push(`local_datasets["${d.id}"] = str(_path)`);
+			lines.push("");
+		}
+		lines.push(
+			"print('Local dataset mapping prepared for later steps (variable: local_datasets)')"
+		);
 		lines.push("");
 		return lines.join("\n");
 	}
@@ -886,35 +942,68 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				);
 			}
 
-			// Step 3: Deterministic data download (bypass LLM for reliability)
-			const rawDataDownloadCode =
-				this.buildDeterministicDataDownloadCode(datasets);
-			// Validate and lightly clean to ensure imports and structure, skip execution here
-			const dataDownloadValidation =
-				await this.codeQualityService.validateAndTest(
-					rawDataDownloadCode,
-					"data-download",
-					{ stepTitle: "Data download", skipExecution: true }
+			// Step 3: Data preparation
+			const remoteDatasets = datasets.filter(
+				(d: any) => Boolean((d as any).url) && !Boolean((d as any).localPath)
+			);
+			const localDatasets = datasets.filter((d: any) =>
+				Boolean((d as any).localPath)
+			);
+
+			// 3a) If there are any remote datasets with URLs, add deterministic download cell
+			if (remoteDatasets.length > 0) {
+				const rawDataDownloadCode =
+					this.buildDeterministicDataDownloadCode(remoteDatasets);
+				const dataDownloadValidation =
+					await this.codeQualityService.validateAndTest(
+						rawDataDownloadCode,
+						"data-download",
+						{ stepTitle: "Data download", skipExecution: true }
+					);
+				const finalDataDownloadCode = this.codeQualityService.getBestCode(
+					dataDownloadValidation
 				);
-			const finalDataDownloadCode = this.codeQualityService.getBestCode(
-				dataDownloadValidation
-			);
-			await this.notebookService.addCodeCell(
-				notebookPath,
-				finalDataDownloadCode
-			);
+				await this.notebookService.addCodeCell(
+					notebookPath,
+					finalDataDownloadCode
+				);
 
-			// Add deterministic download code to global context to prevent LLM re-downloading
-			this.addCodeToContext("data-download", finalDataDownloadCode);
+				// Add to global context to prevent re-downloading
+				this.addCodeToContext("data-download", finalDataDownloadCode);
+				this.updateStatus("Data download cell added");
 
-			this.updateStatus("Data download cell added");
+				await this.executeAndStreamNotebookCell(
+					notebookPath,
+					finalDataDownloadCode,
+					"Data download"
+				);
+			} else {
+				this.updateStatus(
+					"No remote datasets to download; skipping download step"
+				);
+			}
 
-			// Execute the data download cell and stream output into the notebook
-			await this.executeAndStreamNotebookCell(
-				notebookPath,
-				finalDataDownloadCode,
-				"Data download"
-			);
+			// 3b) If there are local datasets, add a preparation/verification cell
+			if (localDatasets.length > 0) {
+				const localPrepRaw = this.buildLocalDataPreparationCode(localDatasets);
+				const localPrepValidation =
+					await this.codeQualityService.validateAndTest(
+						localPrepRaw,
+						"local-data-prep",
+						{ stepTitle: "Local data preparation", skipExecution: true }
+					);
+				const localPrepCode =
+					this.codeQualityService.getBestCode(localPrepValidation);
+				await this.notebookService.addCodeCell(notebookPath, localPrepCode);
+				this.addCodeToContext("local-data-prep", localPrepCode);
+				this.updateStatus("Local data preparation cell added");
+
+				await this.executeAndStreamNotebookCell(
+					notebookPath,
+					localPrepCode,
+					"Local data preparation"
+				);
+			}
 
 			// Step 4: Generate and add analysis step codes
 			for (let i = 0; i < analysisSteps.length; i++) {
