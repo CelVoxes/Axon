@@ -4,6 +4,9 @@ import { FiFolder, FiMessageSquare } from "react-icons/fi";
 import { useWorkspaceContext, useUIContext } from "../../context/AppContext";
 import { FileEditor } from "./FileEditor";
 import { WelcomeScreen } from "./WelcomeScreen";
+import { SSHConnectModal } from "./SSHConnectModal";
+import { SSHTerminal } from "./SSHTerminal";
+import { RemoteFolderModal } from "./RemoteFolderModal";
 import {
 	ActionButton,
 	StatusIndicator,
@@ -19,9 +22,6 @@ const MainContainer = styled.div`
 	background-color: #151515;
 	overflow: hidden;
 	height: 100%;
-	margin: 8px;
-	border-radius: 8px;
-	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 `;
 
 const TabBar = styled.div`
@@ -94,6 +94,13 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 		useWorkspaceContext();
 	const { state: uiState, dispatch: uiDispatch } = useUIContext();
 	const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>([]);
+	const [showSSHModal, setShowSSHModal] = useState(false);
+	const [sshSessionId, setSshSessionId] = useState<string | null>(null);
+	const [sshTargetLabel, setSshTargetLabel] = useState<string>("");
+	const [isConnectingSSH, setIsConnectingSSH] = useState(false);
+  const [sshError, setSshError] = useState<string | null>(null);
+  const [showRemoteFolderModal, setShowRemoteFolderModal] = useState(false);
+  const [sshUsername, setSshUsername] = useState<string>("");
 
 	useEffect(() => {
 		async function syncRecentWorkspaces() {
@@ -403,10 +410,84 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 
 		// Show welcome screen when no workspace is open
 		return (
-			<WelcomeScreen
-				recentWorkspaces={recentWorkspaces}
-				onOpenWorkspace={handleOpenWorkspace}
-			/>
+			<>
+				<WelcomeScreen
+					recentWorkspaces={recentWorkspaces}
+					onOpenWorkspace={handleOpenWorkspace}
+					onOpenSSH={() => {
+						setSshError(null);
+						setShowSSHModal(true);
+					}}
+				/>
+				{showSSHModal && (
+					<SSHConnectModal
+						onCancel={() => setShowSSHModal(false)}
+						isConnecting={isConnectingSSH}
+						error={sshError}
+						onConnect={async (target: string) => {
+							try {
+								setIsConnectingSSH(true);
+								setSshError(null);
+								const { v4: uuidv4 } = await import("uuid");
+                                const sid = uuidv4();
+                                setSshSessionId(sid);
+                                setSshTargetLabel(target);
+                                const username = target.includes("@") ? target.split("@")[0] : "";
+                                setSshUsername(username);
+                                const res = await (window as any).electronAPI.sshStart(sid, { target });
+								if (!res?.success) {
+									setSshError(res?.error || "Failed to start SSH session");
+									setSshSessionId(null);
+									return;
+								}
+                                setShowSSHModal(false);
+                                setShowRemoteFolderModal(true);
+							} catch (e: any) {
+								setSshError(e?.message || String(e));
+							} finally {
+								setIsConnectingSSH(false);
+							}
+						}}
+					/>
+				)}
+				{sshSessionId && (
+					<SSHTerminal
+						sessionId={sshSessionId}
+						targetLabel={sshTargetLabel}
+						onClose={() => {
+							if (sshSessionId) {
+								(window as any).electronAPI
+									.sshStop(sshSessionId)
+									.catch(() => {});
+							}
+							setSshSessionId(null);
+						}}
+					/>
+				)}
+                {showRemoteFolderModal && sshSessionId && (
+                    <RemoteFolderModal
+                        username={sshUsername || "root"}
+                        isWorking={false}
+                        error={null}
+                        onCancel={() => setShowRemoteFolderModal(false)}
+                        onOpen={async (remotePath: string) => {
+                            try {
+                                const resp = await (window as any).electronAPI.sshOpenRemoteFolder(
+                                    sshSessionId,
+                                    remotePath
+                                );
+                                if (!resp?.success) {
+                                    alert(resp?.error || "Failed to open remote folder");
+                                    return;
+                                }
+                                setShowRemoteFolderModal(false);
+                            } catch (e) {
+                                alert(String(e));
+                            }
+                        }}
+                    />
+                )}
+			</>
 		);
 	};
 

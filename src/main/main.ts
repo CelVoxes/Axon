@@ -219,6 +219,7 @@ export class AxonApp {
 					{ role: "cut" },
 					{ role: "copy" },
 					{ role: "paste" },
+					{ role: "selectAll" },
 				],
 			},
 			{
@@ -1738,6 +1739,432 @@ export class AxonApp {
 		ipcMain.handle("get-biorag-url", () => {
 			return `http://localhost:${this.bioragPort}`;
 		});
+
+		// SSH session management (top-level, not nested)
+		const sshClients = new Map<string, any>();
+		const sshStreams = new Map<string, any>();
+		const sshAuthFinish = new Map<string, (answers: string[]) => void>();
+		const sshPendingRetry = new Map<
+			string,
+			{ host: string; port: number; username: string; cwd?: string }
+		>();
+
+		ipcMain.handle(
+			"ssh-start",
+			async (_: any, sessionId: string, config: any) => {
+				try {
+					let { host, port, username, cwd, target } = config || {};
+					if (typeof target === "string" && target.trim().length > 0) {
+						const t = target.trim();
+						const atIdx = t.indexOf("@");
+						let hostPort = t;
+						if (atIdx > -1) {
+							username = t.slice(0, atIdx);
+							hostPort = t.slice(atIdx + 1);
+						}
+						const colonIdx = hostPort.lastIndexOf(":");
+						if (colonIdx > -1) {
+							host = hostPort.slice(0, colonIdx);
+							const p = parseInt(hostPort.slice(colonIdx + 1), 10);
+							if (Number.isFinite(p)) port = p;
+						} else {
+							host = hostPort;
+						}
+					}
+					port = port || 22;
+					if (!host) throw new Error("Missing host");
+					if (!username) throw new Error("Missing username (use user@host)");
+
+					const Client = require("ssh2").Client as any;
+					const client = new Client();
+					sshClients.set(sessionId, client);
+
+					await new Promise<void>((resolve, reject) => {
+						client
+							.on(
+								"keyboard-interactive",
+								(
+									_name: string,
+									instructions: string,
+									_lang: string,
+									prompts: any[],
+									finish: (answers: string[]) => void
+								) => {
+									try {
+										sshAuthFinish.set(sessionId, finish);
+										this.mainWindow?.webContents.send("ssh-auth-prompt", {
+											sessionId,
+											name: _name,
+											instructions,
+											prompts: (prompts || []).map((p: any) => ({
+												prompt: p?.prompt,
+												echo: !!p?.echo,
+											})),
+										});
+									} catch {}
+								}
+							)
+							.on("ready", () => {
+								try {
+									client.shell(
+										{ term: "xterm-256color" },
+										(err: any, stream: any) => {
+											if (err) {
+												reject(err);
+												return;
+											}
+											sshStreams.set(sessionId, stream);
+											stream.on("data", (data: Buffer) => {
+												this.mainWindow?.webContents.send("ssh-data", {
+													sessionId,
+													data: data.toString("utf8"),
+												});
+											});
+											stream.on("close", () => {
+												this.mainWindow?.webContents.send("ssh-closed", {
+													sessionId,
+												});
+												try {
+													client.end();
+												} catch {}
+											});
+											if (
+												cwd &&
+												typeof cwd === "string" &&
+												cwd.trim().length > 0
+											) {
+												stream.write(
+													`cd ${cwd
+														.replace(/\\/g, "\\\\")
+														.replace(/\n/g, "")}\n`
+												);
+											}
+											resolve();
+										}
+									);
+								} catch (e) {
+									reject(e);
+								}
+							})
+							.on("error", (err: any) => {
+								this.mainWindow?.webContents.send("ssh-error", {
+									sessionId,
+									error: err?.message || String(err),
+								});
+								reject(err);
+							})
+							.on("end", () => {
+								this.mainWindow?.webContents.send("ssh-closed", { sessionId });
+							})
+							.connect({
+								host,
+								port,
+								username,
+								tryKeyboard: true,
+								password:
+									config &&
+									typeof config.password === "string" &&
+									config.password.length > 0
+										? config.password
+										: undefined,
+							});
+					});
+
+					return { success: true };
+				} catch (error) {
+					const message =
+						error instanceof Error ? error.message : String(error);
+					// If server didn't trigger keyboard-interactive and password was not provided, prompt for password
+					if (
+						/All configured authentication methods failed|No authentication methods available|Authentication failed/i.test(
+							message
+						)
+					) {
+						try {
+							const tStr =
+								typeof config?.target === "string"
+									? String(config.target).trim()
+									: "";
+							let h: string | undefined =
+								(config && (config.host as string)) || undefined;
+							let p: number = (config && (config.port as number)) || 22;
+							let u: string | undefined =
+								(config && (config.username as string)) || undefined;
+							const d: string | undefined =
+								(config && (config.cwd as string)) || undefined;
+							if (tStr) {
+								const at = tStr.indexOf("@");
+								let hp = tStr;
+								if (at > -1) {
+									u = tStr.slice(0, at);
+									hp = tStr.slice(at + 1);
+								}
+								const ci = hp.lastIndexOf(":");
+								if (ci > -1) {
+									h = hp.slice(0, ci);
+									const pv = parseInt(hp.slice(ci + 1), 10);
+									if (Number.isFinite(pv)) p = pv;
+								} else {
+									h = hp;
+								}
+							}
+							if (h && u) {
+								sshPendingRetry.set(sessionId, {
+									host: h,
+									port: p,
+									username: u,
+									cwd: d,
+								});
+							}
+							this.mainWindow?.webContents.send("ssh-auth-prompt", {
+								sessionId,
+								name: "password",
+								instructions: "Password authentication required",
+								prompts: [{ prompt: "Password:", echo: false }],
+							});
+							return { success: true, awaitingPassword: true };
+						} catch {}
+					}
+					this.mainWindow?.webContents.send("ssh-error", {
+						sessionId,
+						error: message,
+					});
+					try {
+						const c = sshClients.get(sessionId);
+						c?.end?.();
+					} catch {}
+					sshClients.delete(sessionId);
+					sshStreams.delete(sessionId);
+					return { success: false, error: message };
+				}
+			}
+		);
+
+		ipcMain.handle(
+			"ssh-write",
+			async (_: any, sessionId: string, data: string) => {
+				try {
+					const stream = sshStreams.get(sessionId);
+					if (stream) {
+						stream.write(data);
+						return { success: true };
+					}
+					return { success: false, error: "No active SSH stream" };
+				} catch (error) {
+					return {
+						success: false,
+						error: error instanceof Error ? error.message : String(error),
+					};
+				}
+			}
+		);
+
+		ipcMain.handle(
+			"ssh-resize",
+			async (_: any, sessionId: string, cols: number, rows: number) => {
+				try {
+					const stream = sshStreams.get(sessionId);
+					if (stream && typeof stream.setWindow === "function") {
+						stream.setWindow(rows || 24, cols || 80, 600, 400);
+						return { success: true };
+					}
+					return { success: false };
+				} catch (error) {
+					return { success: false };
+				}
+			}
+		);
+
+		ipcMain.handle("ssh-stop", async (_: any, sessionId: string) => {
+			try {
+				const stream = sshStreams.get(sessionId);
+				try {
+					stream?.end?.();
+				} catch {}
+				const client = sshClients.get(sessionId);
+				try {
+					client?.end?.();
+				} catch {}
+				sshStreams.delete(sessionId);
+				sshClients.delete(sessionId);
+				sshAuthFinish.delete(sessionId);
+				return { success: true };
+			} catch (error) {
+				return { success: false };
+			}
+		});
+
+		ipcMain.handle(
+			"ssh-auth-answer",
+			async (_: any, sessionId: string, answers: string[]) => {
+				try {
+					const fn = sshAuthFinish.get(sessionId);
+					if (fn) {
+						sshAuthFinish.delete(sessionId);
+						try {
+							fn(answers || []);
+							return { success: true };
+						} catch (e: any) {
+							return { success: false, error: e?.message || String(e) };
+						}
+					}
+					// Fallback: retry connection with provided password if we stored target
+					const retryCfg = sshPendingRetry.get(sessionId);
+					if (!retryCfg)
+						return { success: false, error: "No auth prompt pending" };
+					sshPendingRetry.delete(sessionId);
+					const password =
+						Array.isArray(answers) && answers.length > 0
+							? String(answers[0])
+							: "";
+					if (!password) return { success: false, error: "Empty password" };
+					const Client = require("ssh2").Client as any;
+					const client = new Client();
+					sshClients.set(sessionId, client);
+					await new Promise<void>((resolve, reject) => {
+						client
+							.on("ready", () => {
+								try {
+									client.shell(
+										{ term: "xterm-256color" },
+										(err: any, stream: any) => {
+											if (err) {
+												reject(err);
+												return;
+											}
+											sshStreams.set(sessionId, stream);
+											stream.on("data", (data: Buffer) => {
+												this.mainWindow?.webContents.send("ssh-data", {
+													sessionId,
+													data: data.toString("utf8"),
+												});
+											});
+											stream.on("close", () => {
+												this.mainWindow?.webContents.send("ssh-closed", {
+													sessionId,
+												});
+												try {
+													client.end();
+												} catch {}
+											});
+											if (
+												retryCfg.cwd &&
+												typeof retryCfg.cwd === "string" &&
+												retryCfg.cwd.trim().length > 0
+											) {
+												stream.write(
+													`cd ${retryCfg.cwd
+														.replace(/\\/g, "\\\\")
+														.replace(/\n/g, "")}\n`
+												);
+											}
+											resolve();
+										}
+									);
+								} catch (e) {
+									reject(e);
+								}
+							})
+							.on("error", (err: any) => {
+								this.mainWindow?.webContents.send("ssh-error", {
+									sessionId,
+									error: err?.message || String(err),
+								});
+								reject(err);
+							})
+							.on("end", () => {
+								this.mainWindow?.webContents.send("ssh-closed", { sessionId });
+							})
+							.connect({
+								host: retryCfg.host,
+								port: retryCfg.port,
+								username: retryCfg.username,
+								password,
+								tryKeyboard: true,
+							});
+					});
+					return { success: true };
+				} catch (error) {
+					return {
+						success: false,
+						error: error instanceof Error ? error.message : String(error),
+					};
+				}
+			}
+		);
+
+		// Open remote folder via SFTP into a local temp dir and notify renderer
+		ipcMain.handle(
+			"ssh-open-remote-folder",
+			async (_: any, sessionId: string, remotePath: string) => {
+				try {
+					const client = sshClients.get(sessionId);
+					if (!client) return { success: false, error: "No SSH session" };
+					const sftp: any = await new Promise((resolve, reject) => {
+						client.sftp((err: any, s: any) => (err ? reject(err) : resolve(s)));
+					});
+					const os = require("os");
+					const path = require("path");
+					const fs = require("fs");
+					const localRoot = path.join(os.tmpdir(), `axon-remote-${sessionId}`);
+					fs.mkdirSync(localRoot, { recursive: true });
+
+					const downloadDir = async (
+						rPath: string,
+						lPath: string
+					): Promise<void> => {
+						await new Promise<void>((resolve, reject) => {
+							sftp.readdir(rPath, async (err2: any, list: any[]) => {
+								if (err2) return reject(err2);
+								if (!list || list.length === 0) return resolve();
+								// Ensure local dir
+								fs.mkdirSync(lPath, { recursive: true });
+								const processNext = async (idx: number) => {
+									if (idx >= list.length) return resolve();
+									const entry = list[idx];
+									const name =
+										entry.filename || entry.longname?.split(/\s+/).pop();
+									if (!name || name === "." || name === "..") {
+										return processNext(idx + 1);
+									}
+									const rChild = path.posix.join(rPath, name);
+									const lChild = path.join(lPath, name);
+									sftp.stat(rChild, (e3: any, st: any) => {
+										if (e3) return processNext(idx + 1);
+										if (st.isDirectory && st.isDirectory()) {
+											fs.mkdirSync(lChild, { recursive: true });
+											downloadDir(rChild, lChild).then(() =>
+												processNext(idx + 1)
+											);
+										} else {
+											const writeStream = fs.createWriteStream(lChild);
+											const readStream = sftp.createReadStream(rChild);
+											readStream
+												.pipe(writeStream)
+												.on("finish", () => processNext(idx + 1))
+												.on("error", () => processNext(idx + 1));
+										}
+									});
+								};
+								processNext(0);
+							});
+						});
+					};
+
+					fs.mkdirSync(localRoot, { recursive: true });
+					await downloadDir(remotePath, localRoot);
+
+					// Tell renderer to set workspace
+					this.mainWindow?.webContents.send("set-workspace", localRoot);
+					return { success: true, localPath: localRoot };
+				} catch (error) {
+					return {
+						success: false,
+						error: error instanceof Error ? error.message : String(error),
+					};
+				}
+			}
+		);
 
 		// File operations
 		// Removed duplicate file and directory IPC handlers to avoid confusion.

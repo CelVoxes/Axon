@@ -7,9 +7,7 @@ export interface ElectronAPI {
 		dirPath: string
 	) => Promise<Array<{ name: string; isDirectory: boolean; path: string }>>;
 	openFile: (filePath: string) => Promise<{ success: boolean; error?: string }>;
-	getFileInfo: (
-		filePath: string
-	) => Promise<{
+	getFileInfo: (filePath: string) => Promise<{
 		size: number;
 		created: string | Date;
 		modified: string | Date;
@@ -67,6 +65,34 @@ export interface ElectronAPI {
 	onVirtualEnvStatus: (callback: (data: any) => void) => void;
 	onJupyterCodeWriting: (callback: (data: any) => void) => void;
 	onJupyterNetworkError: (callback: (data: any) => void) => void;
+
+	// SSH
+	sshStart: (
+		sessionId: string,
+		config: any
+	) => Promise<{ success: boolean; error?: string }>;
+	sshWrite: (
+		sessionId: string,
+		data: string
+	) => Promise<{ success: boolean; error?: string }>;
+	sshResize: (
+		sessionId: string,
+		cols: number,
+		rows: number
+	) => Promise<{ success: boolean; error?: string }>;
+	sshStop: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
+	onSSHData: (callback: (data: any) => void) => void;
+	onSSHError: (callback: (data: any) => void) => void;
+	onSSHClosed: (callback: (data: any) => void) => void;
+	onSSHAuthPrompt: (callback: (data: any) => void) => void;
+	sshAuthAnswer: (
+		sessionId: string,
+		answers: string[]
+	) => Promise<{ success: boolean; error?: string }>;
+	sshOpenRemoteFolder: (
+		sessionId: string,
+		remotePath: string
+	) => Promise<{ success: boolean; localPath?: string; error?: string }>;
 
 	onSetWorkspace: (callback: (workspacePath: string) => void) => void;
 	onTriggerOpenWorkspace: (callback: () => void) => void;

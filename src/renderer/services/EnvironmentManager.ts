@@ -1,5 +1,6 @@
 import { Dataset, DataTypeAnalysis } from "./types";
 import { DatasetManager } from "./DatasetManager";
+import { ElectronClient } from "../utils/ElectronClient";
 
 export interface EnvironmentStatus {
 	venvExists: boolean;
@@ -45,7 +46,7 @@ export class EnvironmentManager {
 	async getWorkspaceKernelName(workspaceDir: string): Promise<string> {
 		try {
 			const metadataPath = `${workspaceDir}/workspace_metadata.json`;
-			const content = await window.electronAPI.readFile(metadataPath);
+			const content = await ElectronClient.readFile(metadataPath);
 			const metadata = JSON.parse(content);
 			return metadata?.kernelName || "python3";
 		} catch (error) {
@@ -66,7 +67,7 @@ export class EnvironmentManager {
 			this.updateStatus("🔧 Starting Jupyter with workspace kernels...");
 
 			// Start Jupyter server with workspace kernels
-			const result = await window.electronAPI.startJupyter(workspaceDir);
+			const result = await ElectronClient.startJupyter(workspaceDir);
 
 			if (result.success) {
 				console.log("✅ Jupyter started with workspace kernels");
@@ -100,9 +101,7 @@ export class EnvironmentManager {
 			const kernelSpecPath = `${kernelsDir}/kernel.json`;
 
 			try {
-				const kernelSpecContent = await window.electronAPI.readFile(
-					kernelSpecPath
-				);
+				const kernelSpecContent = await ElectronClient.readFile(kernelSpecPath);
 				const kernelSpec = JSON.parse(kernelSpecContent);
 
 				// Verify that the kernel spec points to the workspace's virtual environment Python
@@ -149,14 +148,14 @@ export class EnvironmentManager {
 
 			// Check if virtual environment exists
 			const venvPath = `${workspaceDir}/venv`;
-			const venvExists = await window.electronAPI.directoryExists(venvPath);
+			const venvExists = await ElectronClient.directoryExists(venvPath);
 			status.venvExists = venvExists;
 
 			if (!venvExists) {
 				this.updateStatus("🔧 Creating virtual environment...");
 				try {
 					// Create virtual environment using IPC
-					const venvResult = await window.electronAPI.createVirtualEnv(
+					const venvResult = await ElectronClient.createVirtualEnv(
 						workspaceDir
 					);
 					if (!venvResult.success) {
@@ -406,7 +405,7 @@ except ImportError:
 `;
 
 		try {
-			const testResult = await window.electronAPI.executeJupyterCode(
+			const testResult = await ElectronClient.executeJupyterCode(
 				testCode,
 				workspaceDir
 			);

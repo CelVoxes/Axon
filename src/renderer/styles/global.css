@@ -28,6 +28,14 @@ body {
 	overflow: hidden;
 }
 
+/* xterm tweaks */
+.xterm-viewport {
+	scrollbar-color: #444 #111;
+}
+.xterm .xterm-screen canvas {
+	border-radius: 6px;
+}
+
 #root {
 	width: 100vw;
 	height: 100vh;

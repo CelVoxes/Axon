@@ -220,4 +220,30 @@ export const electronAPI = {
 	): Promise<{ success: boolean; error?: string }> {
 		return safeElectronAPICall<any>("interruptJupyter", workspacePath);
 	},
+
+	// SSH operations
+	async sshStart(
+		sessionId: string,
+		config: any
+	): Promise<{ success: boolean; error?: string }> {
+		return safeElectronAPICall<any>("sshStart", sessionId, config);
+	},
+	async sshWrite(
+		sessionId: string,
+		data: string
+	): Promise<{ success: boolean; error?: string }> {
+		return safeElectronAPICall<any>("sshWrite", sessionId, data);
+	},
+	async sshResize(
+		sessionId: string,
+		cols: number,
+		rows: number
+	): Promise<{ success: boolean; error?: string }> {
+		return safeElectronAPICall<any>("sshResize", sessionId, cols, rows);
+	},
+	async sshStop(
+		sessionId: string
+	): Promise<{ success: boolean; error?: string }> {
+		return safeElectronAPICall<any>("sshStop", sessionId);
+	},
 };

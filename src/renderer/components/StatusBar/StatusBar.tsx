@@ -8,15 +8,16 @@ import { typography } from "../../styles/design-system";
 
 const StatusBarContainer = styled.div`
 	height: 24px;
-	background: #007acc;
+	background: #222;
 	display: flex;
+
 	align-items: center;
 	justify-content: space-between;
-	padding: 0 12px;
+	padding: 0 4px;
 	font-size: ${typography.sm};
 	color: white;
 	flex-shrink: 0;
-	border-top: 1px solid #005a9e;
+	border-top: 1px solid #444;
 `;
 
 const StatusLeft = styled.div`
@@ -36,8 +37,7 @@ const StatusItem = styled.div`
 	align-items: center;
 	gap: 4px;
 	padding: 2px 6px;
-	border-radius: 2px;
-	background: rgba(255, 255, 255, 0.1);
+
 	font-weight: 500;
 	transition: background-color 0.2s;
 `;

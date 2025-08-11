@@ -1,6 +1,6 @@
 import React from "react";
 import styled from "styled-components";
-import { FiFolder } from "react-icons/fi";
+import { FiFolder, FiServer } from "react-icons/fi";
 // @ts-ignore
 import axonLogo from "../../../png/axon-no-background.png";
 import { typography } from "../../styles/design-system";
@@ -50,9 +50,8 @@ const ActionCard = styled.button`
 	flex-direction: column;
 	align-items: center;
 	justify-content: center;
-	padding: 24px;
-	min-width: 140px;
-	height: 120px;
+	padding: 20px;
+	min-width: 160px;
 	background-color: #2d2d2d;
 	border: 1px solid #404040;
 	border-radius: 8px;
@@ -127,11 +126,13 @@ const RecentProjects = styled.div`
 interface WelcomeScreenProps {
 	recentWorkspaces: string[];
 	onOpenWorkspace: (path: string) => void;
+	onOpenSSH: () => void;
 }
 
 export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
 	recentWorkspaces,
 	onOpenWorkspace,
+	onOpenSSH,
 }) => {
 	return (
 		<WelcomeContainer>
@@ -150,17 +151,13 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
 						<FiFolder size={18} />
 					</div>
 					<div className="label">Open project</div>
-					<div className="description">Open an existing folder</div>
 				</ActionCard>
 
-				<ActionCard
-					onClick={() => {
-						// Clone repo functionality
-					}}
-				>
-					<div className="icon">⌘</div>
-					<div className="label">Clone repo</div>
-					<div className="description">Clone from Git repository</div>
+				<ActionCard onClick={onOpenSSH}>
+					<div className="icon">
+						<FiServer size={18} />
+					</div>
+					<div className="label">Connect via SSH</div>
 				</ActionCard>
 			</WelcomeActions>
 

@@ -1,6 +1,7 @@
 import { Dataset } from "./types";
 import { AsyncUtils } from "../utils/AsyncUtils";
 import { EventManager } from "../utils/EventManager";
+import { ElectronClient } from "../utils/ElectronClient";
 
 export interface NotebookCell {
 	id: string;
@@ -113,7 +114,7 @@ export class NotebookService {
 	): Promise<void> {
 		try {
 			// Read current notebook
-			const notebookContent = await window.electronAPI.readFile(notebookPath);
+			const notebookContent = await ElectronClient.readFile(notebookPath);
 			const notebook = JSON.parse(notebookContent);
 
 			// Update cell output
@@ -128,7 +129,7 @@ export class NotebookService {
 			}
 
 			// Write updated notebook
-			await window.electronAPI.writeFile(
+			await ElectronClient.writeFile(
 				notebookPath,
 				JSON.stringify(notebook, null, 2)
 			);
@@ -177,7 +178,7 @@ export class NotebookService {
 			// First, check if the notebook is already ready (in case event was dispatched before listener was set up)
 			const checkIfAlreadyReady = async () => {
 				try {
-					const fileContent = await window.electronAPI.readFile(notebookPath);
+					const fileContent = await ElectronClient.readFile(notebookPath);
 					if (fileContent && fileContent.length > 0) {
 						// Try to parse as JSON to verify it's a valid notebook
 						try {
@@ -204,7 +205,7 @@ export class NotebookService {
 					`NotebookService: Timeout waiting for notebook ready: ${notebookPath}`
 				);
 				try {
-					const fileContent = await window.electronAPI.readFile(notebookPath);
+					const fileContent = await ElectronClient.readFile(notebookPath);
 					console.log(
 						`NotebookService: Notebook file exists and has content length: ${fileContent.length}`
 					);
@@ -259,7 +260,7 @@ export class NotebookService {
 		while (attempts < maxAttempts) {
 			try {
 				// Check if file exists by trying to read it
-				await window.electronAPI.readFile(notebookPath);
+				await ElectronClient.readFile(notebookPath);
 				break; // File exists, proceed to open
 			} catch (error) {
 				attempts++;
@@ -454,7 +455,7 @@ export class NotebookService {
 
 			// Verify the file was written correctly
 			try {
-				const writtenContent = await window.electronAPI.readFile(notebookPath);
+				const writtenContent = await ElectronClient.readFile(notebookPath);
 				console.log(
 					`NotebookService: Verified notebook file has ${writtenContent.length} bytes`
 				);

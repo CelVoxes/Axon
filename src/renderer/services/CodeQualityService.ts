@@ -1,6 +1,11 @@
 import { BackendClient } from "./BackendClient";
 import { CellExecutionService } from "./CellExecutionService";
 import { CodeGenerationService } from "./CodeGenerationService";
+import {
+	extractImports as sharedExtractImports,
+	getExistingImports as sharedGetExistingImports,
+	removeDuplicateImports as sharedRemoveDuplicateImports,
+} from "../utils/ImportUtils";
 
 export interface CodeQualityResult {
 	isValid: boolean;
@@ -696,36 +701,14 @@ ${code.replace(/while\s+(True|1):/g, (match) => {
 	 * Extract imports from code string
 	 */
 	private extractImports(code: string): Set<string> {
-		const imports = new Set<string>();
-		const lines = code.split("\n");
-
-		for (const line of lines) {
-			const trimmedLine = line.trim();
-			// Match various import patterns
-			if (
-				trimmedLine.startsWith("import ") ||
-				trimmedLine.startsWith("from ") ||
-				trimmedLine.match(/^import\s+\w+/)
-			) {
-				imports.add(trimmedLine);
-			}
-		}
-
-		return imports;
+		return sharedExtractImports(code);
 	}
 
 	/**
 	 * Get all imports from global code context
 	 */
 	private getExistingImports(globalCodeContext?: string): Set<string> {
-		const allImports = new Set<string>();
-
-		if (globalCodeContext) {
-			const imports = this.extractImports(globalCodeContext);
-			imports.forEach((imp) => allImports.add(imp));
-		}
-
-		return allImports;
+		return sharedGetExistingImports(globalCodeContext);
 	}
 
 	/**
@@ -735,29 +718,7 @@ ${code.replace(/while\s+(True|1):/g, (match) => {
 		code: string,
 		existingImports: Set<string>
 	): string {
-		const lines = code.split("\n");
-		const filteredLines: string[] = [];
-
-		for (const line of lines) {
-			const trimmedLine = line.trim();
-			// Check if this line is an import
-			if (
-				trimmedLine.startsWith("import ") ||
-				trimmedLine.startsWith("from ") ||
-				trimmedLine.match(/^import\s+\w+/)
-			) {
-				// Only add if this import doesn't already exist
-				if (!existingImports.has(trimmedLine)) {
-					filteredLines.push(line);
-					existingImports.add(trimmedLine); // Track this new import
-				}
-			} else {
-				// Non-import line, always include
-				filteredLines.push(line);
-			}
-		}
-
-		return filteredLines.join("\n");
+		return sharedRemoveDuplicateImports(code, existingImports);
 	}
 
 	private addBasicImports(code: string, globalCodeContext?: string): string {

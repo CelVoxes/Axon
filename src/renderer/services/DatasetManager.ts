@@ -1,4 +1,5 @@
 import { Dataset, DataTypeAnalysis } from "./types";
+import { ElectronClient } from "../utils/ElectronClient";
 
 export interface FileAnalysis {
 	dataType: string;
@@ -114,7 +115,7 @@ export class DatasetManager {
 			}
 
 			// Otherwise search the workspace directory heuristically
-			const files = await window.electronAPI.listDirectory(workspaceDir);
+			const files = await ElectronClient.listDirectory(workspaceDir);
 			const normalizedTitle = (dataset.title || "")
 				.toLowerCase()
 				.replace(/\s+/g, "_");
@@ -139,7 +140,7 @@ export class DatasetManager {
 			// For large/binary files, avoid reading whole content unnecessarily
 			let content = "";
 			try {
-				content = await window.electronAPI.readFile(filePath);
+				content = await ElectronClient.readFile(filePath);
 			} catch (_) {
 				// If cannot read as text, continue with extension-based detection
 			}

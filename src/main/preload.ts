@@ -85,6 +85,31 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		ipcRenderer.on("jupyter-code-writing", (_, data) => callback(data));
 	},
 
+	// SSH operations
+	sshStart: (sessionId: string, config: any) =>
+		ipcRenderer.invoke("ssh-start", sessionId, config),
+	sshWrite: (sessionId: string, data: string) =>
+		ipcRenderer.invoke("ssh-write", sessionId, data),
+	sshResize: (sessionId: string, cols: number, rows: number) =>
+		ipcRenderer.invoke("ssh-resize", sessionId, cols, rows),
+	sshStop: (sessionId: string) => ipcRenderer.invoke("ssh-stop", sessionId),
+	onSSHData: (callback: (data: any) => void) => {
+		ipcRenderer.on("ssh-data", (_, data) => callback(data));
+	},
+	onSSHError: (callback: (data: any) => void) => {
+		ipcRenderer.on("ssh-error", (_, data) => callback(data));
+	},
+	onSSHClosed: (callback: (data: any) => void) => {
+		ipcRenderer.on("ssh-closed", (_, data) => callback(data));
+	},
+	onSSHAuthPrompt: (callback: (data: any) => void) => {
+		ipcRenderer.on("ssh-auth-prompt", (_, data) => callback(data));
+	},
+	sshAuthAnswer: (sessionId: string, answers: string[]) =>
+		ipcRenderer.invoke("ssh-auth-answer", sessionId, answers),
+	sshOpenRemoteFolder: (sessionId: string, remotePath: string) =>
+		ipcRenderer.invoke("ssh-open-remote-folder", sessionId, remotePath),
+
 	// Workspace events
 	onSetWorkspace: (callback: (workspacePath: string) => void) => {
 		ipcRenderer.on("set-workspace", (_, workspacePath) =>

@@ -12,6 +12,11 @@ import {
 	ICodeGenerator,
 } from "./types";
 import { ConfigManager } from "./ConfigManager";
+import {
+	extractImports as sharedExtractImports,
+	getExistingImports as sharedGetExistingImports,
+	removeDuplicateImports as sharedRemoveDuplicateImports,
+} from "../utils/ImportUtils";
 
 export class CodeGenerationService implements ICodeGenerator {
 	private backendClient: BackendClient;
@@ -143,36 +148,14 @@ export class CodeGenerationService implements ICodeGenerator {
 	 * Extract imports from code string
 	 */
 	private extractImports(code: string): Set<string> {
-		const imports = new Set<string>();
-		const lines = code.split("\n");
-
-		for (const line of lines) {
-			const trimmedLine = line.trim();
-			// Match various import patterns
-			if (
-				trimmedLine.startsWith("import ") ||
-				trimmedLine.startsWith("from ") ||
-				trimmedLine.match(/^import\s+\w+/)
-			) {
-				imports.add(trimmedLine);
-			}
-		}
-
-		return imports;
+		return sharedExtractImports(code);
 	}
 
 	/**
 	 * Get all imports from global code context
 	 */
 	private getExistingImports(globalCodeContext?: string): Set<string> {
-		const allImports = new Set<string>();
-
-		if (globalCodeContext) {
-			const imports = this.extractImports(globalCodeContext);
-			imports.forEach((imp) => allImports.add(imp));
-		}
-
-		return allImports;
+		return sharedGetExistingImports(globalCodeContext);
 	}
 
 	/**
@@ -182,29 +165,7 @@ export class CodeGenerationService implements ICodeGenerator {
 		code: string,
 		existingImports: Set<string>
 	): string {
-		const lines = code.split("\n");
-		const filteredLines: string[] = [];
-
-		for (const line of lines) {
-			const trimmedLine = line.trim();
-			// Check if this line is an import
-			if (
-				trimmedLine.startsWith("import ") ||
-				trimmedLine.startsWith("from ") ||
-				trimmedLine.match(/^import\s+\w+/)
-			) {
-				// Only add if this import doesn't already exist
-				if (!existingImports.has(trimmedLine)) {
-					filteredLines.push(line);
-					existingImports.add(trimmedLine); // Track this new import
-				}
-			} else {
-				// Non-import line, always include
-				filteredLines.push(line);
-			}
-		}
-
-		return filteredLines.join("\n");
+		return sharedRemoveDuplicateImports(code, existingImports);
 	}
 
 	private buildEnhancedContext(request: CodeGenerationRequest): string {
@@ -253,13 +214,11 @@ Available datasets (use ONLY these, do NOT invent links):
 ${datasetInfo}
 
 Dataset handling constraints:
-		- Data files are already downloaded to ./data by a previous step. Do NOT re-download; only load existing files.
-		- Use ONLY the provided dataset URLs above if present. If a dataset has no URL, print a clear message and skip it.
-- Create a local data directory (./data) and download files there before loading.
-- For format=h5ad: use anndata.read_h5ad on the downloaded file.
-- For format=csv/tsv/txt: use pandas read_csv with the appropriate separator.
-- Validate HTTP status codes, content-type, and file size before saving.
-- Add robust error handling; continue if a specific dataset fails.
+		- Data files should already exist in ./data (from a prior step) or be available via localPath.
+		- Do NOT re-download data in this step; if a file is missing, print a clear message and skip.
+		- For format=h5ad: use anndata.read_h5ad on the existing file.
+		- For format=csv/tsv/txt: use pandas read_csv with the appropriate separator.
+		- Add robust error handling; continue if a specific dataset fails.
 
 Local datasets:
 - If localPath is provided, prefer loading from that path instead of downloading.

@@ -1,5 +1,6 @@
 import { Dataset } from "./types";
 import { AsyncUtils } from "../utils/AsyncUtils";
+import { ElectronClient } from "../utils/ElectronClient";
 
 export interface WorkspaceInfo {
 	path: string;
@@ -60,7 +61,7 @@ export class WorkspaceManager {
 				: `./workspaces/${workspaceName}`;
 
 			// Create workspace directories
-			await window.electronAPI.createDirectory(workspacePath);
+			await ElectronClient.createDirectory(workspacePath);
 			// Proactively refresh file tree in case listeners are not attached yet
 			window.dispatchEvent(new Event("refreshFileTree"));
 
@@ -85,7 +86,7 @@ export class WorkspaceManager {
 
 		while (attempts < maxAttempts) {
 			try {
-				await window.electronAPI.readFile(filePath);
+				await ElectronClient.readFile(filePath);
 				return {
 					exists: true,
 					path: filePath,
@@ -115,7 +116,7 @@ export class WorkspaceManager {
 	 */
 	async checkDirectoryExists(dirPath: string): Promise<boolean> {
 		try {
-			return await window.electronAPI.directoryExists(dirPath);
+			return await ElectronClient.directoryExists(dirPath);
 		} catch (error) {
 			console.error(`Error checking directory ${dirPath}:`, error);
 			return false;
@@ -127,7 +128,7 @@ export class WorkspaceManager {
 	 */
 	async writeFile(filePath: string, content: string): Promise<boolean> {
 		try {
-			await window.electronAPI.writeFile(filePath, content);
+			await ElectronClient.writeFile(filePath, content);
 			return true;
 		} catch (error) {
 			console.error(`Error writing file ${filePath}:`, error);
@@ -140,7 +141,7 @@ export class WorkspaceManager {
 	 */
 	async readFile(filePath: string): Promise<string | null> {
 		try {
-			return await window.electronAPI.readFile(filePath);
+			return await ElectronClient.readFile(filePath);
 		} catch (error) {
 			console.error(`Error reading file ${filePath}:`, error);
 			return null;

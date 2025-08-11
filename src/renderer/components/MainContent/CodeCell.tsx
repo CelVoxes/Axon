@@ -23,6 +23,8 @@ import "highlight.js/styles/github-dark.css";
 import hljs from "highlight.js";
 import { typography } from "../../styles/design-system";
 import { EventManager } from "../../utils/EventManager";
+import { SHORTCUTS } from "../../utils/Constants";
+import { ActionButton as SharedActionButton } from "@components/shared/StyledComponents";
 
 const CellContainer = styled.div<{ $accentColor?: string }>`
 	margin: 16px 0;
@@ -32,6 +34,108 @@ const CellContainer = styled.div<{ $accentColor?: string }>`
 	overflow: hidden;
 	background: #1e1e1e;
 `;
+
+const FloatingToolbar = styled.div`
+	position: absolute;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	background: #2d2d30;
+	border: 1px solid #3c3c3c;
+	border-radius: 6px;
+	padding: 6px 8px;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+	z-index: 5;
+	transform: translate(-50%, -120%);
+`;
+
+interface SelectionToolbarProps {
+	editorRef: React.MutableRefObject<any>;
+	onAddToChat: () => void;
+}
+
+const MonacoSelectionToolbar: React.FC<SelectionToolbarProps> = ({
+	editorRef,
+	onAddToChat,
+}) => {
+	const [visible, setVisible] = useState(false);
+	const [position, setPosition] = useState<{ left: number; top: number }>({
+		left: 0,
+		top: 0,
+	});
+
+	useEffect(() => {
+		const editor = editorRef.current;
+		if (!editor) return;
+
+		const updateFromSelection = () => {
+			try {
+				const selection = editor.getSelection?.();
+				const model = editor.getModel?.();
+				const hasSelection = !!selection && !selection.isEmpty?.();
+				if (!hasSelection || !model) {
+					setVisible(false);
+					return;
+				}
+				const start = selection.getStartPosition();
+				const end = selection.getEndPosition();
+				const midLine = Math.min(
+					(start.lineNumber + end.lineNumber) / 2,
+					end.lineNumber
+				);
+				const midColumn =
+					start.lineNumber === end.lineNumber
+						? (start.column + end.column) / 2
+						: end.column;
+				const layout = editor.getLayoutInfo?.();
+				const topForLine =
+					editor.getTopForLineNumber?.(Math.floor(midLine)) ?? 0;
+				const leftForColumn =
+					editor.getOffsetForColumn?.(
+						Math.floor(midLine),
+						Math.floor(midColumn)
+					) ?? 0;
+				const editorDom = editor.getDomNode?.();
+				if (!editorDom || !layout) {
+					setVisible(false);
+					return;
+				}
+				const rect = editorDom.getBoundingClientRect();
+				setPosition({
+					left: rect.left + leftForColumn + layout.contentLeft,
+					top: rect.top + topForLine,
+				});
+				setVisible(true);
+			} catch {
+				setVisible(false);
+			}
+		};
+
+		const disposables: any[] = [];
+		disposables.push(editor.onDidChangeCursorSelection?.(updateFromSelection));
+		disposables.push(editor.onDidScrollChange?.(updateFromSelection));
+		// Update once on mount
+		updateFromSelection();
+
+		return () => {
+			disposables.forEach((d) => d && d.dispose && d.dispose());
+		};
+	}, [editorRef]);
+
+	if (!visible) return null;
+
+	return (
+		<div
+			style={{ position: "absolute", left: position.left, top: position.top }}
+		>
+			<FloatingToolbar>
+				<SharedActionButton onClick={onAddToChat} $variant="secondary">
+					Add to Chat ({SHORTCUTS.ADD_TO_CHAT.accelerator})
+				</SharedActionButton>
+			</FloatingToolbar>
+		</div>
+	);
+};
 
 const CellHeader = styled.div`
 	display: flex;
@@ -82,6 +186,10 @@ const CodeInput = styled.textarea`
 	&::placeholder {
 		color: #858585;
 	}
+`;
+
+const CellBody = styled.div`
+	position: relative;
 `;
 
 const OutputContainer = styled.div`
@@ -332,6 +440,14 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const monacoEditorRef = useRef<any>(null);
 
+	// Sync local editor state when parent updates initialCode (e.g., after external edits)
+	useEffect(() => {
+		if (initialCode !== code) {
+			setCode(initialCode);
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [initialCode]);
+
 	// Initialize CellExecutionService
 	const cellExecutionService = useMemo(() => {
 		return workspacePath ? new CellExecutionService(workspacePath) : null;
@@ -426,15 +542,18 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 
 	const askChatToEditSelection = () => {
 		let selectedText = "";
+		// Default selection bounds assume entire code
+		let selectionStart = 0;
+		let selectionEnd = code.length;
+
 		if (language === "markdown") {
 			const el = textareaRef.current;
 			if (el) {
 				const start = el.selectionStart ?? 0;
 				const end = el.selectionEnd ?? 0;
-				selectedText = code.substring(
-					Math.min(start, end),
-					Math.max(start, end)
-				);
+				selectionStart = Math.min(start, end);
+				selectionEnd = Math.max(start, end);
+				selectedText = code.substring(selectionStart, selectionEnd);
 			}
 		} else if (monacoEditorRef.current) {
 			try {
@@ -442,8 +561,14 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 				const selection = editor.getSelection && editor.getSelection();
 				if (selection && editor.getModel) {
 					const model = editor.getModel();
-					if (model && model.getValueInRange) {
+					if (model && model.getValueInRange && model.getOffsetAt) {
 						selectedText = model.getValueInRange(selection) || "";
+						const startPos = selection.getStartPosition();
+						const endPos = selection.getEndPosition();
+						const startOffset = model.getOffsetAt(startPos);
+						const endOffset = model.getOffsetAt(endPos);
+						selectionStart = Math.min(startOffset, endOffset);
+						selectionEnd = Math.max(startOffset, endOffset);
 					}
 				}
 			} catch (_) {
@@ -454,12 +579,17 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		// Fallback to entire code if no explicit selection
 		if (!selectedText || selectedText.trim().length === 0) {
 			selectedText = code;
+			selectionStart = 0;
+			selectionEnd = code.length;
 		}
 
 		EventManager.dispatchEvent("chat-edit-selection", {
 			filePath,
 			cellIndex,
 			selectedText,
+			fullCode: code,
+			selectionStart,
+			selectionEnd,
 			language,
 		});
 	};
@@ -548,15 +678,30 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 				</>
 			) : (
 				<>
-					<div style={{ borderTop: "1px solid #404040" }}>
+					<CellBody style={{ borderTop: "1px solid #404040" }}>
 						<Editor
 							height="260px"
 							value={code}
 							onChange={handleEditorChange}
 							language={language === "python" ? "python" : "plaintext"}
 							theme="vs-dark"
-							onMount={(editor) => {
+							onMount={(editor, monaco) => {
 								monacoEditorRef.current = editor;
+								try {
+									// Add editor command for Add to Chat
+									editor.addAction({
+										id: "add-to-chat",
+										label: "Add to Chat",
+										keybindings: monaco
+											? [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyL]
+											: [],
+										run: () => {
+											askChatToEditSelection();
+										},
+									});
+								} catch (_) {
+									// ignore monaco addAction failures
+								}
 							}}
 							options={{
 								fontSize: 13,
@@ -568,7 +713,12 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 								renderWhitespace: "selection",
 							}}
 						/>
-					</div>
+						{/* Floating toolbar near selection */}
+						<MonacoSelectionToolbar
+							editorRef={monacoEditorRef}
+							onAddToChat={askChatToEditSelection}
+						/>
+					</CellBody>
 					{output && <OutputRenderer output={output} hasError={hasError} />}
 				</>
 			)}

@@ -523,47 +523,59 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 	 */
 	private buildLocalDataPreparationCode(datasets: Dataset[]): string {
 		const lines: string[] = [];
-		// Filter to only datasets that have localPath provided
 		const localDatasets = datasets.filter((d: any) =>
 			Boolean((d as any).localPath)
 		);
 
-		// Minimal cell: load the first local dataset into variable `data`
 		lines.push("from pathlib import Path");
-		lines.push("data = None");
+		lines.push("import os");
+		lines.push("print('Preparing local datasets...')");
+		lines.push("local_datasets = {}");
+		lines.push("");
+
 		if (localDatasets.length === 0) {
 			lines.push("print('No local datasets selected')");
-			lines.push("# data remains None");
+			lines.push("# local_datasets will remain empty");
+			lines.push("");
 			return lines.join("\n");
 		}
 
-		const first = localDatasets[0] as any;
-		const firstPath = (first.localPath || "")
-			.replace(/\\/g, "\\\\")
-			.replace(/"/g, '\\"');
+		for (const d of localDatasets as any[]) {
+			const safeTitle = (d.title || d.id).replace(/\"/g, '\\"');
+			const safePath = (d.localPath || "")
+				.replace(/\\/g, "\\\\")
+				.replace(/\"/g, '\\"');
+			const isDir = Boolean(d.isLocalDirectory);
+			lines.push(`# ${safeTitle}`);
+			lines.push(`_path = Path("${safePath}")`);
+			lines.push("exists = _path.exists()");
+			lines.push(
+				"kind = 'directory' if _path.is_dir() else ('file' if _path.is_file() else 'unknown')"
+			);
+			lines.push(
+				"print(f'- ${safeTitle}: {kind} -> {str(_path)} | exists: {exists}')"
+			);
+			lines.push("if _path.is_dir():");
+			lines.push("    # 10x-style folder heuristics (also check gz variants)");
+			lines.push(
+				"    mtx = (_path / 'matrix.mtx').exists() or (_path / 'matrix.mtx.gz').exists()"
+			);
+			lines.push(
+				"    features = (_path / 'features.tsv').exists() or (_path / 'features.tsv.gz').exists() or (_path / 'genes.tsv').exists() or (_path / 'genes.tsv.gz').exists()"
+			);
+			lines.push(
+				"    barcodes = (_path / 'barcodes.tsv').exists() or (_path / 'barcodes.tsv.gz').exists()"
+			);
+			lines.push(
+				"    print('  contains 10x markers:' , 'matrix.mtx' if mtx else '-', 'features/genes' if features else '-', 'barcodes.tsv' if barcodes else '-')"
+			);
+			lines.push(`local_datasets["${String((d as any).id)}"] = str(_path)`);
+			lines.push("");
+		}
 
-		lines.push(`# Loading: ${(first.title || first.id).replace(/"/g, '\\"')}`);
-		lines.push(`_path = Path("${firstPath}")`);
-		lines.push("try:");
-		lines.push("    if _path.is_dir():");
-		lines.push("        import scanpy as sc");
-		lines.push("        data = sc.read_10x_mtx(str(_path))");
-		lines.push("    else:");
-		lines.push("        p = str(_path).lower()");
-		lines.push("        if p.endswith('.h5ad'):");
-		lines.push("            import anndata as ad");
-		lines.push("            data = ad.read_h5ad(str(_path))");
-		lines.push("        elif p.endswith('.csv'):");
-		lines.push("            import pandas as pd");
-		lines.push("            data = pd.read_csv(str(_path))");
-		lines.push("        elif p.endswith('.tsv') or p.endswith('.txt'):");
-		lines.push("            import pandas as pd");
-		lines.push("            data = pd.read_csv(str(_path), sep='\t')");
-		lines.push("        else:");
-		lines.push("            print(f'Unsupported format: {str(_path)}')");
-		lines.push("    print('Loaded local dataset into variable \"data\"')");
-		lines.push("except Exception as e:");
-		lines.push("    print(f'Error loading local dataset: {e}')");
+		lines.push(
+			"print('Local dataset mapping prepared (variable: local_datasets)')"
+		);
 		lines.push("");
 		return lines.join("\n");
 	}

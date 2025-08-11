@@ -35,6 +35,21 @@ export const Composer: React.FC<ComposerProps> = ({
 	const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const rafIdRef = React.useRef<number | null>(null);
 
+	const resizeTextarea = React.useCallback((el: HTMLTextAreaElement) => {
+		// Read max-height from computed styles to avoid hardcoding
+		const computed = window.getComputedStyle(el);
+		const maxHeightStr = computed.maxHeight;
+		const maxHeight = Number.isFinite(parseFloat(maxHeightStr))
+			? parseFloat(maxHeightStr)
+			: Number.POSITIVE_INFINITY;
+
+		el.style.height = "auto";
+		const next = Math.min(el.scrollHeight, maxHeight);
+		if (el.style.height !== `${next}px`) {
+			el.style.height = `${next}px`;
+		}
+	}, []);
+
 	const applyModel = (next: string) => {
 		setModel(next);
 		ConfigManager.getInstance().setValue(
@@ -67,18 +82,20 @@ export const Composer: React.FC<ComposerProps> = ({
 			if (rafIdRef.current) {
 				cancelAnimationFrame(rafIdRef.current);
 			}
-			rafIdRef.current = requestAnimationFrame(() => {
-				const maxHeight = 120;
-				// Measure first without forcing multiple reflows
-				el.style.height = "auto";
-				const next = Math.min(el.scrollHeight, maxHeight);
-				if (el.style.height !== `${next}px`) {
-					el.style.height = `${next}px`;
-				}
-			});
+			rafIdRef.current = requestAnimationFrame(() => resizeTextarea(el));
 		},
-		[onChange]
+		[onChange, resizeTextarea]
 	);
+
+	// Ensure resize when value is updated programmatically
+	React.useLayoutEffect(() => {
+		if (!textareaRef.current) return;
+		// Use rAF to run after DOM updates/paint
+		if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
+		rafIdRef.current = requestAnimationFrame(() => {
+			if (textareaRef.current) resizeTextarea(textareaRef.current);
+		});
+	}, [value, resizeTextarea]);
 
 	return (
 		<div className="chat-input-container">

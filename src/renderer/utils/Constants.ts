@@ -49,6 +49,13 @@ export const DEFAULT_CONFIGS = {
 	TIMEOUT_MS: 120000,
 } as const;
 
+// Centralized keyboard shortcuts
+export const SHORTCUTS = {
+	ADD_TO_CHAT: {
+		accelerator: "CmdOrCtrl+L", // renderer/editor usage label
+	},
+} as const;
+
 export type Language = (typeof LANGUAGES)[keyof typeof LANGUAGES];
 export type CellStatus = (typeof CELL_STATUS)[keyof typeof CELL_STATUS];
 export type AnalysisType = (typeof ANALYSIS_TYPES)[keyof typeof ANALYSIS_TYPES];

@@ -10,7 +10,9 @@ const MenuContainer = styled.div`
 	width: 320px; /* default width */
 	max-width: 480px; /* prevent overflows */
 	max-height: 200px; /* shorter */
-	overflow: auto;
+	box-sizing: border-box;
+	overflow-y: auto;
+	overflow-x: hidden;
 	background: #1e1e1e;
 	border: 1px solid #2a2a2a;
 	border-radius: 6px;
@@ -31,6 +33,9 @@ const Item = styled.div<{ $active?: boolean }>`
 	align-items: center;
 	gap: 6px;
 	cursor: pointer;
+	flex-wrap: nowrap;
+	white-space: nowrap;
+	overflow: hidden;
 	background: ${(p) => (p.$active ? "#2b2f3a" : "transparent")};
 	&:hover {
 		background: #2b2f3a;
@@ -41,11 +46,22 @@ const Alias = styled.span`
 	color: #fff;
 	font-size: ${typography.sm}; /* smaller */
 	font-weight: 600;
+	flex: 1 1 auto;
+	min-width: 0; /* allow flex child to shrink for ellipsis */
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 `;
 
 const Meta = styled.span`
 	color: #888;
 	font-size: 11px; /* extra small */
+	flex: 0 1 auto;
+	min-width: 0;
+	margin-left: auto;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 `;
 
 const Footer = styled.div`

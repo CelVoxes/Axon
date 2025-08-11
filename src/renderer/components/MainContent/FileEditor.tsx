@@ -455,6 +455,13 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					};
 
 					setNotebookData(updatedNotebook);
+					// Update in-memory editor state for immediate UI reflection
+					setCellStates((prev) => {
+						const next = [...prev];
+						const prevEntry = next[actualCellIndex] || { code: "", output: "" };
+						next[actualCellIndex] = { ...prevEntry, code };
+						return next;
+					});
 					setHasChanges(true);
 
 					// Auto-save the notebook and dispatch success event after completion

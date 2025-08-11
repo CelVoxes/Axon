@@ -40,6 +40,7 @@ import {
 	Dataset,
 } from "../../services/types";
 import { EventManager } from "../../utils/EventManager";
+import { NotebookService } from "../../services/NotebookService";
 
 // Removed duplicated local code rendering. Use shared CodeBlock instead.
 
@@ -134,6 +135,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [activeLocalIndex, setActiveLocalIndex] = useState<number>(-1);
 	const [activeWorkspaceIndex, setActiveWorkspaceIndex] = useState<number>(-1);
 
+	// Selection-based code edit context (set when user triggers Ask Chat from a notebook cell)
+	interface CodeEditContext {
+		filePath?: string;
+		cellIndex?: number;
+		language?: string;
+		selectedText: string;
+		fullCode?: string;
+		selectionStart?: number;
+		selectionEnd?: number;
+	}
+	const [codeEditContext, setCodeEditContext] =
+		useState<CodeEditContext | null>(null);
+
 	// Prefill composer when user triggers chat-edit-selection from an editor
 	useEffect(() => {
 		const cleanup = EventManager.createManagedListener(
@@ -145,6 +159,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				const prefix = `Please edit the selected ${lang} code.\n`;
 				const fenced = "\n```" + lang + "\n" + snippet + "\n```\n";
 				setInputValue(prefix + fenced);
+				// Save edit context for in-place update on send
+				setCodeEditContext({
+					filePath: detail.filePath,
+					cellIndex: detail.cellIndex,
+					language: detail.language,
+					selectedText: detail.selectedText,
+					fullCode: detail.fullCode,
+					selectionStart: detail.selectionStart,
+					selectionEnd: detail.selectionEnd,
+				});
 				// Ensure chat opens and is focused
 				if (!uiState.showChatPanel || uiState.chatCollapsed) {
 					uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
@@ -674,6 +698,121 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		let isMounted = true;
 
 		try {
+			// If there is an active code edit context, perform edit-in-place and return early
+			if (
+				codeEditContext &&
+				codeEditContext.filePath &&
+				codeEditContext.cellIndex !== undefined
+			) {
+				if (!backendClient) {
+					addMessage(
+						"Backend not ready to edit code. Please try again in a moment.",
+						false
+					);
+					return;
+				}
+				const wsPath = workspaceState.currentWorkspace || "";
+				const notebookService = new NotebookService({ workspacePath: wsPath });
+
+				// Build LLM prompt to transform only the selected snippet
+				const lang = (codeEditContext.language || "python").toLowerCase();
+				const originalSnippet = codeEditContext.selectedText || "";
+				const task =
+					`Edit the following ${lang} code according to the user's instruction. ` +
+					`Return only the revised code snippet that should replace the selection, with no fences and no explanations.`;
+
+				// Streaming accumulation
+				let editedSnippet = "";
+				const streamingMessageId = `edit-${Date.now()}`;
+				analysisDispatch({
+					type: "ADD_MESSAGE",
+					payload: {
+						id: streamingMessageId,
+						content: "",
+						isUser: false,
+						isStreaming: true,
+						code: "",
+					},
+				});
+
+				try {
+					await backendClient.generateCodeStream(
+						{
+							task_description: `${task}\n\nUser instruction:\n${userMessage}\n\nOriginal selected code:\n\n\`\`\`${lang}\n${originalSnippet}\n\`\`\`\n`,
+							language: lang,
+							context: "Notebook code edit-in-place",
+						},
+						(chunk: string) => {
+							editedSnippet += chunk;
+							// Update streaming view as a code block
+							analysisDispatch({
+								type: "UPDATE_MESSAGE",
+								payload: {
+									id: streamingMessageId,
+									updates: {
+										content: `\n\nEdited snippet (streaming):\n\n\`\`\`${lang}\n${editedSnippet}\n\`\`\``,
+										isStreaming: true,
+									},
+								},
+							});
+						}
+					);
+				} catch (e) {
+					addMessage(
+						`Code edit failed: ${e instanceof Error ? e.message : String(e)}`,
+						false
+					);
+					return;
+				} finally {
+					// Close streaming state
+					analysisDispatch({
+						type: "UPDATE_MESSAGE",
+						payload: {
+							id: streamingMessageId,
+							updates: { isStreaming: false },
+						},
+					});
+				}
+
+				// Clean fences if model returned them
+				const cleaned = editedSnippet
+					.replace(/^\s*```[a-zA-Z]*\s*/g, "")
+					.replace(/\s*```\s*$/g, "")
+					.trim();
+
+				// Compute replacement in the full cell code
+				const base = codeEditContext.fullCode ?? "";
+				const start = Math.max(0, codeEditContext.selectionStart ?? 0);
+				const end = Math.min(
+					base.length,
+					codeEditContext.selectionEnd ?? base.length
+				);
+				const newCode =
+					base.substring(0, start) + cleaned + base.substring(end);
+
+				// Persist into the notebook cell
+				const updated = await notebookService.updateCellCode(
+					codeEditContext.filePath,
+					codeEditContext.cellIndex,
+					newCode
+				);
+
+				if (updated) {
+					addMessage(
+						`Notebook updated at cell ${codeEditContext.cellIndex}.`,
+						false
+					);
+				} else {
+					addMessage(
+						`Failed to update notebook cell ${codeEditContext.cellIndex}.`,
+						false
+					);
+				}
+
+				// Clear context after applying edit
+				setCodeEditContext(null);
+				return;
+			}
 			// Check if this is a request for suggestions or help
 			if (isSuggestionsRequest(userMessage)) {
 				await handleSuggestionsRequest(userMessage);
