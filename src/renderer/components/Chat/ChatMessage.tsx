@@ -267,11 +267,37 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 								) {
 									return null;
 								}
+
+								// Compute header title for diff blocks as "+<adds> -<dels>"
+								let headerTitle = "";
+								if (language === "diff") {
+									try {
+										const lines = codeContent.split(/\r?\n/);
+										let adds = 0;
+										let dels = 0;
+										for (const line of lines) {
+											if (
+												line.startsWith("+++") ||
+												line.startsWith("---") ||
+												line.startsWith("diff ") ||
+												line.startsWith("@@")
+											) {
+												continue;
+											}
+											if (line.startsWith("+")) adds++;
+											else if (line.startsWith("-")) dels++;
+										}
+										headerTitle = `+${adds} -${dels}`;
+									} catch {
+										headerTitle = "";
+									}
+								}
+
 								return (
 									<CodeBlock
-										code={String(children || "").trim()}
+										code={codeContent}
 										language={language}
-										title=""
+										title={headerTitle}
 										isStreaming={
 											message.isStreaming || message.status === "pending"
 										}

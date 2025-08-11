@@ -860,7 +860,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		query: string,
 		datasets: Dataset[],
 		analysisSteps: AnalysisStep[],
-		workspaceDir: string
+		workspaceDir: string,
+		options?: { skipEnvCells?: boolean }
 	): Promise<boolean> {
 		console.log(
 			"🚀 STARTING CODE GENERATION - packages should be installed by now"
@@ -896,13 +897,41 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			}
 		}
 
+		// Seed global context from existing notebook so subsequent code is aware
+		try {
+			const fileContent = await (window as any).electronAPI.readFile(
+				notebookPath
+			);
+			const nb = JSON.parse(fileContent);
+			if (Array.isArray(nb?.cells)) {
+				let added = 0;
+				for (let idx = 0; idx < nb.cells.length; idx++) {
+					const c = nb.cells[idx];
+					if (c?.cell_type !== "code") continue;
+					const srcArr: string[] = Array.isArray(c.source) ? c.source : [];
+					const code = srcArr.join("");
+					if (code && code.trim().length > 0) {
+						const id = `nb-cell-${idx}`;
+						this.addCodeToContext(id, code);
+						added++;
+					}
+				}
+				if (added > 0) {
+					this.updateStatus(`Loaded ${added} prior code cells into context`);
+				}
+			}
+		} catch (e) {
+			console.warn("Failed to seed global context from notebook:", e);
+		}
+
 		// Delegate the complex cell generation to a focused method
 		return await this.generateNotebookCells(
 			notebookPath,
 			query,
 			datasets,
 			analysisSteps,
-			workspaceDir
+			workspaceDir,
+			options
 		);
 	}
 
@@ -921,7 +950,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		query: string,
 		datasets: Dataset[],
 		analysisSteps: AnalysisStep[],
-		workspaceDir: string
+		workspaceDir: string,
+		options?: { skipEnvCells?: boolean }
 	): Promise<boolean> {
 		try {
 			if (this.shouldStopAnalysis) {
@@ -938,30 +968,35 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				return false;
 			}
 
-			// Step 2: Generate, lint and add package installation code
-			const packageCode =
-				await this.environmentManager.generatePackageInstallationCode(
-					datasets,
-					analysisSteps
+			// Step 2: (optional) Generate, lint and add package installation code
+			if (!options?.skipEnvCells) {
+				const packageCode =
+					await this.environmentManager.generatePackageInstallationCode(
+						datasets,
+						analysisSteps
+					);
+				// Validate (lint/clean) without executing; execution will happen after adding to notebook
+				const packageTestResult = await this.codeQualityService.validateAndTest(
+					packageCode,
+					"package-install",
+					{ stepTitle: "Package installation", skipExecution: true }
 				);
-			// Validate (lint/clean) without executing; execution will happen after adding to notebook
-			const packageTestResult = await this.codeQualityService.validateAndTest(
-				packageCode,
-				"package-install",
-				{ stepTitle: "Package installation", skipExecution: true }
-			);
-			{
-				const finalPackageCode =
-					this.codeQualityService.getBestCode(packageTestResult);
-				await this.notebookService.addCodeCell(notebookPath, finalPackageCode);
-				this.updateStatus("Package installation cell added");
+				{
+					const finalPackageCode =
+						this.codeQualityService.getBestCode(packageTestResult);
+					await this.notebookService.addCodeCell(
+						notebookPath,
+						finalPackageCode
+					);
+					this.updateStatus("Package installation cell added");
 
-				// Execute the just-added cell with real-time streaming to notebook
-				await this.executeAndStreamNotebookCell(
-					notebookPath,
-					finalPackageCode,
-					"Package installation"
-				);
+					// Execute the just-added cell with real-time streaming to notebook
+					await this.executeAndStreamNotebookCell(
+						notebookPath,
+						finalPackageCode,
+						"Package installation"
+					);
+				}
 			}
 
 			if (this.shouldStopAnalysis) {
@@ -983,36 +1018,38 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				return false;
 			}
 
-			if (remoteDatasets.length > 0) {
-				const rawDataDownloadCode =
-					this.buildDeterministicDataDownloadCode(remoteDatasets);
-				const dataDownloadValidation =
-					await this.codeQualityService.validateAndTest(
-						rawDataDownloadCode,
-						"data-download",
-						{ stepTitle: "Data download", skipExecution: true }
+			if (!options?.skipEnvCells) {
+				if (remoteDatasets.length > 0) {
+					const rawDataDownloadCode =
+						this.buildDeterministicDataDownloadCode(remoteDatasets);
+					const dataDownloadValidation =
+						await this.codeQualityService.validateAndTest(
+							rawDataDownloadCode,
+							"data-download",
+							{ stepTitle: "Data download", skipExecution: true }
+						);
+					const finalDataDownloadCode = this.codeQualityService.getBestCode(
+						dataDownloadValidation
 					);
-				const finalDataDownloadCode = this.codeQualityService.getBestCode(
-					dataDownloadValidation
-				);
-				await this.notebookService.addCodeCell(
-					notebookPath,
-					finalDataDownloadCode
-				);
+					await this.notebookService.addCodeCell(
+						notebookPath,
+						finalDataDownloadCode
+					);
 
-				// Add to global context to prevent re-downloading
-				this.addCodeToContext("data-download", finalDataDownloadCode);
-				this.updateStatus("Data download cell added");
+					// Add to global context to prevent re-downloading
+					this.addCodeToContext("data-download", finalDataDownloadCode);
+					this.updateStatus("Data download cell added");
 
-				await this.executeAndStreamNotebookCell(
-					notebookPath,
-					finalDataDownloadCode,
-					"Data download"
-				);
-			} else {
-				this.updateStatus(
-					"No remote datasets to download; skipping download step"
-				);
+					await this.executeAndStreamNotebookCell(
+						notebookPath,
+						finalDataDownloadCode,
+						"Data download"
+					);
+				} else {
+					this.updateStatus(
+						"No remote datasets to download; skipping download step"
+					);
+				}
 			}
 
 			// 3b) If there are local datasets, add a preparation/verification cell

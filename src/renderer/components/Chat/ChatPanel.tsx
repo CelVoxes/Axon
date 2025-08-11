@@ -718,6 +718,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				// Build LLM prompt to transform only the selected snippet
 				const lang = (codeEditContext.language || "python").toLowerCase();
 				const originalSnippet = codeEditContext.selectedText || "";
+				const filePath = codeEditContext.filePath;
+				const cellIndex = codeEditContext.cellIndex;
+				const fullCode = codeEditContext.fullCode ?? "";
+				const selStart = Math.max(0, codeEditContext.selectionStart ?? 0);
+				const selEnd = Math.min(
+					fullCode.length,
+					codeEditContext.selectionEnd ?? selStart
+				);
+				const beforeSelection = fullCode.slice(0, selStart);
+				const withinSelection = fullCode.slice(selStart, selEnd);
+				const startLine = (beforeSelection.match(/\n/g)?.length ?? 0) + 1;
+				const endLine = startLine + (withinSelection.match(/\n/g)?.length ?? 0);
+				const fileName = filePath.split("/").pop() || filePath;
+
+				// Pre-change explanation in chat
+				addMessage(
+					`Editing plan:\n\n- **Target**: cell ${cellIndex} in \`${fileName}\`\n- **Scope**: replace lines ${startLine}-${endLine} of the selected code\n- **Process**: I will generate the revised snippet (streaming below), then apply it to the notebook and confirm the save.`,
+					false
+				);
 				const task =
 					`Edit the following ${lang} code according to the user's instruction. ` +
 					`Return only the revised code snippet that should replace the selection, with no fences and no explanations.`;
@@ -782,33 +801,108 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					.trim();
 
 				// Compute replacement in the full cell code
-				const base = codeEditContext.fullCode ?? "";
-				const start = Math.max(0, codeEditContext.selectionStart ?? 0);
-				const end = Math.min(
-					base.length,
-					codeEditContext.selectionEnd ?? base.length
-				);
+				const base = fullCode;
+				const start = selStart;
+				const end = selEnd;
 				const newCode =
 					base.substring(0, start) + cleaned + base.substring(end);
 
 				// Persist into the notebook cell
-				const updated = await notebookService.updateCellCode(
-					codeEditContext.filePath,
-					codeEditContext.cellIndex,
-					newCode
+				await notebookService.updateCellCode(filePath, cellIndex, newCode);
+
+				// Wait for confirmation of save from the editor
+				let updateDetail: any = null;
+				try {
+					// Wait up to 15s for the matching notebook-cell-updated event
+					const timeoutMs = 15000;
+					const startWait = Date.now();
+					while (Date.now() - startWait < timeoutMs) {
+						const detail = await EventManager.waitForEvent<any>(
+							"notebook-cell-updated",
+							Math.max(1, timeoutMs - (Date.now() - startWait))
+						);
+						if (
+							detail?.filePath === filePath &&
+							detail?.cellIndex === cellIndex
+						) {
+							updateDetail = detail;
+							break;
+						}
+					}
+				} catch (_) {
+					// ignore; we'll fall back to optimistic messaging below
+				}
+
+				const originalLineCount = withinSelection.split("\n").length;
+				const newLineCount = cleaned.split("\n").length;
+				const summary = `Applied notebook edit:\n\n- **Cell**: ${cellIndex}\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Status**: ${
+					updateDetail?.success === false ? "save failed" : "saved"
+				}`;
+
+				// Build unified diff for the selection in GitHub style
+				const buildUnifiedDiff = (
+					oldText: string,
+					newText: string,
+					file: string,
+					oldStart: number
+				) => {
+					const oldLines = oldText.split("\n");
+					const newLines = newText.split("\n");
+					const m = oldLines.length;
+					const n = newLines.length;
+					const lcs: number[][] = Array.from({ length: m + 1 }, () =>
+						Array(n + 1).fill(0)
+					);
+					for (let i = 1; i <= m; i++) {
+						for (let j = 1; j <= n; j++) {
+							if (oldLines[i - 1] === newLines[j - 1]) {
+								lcs[i][j] = lcs[i - 1][j - 1] + 1;
+							} else {
+								lcs[i][j] = Math.max(lcs[i - 1][j], lcs[i][j - 1]);
+							}
+						}
+					}
+					const ops: Array<{ t: " " | "+" | "-"; s: string }> = [];
+					let i = m,
+						j = n;
+					while (i > 0 || j > 0) {
+						if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+							ops.push({ t: " ", s: oldLines[i - 1] });
+							i--;
+							j--;
+						} else if (j > 0 && (i === 0 || lcs[i][j - 1] >= lcs[i - 1][j])) {
+							ops.push({ t: "+", s: newLines[j - 1] });
+							j--;
+						} else if (i > 0) {
+							ops.push({ t: "-", s: oldLines[i - 1] });
+							i--;
+						}
+					}
+					ops.reverse();
+
+					const oldCount = m;
+					const newCount = n;
+					const newStart = oldStart; // selection replaced in place
+					const headerA = `--- a/${file}:${oldStart}-${
+						oldStart + oldCount - 1
+					}`;
+					const headerB = `+++ b/${file}:${newStart}-${
+						newStart + newCount - 1
+					}`;
+					const hunk = `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`;
+					const body = ops.map((o) => `${o.t}${o.s}`).join("\n");
+					return `${headerA}\n${headerB}\n${hunk}\n${body}`;
+				};
+
+				const unifiedDiff = buildUnifiedDiff(
+					withinSelection,
+					cleaned,
+					fileName,
+					startLine
 				);
 
-				if (updated) {
-					addMessage(
-						`Notebook updated at cell ${codeEditContext.cellIndex}.`,
-						false
-					);
-				} else {
-					addMessage(
-						`Failed to update notebook cell ${codeEditContext.cellIndex}.`,
-						false
-					);
-				}
+				// Post-change summary with unified diff (CodeMessage renderer will show +adds/-dels as title)
+				addMessage(`${summary}\n\n\`\`\`diff\n${unifiedDiff}\n\`\`\``, false);
 
 				// Clear context after applying edit
 				setCodeEditContext(null);
@@ -919,11 +1013,54 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				// User has selected datasets and is now specifying analysis
 				await handleAnalysisRequest(userMessage);
 			} else {
-				// Check if this is an analysis request (even without datasets selected)
+				// If there is an active notebook open, treat as incremental analysis instead of searching
+				const activeFile = (workspaceState as any).activeFile as string | null;
+				const isNotebookOpen = Boolean(
+					activeFile && activeFile.endsWith(".ipynb")
+				);
 				const isAnalysis = isAnalysisRequest(userMessage);
 
-				if (isAnalysis) {
-					// This is an analysis request, but no datasets are selected yet
+				if (isNotebookOpen && isAnalysis) {
+					// Append new analysis step to the current notebook (skip dataset search)
+					addMessage(
+						`Detected analysis request for the current notebook. I'll add a new step for: ${userMessage}`,
+						false
+					);
+					// Reuse the handler below
+					await (async () => {
+						try {
+							const wsDir = workspaceState.currentWorkspace || "";
+							if (!backendClient || !wsDir)
+								throw new Error("Backend not ready");
+							const agent = new AutonomousAgent(backendClient, wsDir);
+							const steps = [
+								{
+									id: "step_1",
+									description: userMessage,
+									code: "",
+									status: "pending" as const,
+								},
+							];
+							await agent.startNotebookCodeGeneration(
+								activeFile!,
+								userMessage,
+								[],
+								steps as any,
+								wsDir,
+								{ skipEnvCells: true }
+							);
+							addMessage("Added analysis step to the open notebook.", false);
+						} catch (e) {
+							addMessage(
+								`Failed to append analysis step: ${
+									e instanceof Error ? e.message : String(e)
+								}`,
+								false
+							);
+						}
+					})();
+				} else if (isAnalysis) {
+					// Existing behavior: guide the user to dataset search if nothing is open/selected
 					addMessage(
 						`Analysis Request Detected!\n\n` +
 							`I can help you with: ${userMessage}\n\n` +
@@ -931,12 +1068,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							`Searching for: ${userMessage}`,
 						false
 					);
-
-					// Automatically search for relevant datasets
 					setProgressMessage("Searching for relevant datasets...");
 					setShowSearchDetails(true);
-
-					// Check if backendClient is available
 					if (!backendClient) {
 						addMessage(
 							"Backend client not initialized. Please wait a moment and try again.",
@@ -944,31 +1077,23 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						);
 						return;
 					}
-
-					// Set up progress callback for real-time updates
 					backendClient.setProgressCallback((progress) => {
 						updateProgressData(progress);
 					});
-
-					// Initialize search progress
 					setSearchProgress({
 						message: "Initializing search...",
 						progress: 0,
 						step: "init",
 						datasetsFound: 0,
 					});
-
 					const response = await backendClient.discoverDatasets(userMessage, {
-						limit: 50, // Show more datasets, pagination will handle display
+						limit: 50,
 					});
-
 					if (response.datasets && response.datasets.length > 0) {
 						setAvailableDatasets(response.datasets);
 						setShowDatasetModal(true);
-
 						let responseContent = `## Found ${response.datasets.length} Relevant Datasets\n\n`;
 						responseContent += `I found ${response.datasets.length} datasets that could be used for your analysis. Please select the ones you'd like to work with:\n\n`;
-
 						response.datasets
 							.slice(0, 5)
 							.forEach((dataset: any, index: number) => {
@@ -985,15 +1110,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								}
 								responseContent += `\n`;
 							});
-
 						if (response.datasets.length > 5) {
 							responseContent += `*... and ${
 								response.datasets.length - 5
 							} more datasets*\n\n`;
 						}
-
 						responseContent += `**💡 Tip:** Select the datasets you want to analyze, then I'll proceed with your analysis request.`;
-
 						addMessage(responseContent, false);
 					} else {
 						addMessage(
@@ -1001,8 +1123,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							false
 						);
 					}
-
-					// Keep progress visible for a moment, then clear
 					setTimeout(() => {
 						setSearchProgress(null);
 						setShowSearchDetails(false);
