@@ -88,11 +88,28 @@ export interface MentionSuggestionsProps {
 	isOpen: boolean;
 	items: LocalDatasetEntry[]; // pre-filtered and sorted local
 	workspaceItems?: LocalDatasetEntry[]; // pre-filtered and sorted workspace
+	hideWorkspace?: boolean; // hide the workspace section (useful for # cell-only)
+	// Optional: notebook cell items (e.g., from active .ipynb)
+	cellItems?: Array<{
+		id: string;
+		alias: string;
+		title: string;
+		localPath: string; // full notebook path
+		cellIndex?: number; // 1-based index for display
+	}>;
 	query: string;
 	onSelect: (item: LocalDatasetEntry) => void;
 	onSelectWorkspace?: (item: LocalDatasetEntry) => void;
+	onSelectCell?: (item: {
+		id: string;
+		alias: string;
+		title: string;
+		localPath: string;
+		cellIndex?: number;
+	}) => void;
 	activeLocalIndex?: number;
 	activeWorkspaceIndex?: number;
+	activeCellIndex?: number;
 	left?: number;
 	bottom?: number;
 	hideLocal?: boolean;
@@ -103,18 +120,20 @@ export const MentionSuggestions: React.FC<MentionSuggestionsProps> = ({
 	isOpen,
 	items,
 	workspaceItems = [],
+	hideWorkspace = false,
+	cellItems = [],
 	query,
 	onSelect,
 	onSelectWorkspace,
+	onSelectCell,
 	activeLocalIndex = -1,
 	activeWorkspaceIndex = -1,
+	activeCellIndex = -1,
 	left = 16,
 	bottom = 88,
 	hideLocal = false,
 	hideFolders = false,
 }) => {
-	if (!isOpen) return null;
-
 	const q = (query || "").toLowerCase();
 	const sorted = items || [];
 	const shorten = (text: string, max: number = 26): string => {
@@ -127,6 +146,7 @@ export const MentionSuggestions: React.FC<MentionSuggestionsProps> = ({
 
 	const localItemRefs = React.useRef<HTMLDivElement[]>([]);
 	const workspaceItemRefs = React.useRef<HTMLDivElement[]>([]);
+	const cellItemRefs = React.useRef<HTMLDivElement[]>([]);
 
 	React.useEffect(() => {
 		// Reset refs when data length changes
@@ -136,6 +156,10 @@ export const MentionSuggestions: React.FC<MentionSuggestionsProps> = ({
 	React.useEffect(() => {
 		workspaceItemRefs.current = [];
 	}, [workspaceItems.length]);
+
+	React.useEffect(() => {
+		cellItemRefs.current = [];
+	}, [cellItems.length]);
 
 	React.useEffect(() => {
 		if (activeLocalIndex >= 0) {
@@ -155,23 +179,34 @@ export const MentionSuggestions: React.FC<MentionSuggestionsProps> = ({
 		}
 	}, [activeWorkspaceIndex, workspaceItemRefs]);
 
+	React.useEffect(() => {
+		if (activeCellIndex >= 0) {
+			const el = cellItemRefs.current[activeCellIndex];
+			if (el) {
+				el.scrollIntoView({ block: "nearest" });
+			}
+		}
+	}, [activeCellIndex, cellItemRefs]);
+
 	return (
 		<MenuContainer
 			role="listbox"
 			aria-label="Mention suggestions"
-			style={{ left, bottom }}
+			style={{ left, bottom, display: isOpen ? "block" : "none" }}
 		>
-			{!hideLocal && (
-				<>
-					<SectionTitle>
-						{q ? `Local data matching "${query}"` : "Local data available to @"}
-					</SectionTitle>
-					{sorted.length === 0 && (
-						<Item>
-							<Meta>No indexed local data yet</Meta>
-						</Item>
-					)}
-					{sorted.map((d, i) => (
+			<div
+				data-section="local"
+				style={{ display: hideLocal ? "none" : "block" }}
+			>
+				<SectionTitle>
+					{q ? `Local data matching "${query}"` : "Local data available to @"}
+				</SectionTitle>
+				{sorted.length === 0 ? (
+					<Item>
+						<Meta>No indexed local data yet</Meta>
+					</Item>
+				) : (
+					sorted.map((d, i) => (
 						<Item
 							key={d.id}
 							onClick={() => onSelect(d)}
@@ -191,51 +226,82 @@ export const MentionSuggestions: React.FC<MentionSuggestionsProps> = ({
 							</Alias>
 							<Meta>{shorten((d.title || d.id).replace(/^.*\//, ""), 24)}</Meta>
 						</Item>
-					))}
-				</>
-			)}
+					))
+				)}
+			</div>
 
-			<SectionTitle>Workspace files</SectionTitle>
-			{(workspaceItems || []).length === 0 && (
-				<Item>
-					<Meta>No workspace matches</Meta>
-				</Item>
-			)}
-			{(workspaceItems || [])
-				.filter((d) => (hideFolders ? !d.isLocalDirectory : true))
-				.map((d, i) => (
+			<div
+				data-section="workspace"
+				style={{ display: hideWorkspace ? "none" : "block" }}
+			>
+				<SectionTitle>Workspace files</SectionTitle>
+				{(workspaceItems || []).length === 0 ? (
+					<Item>
+						<Meta>No workspace matches</Meta>
+					</Item>
+				) : (
+					(workspaceItems || [])
+						.filter((d) => (hideFolders ? !d.isLocalDirectory : true))
+						.map((d, i) => (
+							<Item
+								key={`ws-${d.id}`}
+								onClick={() => onSelectWorkspace && onSelectWorkspace(d)}
+								$active={i === activeWorkspaceIndex}
+								ref={(el: HTMLDivElement | null) => {
+									if (el) workspaceItemRefs.current[i] = el;
+								}}
+							>
+								<span
+									className="icon"
+									style={{
+										width: 14,
+										display: "inline-flex",
+										alignItems: "center",
+										justifyContent: "center",
+										color: "#888",
+									}}
+								>
+									{!hideFolders && (d as any).isLocalDirectory ? (
+										<FiFolder size={12} />
+									) : (
+										<span style={{ fontSize: 11 }}>
+											{getFileTypeIcon(d.title || "")}
+										</span>
+									)}
+								</span>
+								<Alias>
+									{shorten(
+										d.alias || (d.title || d.id).replace(/\s+/g, "_"),
+										42
+									)}
+								</Alias>
+								<Meta>
+									{shorten((d.title || d.id).replace(/^.*\//, ""), 24)}
+								</Meta>
+							</Item>
+						))
+				)}
+			</div>
+
+			<div
+				data-section="cells"
+				style={{ display: cellItems.length > 0 ? "block" : "none" }}
+			>
+				<SectionTitle>Notebook cells</SectionTitle>
+				{cellItems.map((c, i) => (
 					<Item
-						key={`ws-${d.id}`}
-						onClick={() => onSelectWorkspace && onSelectWorkspace(d)}
-						$active={i === activeWorkspaceIndex}
+						key={`cell-${c.id}`}
+						onClick={() => onSelectCell && onSelectCell(c)}
+						$active={i === activeCellIndex}
 						ref={(el: HTMLDivElement | null) => {
-							if (el) workspaceItemRefs.current[i] = el;
+							if (el) cellItemRefs.current[i] = el;
 						}}
 					>
-						<span
-							className="icon"
-							style={{
-								width: 14,
-								display: "inline-flex",
-								alignItems: "center",
-								justifyContent: "center",
-								color: "#888",
-							}}
-						>
-							{!hideFolders && d.isLocalDirectory ? (
-								<FiFolder size={12} />
-							) : (
-								<span style={{ fontSize: 11 }}>
-									{getFileTypeIcon(d.title || "")}
-								</span>
-							)}
-						</span>
-						<Alias>
-							{shorten(d.alias || (d.title || d.id).replace(/\s+/g, "_"), 42)}
-						</Alias>
-						<Meta>{shorten((d.title || d.id).replace(/^.*\//, ""), 24)}</Meta>
+						<Alias>{shorten(c.alias, 42)}</Alias>
+						<Meta>{shorten(c.title, 28)}</Meta>
 					</Item>
 				))}
+			</div>
 		</MenuContainer>
 	);
 };

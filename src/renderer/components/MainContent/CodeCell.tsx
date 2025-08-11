@@ -27,6 +27,7 @@ import { SHORTCUTS } from "../../utils/Constants";
 import { ActionButton as SharedActionButton } from "@components/shared/StyledComponents";
 
 const CellContainer = styled.div<{ $accentColor?: string }>`
+	position: relative;
 	margin: 16px 0;
 	border: 1px solid #404040;
 	border-left: 4px solid ${(props) => props.$accentColor || "transparent"};
@@ -143,6 +144,27 @@ const CellType = styled.div`
 	align-items: center;
 	gap: 8px;
 `;
+
+const CellIndexBadge = styled.button`
+	background: #1f2937;
+	color: #9ca3af;
+	border: 1px solid #374151;
+	border-radius: 10px;
+	padding: 0 6px;
+	font-size: 11px;
+	line-height: 18px;
+	height: 18px;
+	cursor: pointer;
+	transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+
+	&:hover {
+		background: #374151;
+		color: #e5e7eb;
+		border-color: #4b5563;
+	}
+`;
+
+// Left badge now sits inline inside header to avoid overlap
 
 const ExecutionIndicator = styled.div<{ $hasOutput: boolean }>`
 	width: 8px;
@@ -583,6 +605,56 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		});
 	};
 
+	const insertCellMentionIntoChat = () => {
+		try {
+			const event = new CustomEvent("chat-insert-mention", {
+				detail: {
+					alias:
+						typeof cellIndex === "number" ? `#${cellIndex + 1}` : undefined,
+					filePath,
+				},
+			});
+			window.dispatchEvent(event);
+		} catch (_) {
+			// ignore
+		}
+	};
+
+	const addOutputToChat = () => {
+		try {
+			const event = new CustomEvent("chat-add-output", {
+				detail: {
+					filePath,
+					cellIndex,
+					language,
+					code,
+					output,
+					hasError,
+				},
+			});
+			window.dispatchEvent(event);
+		} catch {
+			// ignore
+		}
+	};
+
+	const fixErrorWithChat = () => {
+		try {
+			const event = new CustomEvent("chat-fix-error", {
+				detail: {
+					filePath,
+					cellIndex,
+					language,
+					code,
+					output,
+				},
+			});
+			window.dispatchEvent(event);
+		} catch {
+			// ignore
+		}
+	};
+
 	const clearOutput = () => {
 		setOutput("");
 		setHasError(false);
@@ -600,6 +672,14 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		<CellContainer $accentColor={accentColor}>
 			<CellHeader>
 				<CellType>
+					{typeof cellIndex === "number" && (
+						<CellIndexBadge
+							onClick={insertCellMentionIntoChat}
+							title="Insert cell number into chat"
+						>
+							#{cellIndex + 1}
+						</CellIndexBadge>
+					)}
 					<ExecutionIndicator $hasOutput={!!output} />
 					{language.toUpperCase()}
 				</CellType>
@@ -708,7 +788,14 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 							onAddToChat={askChatToEditSelection}
 						/>
 					</CellBody>
-					{output && <OutputRenderer output={output} hasError={hasError} />}
+					{output && (
+						<OutputRenderer
+							output={output}
+							hasError={hasError}
+							onAddOutputToChat={addOutputToChat}
+							onFixErrorWithChat={hasError ? fixErrorWithChat : undefined}
+						/>
+					)}
 				</>
 			)}
 		</CellContainer>
@@ -812,10 +899,12 @@ const renderMarkdown = (data: string) => {
 	);
 };
 
-const OutputRenderer: React.FC<{ output: string; hasError: boolean }> = ({
-	output,
-	hasError,
-}) => {
+const OutputRenderer: React.FC<{
+	output: string;
+	hasError: boolean;
+	onAddOutputToChat?: () => void;
+	onFixErrorWithChat?: () => void;
+}> = ({ output, hasError, onAddOutputToChat, onFixErrorWithChat }) => {
 	const [isCollapsed, setIsCollapsed] = useState(false);
 	const [showRaw, setShowRaw] = useState(true);
 
@@ -894,6 +983,18 @@ const OutputRenderer: React.FC<{ output: string; hasError: boolean }> = ({
 					{parsed.type === "text" && "📄 Output"}
 				</OutputTitle>
 				<OutputActions>
+					{onAddOutputToChat && (
+						<ActionButton onClick={onAddOutputToChat} $variant="secondary">
+							<FiMessageSquare size={12} />
+							Add Output to Chat
+						</ActionButton>
+					)}
+					{hasError && onFixErrorWithChat && (
+						<ActionButton onClick={onFixErrorWithChat} $variant="secondary">
+							<FiMessageSquare size={12} />
+							Ask Chat to Fix Error
+						</ActionButton>
+					)}
 					<ActionButton onClick={copyOutput} $variant="secondary">
 						<FiCopy size={12} />
 						Copy

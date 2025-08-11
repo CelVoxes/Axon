@@ -1,6 +1,34 @@
 import React from "react";
+import styled from "styled-components";
 import { FiSquare } from "react-icons/fi";
 import { ConfigManager } from "../../services/ConfigManager";
+
+// Define styled components at module scope to avoid dynamic creation warnings
+const MentionsBar = styled.div<{ $visible: boolean }>`
+	display: ${(p) => (p.$visible ? "flex" : "none")};
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 6px 8px;
+	margin-bottom: 8px;
+	background: #2d2d30;
+	border: 1px solid #3e3e42;
+	border-radius: 6px;
+	max-height: 72px;
+	overflow-y: auto;
+`;
+
+const MentionChip = styled.span`
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 8px;
+	border-radius: 12px;
+	font-size: 12px;
+	line-height: 16px;
+	background: #374151;
+	color: #e5e7eb;
+	border: 1px solid #4b5563;
+`;
 
 interface ComposerProps {
 	value: string;
@@ -97,8 +125,34 @@ export const Composer: React.FC<ComposerProps> = ({
 		});
 	}, [value, resizeTextarea]);
 
+	// Extract mention tokens (e.g., @alias and #cell references) and show them above the composer
+	const mentionTokens = React.useMemo(() => {
+		const tokens = new Set<string>();
+		try {
+			const atMatches = Array.from(value.matchAll(/@([^\s@]+)/g)).map(
+				(m) => `@${m[1]}`
+			);
+			const hashMatches = Array.from(value.matchAll(/#([^\s#]+)/g)).map(
+				(m) => `#${m[1]}`
+			);
+			for (const t of atMatches.concat(hashMatches)) {
+				if (t.trim().length > 1) tokens.add(t);
+			}
+		} catch (_) {
+			// ignore parse errors
+		}
+		return Array.from(tokens);
+	}, [value]);
+
 	return (
 		<div className="chat-input-container">
+			<MentionsBar $visible={mentionTokens.length > 0}>
+				{mentionTokens.map((t) => (
+					<MentionChip key={t} title={t}>
+						{t}
+					</MentionChip>
+				))}
+			</MentionsBar>
 			<textarea
 				value={value}
 				onChange={handleTextareaChange}

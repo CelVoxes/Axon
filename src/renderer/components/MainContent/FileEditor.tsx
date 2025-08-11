@@ -736,25 +736,13 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			cells: updatedCells,
 		};
 
-		// Shift cellStates indices at and after insertion point
+		// Insert default state at the same index to keep arrays aligned
 		setCellStates((prev) => {
-			const updated: any = { ...prev };
-			const indices = Object.keys(updated)
-				.map((k) => parseInt(k, 10))
-				.filter((k) => !Number.isNaN(k))
-				.sort((a, b) => b - a); // shift from bottom to top
-			indices.forEach((k) => {
-				if (k >= safeIndex) {
-					updated[k + 1] = updated[k];
-					delete updated[k];
-				}
-			});
-			// Initialize state for the inserted cell
-			updated[safeIndex] = {
-				code: newCell.source.join(""),
-				output: "",
-			};
-			return updated;
+			const next = Array.isArray(prev)
+				? [...prev]
+				: ([] as Array<{ code: string; output: string }>);
+			next.splice(safeIndex, 0, { code: newCell.source.join(""), output: "" });
+			return next;
 		});
 
 		setNotebookData(updatedNotebook);
@@ -783,20 +771,15 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			cells: updatedCells,
 		};
 
-		// Update cell states to remove the deleted cell
-		const updatedCellStates = { ...cellStates };
-		delete updatedCellStates[index];
-		// Shift down all cell states after the deleted index
-		Object.keys(updatedCellStates).forEach((key) => {
-			const keyNum = parseInt(key);
-			if (keyNum > index) {
-				updatedCellStates[keyNum - 1] = updatedCellStates[keyNum];
-				delete updatedCellStates[keyNum];
-			}
-		});
-
+		// Remove corresponding state entry to keep arrays aligned
 		setNotebookData(updatedNotebook);
-		setCellStates(updatedCellStates);
+		setCellStates((prev) => {
+			const next = Array.isArray(prev)
+				? [...prev]
+				: ([] as Array<{ code: string; output: string }>);
+			if (index >= 0 && index < next.length) next.splice(index, 1);
+			return next;
+		});
 		setHasChanges(true);
 
 		// Auto-save the notebook
@@ -805,10 +788,14 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	};
 
 	const updateCellCode = (index: number, code: string) => {
-		setCellStates((prev) => ({
-			...prev,
-			[index]: { ...prev[index], code },
-		}));
+		setCellStates((prev) => {
+			const next = Array.isArray(prev)
+				? [...prev]
+				: ([] as Array<{ code: string; output: string }>);
+			const prevEntry = next[index] || { code: "", output: "" };
+			next[index] = { ...prevEntry, code };
+			return next;
+		});
 		setHasChanges(true);
 
 		// Auto-save the notebook when cell code is updated
@@ -830,10 +817,14 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	};
 
 	const updateCellOutput = (index: number, output: string) => {
-		setCellStates((prev) => ({
-			...prev,
-			[index]: { ...prev[index], output },
-		}));
+		setCellStates((prev) => {
+			const next = Array.isArray(prev)
+				? [...prev]
+				: ([] as Array<{ code: string; output: string }>);
+			const prevEntry = next[index] || { code: "", output: "" };
+			next[index] = { ...prevEntry, output };
+			return next;
+		});
 		setHasChanges(true);
 
 		// Auto-save the notebook when cell output is updated

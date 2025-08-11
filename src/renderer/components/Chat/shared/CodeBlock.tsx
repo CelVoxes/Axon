@@ -44,10 +44,18 @@ const HeaderLeft = styled.div`
 	gap: 10px;
 `;
 
-const Title = styled.span`
+const Title = styled.span<{ $isDiff?: boolean }>`
 	color: #fff;
 	font-weight: 600;
 	font-size: ${typography.base};
+
+	${(p) =>
+		p.$isDiff
+			? `
+    .adds { color: ${colors.success}; }
+    .dels { color: ${colors.error}; }
+  `
+			: ""}
 `;
 
 const LanguagePill = styled.span`
@@ -116,13 +124,30 @@ const Content = styled.div<{ $streaming?: boolean; $wrap?: boolean }>`
 		p.$streaming ? `3px solid ${colors.primary[600]}` : "none"};
 `;
 
-const Pre = styled.pre<{ $wrap?: boolean }>`
+const Pre = styled.pre<{ $wrap?: boolean; $isDiff?: boolean }>`
 	margin: 0;
 	padding: 12px;
 	background: transparent;
 	border: none;
 	white-space: ${(p) => (p.$wrap ? "pre-wrap" : "pre")};
 	word-break: ${(p) => (p.$wrap ? "break-word" : "normal")};
+	${(p) =>
+		p.$isDiff
+			? `
+    /* Fallback custom diff line styling */
+    .diff-line { display: block; width: 100%; }
+    .diff-line.added { background: rgba(16, 185, 129, 0.18); }
+    .diff-line.removed { background: rgba(239, 68, 68, 0.18); }
+    .diff-line.hunk { background: rgba(59, 130, 246, 0.12); }
+    .diff-line.meta { background: rgba(156, 163, 175, 0.12); }
+
+    /* When highlight.js marks tokens, also tint them */
+    code > span.hljs-addition,
+    code .hljs-addition { background: rgba(16, 185, 129, 0.18); display: block; width: 100%; }
+    code > span.hljs-deletion,
+    code .hljs-deletion { background: rgba(239, 68, 68, 0.18); display: block; width: 100%; }
+  `
+			: ""}
 `;
 
 const Code = styled.code<{ $wrap?: boolean }>`
@@ -266,6 +291,32 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 		: code;
 
 	const [wrap, setWrap] = useState(true);
+	const isDiff = (language || "").toLowerCase() === "diff";
+
+	const diffLines = React.useMemo(() => {
+		if (!isDiff) return [] as Array<{ text: string; cls: string }>;
+		const lines = displayCode.split(/\r?\n/);
+		return lines.map((line) => {
+			if (
+				line.startsWith("+++ ") ||
+				line.startsWith("--- ") ||
+				line.startsWith("diff ") ||
+				line.startsWith("index ")
+			) {
+				return { text: line, cls: "diff-line meta" };
+			}
+			if (line.startsWith("@@")) {
+				return { text: line, cls: "diff-line hunk" };
+			}
+			if (line.startsWith("+")) {
+				return { text: line, cls: "diff-line added" };
+			}
+			if (line.startsWith("-")) {
+				return { text: line, cls: "diff-line removed" };
+			}
+			return { text: line, cls: "diff-line" };
+		});
+	}, [displayCode, isDiff]);
 
 	return (
 		<Container>
@@ -286,7 +337,18 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 				}}
 			>
 				<HeaderLeft>
-					{title && <Title>{title}</Title>}
+					{title && (
+						<Title $isDiff={isDiff}>
+							{isDiff ? (
+								<>
+									<span className="adds">{title.split(" ")[0]}</span>{" "}
+									<span className="dels">{title.split(" ")[1] || ""}</span>
+								</>
+							) : (
+								title
+							)}
+						</Title>
+					)}
 					<LanguagePill>
 						{language}
 						{isStreaming && (
@@ -317,14 +379,24 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 						$streaming={isStreaming}
 						$wrap={wrap}
 					>
-						<Pre $wrap={wrap}>
-							<Code
-								ref={codeRef as unknown as React.RefObject<HTMLElement>}
-								className={`language-${language}`}
-								$wrap={wrap}
-							>
-								{displayCode}
-							</Code>
+						<Pre $wrap={wrap} $isDiff={isDiff}>
+							{isDiff ? (
+								<code className={`language-${language}`}>
+									{diffLines.map((l, idx) => (
+										<div key={idx} className={l.cls}>
+											{l.text || "\u00A0"}
+										</div>
+									))}
+								</code>
+							) : (
+								<Code
+									ref={codeRef as unknown as React.RefObject<HTMLElement>}
+									className={`language-${language}`}
+									$wrap={wrap}
+								>
+									{displayCode}
+								</Code>
+							)}
 						</Pre>
 					</Content>
 					{!isStreaming && (

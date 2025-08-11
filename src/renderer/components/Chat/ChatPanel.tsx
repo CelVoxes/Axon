@@ -133,8 +133,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [mentionOpen, setMentionOpen] = useState(false);
 	const [mentionQuery, setMentionQuery] = useState("");
 	const [workspaceMentionItems, setWorkspaceMentionItems] = useState<any[]>([]);
+	const [cellMentionItems, setCellMentionItems] = useState<any[]>([]);
 	const [activeLocalIndex, setActiveLocalIndex] = useState<number>(-1);
 	const [activeWorkspaceIndex, setActiveWorkspaceIndex] = useState<number>(-1);
+	const [activeCellIndex, setActiveCellIndex] = useState<number>(-1);
 
 	// Selection-based code edit context (set when user triggers Ask Chat from a notebook cell)
 	interface CodeEditContext {
@@ -178,6 +180,65 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 		);
 		return cleanup;
+	}, [uiDispatch, uiState.showChatPanel, uiState.chatCollapsed]);
+
+	// Prefill composer when user adds output to chat or asks to fix an error
+	useEffect(() => {
+		const onAddOutput = (e: Event) => {
+			const ce = e as CustomEvent;
+			const d = ce.detail || {};
+			const lang: string = String(d.language || "python").toLowerCase();
+			const code: string = String(d.code || "");
+			const out: string = String(d.output || "");
+			const prefix = `Please review the following ${lang} cell output and suggest improvements or next steps.`;
+			const body = `\n\nOutput:\n\n\`\`\`text\n${out}\n\`\`\`\n\nCode:\n\n\`\`\`${lang}\n${code}\n\`\`\`\n`;
+			setInputValue(prefix + body);
+			setCodeEditContext({
+				filePath: d.filePath,
+				cellIndex: d.cellIndex,
+				language: d.language,
+				selectedText: code,
+				fullCode: code,
+				selectionStart: 0,
+				selectionEnd: code.length,
+			});
+			if (!uiState.showChatPanel || uiState.chatCollapsed) {
+				uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
+				uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
+			}
+		};
+		const onFixError = (e: Event) => {
+			const ce = e as CustomEvent;
+			const d = ce.detail || {};
+			const lang: string = String(d.language || "python").toLowerCase();
+			const code: string = String(d.code || "");
+			const out: string = String(d.output || "");
+			const prefix = `The following ${lang} cell failed. Fix the code to resolve the error. Return only the corrected code.`;
+			const body = `\n\nError Output:\n\n\`\`\`text\n${out}\n\`\`\`\n\nOriginal Code:\n\n\`\`\`${lang}\n${code}\n\`\`\`\n`;
+			setInputValue(prefix + body);
+			setCodeEditContext({
+				filePath: d.filePath,
+				cellIndex: d.cellIndex,
+				language: d.language,
+				selectedText: code,
+				fullCode: code,
+				selectionStart: 0,
+				selectionEnd: code.length,
+			});
+			if (!uiState.showChatPanel || uiState.chatCollapsed) {
+				uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
+				uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
+			}
+		};
+		window.addEventListener("chat-add-output", onAddOutput as EventListener);
+		window.addEventListener("chat-fix-error", onFixError as EventListener);
+		return () => {
+			window.removeEventListener(
+				"chat-add-output",
+				onAddOutput as EventListener
+			);
+			window.removeEventListener("chat-fix-error", onFixError as EventListener);
+		};
 	}, [uiDispatch, uiState.showChatPanel, uiState.chatCollapsed]);
 
 	// Initialize local dataset registry
@@ -406,11 +467,67 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		const handleValidationError = (event: Event) => {
 			if (!isMounted) return;
 			const customEvent = event as CustomEvent<CodeValidationErrorEvent>;
-			const { errors, warnings } = customEvent.detail;
+			const { errors, warnings, originalCode, fixedCode } = customEvent.detail;
 
 			// Set validation errors for display (UI will show them)
 			setValidationErrors(errors);
 			setValidationWarnings(warnings);
+
+			// Also post a chat message summarizing the errors with optional diff
+			try {
+				const warningSuffix =
+					warnings && warnings.length
+						? ` and ${warnings.length} warning(s)`
+						: "";
+				let summary = `**Code validation found ${errors.length} error(s)${warningSuffix}.**`;
+				const list = errors.map((e, i) => `${i + 1}. ${e}`).join("\n");
+				summary += `\n\n${list}`;
+				if (
+					originalCode &&
+					fixedCode &&
+					typeof originalCode === "string" &&
+					typeof fixedCode === "string"
+				) {
+					// Lightweight line-by-line diff for the chat
+					const oldLines = originalCode.split("\n");
+					const newLines = fixedCode.split("\n");
+					const m = oldLines.length;
+					const n = newLines.length;
+					const lcs: number[][] = Array.from({ length: m + 1 }, () =>
+						Array(n + 1).fill(0)
+					);
+					for (let i = 1; i <= m; i++) {
+						for (let j = 1; j <= n; j++) {
+							lcs[i][j] =
+								oldLines[i - 1] === newLines[j - 1]
+									? lcs[i - 1][j - 1] + 1
+									: Math.max(lcs[i - 1][j], lcs[i][j - 1]);
+						}
+					}
+					const ops: Array<{ t: " " | "+" | "-"; s: string }> = [];
+					let i = m,
+						j = n;
+					while (i > 0 || j > 0) {
+						if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+							ops.push({ t: " ", s: oldLines[i - 1] });
+							i--;
+							j--;
+						} else if (j > 0 && (i === 0 || lcs[i][j - 1] >= lcs[i - 1][j])) {
+							ops.push({ t: "+", s: newLines[j - 1] });
+							j--;
+						} else if (i > 0) {
+							ops.push({ t: "-", s: oldLines[i - 1] });
+							i--;
+						}
+					}
+					ops.reverse();
+					const diffBody = ops.map((o) => `${o.t}${o.s}`).join("\n");
+					summary += `\n\n\`\`\`diff\n${diffBody}\n\`\`\``;
+				}
+				addMessage(summary, false);
+			} catch (_) {
+				// Ignore chat summary failures
+			}
 		};
 
 		// Add event listeners
@@ -645,13 +762,163 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		const tokens = Array.from(userMessage.matchAll(/@([^\s@]+)/g)).map(
 			(m) => m[1]
 		);
+		// Also capture #N and #all tokens (only meaningful if notebook active)
+		const hashTokens = Array.from(userMessage.matchAll(/#(all|\d+)/gi)).map(
+			(m) => m[1]
+		);
 		const workspaceResolved: LocalDatasetEntry[] = [];
-		if (tokens.length > 0) {
+		let cellMentionContext: null | {
+			filePath: string;
+			cellIndex0: number;
+			language: string;
+			code: string;
+		} = null;
+		// If user referenced cells with #N/#all, resolve them against the active notebook now
+		if (hashTokens.length > 0) {
+			try {
+				const activeFile = (workspaceState as any).activeFile as string | null;
+				if (activeFile && activeFile.endsWith(".ipynb")) {
+					const content = await window.electronAPI.readFile(activeFile);
+					const nb = JSON.parse(content);
+					const cells = Array.isArray(nb?.cells) ? nb.cells : [];
+					const wantAll = hashTokens.some(
+						(t) => String(t).toLowerCase() === "all"
+					);
+					const targetIndices = wantAll
+						? cells.map((_: unknown, i: number) => i)
+						: hashTokens
+								.map((t) => parseInt(String(t), 10))
+								.filter(
+									(n) => Number.isInteger(n) && n >= 1 && n <= cells.length
+								)
+								.map((n) => n - 1);
+					if (targetIndices.length > 0) {
+						for (const idx0 of targetIndices) {
+							const c = cells[idx0];
+							if (!c) continue;
+							const srcArr: string[] = Array.isArray(c.source) ? c.source : [];
+							const code = srcArr.join("");
+							const lang = c.cell_type === "markdown" ? "markdown" : "python";
+							if (!cellMentionContext) {
+								cellMentionContext = {
+									filePath: activeFile,
+									cellIndex0: idx0,
+									language: lang,
+									code,
+								};
+							}
+						}
+					}
+				}
+			} catch (_) {
+				// ignore failures
+			}
+		}
+
+		if (tokens.length > 0 || hashTokens.length > 0) {
 			const wsRoot = workspaceState.currentWorkspace || "";
 			const registry = localRegistryRef.current;
 			for (const token of tokens) {
 				// Heuristic: consider anything with a slash or starting with / as a path
 				const looksLikePath = token.startsWith("/") || token.includes("/");
+				// Handle notebook cell reference like path.ipynb#3
+				const cellRefMatch = token.match(/^(.*\.ipynb)#(\d+)$/i);
+				if (cellRefMatch) {
+					const pathPart = cellRefMatch[1];
+					const index1Based = parseInt(cellRefMatch[2], 10);
+					if (!Number.isNaN(index1Based) && index1Based >= 1) {
+						const candidatePath = pathPart.startsWith("/")
+							? pathPart
+							: wsRoot
+							? `${wsRoot}/${pathPart}`
+							: "";
+						if (candidatePath) {
+							try {
+								const fileContent = await window.electronAPI.readFile(
+									candidatePath
+								);
+								const nb = JSON.parse(fileContent);
+								const idx0 = index1Based - 1;
+								const cell = Array.isArray(nb?.cells) ? nb.cells[idx0] : null;
+								if (cell) {
+									const srcArr: string[] = Array.isArray(cell.source)
+										? cell.source
+										: [];
+									const code = srcArr.join("");
+									const lang =
+										cell.cell_type === "markdown" ? "markdown" : "python";
+									// Prefer first valid cell mention only for edit context
+									if (!cellMentionContext) {
+										cellMentionContext = {
+											filePath: candidatePath,
+											cellIndex0: idx0,
+											language: lang,
+											code,
+										};
+									}
+									// Handle #N and #all against the active notebook
+									try {
+										const activeFile = (workspaceState as any).activeFile as
+											| string
+											| null;
+										if (
+											activeFile &&
+											activeFile.endsWith(".ipynb") &&
+											hashTokens.length > 0
+										) {
+											const content = await window.electronAPI.readFile(
+												activeFile
+											);
+											const nb = JSON.parse(content);
+											const cells = Array.isArray(nb?.cells) ? nb.cells : [];
+											const wantAll = hashTokens.some(
+												(t) => String(t).toLowerCase() === "all"
+											);
+											const targetIndices = wantAll
+												? cells.map((_: unknown, i: number) => i)
+												: hashTokens
+														.map((t) => parseInt(String(t), 10))
+														.filter(
+															(n) =>
+																Number.isInteger(n) &&
+																n >= 1 &&
+																n <= cells.length
+														)
+														.map((n) => n - 1);
+											if (targetIndices.length > 0) {
+												// Build combined context; prefer first for edit-in-place
+												for (const idx0 of targetIndices) {
+													const c = cells[idx0];
+													if (!c) continue;
+													const srcArr: string[] = Array.isArray(c.source)
+														? c.source
+														: [];
+													const code = srcArr.join("");
+													const lang =
+														c.cell_type === "markdown" ? "markdown" : "python";
+													if (!cellMentionContext) {
+														cellMentionContext = {
+															filePath: activeFile,
+															cellIndex0: idx0,
+															language: lang,
+															code,
+														};
+													}
+												}
+											}
+										}
+									} catch (_) {
+										// ignore
+									}
+								}
+							} catch (_) {
+								// ignore
+							}
+						}
+					}
+					// skip normal path handling for cell references
+					continue;
+				}
 				if (!looksLikePath) continue;
 
 				const candidatePath = token.startsWith("/")
@@ -699,6 +966,189 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		let isMounted = true;
 
 		try {
+			// If message referenced a notebook cell via #N/#all, perform inline edit on the first referenced cell
+			if (cellMentionContext) {
+				if (!backendClient) {
+					addMessage(
+						"Backend not ready to edit code. Please try again in a moment.",
+						false
+					);
+					return;
+				}
+				const wsPath = workspaceState.currentWorkspace || "";
+				const notebookService = new NotebookService({ workspacePath: wsPath });
+
+				const lang = (cellMentionContext.language || "python").toLowerCase();
+				const originalSnippet = cellMentionContext.code || "";
+				const filePath = cellMentionContext.filePath;
+				const cellIndex = cellMentionContext.cellIndex0;
+				const fullCode = originalSnippet;
+				const selStart = 0;
+				const selEnd = fullCode.length;
+				const beforeSelection = fullCode.slice(0, selStart);
+				const withinSelection = fullCode.slice(selStart, selEnd);
+				const startLine = (beforeSelection.match(/\n/g)?.length ?? 0) + 1;
+				const endLine = startLine + (withinSelection.match(/\n/g)?.length ?? 0);
+				const fileName = filePath.split("/").pop() || filePath;
+
+				addMessage(
+					`Editing plan:\n\n- **Target**: cell ${cellIndex} in \`${fileName}\`\n- **Scope**: replace lines ${startLine}-${endLine} of the selected code\n- **Process**: I will generate the revised snippet (streaming below), then apply it to the notebook and confirm the save.`,
+					false
+				);
+				const task =
+					`Edit the following ${lang} code according to the user's instruction. ` +
+					`Return only the revised code snippet that should replace the selection, with no fences and no explanations.`;
+
+				let editedSnippet = "";
+				const streamingMessageId = `edit-${Date.now()}`;
+				analysisDispatch({
+					type: "ADD_MESSAGE",
+					payload: {
+						id: streamingMessageId,
+						content: "",
+						isUser: false,
+						isStreaming: true,
+						code: "",
+					},
+				});
+
+				try {
+					await backendClient.generateCodeStream(
+						{
+							task_description: `${task}\n\nUser instruction:\n${userMessage}\n\nOriginal selected code:\n\n\`\`\`${lang}\n${originalSnippet}\n\`\`\`\n`,
+							language: lang,
+							context: "Notebook code edit-in-place",
+						},
+						(chunk: string) => {
+							editedSnippet += chunk;
+							analysisDispatch({
+								type: "UPDATE_MESSAGE",
+								payload: {
+									id: streamingMessageId,
+									updates: {
+										content: `\n\nEdited snippet (streaming):\n\n\`\`\`${lang}\n${editedSnippet}\n\`\`\``,
+										isStreaming: true,
+									},
+								},
+							});
+						}
+					);
+				} catch (e) {
+					addMessage(
+						`Code edit failed: ${e instanceof Error ? e.message : String(e)}`,
+						false
+					);
+					return;
+				} finally {
+					analysisDispatch({
+						type: "UPDATE_MESSAGE",
+						payload: {
+							id: streamingMessageId,
+							updates: { isStreaming: false },
+						},
+					});
+				}
+
+				const cleaned = editedSnippet
+					.replace(/^\s*```[a-zA-Z]*\s*/g, "")
+					.replace(/\s*```\s*$/g, "")
+					.trim();
+				const base = fullCode;
+				const start = selStart;
+				const end = selEnd;
+				const newCode =
+					base.substring(0, start) + cleaned + base.substring(end);
+
+				await notebookService.updateCellCode(filePath, cellIndex, newCode);
+
+				let updateDetail: any = null;
+				try {
+					const timeoutMs = 15000;
+					const startWait = Date.now();
+					while (Date.now() - startWait < timeoutMs) {
+						const detail = await EventManager.waitForEvent<any>(
+							"notebook-cell-updated",
+							Math.max(1, timeoutMs - (Date.now() - startWait))
+						);
+						if (
+							detail?.filePath === filePath &&
+							detail?.cellIndex === cellIndex
+						) {
+							updateDetail = detail;
+							break;
+						}
+					}
+				} catch (_) {}
+
+				const originalLineCount = withinSelection.split("\n").length;
+				const newLineCount = cleaned.split("\n").length;
+				const summary = `Applied notebook edit:\n\n- **Cell**: ${cellIndex}\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Status**: ${
+					updateDetail?.success === false ? "save failed" : "saved"
+				}`;
+
+				const buildUnifiedDiff = (
+					oldText: string,
+					newText: string,
+					file: string,
+					oldStart: number
+				) => {
+					const oldLines = oldText.split("\n");
+					const newLines = newText.split("\n");
+					const m = oldLines.length;
+					const n = newLines.length;
+					const lcs: number[][] = Array.from({ length: m + 1 }, () =>
+						Array(n + 1).fill(0)
+					);
+					for (let i = 1; i <= m; i++) {
+						for (let j = 1; j <= n; j++) {
+							if (oldLines[i - 1] === newLines[j - 1]) {
+								lcs[i][j] = lcs[i - 1][j - 1] + 1;
+							} else {
+								lcs[i][j] = Math.max(lcs[i - 1][j], lcs[i][j - 1]);
+							}
+						}
+					}
+					const ops: Array<{ t: " " | "+" | "-"; s: string }> = [];
+					let i = m,
+						j = n;
+					while (i > 0 || j > 0) {
+						if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+							ops.push({ t: " ", s: oldLines[i - 1] });
+							i--;
+							j--;
+						} else if (j > 0 && (i === 0 || lcs[i][j - 1] >= lcs[i - 1][j])) {
+							ops.push({ t: "+", s: newLines[j - 1] });
+							j--;
+						} else if (i > 0) {
+							ops.push({ t: "-", s: oldLines[i - 1] });
+							i--;
+						}
+					}
+					ops.reverse();
+					const oldCount = m;
+					const newCount = n;
+					const newStart = oldStart;
+					const headerA = `--- a/${file}:${oldStart}-${
+						oldStart + oldCount - 1
+					}`;
+					const headerB = `+++ b/${file}:${newStart}-${
+						newStart + newCount - 1
+					}`;
+					const hunk = `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`;
+					const body = ops.map((o) => `${o.t}${o.s}`).join("\n");
+					return `${headerA}\n${headerB}\n${hunk}\n${body}`;
+				};
+
+				const unifiedDiff = buildUnifiedDiff(
+					withinSelection,
+					cleaned,
+					fileName,
+					startLine
+				);
+				addMessage(`${summary}\n\n\`\`\`diff\n${unifiedDiff}\n\`\`\``, false);
+				return;
+			}
+
 			// If there is an active code edit context, perform edit-in-place and return early
 			if (
 				codeEditContext &&
@@ -1735,6 +2185,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			} else {
 				setActiveWorkspaceIndex(-1);
 			}
+			if ((cellMentionItems || []).length > 0) {
+				setActiveCellIndex(0);
+			} else {
+				setActiveCellIndex(-1);
+			}
 			if ((localRegistryRef.current?.list() || []).length > 0) {
 				setActiveLocalIndex(0);
 			} else {
@@ -1753,6 +2208,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		) {
 			setActiveWorkspaceIndex(0);
 		}
+		if (cellMentionItems.length === 0) {
+			setActiveCellIndex(-1);
+		} else if (
+			activeCellIndex < 0 ||
+			activeCellIndex >= cellMentionItems.length
+		) {
+			setActiveCellIndex(0);
+		}
 	}, [workspaceMentionItems, mentionOpen]);
 
 	useEffect(() => {
@@ -1760,6 +2223,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		// Reset highlight on query change
 		if (workspaceMentionItems.length > 0) {
 			setActiveWorkspaceIndex(0);
+		}
+		if (cellMentionItems.length > 0) {
+			setActiveCellIndex(0);
 		}
 	}, [mentionQuery]);
 
@@ -1799,35 +2265,65 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		]
 	);
 
+	// Choose from notebook cell mentions (for # context)
+	const chooseCellMention = useCallback(
+		async (index: number) => {
+			if (index < 0 || index >= cellMentionItems.length) return;
+			const item = cellMentionItems[index];
+			const alias = String(item.alias || "");
+			setInputValue((prev) => {
+				if (/#[^\s#]*$/.test(prev)) {
+					return prev.replace(/#([^\s#]*)$/, alias) + " ";
+				}
+				return (prev.endsWith(" ") ? prev : prev + " ") + alias + " ";
+			});
+			setMentionOpen(false);
+			setMentionQuery("");
+			setWorkspaceMentionItems([]);
+			setCellMentionItems([]);
+			setActiveCellIndex(-1);
+		},
+		[cellMentionItems]
+	);
+
 	const handleComposerKeyDown = useCallback(
 		(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
 			if (!mentionOpen) return;
-			const total = workspaceMentionItems.length;
-			// Navigate within mention list
+			const isHashContext = /#[^\s#]*$/.test(inputValue);
+			const totalCells = cellMentionItems.length;
+			const totalWs = workspaceMentionItems.length;
+			// Navigate within mention list (cells when using #, workspace when using @)
 			if (e.key === "ArrowDown") {
 				e.preventDefault();
-				if (total > 0) {
-					setActiveWorkspaceIndex((prev) => {
-						const next = prev < 0 ? 0 : Math.min(prev + 1, total - 1);
-						return next;
-					});
+				if (isHashContext && totalCells > 0) {
+					setActiveCellIndex((prev) =>
+						prev < 0 ? 0 : Math.min(prev + 1, totalCells - 1)
+					);
+				} else if (!isHashContext && totalWs > 0) {
+					setActiveWorkspaceIndex((prev) =>
+						prev < 0 ? 0 : Math.min(prev + 1, totalWs - 1)
+					);
 				}
 				return;
 			}
 			if (e.key === "ArrowUp") {
 				e.preventDefault();
-				if (total > 0) {
-					setActiveWorkspaceIndex((prev) => {
-						const next = prev <= 0 ? 0 : prev - 1;
-						return next;
-					});
+				if (isHashContext && totalCells > 0) {
+					setActiveCellIndex((prev) => (prev <= 0 ? 0 : prev - 1));
+				} else if (!isHashContext && totalWs > 0) {
+					setActiveWorkspaceIndex((prev) => (prev <= 0 ? 0 : prev - 1));
 				}
 				return;
 			}
 			if (e.key === "Enter") {
 				e.preventDefault();
-				const index = activeWorkspaceIndex >= 0 ? activeWorkspaceIndex : 0;
-				void chooseWorkspaceMention(index, false);
+				if (isHashContext && totalCells > 0) {
+					const index = activeCellIndex >= 0 ? activeCellIndex : 0;
+					void chooseCellMention(index);
+				} else if (!isHashContext && totalWs > 0) {
+					const index = activeWorkspaceIndex >= 0 ? activeWorkspaceIndex : 0;
+					void chooseWorkspaceMention(index, false);
+				}
 				return;
 			}
 			if (e.key === "Escape") {
@@ -1837,14 +2333,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				setWorkspaceMentionItems([]);
 				setActiveWorkspaceIndex(-1);
 				setActiveLocalIndex(-1);
+				setActiveCellIndex(-1);
 				return;
 			}
 		},
 		[
 			mentionOpen,
+			inputValue,
 			workspaceMentionItems.length,
+			cellMentionItems.length,
 			activeWorkspaceIndex,
+			activeCellIndex,
 			chooseWorkspaceMention,
+			chooseCellMention,
 		]
 	);
 
@@ -1887,6 +2388,70 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const handleComposerChange = useCallback(
 		(next: string) => {
 			setInputValue(next);
+			// Support #N / #all shorthands only when a notebook is open
+			const hashMatch = next.match(/#([^\s#]*)$/);
+			if (hashMatch) {
+				setMentionOpen(true);
+				setMentionQuery(hashMatch[1] || "");
+				(async () => {
+					try {
+						// Only show cell items; hide files and local data
+						const activeFile = (workspaceState as any).activeFile as
+							| string
+							| null;
+						const ws = workspaceState.currentWorkspace || "";
+						const rel = (p: string) =>
+							ws && p && p.startsWith(ws) ? p.slice(ws.length + 1) : p;
+						if (!activeFile || !activeFile.endsWith(".ipynb")) {
+							setCellMentionItems([]);
+							return;
+						}
+						const fileContent = await window.electronAPI.readFile(activeFile);
+						const nb = JSON.parse(fileContent);
+						const items: any[] = [];
+						const cells = Array.isArray(nb?.cells) ? nb.cells : [];
+						for (let i = 0; i < cells.length; i++) {
+							const c = cells[i];
+							const srcArr: string[] = Array.isArray(c?.source) ? c.source : [];
+							const firstLine =
+								(srcArr.join("") || "")
+									.split("\n")
+									.find((l) => l.trim().length > 0) ||
+								(c?.cell_type === "markdown" ? "markdown" : "code");
+							const alias = `#${i + 1}`;
+							items.push({
+								id: `${activeFile}-${i}`,
+								alias,
+								title: `${rel(activeFile)} — ${firstLine.slice(0, 80)}`,
+								localPath: activeFile,
+								cellIndex: i + 1,
+							});
+						}
+						// allow #all virtual item
+						const allItem = {
+							id: `${activeFile}-all`,
+							alias: `#all`,
+							title: `${rel(activeFile)} — all cells`,
+							localPath: activeFile,
+							cellIndex: undefined,
+						};
+						const q = (hashMatch[1] || "").toLowerCase();
+						const filtered = q
+							? [allItem, ...items].filter(
+									(it) =>
+										it.alias.toLowerCase().includes(q) ||
+										(it.title || "").toLowerCase().includes(q)
+							  )
+							: [allItem, ...items];
+						setCellMentionItems(filtered);
+						setWorkspaceMentionItems([]);
+					} catch {
+						setCellMentionItems([]);
+					}
+				})();
+				return;
+			}
+
 			const match = next.match(/@([^\s@]*)$/);
 			if (match) {
 				setMentionOpen(true);
@@ -1895,6 +2460,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					try {
 						if (!workspaceState.currentWorkspace) {
 							setWorkspaceMentionItems([]);
+							setCellMentionItems([]);
 							return;
 						}
 						const wsRoot = workspaceState.currentWorkspace;
@@ -1943,18 +2509,99 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						}
 
 						setWorkspaceMentionItems(results);
+
+						// Build notebook cell items from active .ipynb
+						try {
+							const activeFile = (workspaceState as any).activeFile as
+								| string
+								| null;
+							const ws = workspaceState.currentWorkspace || "";
+							const rel = (p: string) =>
+								ws && p.startsWith(ws) ? p.slice(ws.length + 1) : p;
+							if (activeFile && activeFile.endsWith(".ipynb")) {
+								const fileContent = await window.electronAPI.readFile(
+									activeFile
+								);
+								const nb = JSON.parse(fileContent);
+								const items: any[] = [];
+								const cells = Array.isArray(nb?.cells) ? nb.cells : [];
+								for (let i = 0; i < cells.length; i++) {
+									const c = cells[i];
+									const srcArr: string[] = Array.isArray(c?.source)
+										? c.source
+										: [];
+									const firstLine =
+										(srcArr.join("") || "")
+											.split("\n")
+											.find((l) => l.trim().length > 0) ||
+										(c?.cell_type === "markdown" ? "markdown" : "code");
+									const alias = `${rel(activeFile)}#${i + 1}`;
+									items.push({
+										id: `${activeFile}-${i}`,
+										alias,
+										title: firstLine.slice(0, 80),
+										localPath: activeFile,
+										cellIndex: i + 1,
+									});
+								}
+								// Filter by query
+								const q = (match[1] || "").toLowerCase();
+								const filtered = q
+									? items.filter(
+											(it) =>
+												it.alias.toLowerCase().includes(q) ||
+												(it.title || "").toLowerCase().includes(q)
+									  )
+									: items;
+								setCellMentionItems(filtered);
+							} else {
+								setCellMentionItems([]);
+							}
+						} catch {
+							setCellMentionItems([]);
+						}
 					} catch {
 						setWorkspaceMentionItems([]);
+						setCellMentionItems([]);
 					}
 				})();
 			} else if (mentionOpen) {
 				setMentionOpen(false);
 				setMentionQuery("");
 				setWorkspaceMentionItems([]);
+				setCellMentionItems([]);
 			}
 		},
 		[mentionOpen, workspaceState.currentWorkspace]
 	);
+
+	// Support external requests to insert a mention into the composer (from cells)
+	useEffect(() => {
+		const onInsertMention = (e: Event) => {
+			const ce = e as CustomEvent<{ alias?: string; filePath?: string }>;
+			const alias = ce.detail?.alias;
+			if (!alias) return;
+			setInputValue(
+				(prev) =>
+					(prev.endsWith(" ") || prev.length === 0 ? prev : prev + " ") +
+					alias +
+					" "
+			);
+			setMentionOpen(false);
+			setMentionQuery("");
+			setWorkspaceMentionItems([]);
+			setCellMentionItems([]);
+		};
+		window.addEventListener(
+			"chat-insert-mention",
+			onInsertMention as EventListener
+		);
+		return () =>
+			window.removeEventListener(
+				"chat-insert-mention",
+				onInsertMention as EventListener
+			);
+	}, []);
 
 	const MessagesView = React.useMemo(() => {
 		return (
@@ -2217,11 +2864,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				isOpen={mentionOpen}
 				items={localRegistryRef.current?.list() || []}
 				workspaceItems={workspaceMentionItems}
+				cellItems={cellMentionItems}
+				hideWorkspace={/#[^\s#]*$/.test(inputValue)}
 				query={mentionQuery}
 				hideLocal={true}
 				hideFolders={false}
 				activeWorkspaceIndex={activeWorkspaceIndex}
 				activeLocalIndex={activeLocalIndex}
+				activeCellIndex={activeCellIndex}
 				onSelect={(item) => {
 					const alias =
 						item.alias || (item.title || item.id).replace(/\s+/g, "_");
@@ -2244,6 +2894,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					setSelectedDatasets((prev) => mergeSelectedDatasets(prev, [entry]));
 					const alias =
 						entry.alias || (entry.title || entry.id).replace(/\s+/g, "_");
+					setInputValue(
+						(prev) => prev.replace(/@([^\s@]*)$/, `@${alias}`) + " "
+					);
+					setMentionOpen(false);
+					setMentionQuery("");
+				}}
+				onSelectCell={(item) => {
+					const alias = item.alias; // already relPath#N
 					setInputValue(
 						(prev) => prev.replace(/@([^\s@]*)$/, `@${alias}`) + " "
 					);
