@@ -7,6 +7,7 @@ import { ActionButton } from "@components/shared/StyledComponents";
 import { useWorkspaceContext } from "../../context/AppContext";
 import { typography } from "../../styles/design-system";
 import { EventManager } from "../../utils/EventManager";
+import { electronAPI } from "../../utils/electronAPI";
 
 const EditorContainer = styled.div`
 	width: 100%;
@@ -563,6 +564,13 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		return () => clearInterval(cleanupInterval);
 	}, [filePath]);
 
+	const isImageFile = (p: string) => {
+		const ext = p.split(".").pop()?.toLowerCase();
+		return ext
+			? ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"].includes(ext)
+			: false;
+	};
+
 	const loadFile = async () => {
 		try {
 			setIsLoading(true);
@@ -570,6 +578,21 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			// Check if electronAPI is available
 			if (!window.electronAPI || !window.electronAPI.readFile) {
 				throw new Error("Electron API not available for reading files");
+			}
+
+			// If image, read as binary and show an image viewer
+			if (isImageFile(filePath)) {
+				const bin = await electronAPI.readFileBinary(filePath);
+				const dataUrl: string | undefined = bin?.success
+					? bin.data?.dataUrl
+					: undefined;
+				if (dataUrl) {
+					setContent(dataUrl);
+					setNotebookData(null);
+					setCellIds([]);
+					setHasChanges(false);
+					return;
+				}
 			}
 
 			const fileContent = await window.electronAPI.readFile(filePath);
@@ -1019,6 +1042,28 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 			{filePath.endsWith(".ipynb") && notebookData ? (
 				renderNotebook()
+			) : isImageFile(filePath) ? (
+				<div
+					style={{
+						display: "flex",
+						justifyContent: "center",
+						alignItems: "center",
+						height: "100%",
+						background: "#1e1e1e",
+					}}
+				>
+					<img
+						src={content}
+						alt={fileName}
+						style={{
+							maxWidth: "100%",
+							maxHeight: "100%",
+							objectFit: "contain",
+							border: "1px solid #3e3e42",
+							borderRadius: 8,
+						}}
+					/>
+				</div>
 			) : (
 				<EditorContent>
 					<Editor

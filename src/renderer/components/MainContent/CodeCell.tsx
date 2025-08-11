@@ -46,16 +46,16 @@ const FloatingToolbar = styled.div`
 	padding: 6px 8px;
 	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
 	z-index: 5;
-	transform: translate(-50%, -120%);
+	white-space: nowrap;
 `;
 
 interface SelectionToolbarProps {
-	editorRef: React.MutableRefObject<any>;
+	editor: any | null;
 	onAddToChat: () => void;
 }
 
 const MonacoSelectionToolbar: React.FC<SelectionToolbarProps> = ({
-	editorRef,
+	editor,
 	onAddToChat,
 }) => {
 	const [visible, setVisible] = useState(false);
@@ -65,7 +65,6 @@ const MonacoSelectionToolbar: React.FC<SelectionToolbarProps> = ({
 	});
 
 	useEffect(() => {
-		const editor = editorRef.current;
 		if (!editor) return;
 
 		const updateFromSelection = () => {
@@ -77,34 +76,18 @@ const MonacoSelectionToolbar: React.FC<SelectionToolbarProps> = ({
 					setVisible(false);
 					return;
 				}
-				const start = selection.getStartPosition();
 				const end = selection.getEndPosition();
-				const midLine = Math.min(
-					(start.lineNumber + end.lineNumber) / 2,
-					end.lineNumber
-				);
-				const midColumn =
-					start.lineNumber === end.lineNumber
-						? (start.column + end.column) / 2
-						: end.column;
 				const layout = editor.getLayoutInfo?.();
-				const topForLine =
-					editor.getTopForLineNumber?.(Math.floor(midLine)) ?? 0;
-				const leftForColumn =
-					editor.getOffsetForColumn?.(
-						Math.floor(midLine),
-						Math.floor(midColumn)
-					) ?? 0;
 				const editorDom = editor.getDomNode?.();
-				if (!editorDom || !layout) {
+				const rect = editorDom?.getBoundingClientRect?.();
+				const coords = editor.getScrolledVisiblePosition?.(end);
+				if (!layout || !rect || !coords) {
 					setVisible(false);
 					return;
 				}
-				const rect = editorDom.getBoundingClientRect();
-				setPosition({
-					left: rect.left + leftForColumn + layout.contentLeft,
-					top: rect.top + topForLine,
-				});
+				const left = rect.left + (coords.left ?? 0) + layout.contentLeft;
+				const top = rect.top + (coords.top ?? 0) + (coords.height ?? 0) + 6;
+				setPosition({ left, top });
 				setVisible(true);
 			} catch {
 				setVisible(false);
@@ -120,18 +103,24 @@ const MonacoSelectionToolbar: React.FC<SelectionToolbarProps> = ({
 		return () => {
 			disposables.forEach((d) => d && d.dispose && d.dispose());
 		};
-	}, [editorRef]);
+	}, [editor]);
 
 	if (!visible) return null;
 
 	return (
 		<div
-			style={{ position: "absolute", left: position.left, top: position.top }}
+			style={{
+				position: "fixed",
+				left: Math.max(8, position.left),
+				top: Math.max(8, position.top),
+				pointerEvents: "auto",
+				zIndex: 9999,
+			}}
 		>
 			<FloatingToolbar>
-				<SharedActionButton onClick={onAddToChat} $variant="secondary">
+				<ActionButton onClick={onAddToChat} $variant="secondary">
 					Add to Chat ({SHORTCUTS.ADD_TO_CHAT.accelerator})
-				</SharedActionButton>
+				</ActionButton>
 			</FloatingToolbar>
 		</div>
 	);
@@ -715,7 +704,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 						/>
 						{/* Floating toolbar near selection */}
 						<MonacoSelectionToolbar
-							editorRef={monacoEditorRef}
+							editor={monacoEditorRef.current}
 							onAddToChat={askChatToEditSelection}
 						/>
 					</CellBody>

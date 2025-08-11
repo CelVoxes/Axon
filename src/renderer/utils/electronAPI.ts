@@ -84,6 +84,22 @@ export const electronAPI = {
 	},
 
 	/**
+	 * Safely read a file as binary and return data URL + mime
+	 */
+	async readFileBinary(
+		filePath: string
+	): Promise<{
+		success: boolean;
+		data?: { dataUrl: string; mime: string };
+		error?: string;
+	}> {
+		return safeElectronAPICall<{ dataUrl: string; mime: string }>(
+			"readFileBinary",
+			filePath
+		);
+	},
+
+	/**
 	 * Safely write a file
 	 */
 	async writeFile(

@@ -9,7 +9,7 @@ import { SearchConfig } from "../../config/SearchConfig";
 import { useChatIntent } from "../../hooks/useChatIntent";
 import { DatasetSelectionModal } from "./DatasetSelectionModal";
 import { ChatMessage } from "./ChatMessage";
-import { FiMinimize2, FiMaximize2 } from "react-icons/fi";
+import { FiMinimize2, FiMaximize2, FiPlus, FiClock } from "react-icons/fi";
 import { CodeBlock } from "./shared/CodeBlock";
 import { Composer } from "./Composer";
 import { MentionSuggestions } from "./MentionSuggestions";
@@ -81,6 +81,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [currentSuggestions, setCurrentSuggestions] =
 		useState<DataTypeSuggestions | null>(null);
 	const localRegistryRef = useRef<LocalDatasetRegistry | null>(null);
+	const [showHistoryMenu, setShowHistoryMenu] = useState<boolean>(false);
 
 	// Global code context to track all generated code across the conversation
 	const [globalCodeContext, setGlobalCodeContext] = useState<
@@ -1903,8 +1904,74 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	return (
 		<div className={`chat-panel ${className || ""}`}>
 			<div className="chat-header">
-				<h3></h3>
-				<div style={{ display: "flex", gap: 8 }}>
+				<h3 style={{ margin: 0, fontSize: 14, color: "#ddd", flex: 1 }}>
+					{(() => {
+						const activeId = (analysisState as any).activeChatSessionId as
+							| string
+							| null;
+						const sessions = ((analysisState as any).chatSessions ||
+							[]) as Array<{
+							id: string;
+							title: string;
+						}>;
+						const active = sessions.find((s) => s.id === activeId);
+						return active?.title || "Chat";
+					})()}
+				</h3>
+				<div
+					style={{
+						display: "flex",
+						gap: 8,
+						alignItems: "center",
+						position: "relative",
+					}}
+				>
+					<button
+						onClick={() => {
+							// Start a brand new chat session
+							analysisDispatch({ type: "NEW_CHAT_SESSION" });
+							setSelectedDatasets([]);
+							setAvailableDatasets([]);
+							setCurrentSuggestions(null);
+							setSuggestionButtons([]);
+							setProcessedEvents(new Set());
+							setAgentInstance(null);
+							setVirtualEnvStatus("");
+							setShowHistoryMenu(false);
+							suggestionsService?.startNewConversation?.();
+						}}
+						className="chat-new-button"
+						title="New Chat"
+						style={{
+							display: "inline-flex",
+							alignItems: "center",
+							gap: 6,
+							background: "none",
+							border: "none",
+							padding: 0,
+							margin: 0,
+							cursor: "pointer",
+						}}
+					>
+						<FiPlus />
+					</button>
+					<button
+						onClick={() => setShowHistoryMenu((v) => !v)}
+						className="chat-history-button"
+						title="Chat History"
+						style={{
+							display: "inline-flex",
+							alignItems: "center",
+							gap: 6,
+							background: "none",
+							border: "none",
+							padding: 0,
+							margin: 0,
+							cursor: "pointer",
+						}}
+					>
+						<FiClock />
+					</button>
 					<button
 						onClick={toggleChat}
 						className="chat-toggle-button"
@@ -1912,6 +1979,104 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					>
 						{uiState.chatCollapsed ? <FiMaximize2 /> : <FiMinimize2 />}
 					</button>
+					{showHistoryMenu && (
+						<div
+							style={{
+								position: "absolute",
+								right: 48,
+								top: 28,
+								background: "#2d2d30",
+								border: "1px solid #3e3e42",
+								borderRadius: 6,
+								width: 320,
+								maxHeight: 360,
+								overflowY: "auto",
+								overflowX: "hidden",
+								zIndex: 10,
+								boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+							}}
+							onMouseLeave={() => setShowHistoryMenu(false)}
+						>
+							<div
+								style={{
+									padding: "8px 10px",
+									color: "#999",
+									fontSize: 12,
+									borderBottom: "1px solid #3e3e42",
+								}}
+							>
+								Sessions
+							</div>
+							{(((analysisState as any).chatSessions || []) as Array<any>)
+								.length === 0 && (
+								<div style={{ padding: 10, color: "#aaa", fontSize: 12 }}>
+									No previous chats
+								</div>
+							)}
+							{(((analysisState as any).chatSessions || []) as Array<any>).map(
+								(s: any) => {
+									const isActive =
+										s.id === (analysisState as any).activeChatSessionId;
+									return (
+										<div
+											key={s.id}
+											onClick={async () => {
+												setShowHistoryMenu(false);
+												if (s.id === (analysisState as any).activeChatSessionId)
+													return;
+												analysisDispatch({
+													type: "SET_ACTIVE_CHAT_SESSION",
+													payload: s.id,
+												});
+												// Messages for the selected session will be loaded by context effect
+												setSelectedDatasets([]);
+												setAvailableDatasets([]);
+												setCurrentSuggestions(null);
+												setSuggestionButtons([]);
+												setProcessedEvents(new Set());
+												setAgentInstance(null);
+												setVirtualEnvStatus("");
+											}}
+											style={{
+												padding: "10px 12px",
+												cursor: "pointer",
+												display: "flex",
+												flexDirection: "column",
+												gap: 2,
+												width: "100%",
+												background: isActive ? "#37373d" : "transparent",
+											}}
+										>
+											<div
+												style={{
+													color: "#ddd",
+													fontSize: 13,
+													whiteSpace: "nowrap",
+													overflow: "hidden",
+													textOverflow: "ellipsis",
+												}}
+											>
+												{s.title || "Untitled"}
+											</div>
+											{s.lastMessagePreview && (
+												<div
+													style={{
+														color: "#999",
+														fontSize: 11,
+														whiteSpace: "nowrap",
+														overflow: "hidden",
+														textOverflow: "ellipsis",
+													}}
+												>
+													{s.lastMessagePreview}
+												</div>
+											)}
+										</div>
+									);
+								}
+							)}
+						</div>
+					)}
 				</div>
 			</div>
 

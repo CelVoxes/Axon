@@ -200,7 +200,7 @@ export class AxonApp {
 				submenu: [
 					{
 						label: "Open Folder",
-						accelerator: "CmdOrCtrl+O",
+						accelerator: "⌘O",
 						click: async () => {
 							// Just trigger the same action as the UI buttons
 							this.mainWindow?.webContents.send("trigger-open-workspace");
@@ -1056,6 +1056,29 @@ export class AxonApp {
 		ipcMain.handle("fs-read-file", async (_, filePath: string) => {
 			try {
 				return await fs.promises.readFile(filePath, "utf8");
+			} catch (error) {
+				throw error;
+			}
+		});
+
+		// Binary file read - returns a data URL for safe rendering in renderer
+		ipcMain.handle("fs-read-file-binary", async (_, filePath: string) => {
+			try {
+				const buf = await fs.promises.readFile(filePath);
+				const ext = (path.extname(filePath) || "")
+					.toLowerCase()
+					.replace(".", "");
+				let mime = "application/octet-stream";
+				if (ext) {
+					if (ext === "jpg") mime = "image/jpeg";
+					else if (ext === "svg") mime = "image/svg+xml";
+					else if (["png", "jpeg", "gif", "webp", "bmp"].includes(ext)) {
+						mime = `image/${ext}`;
+					}
+				}
+				const base64 = buf.toString("base64");
+				const dataUrl = `data:${mime};base64,${base64}`;
+				return { dataUrl, mime };
 			} catch (error) {
 				throw error;
 			}

@@ -52,7 +52,7 @@ export const DEFAULT_CONFIGS = {
 // Centralized keyboard shortcuts
 export const SHORTCUTS = {
 	ADD_TO_CHAT: {
-		accelerator: "CmdOrCtrl+L", // renderer/editor usage label
+		accelerator: "⌘L", // renderer/editor usage label
 	},
 } as const;
 

@@ -31,6 +31,14 @@ export interface Message {
 	suggestions?: any; // DataTypeSuggestions from AnalysisSuggestionsService
 }
 
+export interface ChatSessionMeta {
+	id: string;
+	title: string;
+	createdAt: string;
+	updatedAt: string;
+	lastMessagePreview?: string;
+}
+
 // Combined state interface
 interface AppState {
 	// Workspace state
@@ -51,6 +59,10 @@ interface AppState {
 	// UI state
 	chatCollapsed: boolean;
 	showChatPanel: boolean;
+
+	// Chat sessions state
+	activeChatSessionId: string | null;
+	chatSessions: ChatSessionMeta[];
 }
 
 // Combined action types
@@ -82,7 +94,12 @@ type AppAction =
 
 	// UI actions
 	| { type: "SET_CHAT_COLLAPSED"; payload: boolean }
-	| { type: "SET_SHOW_CHAT_PANEL"; payload: boolean };
+	| { type: "SET_SHOW_CHAT_PANEL"; payload: boolean }
+
+	// Chat sessions actions
+	| { type: "SET_CHAT_SESSIONS"; payload: ChatSessionMeta[] }
+	| { type: "SET_ACTIVE_CHAT_SESSION"; payload: string | null }
+	| { type: "NEW_CHAT_SESSION"; payload?: { title?: string } };
 
 const initialState: AppState = {
 	// Workspace state
@@ -103,6 +120,10 @@ const initialState: AppState = {
 	// UI state
 	chatCollapsed: false,
 	showChatPanel: false,
+
+	// Chat sessions state
+	activeChatSessionId: null,
+	chatSessions: [],
 };
 
 function appReducer(state: AppState, action: AppAction): AppState {
@@ -214,6 +235,36 @@ function appReducer(state: AppState, action: AppAction): AppState {
 		case "SET_SHOW_CHAT_PANEL":
 			return { ...state, showChatPanel: action.payload };
 
+		// Chat sessions actions
+		case "SET_CHAT_SESSIONS":
+			return { ...state, chatSessions: action.payload };
+
+		case "SET_ACTIVE_CHAT_SESSION":
+			return { ...state, activeChatSessionId: action.payload };
+
+		case "NEW_CHAT_SESSION": {
+			// If the current active session is already empty, don't create another
+			if (state.activeChatSessionId && state.messages.length === 0) {
+				return state;
+			}
+			const nowIso = new Date().toISOString();
+			const id = `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+			const title = action.payload?.title || "New Chat";
+			const newMeta: ChatSessionMeta = {
+				id,
+				title,
+				createdAt: nowIso,
+				updatedAt: nowIso,
+				lastMessagePreview: "",
+			};
+			return {
+				...state,
+				activeChatSessionId: id,
+				chatSessions: [newMeta, ...state.chatSessions],
+				messages: [],
+			};
+		}
+
 		default:
 			return state;
 	}
@@ -232,52 +283,184 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
 	// Note: We intentionally do not auto-open the last workspace on boot.
 
-	// Persist chat history per workspace on changes
+	// Load chat sessions and active session on workspace change (with legacy migration)
 	useEffect(() => {
 		(async () => {
 			try {
-				if (state.currentWorkspace) {
-					// Only persist after we've restored chat for this workspace, to avoid overwriting
-					if (restoredWorkspaceRef.current !== state.currentWorkspace) {
-						return;
-					}
-					const chatKey = `chatHistory:${state.currentWorkspace}`;
-					await electronAPI.storeSet(chatKey, state.messages);
-				}
-			} catch (e) {
-				// noop
-			}
-		})();
-	}, [state.currentWorkspace, state.messages]);
-
-	// When workspace changes during a session, load its chat history
-	useEffect(() => {
-		(async () => {
-			try {
-				if (state.currentWorkspace) {
-					const chatKey = `chatHistory:${state.currentWorkspace}`;
-					const chat = await electronAPI.storeGet(chatKey);
-					if (chat?.success && Array.isArray(chat.data)) {
-						const restored = (chat.data as any[]).map((m) => ({
-							...m,
-							id: m.id || Math.random().toString(36).slice(2),
-							timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
-						}));
-						dispatch({ type: "SET_CHAT_MESSAGES", payload: restored as any });
-					} else {
-						dispatch({ type: "SET_CHAT_MESSAGES", payload: [] as any });
-					}
-					restoredWorkspaceRef.current = state.currentWorkspace;
-				} else {
+				const ws = state.currentWorkspace;
+				if (!ws) {
 					dispatch({ type: "SET_CHAT_MESSAGES", payload: [] as any });
+					dispatch({ type: "SET_CHAT_SESSIONS", payload: [] });
+					dispatch({ type: "SET_ACTIVE_CHAT_SESSION", payload: null });
+					return;
 				}
+
+				const sessionsKey = `chat:sessions:${ws}`;
+				const activeKey = `chat:activeSession:${ws}`;
+				const legacyKey = `chatHistory:${ws}`;
+
+				const [sessionsRes, activeRes] = await Promise.all([
+					electronAPI.storeGet(sessionsKey),
+					electronAPI.storeGet(activeKey),
+				]);
+
+				let sessions: ChatSessionMeta[] = Array.isArray(sessionsRes?.data)
+					? (sessionsRes.data as ChatSessionMeta[])
+					: [];
+
+				if (!sessions || sessions.length === 0) {
+					const legacy = await electronAPI.storeGet(legacyKey);
+					const legacyMessages: any[] = Array.isArray(legacy?.data)
+						? (legacy!.data as any[])
+						: [];
+					const nowIso = new Date().toISOString();
+					const id = `sess_${Date.now()}_${Math.random()
+						.toString(36)
+						.slice(2, 8)}`;
+					const titleBase =
+						legacyMessages.find((m) => m?.isUser)?.content || "New Chat";
+					const title = String(titleBase).slice(0, 60) || "New Chat";
+					const meta: ChatSessionMeta = {
+						id,
+						title,
+						createdAt: nowIso,
+						updatedAt: nowIso,
+						lastMessagePreview: legacyMessages.length
+							? String(
+									legacyMessages[legacyMessages.length - 1]?.content || ""
+							  ).slice(0, 140)
+							: "",
+					};
+					sessions = [meta];
+					await electronAPI.storeSet(sessionsKey, sessions);
+					await electronAPI.storeSet(activeKey, id);
+					const sessionKey = `chat:session:${ws}:${id}`;
+					await electronAPI.storeSet(sessionKey, legacyMessages || []);
+					restoredWorkspaceRef.current = ws;
+					dispatch({ type: "SET_CHAT_SESSIONS", payload: sessions });
+					dispatch({ type: "SET_ACTIVE_CHAT_SESSION", payload: id });
+					dispatch({
+						type: "SET_CHAT_MESSAGES",
+						payload: (legacyMessages || []) as any,
+					});
+					return;
+				}
+
+				const activeIdRaw = activeRes?.data as string | null;
+				const activeMeta = sessions.find((s) => s.id === activeIdRaw);
+				const activeId = activeMeta
+					? activeMeta.id
+					: sessions
+							.slice()
+							.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0].id;
+
+				const sessionKey = `chat:session:${ws}:${activeId}`;
+				const msgsRes = await electronAPI.storeGet(sessionKey);
+				const restored = (
+					Array.isArray(msgsRes?.data) ? (msgsRes!.data as any[]) : []
+				).map((m) => ({
+					...m,
+					id: m.id || Math.random().toString(36).slice(2),
+					timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+				}));
+
+				restoredWorkspaceRef.current = ws;
+				dispatch({ type: "SET_CHAT_SESSIONS", payload: sessions });
+				dispatch({ type: "SET_ACTIVE_CHAT_SESSION", payload: activeId });
+				dispatch({ type: "SET_CHAT_MESSAGES", payload: restored as any });
 			} catch (e) {
-				// On any error during restore, ensure we clear chat so previous
-				// workspace conversations do not linger visually.
 				dispatch({ type: "SET_CHAT_MESSAGES", payload: [] as any });
+				dispatch({ type: "SET_CHAT_SESSIONS", payload: [] });
+				dispatch({ type: "SET_ACTIVE_CHAT_SESSION", payload: null });
 			}
 		})();
 	}, [state.currentWorkspace]);
+
+	// Persist active session messages per workspace and update session metadata
+	useEffect(() => {
+		(async () => {
+			try {
+				const ws = state.currentWorkspace;
+				const activeId = state.activeChatSessionId;
+				if (!ws || !activeId) return;
+				if (restoredWorkspaceRef.current !== ws) return;
+
+				const sessionKey = `chat:session:${ws}:${activeId}`;
+				await electronAPI.storeSet(sessionKey, state.messages);
+				// Keep legacy key updated for backwards compatibility
+				const legacyKey = `chatHistory:${ws}`;
+				await electronAPI.storeSet(legacyKey, state.messages);
+
+				const lastPreview = state.messages.length
+					? String(
+							state.messages[state.messages.length - 1]?.content || ""
+					  ).slice(0, 140)
+					: "";
+				const firstUser = state.messages.find((m) => m.isUser)?.content || "";
+				const nextSessions = state.chatSessions.map((s) =>
+					s.id === activeId
+						? {
+								...s,
+								title:
+									s.title && s.title !== "New Chat"
+										? s.title
+										: (firstUser || s.title || "New Chat").slice(0, 60),
+								updatedAt: new Date().toISOString(),
+								lastMessagePreview: lastPreview,
+						  }
+						: s
+				);
+				const sessionsKey = `chat:sessions:${ws}`;
+				await electronAPI.storeSet(sessionsKey, nextSessions);
+				if (
+					JSON.stringify(nextSessions) !== JSON.stringify(state.chatSessions)
+				) {
+					dispatch({ type: "SET_CHAT_SESSIONS", payload: nextSessions });
+				}
+			} catch (e) {
+				// ignore persistence errors
+			}
+		})();
+	}, [state.currentWorkspace, state.activeChatSessionId, state.messages]);
+
+	// Persist active session id and sessions list when they change
+	useEffect(() => {
+		(async () => {
+			try {
+				const ws = state.currentWorkspace;
+				if (!ws) return;
+				const activeKey = `chat:activeSession:${ws}`;
+				await electronAPI.storeSet(activeKey, state.activeChatSessionId);
+				const sessionsKey = `chat:sessions:${ws}`;
+				await electronAPI.storeSet(sessionsKey, state.chatSessions);
+			} catch (e) {
+				// ignore
+			}
+		})();
+	}, [state.currentWorkspace, state.activeChatSessionId, state.chatSessions]);
+
+	// Load messages when active chat session changes
+	useEffect(() => {
+		(async () => {
+			try {
+				const ws = state.currentWorkspace;
+				const activeId = state.activeChatSessionId;
+				if (!ws || !activeId) return;
+				const sessionKey = `chat:session:${ws}:${activeId}`;
+				const msgsRes = await electronAPI.storeGet(sessionKey);
+				const restored = (
+					Array.isArray(msgsRes?.data) ? (msgsRes!.data as any[]) : []
+				).map((m) => ({
+					...m,
+					id: m.id || Math.random().toString(36).slice(2),
+					timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+				}));
+				dispatch({ type: "SET_CHAT_MESSAGES", payload: restored as any });
+			} catch (e) {
+				dispatch({ type: "SET_CHAT_MESSAGES", payload: [] as any });
+			}
+		})();
+	}, [state.currentWorkspace, state.activeChatSessionId]);
 
 	return (
 		<AppContext.Provider value={{ state, dispatch }}>
@@ -319,6 +502,8 @@ export const useAnalysisContext = () => {
 			currentMessage: state.currentMessage,
 			isStreaming: state.isStreaming,
 			analysisStatus: state.analysisStatus,
+			activeChatSessionId: state.activeChatSessionId,
+			chatSessions: state.chatSessions,
 		},
 		dispatch,
 	};

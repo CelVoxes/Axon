@@ -5,6 +5,8 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld("electronAPI", {
 	// File system operations
 	readFile: (filePath: string) => ipcRenderer.invoke("fs-read-file", filePath),
+	readFileBinary: (filePath: string) =>
+		ipcRenderer.invoke("fs-read-file-binary", filePath),
 	writeFile: (filePath: string, content: string) =>
 		ipcRenderer.invoke("fs-write-file", filePath, content),
 	createDirectory: async (dirPath: string) => {
@@ -129,6 +131,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
 // Type definitions for the exposed API
 export interface ElectronAPI {
 	readFile: (filePath: string) => Promise<string>;
+	readFileBinary: (
+		filePath: string
+	) => Promise<{ dataUrl: string; mime: string }>;
 	writeFile: (filePath: string, content: string) => Promise<boolean>;
 	createDirectory: (dirPath: string) => Promise<boolean>;
 	directoryExists: (dirPath: string) => Promise<boolean>;

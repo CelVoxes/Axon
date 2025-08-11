@@ -1,5 +1,8 @@
 export interface ElectronAPI {
 	readFile: (filePath: string) => Promise<string>;
+	readFileBinary: (
+		filePath: string
+	) => Promise<{ dataUrl: string; mime: string }>;
 	writeFile: (filePath: string, content: string) => Promise<boolean>;
 	createDirectory: (dirPath: string) => Promise<boolean>;
 	directoryExists: (dirPath: string) => Promise<boolean>;
