@@ -10,17 +10,25 @@ import {
 	useUIContext,
 } from "./context/AppContext";
 import { electronAPI } from "./utils/electronAPI";
+import {
+	BsChatDots,
+	BsChatDotsFill,
+	BsFolder2,
+	BsFolderFill,
+} from "react-icons/bs";
 
 const AppContent: React.FC = () => {
 	const { state: workspaceState } = useWorkspaceContext();
 	const { state: uiState, dispatch: uiDispatch } = useUIContext();
 
-	// Handle workspace change to automatically show chat panel
+	// Handle workspace change to automatically show chat panel (only when workspace changes)
 	useEffect(() => {
 		if (workspaceState.currentWorkspace && !uiState.showChatPanel) {
 			uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
 		}
-	}, [workspaceState.currentWorkspace, uiState.showChatPanel, uiDispatch]);
+		// Intentionally only depend on currentWorkspace so we don't auto-reopen after manual close
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [workspaceState.currentWorkspace]);
 
 	// Persist last workspace for convenience (no auto-open on boot)
 	useEffect(() => {
@@ -40,7 +48,83 @@ const AppContent: React.FC = () => {
 
 	return (
 		<Layout>
-			<Layout.Header />
+			<Layout.Header>
+				{workspaceState.currentWorkspace && (
+					<div
+						style={{
+							marginLeft: "auto",
+							display: "inline-flex",
+							alignItems: "center",
+							gap: 10,
+						}}
+					>
+						{/* Explorer toggle */}
+						<button
+							onClick={() =>
+								uiDispatch({
+									type: "SET_SHOW_SIDEBAR",
+									payload: !uiState.showSidebar,
+								})
+							}
+							style={{
+								display: "inline-flex",
+								alignItems: "center",
+								gap: 6,
+								background: "transparent",
+								border: "none",
+								color: "#ccc",
+								cursor: "pointer",
+								padding: 0,
+							}}
+							title={uiState.showSidebar ? "Hide Explorer" : "Show Explorer"}
+						>
+							{uiState.showSidebar ? <BsFolderFill /> : <BsFolder2 />}
+						</button>
+
+						{/* Chat toggle */}
+						<button
+							onClick={() => {
+								// Toggle chat open/close
+								const isOpen = uiState.showChatPanel && !uiState.chatCollapsed;
+								if (isOpen) {
+									// Close completely
+									uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: false });
+									uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
+								} else {
+									// Open and ensure expanded
+									if (!uiState.showChatPanel) {
+										uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
+									}
+									if (uiState.chatCollapsed) {
+										uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
+									}
+								}
+							}}
+							style={{
+								display: "inline-flex",
+								alignItems: "center",
+								gap: 6,
+								background: "transparent",
+								border: "none",
+								color: "#ccc",
+								cursor: "pointer",
+								padding: 0,
+							}}
+							title={
+								uiState.showChatPanel && !uiState.chatCollapsed
+									? "Close Chat"
+									: "Open Chat"
+							}
+						>
+							{uiState.showChatPanel && !uiState.chatCollapsed ? (
+								<BsChatDotsFill />
+							) : (
+								<BsChatDots />
+							)}
+						</button>
+					</div>
+				)}
+			</Layout.Header>
 
 			<Layout.Body>
 				{workspaceState.currentWorkspace && (

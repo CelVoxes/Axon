@@ -38,7 +38,7 @@ const SidebarContainer = styled.div<{ $collapsed: boolean }>`
 `;
 
 const SidebarHeader = styled.div`
-	padding: 8px 12px;
+	padding: 6px 12px;
 	font-size: ${typography.sm};
 	font-weight: 500;
 	color: #cccccc;

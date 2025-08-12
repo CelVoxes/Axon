@@ -9,7 +9,7 @@ import { SearchConfig } from "../../config/SearchConfig";
 import { useChatIntent } from "../../hooks/useChatIntent";
 import { DatasetSelectionModal } from "./DatasetSelectionModal";
 import { ChatMessage } from "./ChatMessage";
-import { FiMinimize2, FiMaximize2, FiPlus, FiClock } from "react-icons/fi";
+import { FiMinimize2, FiMaximize2, FiPlus, FiClock, FiX } from "react-icons/fi";
 import { CodeBlock } from "./shared/CodeBlock";
 import { Composer } from "./Composer";
 import { MentionSuggestions } from "./MentionSuggestions";
@@ -82,6 +82,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		useState<DataTypeSuggestions | null>(null);
 	const localRegistryRef = useRef<LocalDatasetRegistry | null>(null);
 	const [showHistoryMenu, setShowHistoryMenu] = useState<boolean>(false);
+
+	// Chat mode: "Agent" (default) or "Ask"
+	const [chatMode, setChatMode] = useState<"Agent" | "Ask">("Agent");
 
 	// Global code context to track all generated code across the conversation
 	const [globalCodeContext, setGlobalCodeContext] = useState<
@@ -755,7 +758,54 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		if (!inputValue.trim() || isLoading) return;
 
 		const userMessage = inputValue.trim();
-		// Resolve @mentions to local datasets and auto-attach
+
+		// Ask mode: simple Q&A, no environment creation/editing/search
+		if (chatMode === "Ask") {
+			addMessage(userMessage, true);
+			setInputValue("");
+			setIsLoading(true);
+			setIsProcessing(true);
+
+			let isMounted = true;
+			try {
+				if (!backendClient) {
+					addMessage(
+						"Backend client not initialized. Please wait a moment and try again.",
+						false
+					);
+					return;
+				}
+				// Build lightweight context from recent messages
+				const recent = (analysisState.messages || []).slice(-10);
+				const context = recent
+					.map((m: any) => (typeof m.content === "string" ? m.content : ""))
+					.filter(Boolean)
+					.join("\n\n");
+				const answer = await backendClient.askQuestion({
+					question: userMessage,
+					context,
+				});
+				if (isMounted) {
+					addMessage(answer || "(No answer)", false);
+				}
+			} catch (error) {
+				console.error("Ask mode error:", error);
+				if (isMounted) {
+					addMessage(
+						"Sorry, I couldn't answer that right now. Please try again.",
+						false
+					);
+				}
+			} finally {
+				if (isMounted) {
+					setIsLoading(false);
+					setIsProcessing(false);
+					setProgressMessage("");
+				}
+			}
+			return;
+		}
+		// Resolve @mentions to local datasets and auto-attach (Agent mode only)
 		const mentionDatasets = resolveAtMentions(userMessage);
 
 		// Additionally resolve direct workspace/absolute path mentions like @data/file.csv or @path/to/folder
@@ -966,6 +1016,67 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		let isMounted = true;
 
 		try {
+			// If user referenced a notebook cell and specified line ranges, show the referenced lines (code or output)
+			if (cellMentionContext) {
+				const wantOutput = /\boutput\b/i.test(userMessage);
+				const lineMatch =
+					userMessage.match(/lines?\s+(\d+)(?:\s*-\s*(\d+))?/i) ||
+					userMessage.match(/line\s+(\d+)/i);
+				if (lineMatch) {
+					try {
+						const startLineIdx = Math.max(1, parseInt(lineMatch[1] || "1", 10));
+						const endLineIdx = Math.max(
+							startLineIdx,
+							parseInt(lineMatch[2] || String(startLineIdx), 10)
+						);
+						let snippet = "";
+						let langForBlock = wantOutput
+							? "text"
+							: cellMentionContext.language || "python";
+						if (wantOutput) {
+							const fileContent = await window.electronAPI.readFile(
+								cellMentionContext.filePath
+							);
+							const nb = JSON.parse(fileContent);
+							const cell = Array.isArray(nb?.cells)
+								? nb.cells[cellMentionContext.cellIndex0]
+								: null;
+							let outputText = "";
+							if (cell && Array.isArray(cell.outputs)) {
+								const parts: string[] = [];
+								for (const o of cell.outputs) {
+									if (o?.output_type === "stream" && Array.isArray(o.text)) {
+										parts.push(o.text.join(""));
+									} else if (
+										o?.output_type === "execute_result" &&
+										o?.data?.["text/plain"]
+									) {
+										const t = o.data["text/plain"];
+										parts.push(Array.isArray(t) ? t.join("") : String(t));
+									}
+								}
+								outputText = parts.join("\n");
+							}
+							const outLines = (outputText || "").split(/\r?\n/);
+							snippet = outLines.slice(startLineIdx - 1, endLineIdx).join("\n");
+						} else {
+							const codeLines = (cellMentionContext.code || "").split(/\r?\n/);
+							snippet = codeLines
+								.slice(startLineIdx - 1, endLineIdx)
+								.join("\n");
+						}
+						const cellNum = cellMentionContext.cellIndex0 + 1;
+						addMessage(
+							`Cell ${cellNum} ${
+								wantOutput ? "output" : "code"
+							} lines ${startLineIdx}-${endLineIdx}:\n\n\`\`\`${langForBlock}\n${snippet}\n\`\`\``,
+							false
+						);
+					} catch (_) {
+						// ignore snippet failures
+					}
+				}
+			}
 			// If message referenced a notebook cell via #N/#all, perform inline edit on the first referenced cell
 			if (cellMentionContext) {
 				if (!backendClient) {
@@ -2356,6 +2467,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		});
 	};
 
+	const closeChat = () => {
+		// Fully hide the chat panel and reset collapsed state
+		uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: false });
+		uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
+	};
+
 	// Intent detection moved to useChatIntent hook
 
 	const handleStopProcessing = () => {
@@ -2688,11 +2805,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				<div
 					style={{
 						display: "flex",
-						gap: 8,
+						gap: 4,
 						alignItems: "center",
 						position: "relative",
 					}}
 				>
+					{/* Pass through chatMode to Composer via props */}
 					<button
 						onClick={() => {
 							// Start a brand new chat session
@@ -2707,44 +2825,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							setShowHistoryMenu(false);
 							suggestionsService?.startNewConversation?.();
 						}}
-						className="chat-new-button"
+						className="chat-button"
 						title="New Chat"
-						style={{
-							display: "inline-flex",
-							alignItems: "center",
-							gap: 6,
-							background: "none",
-							border: "none",
-							padding: 0,
-							margin: 0,
-							cursor: "pointer",
-						}}
 					>
 						<FiPlus />
 					</button>
 					<button
 						onClick={() => setShowHistoryMenu((v) => !v)}
-						className="chat-history-button"
+						className="chat-button"
 						title="Chat History"
-						style={{
-							display: "inline-flex",
-							alignItems: "center",
-							gap: 6,
-							background: "none",
-							border: "none",
-							padding: 0,
-							margin: 0,
-							cursor: "pointer",
-						}}
 					>
 						<FiClock />
 					</button>
+
 					<button
-						onClick={toggleChat}
-						className="chat-toggle-button"
-						title={uiState.chatCollapsed ? "Expand Chat" : "Collapse Chat"}
+						onClick={closeChat}
+						className="chat-button"
+						title="Close Chat"
 					>
-						{uiState.chatCollapsed ? <FiMaximize2 /> : <FiMinimize2 />}
+						<FiX />
 					</button>
 					{showHistoryMenu && (
 						<div
@@ -2857,6 +2956,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				isProcessing={isProcessing}
 				isLoading={isLoading}
 				onKeyDown={handleComposerKeyDown}
+				mode={chatMode}
+				onModeChange={(m) => setChatMode(m)}
 			/>
 
 			{/* @ mention suggestions menu */}

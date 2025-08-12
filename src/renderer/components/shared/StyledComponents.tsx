@@ -1,6 +1,12 @@
 import styled, { css } from "styled-components";
 import { typography } from "../../styles/design-system";
-import { COLORS, SPACING, BORDER_RADIUS, SHADOWS, TRANSITIONS } from "../../utils/ThemeUtils";
+import {
+	COLORS,
+	SPACING,
+	BORDER_RADIUS,
+	SHADOWS,
+	TRANSITIONS,
+} from "../../utils/ThemeUtils";
 
 // Shared ActionButton with variants
 export const ActionButton = styled.button<{
@@ -115,140 +121,167 @@ export const ActionButton = styled.button<{
 // === UNIVERSAL COMPONENTS FOR MAXIMUM CONSOLIDATION ===
 
 const containerVariants = {
-  default: css`
-    background: ${COLORS.DARK_SURFACE};
-    border: 1px solid ${COLORS.DARK_BORDER};
-    border-radius: ${BORDER_RADIUS.MD};
-  `,
-  card: css`
-    background: ${COLORS.DARK_SURFACE};
-    border: 1px solid ${COLORS.DARK_BORDER};
-    border-radius: ${BORDER_RADIUS.LG};
-    box-shadow: ${SHADOWS.MD};
-  `,
-  output: css`
-    background: ${COLORS.CODE_BG};
-    border-top: 1px solid ${COLORS.DARK_BORDER};
-  `,
-  transparent: css`
-    background: transparent;
-    border: none;
-  `
+	default: css`
+		background: ${COLORS.DARK_SURFACE};
+		border: 1px solid ${COLORS.DARK_BORDER};
+		border-radius: ${BORDER_RADIUS.MD};
+	`,
+	card: css`
+		background: ${COLORS.DARK_SURFACE};
+		border: 1px solid ${COLORS.DARK_BORDER};
+		border-radius: ${BORDER_RADIUS.LG};
+		box-shadow: ${SHADOWS.MD};
+	`,
+	output: css`
+		background: ${COLORS.CODE_BG};
+		border-top: 1px solid ${COLORS.DARK_BORDER};
+	`,
+	transparent: css`
+		background: transparent;
+		border: none;
+	`,
 };
 
 // Universal Container - replaces OutputContainer, MainContainer, etc.
 export const Container = styled.div<{
-  variant?: keyof typeof containerVariants;
-  padding?: keyof typeof SPACING;
-  margin?: keyof typeof SPACING;
-  fullWidth?: boolean;
-  fullHeight?: boolean;
+	variant?: keyof typeof containerVariants;
+	padding?: keyof typeof SPACING;
+	margin?: keyof typeof SPACING;
+	fullWidth?: boolean;
+	fullHeight?: boolean;
 }>`
-  ${({ variant = 'default' }) => containerVariants[variant]}
-  ${({ padding = 'MD' }) => css`padding: ${SPACING[padding]};`}
-  ${({ margin }) => margin && css`margin: ${SPACING[margin]};`}
-  ${({ fullWidth }) => fullWidth && css`width: 100%;`}
-  ${({ fullHeight }) => fullHeight && css`height: 100%;`}
+	${({ variant = "default" }) => containerVariants[variant]}
+	${({ padding = "MD" }) =>
+		css`
+			padding: ${SPACING[padding]};
+		`}
+  ${({ margin }) =>
+		margin &&
+		css`
+			margin: ${SPACING[margin]};
+		`}
+  ${({ fullWidth }) =>
+		fullWidth &&
+		css`
+			width: 100%;
+		`}
+  ${({ fullHeight }) =>
+		fullHeight &&
+		css`
+			height: 100%;
+		`}
 `;
 
 const headerVariants = {
-  flex: css`
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  `,
-  centered: css`
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  `,
-  left: css`
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-  `
+	flex: css`
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	`,
+	centered: css`
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	`,
+	left: css`
+		display: flex;
+		align-items: center;
+		justify-content: flex-start;
+	`,
 };
 
 // Universal Header - replaces OutputHeader, ChatHeader, etc.
 export const Header = styled.div<{
-  variant?: keyof typeof headerVariants;
-  margin?: keyof typeof SPACING;
-  borderBottom?: boolean;
+	variant?: keyof typeof headerVariants;
+	margin?: keyof typeof SPACING;
+	borderBottom?: boolean;
 }>`
-  ${({ variant = 'flex' }) => headerVariants[variant]}
-  ${({ margin = 'MD' }) => css`margin-bottom: ${SPACING[margin]};`}
-  ${({ borderBottom }) => borderBottom && css`
-    border-bottom: 1px solid ${COLORS.DARK_BORDER};
-    padding-bottom: ${SPACING.SM};
-  `}
+	${({ variant = "flex" }) => headerVariants[variant]}
+	${({ margin = "MD" }) =>
+		css`
+			margin-bottom: ${SPACING[margin]};
+		`}
+  ${({ borderBottom }) =>
+		borderBottom &&
+		css`
+			border-bottom: 1px solid ${COLORS.DARK_BORDER};
+			padding-bottom: ${SPACING.SM};
+		`}
   color: ${COLORS.DARK_TEXT};
-  font-weight: 500;
+	font-weight: 500;
 `;
 
 const actionsVariants = {
-  horizontal: css`
-    display: flex;
-    align-items: center;
-    gap: ${SPACING.SM};
-  `,
-  spaced: css`
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: ${SPACING.MD};
-  `
+	horizontal: css`
+		display: flex;
+		align-items: center;
+		gap: ${SPACING.SM};
+	`,
+	spaced: css`
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: ${SPACING.MD};
+	`,
 };
 
 // Universal Actions - replaces ButtonActions, CellActions, etc.
 export const Actions = styled.div<{
-  variant?: keyof typeof actionsVariants;
-  gap?: keyof typeof SPACING;
+	variant?: keyof typeof actionsVariants;
+	gap?: keyof typeof SPACING;
 }>`
-  ${({ variant = 'horizontal' }) => actionsVariants[variant]}
-  ${({ gap }) => gap && css`gap: ${SPACING[gap]};`}
+	${({ variant = "horizontal" }) => actionsVariants[variant]}
+	${({ gap }) =>
+		gap &&
+		css`
+			gap: ${SPACING[gap]};
+		`}
 `;
 
 // Universal Table - replaces all DataTable duplications
 export const UniversalTable = styled.div<{
-  striped?: boolean;
+	striped?: boolean;
 }>`
-  overflow-x: auto;
-  margin: ${SPACING.SM} 0;
-  border: 1px solid ${COLORS.DARK_BORDER};
-  border-radius: ${BORDER_RADIUS.MD};
-  background: ${COLORS.CODE_BG};
-  
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    
-    th, td {
-      padding: ${SPACING.SM} ${SPACING.MD};
-      text-align: left;
-      border-bottom: 1px solid ${COLORS.DARK_BORDER};
-      color: ${COLORS.DARK_TEXT};
-      font-size: 13px;
-    }
-    
-    th {
-      background: ${COLORS.DARK_SURFACE};
-      font-weight: 600;
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: ${COLORS.DARK_MUTED};
-    }
-    
-    ${({ striped }) => striped && css`
-      tbody tr:nth-child(even) {
-        background: ${COLORS.DARK_SURFACE}40;
-      }
-    `}
-    
-    tbody tr:hover {
-      background: ${COLORS.HOVER};
-    }
-  }
+	overflow-x: auto;
+	margin: ${SPACING.SM} 0;
+	border: 1px solid ${COLORS.DARK_BORDER};
+	border-radius: ${BORDER_RADIUS.MD};
+	background: ${COLORS.CODE_BG};
+
+	table {
+		width: 100%;
+		border-collapse: collapse;
+
+		th,
+		td {
+			padding: ${SPACING.SM} ${SPACING.MD};
+			text-align: left;
+			border-bottom: 1px solid ${COLORS.DARK_BORDER};
+			color: ${COLORS.DARK_TEXT};
+			font-size: 13px;
+		}
+
+		th {
+			background: ${COLORS.DARK_SURFACE};
+			font-weight: 600;
+			font-size: 11px;
+			text-transform: uppercase;
+			letter-spacing: 0.5px;
+			color: ${COLORS.DARK_MUTED};
+		}
+
+		${({ striped }) =>
+			striped &&
+			css`
+				tbody tr:nth-child(even) {
+					background: ${COLORS.DARK_SURFACE}40;
+				}
+			`}
+
+		tbody tr:hover {
+			background: ${COLORS.HOVER};
+		}
+	}
 `;
 
 // Shared StatusIndicator with unified status types
@@ -257,12 +290,13 @@ export const StatusIndicator = styled.div<{
 	$size?: "small" | "medium";
 }>`
 	font-size: ${(props) =>
-		props.$size === "small" ? typography.xs : typography.sm};
+		props.$size === "small" ? typography.sm : typography.base};
 	color: ${(props) => {
 		switch (props.$status) {
 			case "running":
-			case "ready":
 				return "#00ff00";
+			case "ready":
+				return "#007700";
 			case "starting":
 				return "#ffff00";
 			case "error":
@@ -379,4 +413,3 @@ export const Button = styled.button<{
 		cursor: not-allowed;
 	}
 `;
-

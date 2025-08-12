@@ -77,7 +77,7 @@ const MainPane = styled.div`
 `;
 
 const Resizer = styled.div<{ $isDisabled?: boolean }>`
-	width: 4px;
+	width: 2px;
 	background: ${(props) => (props.$isDisabled ? "transparent" : "#404040")};
 	cursor: ${(props) => (props.$isDisabled ? "default" : "col-resize")};
 	position: relative;
@@ -88,11 +88,11 @@ const Resizer = styled.div<{ $isDisabled?: boolean }>`
 	justify-content: center;
 
 	&:hover {
-		background: ${(props) => (props.$isDisabled ? "transparent" : "#0ea5e9")};
+		background: ${(props) => (props.$isDisabled ? "transparent" : "#858585")};
 	}
 
 	&:active {
-		background: ${(props) => (props.$isDisabled ? "transparent" : "#0284c7")};
+		background: ${(props) => (props.$isDisabled ? "transparent" : "#858585")};
 	}
 
 	&::before {
@@ -193,11 +193,13 @@ const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 	const rightPane = childrenArray.find(
 		(child: any) => child?.props?.["data-layout-role"] === "chat"
 	);
+	const isLeftPaneVisible = Boolean(leftPane) && uiState.showSidebar;
+	const isRightPaneVisible = Boolean(rightPane) && uiState.showChatPanel;
 
 	return (
 		<LayoutBodyContainer>
 			{/* Left section with sidebar */}
-			{leftPane && (
+			{isLeftPaneVisible && (
 				<>
 					<ResizablePane width={leftPaneWidth} $minWidth={200} $maxWidth={500}>
 						{leftPane}
@@ -210,7 +212,7 @@ const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 			<MainPane>{mainPane}</MainPane>
 
 			{/* Right section with chat */}
-			{rightPane && (
+			{isRightPaneVisible && (
 				<>
 					<Resizer
 						onMouseDown={handleMouseDown("right")}

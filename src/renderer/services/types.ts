@@ -218,4 +218,6 @@ export interface IBackendClient {
 		selectedDatasets: any[];
 		contextInfo?: string;
 	}): Promise<any>;
+
+	askQuestion(params: { question: string; context?: string }): Promise<string>;
 }

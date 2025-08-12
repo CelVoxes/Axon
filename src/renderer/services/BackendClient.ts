@@ -470,6 +470,54 @@ export class BackendClient implements IBackendClient {
 		}
 	}
 
+	/**
+	 * General Q&A (Ask mode) — no environment creation or editing.
+	 */
+	async askQuestion(params: {
+		question: string;
+		context?: string;
+	}): Promise<string> {
+		try {
+			const controller = new AbortController();
+			this.abortControllers.add(controller);
+			const response = await fetch(`${this.baseUrl}/llm/ask`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					question: params.question,
+					context: params.context || "",
+				}),
+				signal: controller.signal,
+			});
+			if (!response.ok) {
+				const text = await response.text();
+				throw new Error(
+					`HTTP ${response.status}: ${response.statusText} - ${text}`
+				);
+			}
+			const data = await response.json();
+			return String(data?.answer || "");
+		} catch (error) {
+			console.error("BackendClient: Error asking question:", error);
+			throw error;
+		} finally {
+			// Clean up controller if still present
+			try {
+				for (const c of this.abortControllers) {
+					// no-op; they are removed on specific calls normally
+				}
+			} finally {
+				// Ensure to clear all after completing this request
+				// Remove only one controller if exists
+				const it = this.abortControllers.values();
+				const first = it.next();
+				if (!first.done) {
+					this.abortControllers.delete(first.value as AbortController);
+				}
+			}
+		}
+	}
+
 	// Business logic methods
 
 	// Utility method for basic term extraction (fallback)

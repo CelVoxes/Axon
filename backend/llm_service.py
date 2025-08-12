@@ -204,6 +204,39 @@ class LLMService:
         
         print("No provider created, returning None")
         return None
+
+    async def ask(self, question: str, context: str = "", **kwargs) -> str:
+        """General Q&A. Uses provider if available, otherwise a simple fallback."""
+        system_prompt = (
+            "You are Axon, an expert assistant for answering questions about code, "
+            "notebook outputs, datasets, and results. Be concise and precise. "
+            "Do not invent files or environments."
+        )
+        user_content = (
+            f"Question: {question}\n\n" + (f"Context:\n{context}" if context else "")
+        )
+
+        if not self.provider:
+            # Fallback simple echo with no LLM
+            return (
+                "(LLM unavailable) Here's a brief assessment based on the provided context.\n\n"
+                + (f"Context summary: {context[:500]}...\n\n" if context else "")
+                + f"Question: {question}"
+            )
+
+        try:
+            response = await self.provider.generate(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=800,
+                temperature=0.2,
+            )
+            return response
+        except Exception as e:
+            print(f"LLMService.ask error: {e}")
+            return "Sorry, I couldn't generate an answer right now. Please try again."
     
     async def generate_search_terms(
         self, 

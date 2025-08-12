@@ -147,12 +147,11 @@ textarea:focus {
 .chat-header {
 	background: #2d2d30;
 	border-bottom: 1px solid #3c3c3c;
-	padding: 16px 20px;
+	padding: 6px 12px;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
 	flex-shrink: 0;
-	border-radius: 8px 8px 0 0;
 }
 
 .chat-header h3 {
@@ -162,30 +161,7 @@ textarea:focus {
 	color: #ffffff;
 }
 
-.chat-toggle-button {
-	background: transparent;
-	border: none;
-	color: #858585;
-	padding: 4px;
-	border-radius: 4px;
-	cursor: pointer;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	transition: all 0.2s ease;
-}
-
-.chat-toggle-button:hover {
-	background: #404040;
-	color: #ffffff;
-}
-
-.chat-toggle-button svg {
-	width: 16px;
-	height: 16px;
-}
-
-.close-button {
+.chat-button {
 	background: transparent;
 	border: none;
 	color: #858585;
@@ -194,7 +170,7 @@ textarea:focus {
 	cursor: pointer;
 }
 
-.close-button:hover {
+.chat-button:hover {
 	background: rgba(255, 255, 255, 0.1);
 	color: #d4d4d4;
 }

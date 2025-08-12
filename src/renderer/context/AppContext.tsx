@@ -59,6 +59,7 @@ interface AppState {
 	// UI state
 	chatCollapsed: boolean;
 	showChatPanel: boolean;
+	showSidebar: boolean;
 
 	// Chat sessions state
 	activeChatSessionId: string | null;
@@ -95,6 +96,7 @@ type AppAction =
 	// UI actions
 	| { type: "SET_CHAT_COLLAPSED"; payload: boolean }
 	| { type: "SET_SHOW_CHAT_PANEL"; payload: boolean }
+	| { type: "SET_SHOW_SIDEBAR"; payload: boolean }
 
 	// Chat sessions actions
 	| { type: "SET_CHAT_SESSIONS"; payload: ChatSessionMeta[] }
@@ -120,6 +122,7 @@ const initialState: AppState = {
 	// UI state
 	chatCollapsed: false,
 	showChatPanel: false,
+	showSidebar: true,
 
 	// Chat sessions state
 	activeChatSessionId: null,
@@ -234,6 +237,9 @@ function appReducer(state: AppState, action: AppAction): AppState {
 
 		case "SET_SHOW_CHAT_PANEL":
 			return { ...state, showChatPanel: action.payload };
+
+		case "SET_SHOW_SIDEBAR":
+			return { ...state, showSidebar: action.payload };
 
 		// Chat sessions actions
 		case "SET_CHAT_SESSIONS":
@@ -515,6 +521,7 @@ export const useUIContext = () => {
 		state: {
 			chatCollapsed: state.chatCollapsed,
 			showChatPanel: state.showChatPanel,
+			showSidebar: state.showSidebar,
 		},
 		dispatch,
 	};

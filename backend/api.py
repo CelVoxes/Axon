@@ -154,10 +154,19 @@ class DataTypeSuggestionsRequest(BaseModel):
 
 
 class DataTypeSuggestionsResponse(BaseModel):
-	suggestions: List[Dict[str, Any]]
-	recommended_approaches: List[Dict[str, Any]]
-	data_insights: List[Dict[str, Any]]
-	next_steps: List[str]
+    suggestions: List[Dict[str, Any]]
+    recommended_approaches: List[Dict[str, Any]]
+    data_insights: List[Dict[str, Any]]
+    next_steps: List[str]
+
+
+class AskRequest(BaseModel):
+    question: str
+    context: Optional[str] = ""
+
+
+class AskResponse(BaseModel):
+    answer: str
 
 
 @app.get("/")
@@ -178,6 +187,7 @@ async def root():
             "code_generate": "/llm/code",
             "tool_call": "/llm/tool",
             "query_analyze": "/llm/analyze",
+            "ask": "/llm/ask",
         }
     }
 
@@ -664,6 +674,17 @@ async def generate_data_type_suggestions(request: DataTypeSuggestionsRequest):
         return DataTypeSuggestionsResponse(**suggestions)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating suggestions: {str(e)}")
+
+
+@app.post("/llm/ask", response_model=AskResponse)
+async def ask_question(request: AskRequest):
+    """General Q&A endpoint. No environment creation or editing, just answers."""
+    try:
+        llm_service = get_llm_service()
+        answer = await llm_service.ask(request.question, request.context or "")
+        return AskResponse(answer=answer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ask failed: {str(e)}")
 
 
 @app.get("/search/gene/{gene}")

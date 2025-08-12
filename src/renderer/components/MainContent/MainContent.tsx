@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import styled from "styled-components";
-import { FiFolder, FiMessageSquare } from "react-icons/fi";
+import { FiFolder } from "react-icons/fi";
 import { useWorkspaceContext, useUIContext } from "../../context/AppContext";
 import { FileEditor } from "./FileEditor";
 import { WelcomeScreen } from "./WelcomeScreen";
@@ -31,6 +31,33 @@ const TabBar = styled.div`
 	display: flex;
 	align-items: center;
 	overflow-x: auto;
+	overflow-y: hidden;
+	flex-wrap: nowrap;
+	-webkit-overflow-scrolling: touch; /* smooth scrolling */
+	overscroll-behavior-x: contain;
+	/* Always reserve space for a very thin scrollbar to avoid layout shift */
+	scrollbar-width: thin; /* Firefox (cannot set px, thin is the minimum) */
+	scrollbar-color: transparent transparent; /* hidden by default */
+	&::-webkit-scrollbar {
+		height: 3px; /* thinner and stable height */
+	}
+	&::-webkit-scrollbar-thumb {
+		background: transparent; /* hidden by default */
+		border-radius: 3px;
+	}
+	&::-webkit-scrollbar-track {
+		background: transparent;
+	}
+	/* On hover, reveal the thumb without changing height */
+	&:hover {
+		scrollbar-color: #555 transparent;
+	}
+	&:hover::-webkit-scrollbar {
+		height: 3px;
+	}
+	&:hover::-webkit-scrollbar-thumb {
+		background: #555;
+	}
 `;
 
 const Tab = styled.div<{ $isActive: boolean }>`
@@ -41,6 +68,7 @@ const Tab = styled.div<{ $isActive: boolean }>`
 	background-color: ${(props) => (props.$isActive ? "#1e1e1e" : "transparent")};
 	color: ${(props) => (props.$isActive ? "#ffffff" : "#cccccc")};
 	white-space: nowrap;
+	flex: 0 0 auto; /* prevent shrinking/wrapping */
 
 	&:hover {
 		background-color: ${(props) => (props.$isActive ? "#1e1e1e" : "#383838")};
@@ -56,28 +84,7 @@ const Tab = styled.div<{ $isActive: boolean }>`
 	}
 `;
 
-const ControlBar = styled.div`
-	height: 40px;
-	background-color: #252526;
-	border-bottom: 1px solid #3e3e42;
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	padding: 0 12px;
-	gap: 8px;
-`;
-
-const ControlLeft = styled.div`
-	display: flex;
-	align-items: center;
-	gap: 8px;
-`;
-
-const ControlRight = styled.div`
-	display: flex;
-	align-items: center;
-	gap: 8px;
-`;
+// Control bar removed (moved actions to header)
 
 // Using shared ActionButton component
 
@@ -90,6 +97,19 @@ const ControlRight = styled.div`
 export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 	props
 ) => {
+	// Horizontal scrolling for TabBar with mouse wheel (convert vertical wheel to horizontal)
+	const tabBarRef = useRef<HTMLDivElement | null>(null);
+	const handleTabBarWheel = useCallback(
+		(e: React.WheelEvent<HTMLDivElement>) => {
+			const el = tabBarRef.current;
+			if (!el) return;
+			if (Math.abs(e.deltaY) >= Math.abs(e.deltaX)) {
+				el.scrollLeft += e.deltaY;
+				e.preventDefault();
+			}
+		},
+		[]
+	);
 	const { state: workspaceState, dispatch: workspaceDispatch } =
 		useWorkspaceContext();
 	const { state: uiState, dispatch: uiDispatch } = useUIContext();
@@ -98,9 +118,9 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 	const [sshSessionId, setSshSessionId] = useState<string | null>(null);
 	const [sshTargetLabel, setSshTargetLabel] = useState<string>("");
 	const [isConnectingSSH, setIsConnectingSSH] = useState(false);
-  const [sshError, setSshError] = useState<string | null>(null);
-  const [showRemoteFolderModal, setShowRemoteFolderModal] = useState(false);
-  const [sshUsername, setSshUsername] = useState<string>("");
+	const [sshError, setSshError] = useState<string | null>(null);
+	const [showRemoteFolderModal, setShowRemoteFolderModal] = useState(false);
+	const [sshUsername, setSshUsername] = useState<string>("");
 
 	useEffect(() => {
 		async function syncRecentWorkspaces() {
@@ -336,26 +356,6 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 		}
 	};
 
-	const toggleChat = () => {
-		if (!uiState.showChatPanel) {
-			// If chat panel is not shown, show it
-			uiDispatch({
-				type: "SET_SHOW_CHAT_PANEL",
-				payload: true,
-			});
-			uiDispatch({
-				type: "SET_CHAT_COLLAPSED",
-				payload: false,
-			});
-		} else {
-			// If chat panel is shown, toggle collapsed state
-			uiDispatch({
-				type: "SET_CHAT_COLLAPSED",
-				payload: !uiState.chatCollapsed,
-			});
-		}
-	};
-
 	const renderTabBar = () => {
 		if (workspaceState.openFiles.length === 0) return null;
 
@@ -429,19 +429,23 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 								setIsConnectingSSH(true);
 								setSshError(null);
 								const { v4: uuidv4 } = await import("uuid");
-                                const sid = uuidv4();
-                                setSshSessionId(sid);
-                                setSshTargetLabel(target);
-                                const username = target.includes("@") ? target.split("@")[0] : "";
-                                setSshUsername(username);
-                                const res = await (window as any).electronAPI.sshStart(sid, { target });
+								const sid = uuidv4();
+								setSshSessionId(sid);
+								setSshTargetLabel(target);
+								const username = target.includes("@")
+									? target.split("@")[0]
+									: "";
+								setSshUsername(username);
+								const res = await (window as any).electronAPI.sshStart(sid, {
+									target,
+								});
 								if (!res?.success) {
 									setSshError(res?.error || "Failed to start SSH session");
 									setSshSessionId(null);
 									return;
 								}
-                                setShowSSHModal(false);
-                                setShowRemoteFolderModal(true);
+								setShowSSHModal(false);
+								setShowRemoteFolderModal(true);
 							} catch (e: any) {
 								setSshError(e?.message || String(e));
 							} finally {
@@ -464,29 +468,28 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 						}}
 					/>
 				)}
-                {showRemoteFolderModal && sshSessionId && (
-                    <RemoteFolderModal
-                        username={sshUsername || "root"}
-                        isWorking={false}
-                        error={null}
-                        onCancel={() => setShowRemoteFolderModal(false)}
-                        onOpen={async (remotePath: string) => {
-                            try {
-                                const resp = await (window as any).electronAPI.sshOpenRemoteFolder(
-                                    sshSessionId,
-                                    remotePath
-                                );
-                                if (!resp?.success) {
-                                    alert(resp?.error || "Failed to open remote folder");
-                                    return;
-                                }
-                                setShowRemoteFolderModal(false);
-                            } catch (e) {
-                                alert(String(e));
-                            }
-                        }}
-                    />
-                )}
+				{showRemoteFolderModal && sshSessionId && (
+					<RemoteFolderModal
+						username={sshUsername || "root"}
+						isWorking={false}
+						error={null}
+						onCancel={() => setShowRemoteFolderModal(false)}
+						onOpen={async (remotePath: string) => {
+							try {
+								const resp = await (
+									window as any
+								).electronAPI.sshOpenRemoteFolder(sshSessionId, remotePath);
+								if (!resp?.success) {
+									alert(resp?.error || "Failed to open remote folder");
+									return;
+								}
+								setShowRemoteFolderModal(false);
+							} catch (e) {
+								alert(String(e));
+							}
+						}}
+					/>
+				)}
 			</>
 		);
 	};
@@ -495,57 +498,18 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 		<MainContainer>
 			{(() => {
 				const tabs = renderTabBar();
-				return tabs && tabs.length > 0 ? <TabBar>{tabs}</TabBar> : null;
+				return tabs && tabs.length > 0 ? (
+					<TabBar ref={tabBarRef} onWheel={handleTabBarWheel}>
+						{tabs}
+					</TabBar>
+				) : null;
 			})()}
 
-			{workspaceState.currentWorkspace && (
-				<ControlBar>
-					<ControlLeft>
-						<StatusIndicator $status="running">Workspace Open</StatusIndicator>
-					</ControlLeft>
-					<ControlRight>
-						{(!uiState.showChatPanel || uiState.chatCollapsed) && (
-							<ActionButton
-								$variant="primary"
-								onClick={toggleChat}
-								title="Open Chat"
-							>
-								<FiMessageSquare size={14} color="white" />
-								Chat
-							</ActionButton>
-						)}
-					</ControlRight>
-				</ControlBar>
-			)}
+			{/* Control bar removed */}
 
 			{renderContent()}
 
-			{/* Floating chat toggle button when chat is not shown or collapsed */}
-			{workspaceState.currentWorkspace &&
-				(!uiState.showChatPanel || uiState.chatCollapsed) && (
-					<ActionButton
-						$variant="primary"
-						onClick={toggleChat}
-						title="Open Chat"
-						style={{
-							position: "fixed",
-							top: "50%",
-							right: "20px",
-							transform: "translateY(-50%)",
-							zIndex: 1000,
-							borderRadius: "50%",
-							width: "48px",
-							height: "48px",
-							padding: "0",
-							display: "flex",
-							alignItems: "center",
-							justifyContent: "center",
-							boxShadow: "0 4px 12px rgba(0, 0, 0, 0.3)",
-						}}
-					>
-						<FiMessageSquare size={20} />
-					</ActionButton>
-				)}
+			{/* Floating chat toggle removed; top header button handles reopen */}
 		</MainContainer>
 	);
 };

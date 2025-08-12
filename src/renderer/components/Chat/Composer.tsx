@@ -39,6 +39,8 @@ interface ComposerProps {
 	isLoading: boolean;
 	disabled?: boolean;
 	onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+	mode?: "Agent" | "Ask";
+	onModeChange?: (mode: "Agent" | "Ask") => void;
 }
 
 export const Composer: React.FC<ComposerProps> = ({
@@ -50,6 +52,8 @@ export const Composer: React.FC<ComposerProps> = ({
 	isLoading,
 	disabled,
 	onKeyDown,
+	mode = "Agent",
+	onModeChange,
 }) => {
 	const [model, setModel] = React.useState<string>(
 		ConfigManager.getInstance().getDefaultModel()
@@ -60,6 +64,7 @@ export const Composer: React.FC<ComposerProps> = ({
 	);
 
 	const [showModelMenu, setShowModelMenu] = React.useState(false);
+	const [showModeMenu, setShowModeMenu] = React.useState(false);
 	const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const rafIdRef = React.useRef<number | null>(null);
 
@@ -164,7 +169,53 @@ export const Composer: React.FC<ComposerProps> = ({
 			/>
 
 			<div className="chat-controls">
-				<div className="chat-controls-left">
+				<div className="chat-controls-left" style={{ display: "flex", gap: 8 }}>
+					{/* Mode selector */}
+					<div
+						className="pill pill-select"
+						role="button"
+						aria-haspopup="listbox"
+						aria-expanded={showModeMenu}
+						onMouseDown={(e) => {
+							e.preventDefault();
+							e.stopPropagation();
+							setShowModeMenu((s) => !s);
+						}}
+						onClick={(e) => {
+							e.preventDefault();
+							e.stopPropagation();
+						}}
+						title="Select mode"
+					>
+						<span>{mode}</span>
+						<span className="caret">▾</span>
+						{showModeMenu && (
+							<div className="dropdown-menu" role="listbox">
+								{(["Agent", "Ask"] as Array<"Agent" | "Ask">).map((m) => (
+									<div
+										key={m}
+										role="option"
+										aria-selected={m === mode}
+										className={`dropdown-item ${m === mode ? "active" : ""}`}
+										onMouseDown={(e) => {
+											e.preventDefault();
+											e.stopPropagation();
+											onModeChange && onModeChange(m);
+											setShowModeMenu(false);
+										}}
+										onClick={(e) => {
+											onModeChange && onModeChange(m);
+											setShowModeMenu(false);
+											e.stopPropagation();
+										}}
+									>
+										{m}
+									</div>
+								))}
+							</div>
+						)}
+					</div>
+
 					<div
 						className="pill pill-select"
 						role="button"
