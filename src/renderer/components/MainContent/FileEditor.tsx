@@ -4,6 +4,7 @@ import Editor from "@monaco-editor/react";
 import { CodeCell } from "./CodeCell";
 import { FiPlus, FiTrash2 } from "react-icons/fi";
 import { ActionButton } from "@components/shared/StyledComponents";
+import { Tooltip } from "@components/shared/Tooltip";
 import { useWorkspaceContext } from "../../context/AppContext";
 import { typography } from "../../styles/design-system";
 import { EventManager } from "../../utils/EventManager";
@@ -14,6 +15,7 @@ const EditorContainer = styled.div`
 	height: 100%;
 	display: flex;
 	flex-direction: column;
+	position: relative; /* ensure in-notebook overlays stay within editor area */
 `;
 
 const EditorHeader = styled.div`
@@ -158,7 +160,8 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	}, [notebookData]);
 
 	// Get workspace context at the top level to avoid React hooks warning
-	const { state: workspaceState } = useWorkspaceContext();
+	const { state: workspaceState, dispatch: workspaceDispatch } =
+		useWorkspaceContext();
 	// Prefer the directory of the currently open file (e.g., the notebook folder)
 	// Fallback to the globally selected workspace if filePath has no parent
 	const fileDirectory = filePath.includes("/")
@@ -185,6 +188,18 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			);
 		}
 		setPendingEvents([]);
+	}, [filePath]);
+
+	// Ensure the current file is tracked in openFiles even if opened via events
+	useEffect(() => {
+		try {
+			if (workspaceDispatch && !workspaceState.openFiles.includes(filePath)) {
+				workspaceDispatch({ type: "OPEN_FILE", payload: filePath });
+			}
+		} catch (e) {
+			// ignore dispatch errors
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [filePath]);
 
 	// Normalize editor text to ipynb "source" array form (one string per line, keep trailing newlines)
@@ -1019,12 +1034,19 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 				{/* Insert controls at the very top */}
 				<InsertButtonsRow>
-					<InsertCellButton onClick={() => addCellAt(0, "code")}>
-						<FiPlus size={12} /> Insert Code Cell Above
-					</InsertCellButton>
-					<InsertCellButton onClick={() => addCellAt(0, "markdown")}>
-						<FiPlus size={12} /> Insert Markdown Above
-					</InsertCellButton>
+					<Tooltip content="Add a new Python cell at the top" placement="top">
+						<InsertCellButton onClick={() => addCellAt(0, "code")}>
+							<FiPlus size={12} /> Insert Code Cell Above
+						</InsertCellButton>
+					</Tooltip>
+					<Tooltip
+						content="Add a new Markdown text cell at the top"
+						placement="top"
+					>
+						<InsertCellButton onClick={() => addCellAt(0, "markdown")}>
+							<FiPlus size={12} /> Insert Markdown Above
+						</InsertCellButton>
+					</Tooltip>
 				</InsertButtonsRow>
 
 				{notebookData.cells.map((cell, index) => {
@@ -1079,14 +1101,26 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 							{/* Insert controls between cells (after current index) */}
 							<InsertButtonsRow>
-								<InsertCellButton onClick={() => addCellAt(index + 1, "code")}>
-									<FiPlus size={12} /> Insert Code Cell Here
-								</InsertCellButton>
-								<InsertCellButton
-									onClick={() => addCellAt(index + 1, "markdown")}
+								<Tooltip
+									content="Insert a Python cell below this"
+									placement="top"
 								>
-									<FiPlus size={12} /> Insert Markdown Here
-								</InsertCellButton>
+									<InsertCellButton
+										onClick={() => addCellAt(index + 1, "code")}
+									>
+										<FiPlus size={12} /> Insert Code Cell Here
+									</InsertCellButton>
+								</Tooltip>
+								<Tooltip
+									content="Insert a Markdown cell below this"
+									placement="top"
+								>
+									<InsertCellButton
+										onClick={() => addCellAt(index + 1, "markdown")}
+									>
+										<FiPlus size={12} /> Insert Markdown Here
+									</InsertCellButton>
+								</Tooltip>
 							</InsertButtonsRow>
 						</React.Fragment>
 					);
@@ -1120,21 +1154,24 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			<EditorHeader>
 				{fileName} {hasChanges && "(modified)"}
 				{hasChanges && (
-					<button
-						onClick={saveFile}
-						style={{
-							marginLeft: "auto",
-							background: "#0e639c",
-							border: "none",
-							color: "white",
-							padding: "2px 8px",
-							borderRadius: "2px",
-							fontSize: "11px",
-							cursor: "pointer",
-						}}
-					>
-						Save
-					</button>
+					<div style={{ marginLeft: "auto" }}>
+						<Tooltip content="Save changes to disk" placement="bottom">
+							<button
+								onClick={saveFile}
+								style={{
+									background: "#0e639c",
+									border: "none",
+									color: "white",
+									padding: "2px 8px",
+									borderRadius: "2px",
+									fontSize: "11px",
+									cursor: "pointer",
+								}}
+							>
+								Save
+							</button>
+						</Tooltip>
+					</div>
 				)}
 			</EditorHeader>
 

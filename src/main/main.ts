@@ -1760,6 +1760,10 @@ export class AxonApp {
 		});
 
 		ipcMain.handle("get-biorag-url", () => {
+			const envUrl = process.env.BACKEND_URL;
+			if (envUrl && typeof envUrl === "string" && envUrl.trim().length > 0) {
+				return envUrl.trim();
+			}
 			return `http://localhost:${this.bioragPort}`;
 		});
 

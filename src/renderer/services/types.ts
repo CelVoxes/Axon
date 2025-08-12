@@ -97,6 +97,15 @@ export interface CodeValidationErrorEvent {
 	timestamp: number;
 }
 
+// Shared progress types
+export interface SearchProgress {
+	message: string;
+	step: string;
+	progress: number; // 0-100
+	datasetsFound?: number;
+	currentTerm?: string;
+}
+
 // ========== DEPENDENCY-FREE SERVICE INTERFACES ==========
 
 /**

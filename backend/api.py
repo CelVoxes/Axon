@@ -1,11 +1,13 @@
 """Minimal FastAPI application for GEO semantic search."""
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, cast
 import uvicorn
 import json
+import datetime as dt
 import os
 import asyncio
 from pathlib import Path
@@ -25,10 +27,99 @@ from .broad_search import SimpleBroadClient
 from .cellxcensus_search import SimpleCellxCensusClient
 from .llm_service import get_llm_service
 
+# Optional: Prisma DB client (Postgres) - lazy import to avoid tooling errors
+db = None  # type: ignore
+
+# Simple auth dependency that decodes Google-issued ID token or bearer JWT
+async def get_current_user(authorization: Optional[str] = Header(default=None)) -> Optional[dict]:
+    """Optionally authenticate user from Authorization: Bearer <token>.
+    - Accepts Google ID tokens (verify signature via google-auth) or signed JWTs.
+    - Returns minimal user info dict { 'email': str, 'name': str, 'sub': str } or None.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    token = authorization.split(" ", 1)[1].strip()
+
+    # Try Google ID token verification first
+    try:
+        from google.oauth2 import id_token
+        from google.auth.transport import requests as google_requests
+        request = google_requests.Request()
+        payload = id_token.verify_oauth2_token(token, request)
+        # Enforce audience (client id) if configured
+        expected_aud = os.getenv("GOOGLE_CLIENT_ID")
+        token_aud = payload.get("aud")
+        if expected_aud and token_aud and token_aud != expected_aud:
+            raise HTTPException(status_code=401, detail="Invalid token audience")
+        # Accept any hosted domain for now; optionally enforce CLIENT_ID via aud
+        user_info = {
+            "email": payload.get("email"),
+            "name": payload.get("name"),
+            "sub": payload.get("sub"),
+        }
+        return user_info
+    except Exception:
+        pass
+
+    # No backend JWT fallback to keep dependencies minimal
+    return None
+
+async def ensure_db_connected():
+    """Connect Prisma on first request if available."""
+    global db
+    if db is None:
+        try:
+            from prisma import Prisma  # type: ignore
+            db = Prisma()
+        except Exception as e:
+            print("Prisma import failed:", e)
+            return None
+    if db and not db.is_connected():
+        try:
+            await db.connect()
+            print("Prisma connected")
+        except Exception as e:
+            print("Failed to connect Prisma:", e)
+    return db
+
+
+def _create_backend_jwt(user: dict) -> Optional[str]:
+    """Deprecated: we currently reuse Google ID token for Authorization."""
+    return None
+
 app = FastAPI(
     title="Multi-Source Single Cell Data Search API",
     description="Comprehensive API for finding similar datasets using semantic search across GEO, Broad Institute Single Cell Portal, and CellxCensus",
     version="1.1.0"
+)
+
+# Startup/shutdown events to manage Prisma connection
+@app.on_event("startup")
+async def on_startup():
+    try:
+        if db:
+            await db.connect()
+            print("Prisma connected on startup")
+    except Exception as e:
+        print("Prisma startup connect failed:", e)
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    try:
+        if db and db.is_connected():
+            await db.disconnect()
+            print("Prisma disconnected on shutdown")
+    except Exception as e:
+        print("Prisma shutdown disconnect failed:", e)
+
+# Enable CORS for renderer (Electron) requests
+# Electron renderer often has Origin: null (file://), so allow all origins and headers
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Initialize the simple clients lazily
@@ -167,6 +258,14 @@ class AskRequest(BaseModel):
 
 class AskResponse(BaseModel):
     answer: str
+class GoogleAuthRequest(BaseModel):
+    id_token: str
+
+class GoogleAuthResponse(BaseModel):
+    access_token: Optional[str]
+    email: str
+    name: Optional[str]
+
 
 
 @app.get("/")
@@ -192,8 +291,40 @@ async def root():
     }
 
 
+@app.post("/auth/google", response_model=GoogleAuthResponse)
+async def auth_google(request: GoogleAuthRequest):
+    """Verify Google ID token, upsert user, and issue backend JWT."""
+    try:
+        from google.oauth2 import id_token
+        from google.auth.transport import requests as google_requests
+        g_request = google_requests.Request()
+        payload = id_token.verify_oauth2_token(request.id_token, g_request)
+        user_info = {
+            "email": payload.get("email"),
+            "name": payload.get("name"),
+            "sub": payload.get("sub"),
+        }
+        if not user_info.get("email"):
+            raise HTTPException(status_code=400, detail="Invalid Google token: no email")
+
+        await ensure_db_connected()
+        if db:
+            email = cast(str, user_info["email"])  # validated above
+            await db.user.upsert({
+                "where": {"email": email},
+                "create": {"email": email, "name": user_info.get("name")},
+                "update": {"name": user_info.get("name")},
+            })
+
+        # For now, return the Google ID token as access token; frontend sends it as Bearer
+        return GoogleAuthResponse(access_token=request.id_token, email=cast(str, user_info["email"]), name=user_info.get("name"))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Google auth failed: {e}")
+
 @app.post("/search", response_model=List[DatasetResponse])
-async def search_datasets(request: SearchRequest):
+async def search_datasets(request: SearchRequest, user=Depends(get_current_user)):
     """Find GEO datasets most similar to the query.
     
     Args:
@@ -223,6 +354,27 @@ async def search_datasets(request: SearchRequest):
                 similarity_score=dataset.get("similarity_score", 0.0)
             ))
         
+        # Optionally persist a minimal "message" record for audit
+        try:
+            await ensure_db_connected()
+            if db and user and user.get("email"):
+                # Upsert user and store message
+                u = await db.user.upsert({
+                    "where": {"email": user["email"]},
+                    "create": {"email": user["email"], "name": user.get("name")},
+                    "update": {"name": user.get("name")},
+                })
+                await db.message.create({
+                    "data": {
+                        "userId": u.id,
+                        "role": "user",
+                        "content": f"SEARCH: {request.query}",
+                        "model": "search",
+                    }
+                })
+        except Exception as e:
+            print("DB message log failed:", e)
+
         return results
         
     except Exception as e:
@@ -313,7 +465,7 @@ async def search_datasets_stream(request: SearchRequest):
 
 
 @app.post("/search/llm", response_model=LLMSearchResponse)
-async def llm_search_datasets(request: LLMSearchRequest):
+async def llm_search_datasets(request: LLMSearchRequest, user=Depends(get_current_user)):
     """Find CellxCensus datasets using LLM-generated search terms (primary).
     
     Args:
@@ -407,6 +559,38 @@ async def llm_search_datasets(request: LLMSearchRequest):
                 source=dataset.get("source", "CellxCensus")
             ))
         
+        # Log LLM usage if available
+        try:
+            await ensure_db_connected()
+            if db:
+                # Create or get user if provided
+                user_id = None
+                if user and user.get("email"):
+                    u = await db.user.upsert({
+                        "where": {"email": user["email"]},
+                        "create": {"email": user["email"], "name": user.get("name")},
+                        "update": {"name": user.get("name")},
+                    })
+                    user_id = u.id
+
+                # Attempt to extract usage from provider
+                usage = getattr(get_llm_service(), 'provider', None)
+                usage_dict = getattr(usage, 'last_usage', None) if usage else None
+                await db.usagelog.create({
+                    "data": {
+                        **({"userId": user_id} if user_id else {}),
+                        "provider": "openai",
+                        "model": SearchConfig.get_default_llm_model(),
+                        "endpoint": "/search/llm",
+                        "inputTokens": usage_dict.get('prompt_tokens') if usage_dict else None,
+                        "outputTokens": usage_dict.get('completion_tokens') if usage_dict else None,
+                        "totalTokens": usage_dict.get('total_tokens') if usage_dict else None,
+                        "metadata": {"max_attempts": request.max_attempts, "terms": used_search_terms},
+                    }
+                })
+        except Exception as e:
+            print("DB usage log failed:", e)
+
         return LLMSearchResponse(
             datasets=results,
             search_terms=used_search_terms,
@@ -419,7 +603,7 @@ async def llm_search_datasets(request: LLMSearchRequest):
 
 
 @app.post("/llm/simplify", response_model=QuerySimplificationResponse)
-async def simplify_query(request: QuerySimplificationRequest):
+async def simplify_query(request: QuerySimplificationRequest, user=Depends(get_current_user)):
     """Simplify a complex query to its core components."""
     try:
         llm_service = get_llm_service()
@@ -434,7 +618,7 @@ async def simplify_query(request: QuerySimplificationRequest):
 
 
 @app.post("/llm/code")
-async def generate_code(request: dict):
+async def generate_code(request: dict, user=Depends(get_current_user)):
     """Generate code for a given task."""
     try:
         # Support per-request model override
@@ -460,6 +644,30 @@ async def generate_code(request: dict):
             context=context
         )
         
+        # Log usage
+        try:
+            await ensure_db_connected()
+            if db:
+                user_id = None
+                if user and user.get("email"):
+                    u = await db.user.upsert({
+                        "where": {"email": user["email"]},
+                        "create": {"email": user["email"], "name": user.get("name")},
+                        "update": {"name": user.get("name")},
+                    })
+                    user_id = u.id
+                await db.usagelog.create({
+                    "data": {
+                        **({"userId": user_id} if user_id else {}),
+                        "provider": "openai",
+                        "model": model or SearchConfig.get_default_llm_model(),
+                        "endpoint": "/llm/code",
+                        "metadata": {"language": language},
+                    }
+                })
+        except Exception as e:
+            print("DB usage log failed:", e)
+
         return {
             "task_description": task_description,
             "language": language,
@@ -472,7 +680,7 @@ async def generate_code(request: dict):
 
 
 @app.post("/llm/code/stream")
-async def generate_code_stream(request: dict):
+async def generate_code_stream(request: dict, user=Depends(get_current_user)):
     """Generate code with streaming for a given task."""
     try:
         # Support per-request model override
@@ -509,6 +717,30 @@ async def generate_code_stream(request: dict):
                 error_msg = f"# Error generating code: {str(e)}\nprint('Code generation failed due to error')"
                 yield f"data: {json.dumps({'chunk': error_msg})}\n\n"
         
+        # Note: Streaming usage logging cannot capture token counts easily; log metadata only
+        try:
+            await ensure_db_connected()
+            if db:
+                user_id = None
+                if user and user.get("email"):
+                    u = await db.user.upsert({
+                        "where": {"email": user["email"]},
+                        "create": {"email": user["email"], "name": user.get("name")},
+                        "update": {"name": user.get("name")},
+                    })
+                    user_id = u.id
+                await db.usagelog.create({
+                    "data": {
+                        **({"userId": user_id} if user_id else {}),
+                        "provider": "openai",
+                        "model": model or SearchConfig.get_default_llm_model(),
+                        "endpoint": "/llm/code/stream",
+                        "metadata": {"language": language},
+                    }
+                })
+        except Exception as e:
+            print("DB usage log failed:", e)
+
         return StreamingResponse(
             generate(),
             media_type="text/plain",
@@ -527,7 +759,7 @@ async def generate_code_stream(request: dict):
 
 
 @app.post("/llm/validate-code")
-async def validate_code(request: dict):
+async def validate_code(request: dict, user=Depends(get_current_user)):
     """Validate generated code syntax and structure."""
     try:
         llm_service = get_llm_service()
@@ -556,7 +788,7 @@ async def validate_code(request: dict):
 
 
 @app.post("/llm/tool", response_model=ToolCallResponse)
-async def call_tool(request: ToolCallRequest):
+async def call_tool(request: ToolCallRequest, user=Depends(get_current_user)):
     """Generate tool calling instructions."""
     try:
         llm_service = get_llm_service()
@@ -577,7 +809,7 @@ async def call_tool(request: ToolCallRequest):
 
 
 @app.post("/llm/analyze", response_model=QueryAnalysisResponse)
-async def analyze_query(request: QueryAnalysisRequest):
+async def analyze_query(request: QueryAnalysisRequest, user=Depends(get_current_user)):
     """Analyze a query to extract components and intent."""
     try:
         llm_service = get_llm_service()
@@ -595,7 +827,7 @@ async def analyze_query(request: QueryAnalysisRequest):
 
 
 @app.post("/llm/plan")
-async def generate_plan(request: dict):
+async def generate_plan(request: dict, user=Depends(get_current_user)):
     """
     Generate a plan for any task based on current context, question, and available data.
     This can be called at any point during analysis to plan next steps.
@@ -637,7 +869,7 @@ async def generate_plan(request: dict):
 
 
 @app.post("/llm/search-terms", response_model=SearchTermsResponse)
-async def generate_search_terms(request: SearchTermsRequest):
+async def generate_search_terms(request: SearchTermsRequest, user=Depends(get_current_user)):
     """Generate alternative search terms using LLM.
     
     Args:
@@ -661,7 +893,7 @@ async def generate_search_terms(request: SearchTermsRequest):
 
 
 @app.post("/llm/suggestions", response_model=DataTypeSuggestionsResponse)
-async def generate_data_type_suggestions(request: DataTypeSuggestionsRequest):
+async def generate_data_type_suggestions(request: DataTypeSuggestionsRequest, user=Depends(get_current_user)):
     """Generate analysis suggestions based on data types and user question."""
     try:
         llm_service = get_llm_service()
@@ -677,7 +909,7 @@ async def generate_data_type_suggestions(request: DataTypeSuggestionsRequest):
 
 
 @app.post("/llm/ask", response_model=AskResponse)
-async def ask_question(request: AskRequest):
+async def ask_question(request: AskRequest, user=Depends(get_current_user)):
     """General Q&A endpoint. No environment creation or editing, just answers."""
     try:
         llm_service = get_llm_service()
@@ -1307,7 +1539,8 @@ async def health_check():
         "service": "GEO and Broad Single Cell Semantic Search",
         "llm_service": llm_status,
         "openai_key_configured": openai_key_set,
-        "anthropic_key_configured": anthropic_key_set
+        "anthropic_key_configured": anthropic_key_set,
+        "db_connected": bool(db and db.is_connected())
     }
 
 

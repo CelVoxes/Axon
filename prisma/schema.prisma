@@ -1,0 +1,52 @@
+// Prisma schema for Axon application (Python Prisma Client)
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-py"
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages  Message[]
+  usageLogs UsageLog[]
+}
+
+model Message {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  role      String
+  content   String
+  model     String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model UsageLog {
+  id               String   @id @default(uuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id])
+  provider         String
+  model            String
+  endpoint         String?
+  inputTokens      Int?
+  outputTokens     Int?
+  reasoningTokens  Int?
+  totalTokens      Int?
+  metadata         Json?
+  createdAt        DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+

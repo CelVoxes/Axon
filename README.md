@@ -60,6 +60,24 @@ The platform now includes intelligent auto-execution capabilities:
 - **Frontend**: Electron app with React/TypeScript
 - **Analysis**: Jupyter notebooks with virtual environments
 
+## Cloud backend and database
+
+- Deploy the FastAPI backend (`backend/`) to your server (e.g., DigitalOcean). Set environment variables:
+  - `OPENAI_API_KEY` (and optional `ANTHROPIC_API_KEY`)
+  - `DATABASE_URL` (Postgres connection string)
+  - `BACKEND_JWT_SECRET` (used for issuing/verifying backend JWTs)
+- Database uses Prisma (Python) with Postgres. After installing backend requirements:
+  - `pip install -r backend/requirements.txt`
+  - `pip install prisma`
+  - `prisma generate`
+  - `prisma migrate deploy`
+
+### Google Sign-In
+
+- Backend exposes `POST /auth/google` with body `{ id_token: string }` from Google Sign-In.
+- On success, backend upserts user and returns `{ access_token, email, name }`.
+- Send `Authorization: Bearer <access_token>` in subsequent requests; usage and messages are logged per user.
+
 ## License
 
 Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International

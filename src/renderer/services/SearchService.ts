@@ -1,4 +1,5 @@
-import { BackendClient, SearchProgress } from "./BackendClient";
+import { BackendClient } from "./BackendClient";
+import { SearchProgress } from "./types";
 import { GEODataset } from "../types/DatasetTypes";
 import {
 	deduplicateDatasets,
@@ -104,9 +105,10 @@ export class SearchService {
 				const currentTerms =
 					attempt === 0
 						? searchTerms
-						: await this.backendClient.generateAlternativeSearchTerms(
+						: await this.backendClient.generateSearchTerms(
 								simplifiedQuery,
-								attempt + 1
+								attempt + 1,
+								false
 						  );
 
 				for (const term of currentTerms) {

@@ -16,6 +16,7 @@ import {
 } from "react-icons/fi";
 import { CellExecutionService } from "../../services/CellExecutionService";
 import { ActionButton } from "@components/shared/StyledComponents";
+import { Tooltip } from "@components/shared/Tooltip";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -594,15 +595,32 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 			selectionEnd = code.length;
 		}
 
-		EventManager.dispatchEvent("chat-edit-selection", {
-			filePath,
-			cellIndex,
-			selectedText,
-			fullCode: code,
-			selectionStart,
-			selectionEnd,
-			language,
-		});
+		// Compute 1-based line numbers for the current selection
+		const beforeSelection = code.slice(0, selectionStart);
+		const startLine = (beforeSelection.match(/\n/g)?.length ?? 0) + 1;
+		const lineCount = selectedText.split(/\r?\n/).length;
+		const endLine = startLine + lineCount - 1;
+
+		// Build a mention like: @relative/path.ipynb#N lines S-E
+		const relPath = filePath
+			? workspacePath && filePath.startsWith(workspacePath)
+				? filePath.slice(workspacePath.length + 1)
+				: filePath
+			: "";
+		const cellSuffix = typeof cellIndex === "number" ? `#${cellIndex + 1}` : "";
+		const mention = `@${relPath}${cellSuffix} lines ${startLine}-${endLine}`;
+
+		try {
+			const event = new CustomEvent("chat-insert-mention", {
+				detail: {
+					alias: mention,
+					filePath: filePath || undefined,
+				},
+			});
+			window.dispatchEvent(event);
+		} catch (_) {
+			// ignore
+		}
 	};
 
 	const insertCellMentionIntoChat = () => {
@@ -686,52 +704,66 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 				<CellActions>
 					{language !== "markdown" && (
 						<>
-							<ActionButton
-								onClick={askChatToEditSelection}
-								$variant="secondary"
+							<Tooltip
+								content="Send selected code to Chat for help"
+								placement="bottom"
 							>
-								<FiMessageSquare size={12} />
-								Ask Chat
-							</ActionButton>
+								<ActionButton
+									onClick={askChatToEditSelection}
+									$variant="secondary"
+								>
+									<FiMessageSquare size={12} />
+									Ask Chat
+								</ActionButton>
+							</Tooltip>
 
-							<ActionButton onClick={copyCode} $variant="secondary">
-								{copied ? <FiCheck size={12} /> : <FiCopy size={12} />}
-							</ActionButton>
-							<ActionButton
-								onClick={executeCode}
-								$variant="primary"
-								disabled={isExecuting || !code.trim()}
+							<Tooltip
+								content={copied ? "Copied" : "Copy code to clipboard"}
+								placement="bottom"
 							>
-								<FiPlay size={12} />
-								{isExecuting ? (
-									<span
-										style={{
-											display: "flex",
-											alignItems: "center",
-											gap: "4px",
-										}}
-									>
-										<div
+								<ActionButton onClick={copyCode} $variant="secondary">
+									{copied ? <FiCheck size={12} /> : <FiCopy size={12} />}
+								</ActionButton>
+							</Tooltip>
+							<Tooltip content="Run this cell" placement="bottom">
+								<ActionButton
+									onClick={executeCode}
+									$variant="primary"
+									disabled={isExecuting || !code.trim()}
+								>
+									<FiPlay size={12} />
+									{isExecuting ? (
+										<span
 											style={{
-												width: "8px",
-												height: "8px",
-												color: "green",
-												borderRadius: "50%",
-												backgroundColor: "currentColor",
-												animation: "pulse 1.5s ease-in-out infinite",
+												display: "flex",
+												alignItems: "center",
+												gap: "4px",
 											}}
-										/>
-									</span>
-								) : (
-									""
-								)}
-							</ActionButton>
+										>
+											<div
+												style={{
+													width: "8px",
+													height: "8px",
+													color: "green",
+													borderRadius: "50%",
+													backgroundColor: "currentColor",
+													animation: "pulse 1.5s ease-in-out infinite",
+												}}
+											/>
+										</span>
+									) : (
+										""
+									)}
+								</ActionButton>
+							</Tooltip>
 						</>
 					)}
 					{onDelete && (
-						<ActionButton onClick={onDelete} $variant="danger">
-							<FiTrash2 size={12} />
-						</ActionButton>
+						<Tooltip content="Delete this cell" placement="bottom">
+							<ActionButton onClick={onDelete} $variant="danger">
+								<FiTrash2 size={12} />
+							</ActionButton>
+						</Tooltip>
 					)}
 				</CellActions>
 			</CellHeader>

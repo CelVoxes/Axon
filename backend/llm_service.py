@@ -28,9 +28,11 @@ class LLMProvider(ABC):
 class OpenAIProvider(LLMProvider):
     """OpenAI provider implementation."""
     
-    def __init__(self, api_key: str, model: str = None):
+    def __init__(self, api_key: str, model: Optional[str] = None):
         self.client = AsyncOpenAI(api_key=api_key)
-        self.model = model or SearchConfig.get_default_llm_model()
+        default_model = SearchConfig.get_default_llm_model()
+        self.model = model if isinstance(model, str) and model else (default_model if isinstance(default_model, str) and default_model else "gpt-4o-mini")
+        self.last_usage = None
     
     def _prepare_kwargs(self, kwargs: dict) -> dict:
         """Prepare kwargs for OpenAI API, handling model-specific parameter differences."""
@@ -70,6 +72,19 @@ class OpenAIProvider(LLMProvider):
                 total_completion = response.usage.completion_tokens
                 reasoning_pct = (details.reasoning_tokens / total_completion) * 100 if total_completion > 0 else 0
                 print(f"🧠 COT Reasoning detected: {details.reasoning_tokens}/{total_completion} tokens ({reasoning_pct:.1f}% reasoning)")
+        # Persist usage
+        try:
+            if hasattr(response, 'usage') and response.usage is not None:
+                self.last_usage = {
+                    'prompt_tokens': getattr(response.usage, 'prompt_tokens', None),
+                    'completion_tokens': getattr(response.usage, 'completion_tokens', None),
+                    'total_tokens': getattr(response.usage, 'total_tokens', None),
+                    'completion_tokens_details': getattr(response.usage, 'completion_tokens_details', None),
+                }
+            else:
+                self.last_usage = None
+        except Exception:
+            self.last_usage = None
         
         return response.choices[0].message.content.strip()
     
@@ -93,15 +108,7 @@ class OpenAIProvider(LLMProvider):
                     total_content += content
                     yield content
                     
-                # Check for usage info in final chunk (if available)
-                if hasattr(chunk, 'usage') and chunk.usage:
-                    usage = chunk.usage
-                    if hasattr(usage, 'completion_tokens_details'):
-                        details = usage.completion_tokens_details
-                        if hasattr(details, 'reasoning_tokens') and details.reasoning_tokens > 0:
-                            total_completion = usage.completion_tokens
-                            reasoning_pct = (details.reasoning_tokens / total_completion) * 100 if total_completion > 0 else 0
-                            print(f"🧠 COT Reasoning (streaming): {details.reasoning_tokens}/{total_completion} tokens ({reasoning_pct:.1f}% reasoning)")
+                # The OpenAI Python SDK does not expose usage on stream chunks reliably; skip
                     
         except Exception as e:
             print(f"OpenAI streaming error: {e}")
@@ -133,7 +140,7 @@ class AnthropicProvider(LLMProvider):
         
         prompt += "Assistant:"
         
-        response = await self.client.messages.create(
+        response = await self.client.messages.create(  # type: ignore[attr-defined]
             model=self.model,
             max_tokens=kwargs.get("max_tokens", 1000),
             temperature=kwargs.get("temperature", 0.7),
@@ -156,14 +163,14 @@ class AnthropicProvider(LLMProvider):
         
         prompt += "Assistant:"
         
-        with self.client.messages.stream(
+        # Streaming API shape may vary; provide a simple non-streaming fallback for type safety
+        response = await self.client.messages.create(  # type: ignore[attr-defined]
             model=self.model,
             max_tokens=kwargs.get("max_tokens", 1000),
             temperature=kwargs.get("temperature", 0.7),
             messages=[{"role": "user", "content": prompt}]
-        ) as stream:
-            for text in stream.text_stream:
-                yield text
+        )
+        yield response.content[0].text
 
 
 class LLMService:

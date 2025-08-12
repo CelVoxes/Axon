@@ -1,19 +1,15 @@
 import axios from "axios";
 import { SearchConfig, MAX_SEARCH_ATTEMPTS } from "../config/SearchConfig";
-import { IBackendClient } from "./types";
+import { IBackendClient, SearchProgress } from "./types";
+import { ConfigManager } from "./ConfigManager";
 import { readNdjsonStream, readDataStream } from "../utils/StreamUtils";
 import { Logger } from "../utils/Logger";
 import { GEODataset } from "../types/DatasetTypes";
+import { deduplicateDatasets } from "../utils/SearchUtils";
 
 // GEODataset now sourced from shared types
 
-export interface SearchProgress {
-	message: string;
-	step: string;
-	progress: number; // 0-100
-	datasetsFound?: number;
-	currentTerm?: string;
-}
+// moved to types.ts
 
 const log = Logger.createLogger("backendClient");
 
@@ -21,9 +17,24 @@ export class BackendClient implements IBackendClient {
 	private baseUrl: string;
 	private onProgress?: (progress: SearchProgress) => void;
 	private abortControllers: Set<AbortController> = new Set();
+	private authToken: string | null = null;
 
-	constructor(baseUrl: string = "http://localhost:8000") {
-		this.baseUrl = baseUrl;
+	constructor(baseUrl?: string) {
+		const cfg = ConfigManager.getInstance().getSection("backend");
+		this.baseUrl = baseUrl || cfg.baseUrl || "http://localhost:8000";
+	}
+
+	setAuthToken(token: string | null) {
+		this.authToken = token;
+	}
+
+	private buildHeaders(extra?: Record<string, string>): HeadersInit {
+		const headers: Record<string, string> = {
+			"Content-Type": "application/json",
+			...(extra || {}),
+		};
+		if (this.authToken) headers["Authorization"] = `Bearer ${this.authToken}`;
+		return headers;
 	}
 
 	setProgressCallback(callback: (progress: SearchProgress) => void) {
@@ -42,11 +53,19 @@ export class BackendClient implements IBackendClient {
 	}): Promise<GEODataset[]> {
 		try {
 			// Use CellxCensus instead of GEO for better single-cell data
-			const response = await axios.post(`${this.baseUrl}/cellxcensus/search`, {
-				query: query.query,
-				limit: query.limit || 50,
-				organism: query.organism || "Homo sapiens",
-			});
+			const response = await axios.post(
+				`${this.baseUrl}/cellxcensus/search`,
+				{
+					query: query.query,
+					limit: query.limit || 50,
+					organism: query.organism || "Homo sapiens",
+				},
+				{
+					headers: this.authToken
+						? { Authorization: `Bearer ${this.authToken}` }
+						: undefined,
+				}
+			);
 			return response.data;
 		} catch (error) {
 			console.error("BackendClient: Error searching datasets:", error);
@@ -95,10 +114,18 @@ export class BackendClient implements IBackendClient {
 				});
 			}
 
-			const response = await axios.post(`${this.baseUrl}/search/llm`, {
-				...requestPayload,
-				max_attempts: 2, // Add max_attempts for LLM search
-			});
+			const response = await axios.post(
+				`${this.baseUrl}/search/llm`,
+				{
+					...requestPayload,
+					max_attempts: MAX_SEARCH_ATTEMPTS,
+				},
+				{
+					headers: this.authToken
+						? { Authorization: `Bearer ${this.authToken}` }
+						: undefined,
+				}
+			);
 
 			log.debug("🔍 Response status:", String(response.status));
 
@@ -202,13 +229,7 @@ export class BackendClient implements IBackendClient {
 				aggregated.push(...part);
 				if (aggregated.length >= (options.limit ?? 20)) break;
 			}
-			// Deduplicate by id
-			const seen = new Set<string>();
-			const deduped = aggregated.filter((d) => {
-				if (seen.has(d.id)) return false;
-				seen.add(d.id);
-				return true;
-			});
+			const deduped = deduplicateDatasets(aggregated);
 			return { datasets: deduped };
 		} catch (error) {
 			console.error(
@@ -238,12 +259,7 @@ export class BackendClient implements IBackendClient {
 					aggregated.push(...part);
 					if (aggregated.length >= (options.limit ?? 20)) break;
 				}
-				const seen = new Set<string>();
-				const deduped = aggregated.filter((d) => {
-					if (seen.has(d.id)) return false;
-					seen.add(d.id);
-					return true;
-				});
+				const deduped = deduplicateDatasets(aggregated);
 				return { datasets: deduped };
 			} catch (fallbackError) {
 				console.error(
@@ -279,9 +295,7 @@ export class BackendClient implements IBackendClient {
 				`${this.baseUrl}/cellxcensus/search/stream`,
 				{
 					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-					},
+					headers: this.buildHeaders(),
 					body: JSON.stringify({
 						query: query.query,
 						limit: query.limit || 50,
@@ -325,9 +339,17 @@ export class BackendClient implements IBackendClient {
 
 	async simplifyQuery(query: string): Promise<string> {
 		try {
-			const response = await axios.post(`${this.baseUrl}/llm/simplify`, {
-				query: query,
-			});
+			const response = await axios.post(
+				`${this.baseUrl}/llm/simplify`,
+				{
+					query: query,
+				},
+				{
+					headers: this.authToken
+						? { Authorization: `Bearer ${this.authToken}` }
+						: undefined,
+				}
+			);
 			return response.data.simplified_query;
 		} catch (error) {
 			console.error("BackendClient: Error simplifying query:", error);
@@ -342,11 +364,19 @@ export class BackendClient implements IBackendClient {
 		isFirstAttempt: boolean = true
 	): Promise<string[]> {
 		try {
-			const response = await axios.post(`${this.baseUrl}/llm/search-terms`, {
-				query: query,
-				attempt: attempt,
-				is_first_attempt: isFirstAttempt,
-			});
+			const response = await axios.post(
+				`${this.baseUrl}/llm/search-terms`,
+				{
+					query: query,
+					attempt: attempt,
+					is_first_attempt: isFirstAttempt,
+				},
+				{
+					headers: this.authToken
+						? { Authorization: `Bearer ${this.authToken}` }
+						: undefined,
+				}
+			);
 			return response.data.terms || [];
 		} catch (error) {
 			console.error("BackendClient: Error generating search terms:", error);
@@ -355,25 +385,7 @@ export class BackendClient implements IBackendClient {
 		}
 	}
 
-	async generateAlternativeSearchTerms(
-		query: string,
-		attempt: number
-	): Promise<string[]> {
-		try {
-			const response = await axios.post(`${this.baseUrl}/llm/search-terms`, {
-				query: query,
-				attempt: attempt,
-				is_first_attempt: false,
-			});
-			return response.data.terms || [];
-		} catch (error) {
-			console.error(
-				"BackendClient: Error generating alternative search terms:",
-				error
-			);
-			return [];
-		}
-	}
+	// Removed generateAlternativeSearchTerms; use generateSearchTerms(query, attempt, false)
 
 	async searchByGene(
 		gene: string,
@@ -385,7 +397,11 @@ export class BackendClient implements IBackendClient {
 				? `${this.baseUrl}/cellxcensus/search/cell_type/${gene}?organism=${organism}&limit=${limit}`
 				: `${this.baseUrl}/cellxcensus/search/cell_type/${gene}?limit=${limit}`;
 
-			const response = await axios.get(url);
+			const response = await axios.get(url, {
+				headers: this.authToken
+					? { Authorization: `Bearer ${this.authToken}` }
+					: undefined,
+			});
 			return response.data;
 		} catch (error) {
 			console.error("BackendClient: Error searching by gene:", error);
@@ -399,7 +415,12 @@ export class BackendClient implements IBackendClient {
 	): Promise<GEODataset[]> {
 		try {
 			const response = await axios.get(
-				`${this.baseUrl}/cellxcensus/search/disease/${disease}?limit=${limit}`
+				`${this.baseUrl}/cellxcensus/search/disease/${disease}?limit=${limit}`,
+				{
+					headers: this.authToken
+						? { Authorization: `Bearer ${this.authToken}` }
+						: undefined,
+				}
 			);
 			return response.data;
 		} catch (error) {
@@ -415,12 +436,20 @@ export class BackendClient implements IBackendClient {
 		model?: string;
 	}): Promise<string> {
 		try {
-			const response = await axios.post(`${this.baseUrl}/llm/code`, {
-				task_description: request.task_description,
-				language: request.language || "python",
-				context: request.context,
-				model: request.model,
-			});
+			const response = await axios.post(
+				`${this.baseUrl}/llm/code`,
+				{
+					task_description: request.task_description,
+					language: request.language || "python",
+					context: request.context,
+					model: request.model,
+				},
+				{
+					headers: this.authToken
+						? { Authorization: `Bearer ${this.authToken}` }
+						: undefined,
+				}
+			);
 			return response.data.code;
 		} catch (error) {
 			console.error("BackendClient: Error generating code:", error);
@@ -438,9 +467,17 @@ export class BackendClient implements IBackendClient {
 		complexity: string;
 	}> {
 		try {
-			const response = await axios.post(`${this.baseUrl}/llm/analyze`, {
-				query: query,
-			});
+			const response = await axios.post(
+				`${this.baseUrl}/llm/analyze`,
+				{
+					query: query,
+				},
+				{
+					headers: this.authToken
+						? { Authorization: `Bearer ${this.authToken}` }
+						: undefined,
+				}
+			);
 			return response.data;
 		} catch (error) {
 			console.error("BackendClient: Error analyzing query:", error);
@@ -456,13 +493,21 @@ export class BackendClient implements IBackendClient {
 		task_type?: string;
 	}): Promise<any> {
 		try {
-			const response = await axios.post(`${this.baseUrl}/llm/plan`, {
-				question: request.question,
-				context: request.context || "",
-				current_state: request.current_state || {},
-				available_data: request.available_data || [],
-				task_type: request.task_type || "general",
-			});
+			const response = await axios.post(
+				`${this.baseUrl}/llm/plan`,
+				{
+					question: request.question,
+					context: request.context || "",
+					current_state: request.current_state || {},
+					available_data: request.available_data || [],
+					task_type: request.task_type || "general",
+				},
+				{
+					headers: this.authToken
+						? { Authorization: `Bearer ${this.authToken}` }
+						: undefined,
+				}
+			);
 			return response.data;
 		} catch (error) {
 			console.error("BackendClient: Error generating plan:", error);
@@ -477,12 +522,12 @@ export class BackendClient implements IBackendClient {
 		question: string;
 		context?: string;
 	}): Promise<string> {
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
 		try {
-			const controller = new AbortController();
-			this.abortControllers.add(controller);
 			const response = await fetch(`${this.baseUrl}/llm/ask`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
+				headers: this.buildHeaders(),
 				body: JSON.stringify({
 					question: params.question,
 					context: params.context || "",
@@ -501,20 +546,9 @@ export class BackendClient implements IBackendClient {
 			console.error("BackendClient: Error asking question:", error);
 			throw error;
 		} finally {
-			// Clean up controller if still present
 			try {
-				for (const c of this.abortControllers) {
-					// no-op; they are removed on specific calls normally
-				}
-			} finally {
-				// Ensure to clear all after completing this request
-				// Remove only one controller if exists
-				const it = this.abortControllers.values();
-				const first = it.next();
-				if (!first.done) {
-					this.abortControllers.delete(first.value as AbortController);
-				}
-			}
+				this.abortControllers.delete(controller);
+			} catch (_) {}
 		}
 	}
 
@@ -581,9 +615,7 @@ export class BackendClient implements IBackendClient {
 
 			const response = await fetch(`${this.baseUrl}/llm/suggestions`, {
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
+				headers: this.buildHeaders(),
 				body: JSON.stringify(requestBody),
 			});
 
@@ -631,9 +663,7 @@ export class BackendClient implements IBackendClient {
 		try {
 			const response = await fetch(`${this.baseUrl}/llm/validate-code`, {
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
+				headers: this.buildHeaders(),
 				body: JSON.stringify(request),
 			});
 
@@ -663,9 +693,7 @@ export class BackendClient implements IBackendClient {
 		try {
 			const response = await fetch(`${this.baseUrl}/llm/code/stream`, {
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
+				headers: this.buildHeaders(),
 				body: JSON.stringify(request),
 				signal: controller.signal,
 			});
@@ -715,9 +743,7 @@ export class BackendClient implements IBackendClient {
 		try {
 			const response = await fetch(`${this.baseUrl}/llm/code`, {
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
+				headers: this.buildHeaders(),
 				body: JSON.stringify(request),
 			});
 

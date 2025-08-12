@@ -19,7 +19,7 @@ export interface CodeQualityResult {
 	cleanedCode: string;
 }
 
-export interface CodeQualityOptions {
+export interface CodeQualityPipelineOptions {
 	skipValidation?: boolean;
 	skipExecution?: boolean;
 	skipCleaning?: boolean;
@@ -83,7 +83,7 @@ export class CodeQualityService {
 	async validateAndTest(
 		code: string,
 		stepId: string,
-		options: CodeQualityOptions = {}
+		options: CodeQualityPipelineOptions = {}
 	): Promise<CodeQualityResult> {
 		const {
 			skipValidation = false,
@@ -275,7 +275,7 @@ export class CodeQualityService {
 	async validateOnly(
 		code: string,
 		stepId: string,
-		options?: CodeQualityOptions
+		options?: CodeQualityPipelineOptions
 	): Promise<CodeQualityResult> {
 		return this.validateAndTest(code, stepId, {
 			...options,
@@ -289,7 +289,7 @@ export class CodeQualityService {
 	async executeOnly(
 		code: string,
 		stepId: string,
-		options?: CodeQualityOptions
+		options?: CodeQualityPipelineOptions
 	): Promise<CodeQualityResult> {
 		return this.validateAndTest(code, stepId, {
 			...options,
@@ -577,7 +577,7 @@ ${code.replace(/while\s+(True|1):/g, (match) => {
 	 */
 	async testMultipleCode(
 		codeSnippets: { code: string; stepId: string; title?: string }[],
-		options: CodeQualityOptions = {}
+		options: CodeQualityPipelineOptions = {}
 	): Promise<BatchTestResult> {
 		this.updateStatus(`Testing ${codeSnippets.length} code snippets...`);
 

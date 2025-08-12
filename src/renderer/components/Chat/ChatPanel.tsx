@@ -1,3 +1,4 @@
+import { Tooltip } from "@components/shared/Tooltip";
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
 	useAnalysisContext,
@@ -1177,12 +1178,37 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				const filePath = cellMentionContext.filePath;
 				const cellIndex = cellMentionContext.cellIndex0;
 				const fullCode = originalSnippet;
-				const selStart = 0;
-				const selEnd = fullCode.length;
+				// If the message includes an explicit line range (e.g., "lines 3-10"),
+				// restrict the edit scope to those lines; otherwise edit the entire cell
+				let selStart = 0;
+				let selEnd = fullCode.length;
+				let startLine = 1;
+				let endLine = (fullCode.match(/\n/g)?.length ?? 0) + 1;
+				try {
+					const lm =
+						userMessage.match(/lines?\s+(\d+)(?:\s*-\s*(\d+))?/i) ||
+						userMessage.match(/line\s+(\d+)/i);
+					if (lm) {
+						const s = Math.max(1, parseInt(lm[1] || "1", 10));
+						const e = Math.max(s, parseInt(lm[2] || String(s), 10));
+						// Map line numbers to character offsets using original newlines
+						const lineStartPositions: number[] = [0];
+						for (let i = 0; i < fullCode.length; i++) {
+							if (fullCode[i] === "\n") {
+								lineStartPositions.push(i + 1);
+							}
+						}
+						startLine = Math.min(s, lineStartPositions.length);
+						endLine = Math.min(e, lineStartPositions.length);
+						selStart = lineStartPositions[startLine - 1] ?? 0;
+						selEnd =
+							lineStartPositions[endLine] !== undefined
+								? lineStartPositions[endLine]
+								: fullCode.length;
+					}
+				} catch (_) {}
 				const beforeSelection = fullCode.slice(0, selStart);
 				const withinSelection = fullCode.slice(selStart, selEnd);
-				const startLine = (beforeSelection.match(/\n/g)?.length ?? 0) + 1;
-				const endLine = startLine + (withinSelection.match(/\n/g)?.length ?? 0);
 				const fileName = filePath.split("/").pop() || filePath;
 
 				addMessage(
@@ -1222,7 +1248,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								payload: {
 									id: streamingMessageId,
 									updates: {
-										content: `\n\nProposed edits (JSON, streaming):\n\n\`\`\`json\n${streamedResponse}\n\`\`\``,
+										content: `Applying edits to selection…`,
 										isStreaming: true,
 									},
 								},
@@ -1418,13 +1444,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						},
 						(chunk: string) => {
 							streamedResponse += chunk;
-							// Update streaming view as a code block
 							analysisDispatch({
 								type: "UPDATE_MESSAGE",
 								payload: {
 									id: streamingMessageId,
 									updates: {
-										content: `\n\nProposed edits (JSON, streaming):\n\n\`\`\`json\n${streamedResponse}\n\`\`\``,
+										content: `Applying edits to selection…`,
 										isStreaming: true,
 									},
 								},
@@ -2894,6 +2919,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			setMentionQuery("");
 			setWorkspaceMentionItems([]);
 			setCellMentionItems([]);
+			// Ensure chat is visible when mention is inserted
+			try {
+				if (!uiState.showChatPanel || uiState.chatCollapsed) {
+					uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
+					uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
+				}
+			} catch (_) {}
 		};
 		window.addEventListener(
 			"chat-insert-mention",
@@ -2997,51 +3029,57 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					}}
 				>
 					{/* Pass through chatMode to Composer via props */}
-					<button
-						onClick={() => {
-							// Start a brand new chat session
-							analysisDispatch({ type: "NEW_CHAT_SESSION" });
-							setSelectedDatasets([]);
-							setAvailableDatasets([]);
-							setCurrentSuggestions(null);
-							setSuggestionButtons([]);
-							setProcessedEvents(new Set());
-							setAgentInstance(null);
-							setVirtualEnvStatus("");
-							setShowHistoryMenu(false);
-							suggestionsService?.startNewConversation?.();
-						}}
-						className="chat-button"
-						title="New Chat"
-					>
-						<FiPlus />
-					</button>
-					<button
-						onClick={() => setShowHistoryMenu((v) => !v)}
-						className="chat-button"
-						title="Chat History"
-					>
-						<FiClock />
-					</button>
+					<Tooltip content="New chat" placement="bottom">
+						<button
+							onClick={() => {
+								// Start a brand new chat session
+								analysisDispatch({ type: "NEW_CHAT_SESSION" });
+								setSelectedDatasets([]);
+								setAvailableDatasets([]);
+								setCurrentSuggestions(null);
+								setSuggestionButtons([]);
+								setProcessedEvents(new Set());
+								setAgentInstance(null);
+								setVirtualEnvStatus("");
+								setShowHistoryMenu(false);
+								suggestionsService?.startNewConversation?.();
+							}}
+							className="chat-button"
+						>
+							<FiPlus />
+						</button>
+					</Tooltip>
+					<Tooltip content="Chat history" placement="bottom">
+						<button
+							onClick={() => setShowHistoryMenu((v) => !v)}
+							className="chat-button"
+						>
+							<FiClock />
+						</button>
+					</Tooltip>
 
-					<button
-						onClick={() => {
-							// If streaming, prefer collapse to preserve ongoing progress
-							if (analysisState.isStreaming) {
-								uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: true });
-							} else {
-								closeChat();
-							}
-						}}
-						className="chat-button"
-						title={
+					<Tooltip
+						content={
 							analysisState.isStreaming
-								? "Collapse Chat (streaming)"
-								: "Close Chat"
+								? "Collapse chat (streaming)"
+								: "Close chat"
 						}
+						placement="bottom"
 					>
-						<FiX />
-					</button>
+						<button
+							onClick={() => {
+								// If streaming, prefer collapse to preserve ongoing progress
+								if (analysisState.isStreaming) {
+									uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: true });
+								} else {
+									closeChat();
+								}
+							}}
+							className="chat-button"
+						>
+							<FiX />
+						</button>
+					</Tooltip>
 					{showHistoryMenu && (
 						<div
 							style={{

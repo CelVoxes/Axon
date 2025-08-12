@@ -38,6 +38,9 @@ const TabBar = styled.div`
 	/* Always reserve space for a very thin scrollbar to avoid layout shift */
 	scrollbar-width: thin; /* Firefox (cannot set px, thin is the minimum) */
 	scrollbar-color: transparent transparent; /* hidden by default */
+	position: sticky;
+	top: 0;
+	z-index: 100;
 	&::-webkit-scrollbar {
 		height: 3px; /* thinner and stable height */
 	}
@@ -69,6 +72,9 @@ const Tab = styled.div<{ $isActive: boolean }>`
 	color: ${(props) => (props.$isActive ? "#ffffff" : "#cccccc")};
 	white-space: nowrap;
 	flex: 0 0 auto; /* prevent shrinking/wrapping */
+	max-width: 260px;
+	overflow: hidden;
+	text-overflow: ellipsis;
 
 	&:hover {
 		background-color: ${(props) => (props.$isActive ? "#1e1e1e" : "#383838")};
@@ -339,30 +345,25 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 	const handleTabClose = (e: React.MouseEvent, filePath: string) => {
 		e.stopPropagation();
 
-		// If it's a notebook file, we might need to clean up Jupyter connections
-		if (filePath.endsWith(".ipynb")) {
-			// Dispatch a custom event to notify notebook components to cleanup
-			const cleanupEvent = new CustomEvent("notebook-cleanup", {
-				detail: { filePath },
-			});
-			window.dispatchEvent(cleanupEvent);
-
-			// Add a small delay to allow cleanup, then close
-			setTimeout(() => {
-				workspaceDispatch({ type: "CLOSE_FILE", payload: filePath });
-			}, 100);
-		} else {
-			workspaceDispatch({ type: "CLOSE_FILE", payload: filePath });
-		}
+		// Treat .ipynb like any other file in tabs; close immediately
+		workspaceDispatch({ type: "CLOSE_FILE", payload: filePath });
 	};
 
 	const renderTabBar = () => {
-		if (workspaceState.openFiles.length === 0) return null;
+		// Always include the active file in addition to open files (ensures .ipynb doesn't hide others)
+		const files: string[] = Array.from(
+			new Set([
+				...workspaceState.openFiles,
+				...(workspaceState.activeFile ? [workspaceState.activeFile] : []),
+			])
+		);
+
+		if (files.length === 0) return null;
 
 		const tabs: React.ReactNode[] = [];
 
 		// File tabs
-		workspaceState.openFiles.forEach((filePath: string) => {
+		files.forEach((filePath: string) => {
 			const fileName = filePath.split("/").pop() || filePath;
 			const isActive = workspaceState.activeFile === filePath;
 
@@ -373,6 +374,7 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 					onClick={() =>
 						workspaceDispatch({ type: "SET_ACTIVE_FILE", payload: filePath })
 					}
+					title={filePath}
 				>
 					{fileName}
 					<span className="close" onClick={(e) => handleTabClose(e, filePath)}>
@@ -389,10 +391,7 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 		// If workspace is open, show file editor or empty state
 		if (workspaceState.currentWorkspace) {
 			// Show file editor if a file is selected and open
-			if (
-				workspaceState.activeFile &&
-				workspaceState.openFiles.includes(workspaceState.activeFile)
-			) {
+			if (workspaceState.activeFile) {
 				return <FileEditor filePath={workspaceState.activeFile} />;
 			}
 

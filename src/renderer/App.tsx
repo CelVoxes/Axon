@@ -8,6 +8,7 @@ import {
 	AppProvider,
 	useWorkspaceContext,
 	useUIContext,
+	useAnalysisContext,
 } from "./context/AppContext";
 import { electronAPI } from "./utils/electronAPI";
 import {
@@ -20,6 +21,7 @@ import {
 const AppContent: React.FC = () => {
 	const { state: workspaceState } = useWorkspaceContext();
 	const { state: uiState, dispatch: uiDispatch } = useUIContext();
+	const { state: analysisState } = useAnalysisContext();
 
 	// Handle workspace change to automatically show chat panel (only when workspace changes)
 	useEffect(() => {
@@ -84,11 +86,15 @@ const AppContent: React.FC = () => {
 						{/* Chat toggle */}
 						<button
 							onClick={() => {
-								// Prefer collapse over full close to preserve streaming state
 								const isExpanded =
 									uiState.showChatPanel && !uiState.chatCollapsed;
 								if (isExpanded) {
-									uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: true });
+									if (analysisState.isStreaming) {
+										uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: true });
+									} else {
+										uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: false });
+										uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
+									}
 								} else {
 									if (!uiState.showChatPanel) {
 										uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
@@ -108,8 +114,10 @@ const AppContent: React.FC = () => {
 							}}
 							title={
 								uiState.showChatPanel && !uiState.chatCollapsed
-									? "Collapse Chat"
-									: "Expand Chat"
+									? analysisState.isStreaming
+										? "Collapse Chat"
+										: "Close Chat"
+									: "Open Chat"
 							}
 						>
 							{uiState.showChatPanel && !uiState.chatCollapsed ? (

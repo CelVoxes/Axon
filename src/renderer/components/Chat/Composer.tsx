@@ -2,6 +2,7 @@ import React from "react";
 import styled from "styled-components";
 import { FiSquare } from "react-icons/fi";
 import { ConfigManager } from "../../services/ConfigManager";
+import { Tooltip } from "@components/shared/Tooltip";
 
 // Define styled components at module scope to avoid dynamic creation warnings
 const MentionsBar = styled.div<{ $visible: boolean }>`
@@ -171,137 +172,149 @@ export const Composer: React.FC<ComposerProps> = ({
 			<div className="chat-controls">
 				<div className="chat-controls-left" style={{ display: "flex", gap: 8 }}>
 					{/* Mode selector */}
-					<div
-						className="pill pill-select"
-						role="button"
-						aria-haspopup="listbox"
-						aria-expanded={showModeMenu}
-						onMouseDown={(e) => {
-							e.preventDefault();
-							e.stopPropagation();
-							setShowModeMenu((s) => !s);
-						}}
-						onClick={(e) => {
-							e.preventDefault();
-							e.stopPropagation();
-						}}
-						title="Select mode"
-					>
-						<span>{mode}</span>
-						<span className="caret">▾</span>
-						{showModeMenu && (
-							<div className="dropdown-menu" role="listbox">
-								{(["Agent", "Ask"] as Array<"Agent" | "Ask">).map((m) => (
-									<div
-										key={m}
-										role="option"
-										aria-selected={m === mode}
-										className={`dropdown-item ${m === mode ? "active" : ""}`}
-										onMouseDown={(e) => {
-											e.preventDefault();
-											e.stopPropagation();
-											onModeChange && onModeChange(m);
-											setShowModeMenu(false);
-										}}
-										onClick={(e) => {
-											onModeChange && onModeChange(m);
-											setShowModeMenu(false);
-											e.stopPropagation();
-										}}
-									>
-										{m}
-									</div>
-								))}
-							</div>
-						)}
-					</div>
+					<Tooltip content="Select interaction mode" placement="top">
+						<div
+							className="pill pill-select"
+							role="button"
+							aria-haspopup="listbox"
+							aria-expanded={showModeMenu}
+							onMouseDown={(e) => {
+								e.preventDefault();
+								e.stopPropagation();
+								setShowModeMenu((s) => !s);
+							}}
+							onClick={(e) => {
+								e.preventDefault();
+								e.stopPropagation();
+							}}
+						>
+							<span>{mode}</span>
+							<span className="caret">▾</span>
+							{showModeMenu && (
+								<div className="dropdown-menu" role="listbox">
+									{(["Agent", "Ask"] as Array<"Agent" | "Ask">).map((m) => (
+										<div
+											key={m}
+											role="option"
+											aria-selected={m === mode}
+											className={`dropdown-item ${m === mode ? "active" : ""}`}
+											onMouseDown={(e) => {
+												e.preventDefault();
+												e.stopPropagation();
+												onModeChange && onModeChange(m);
+												setShowModeMenu(false);
+											}}
+											onClick={(e) => {
+												onModeChange && onModeChange(m);
+												setShowModeMenu(false);
+												e.stopPropagation();
+											}}
+										>
+											{m}
+										</div>
+									))}
+								</div>
+							)}
+						</div>
+					</Tooltip>
 
-					<div
-						className="pill pill-select"
-						role="button"
-						aria-haspopup="listbox"
-						aria-expanded={showModelMenu}
-						onMouseDown={(e) => {
-							// Use mousedown to toggle once and avoid double toggle on click
-							e.preventDefault();
-							e.stopPropagation();
-							console.log("[Composer] pill onMouseDown (toggle)", {
-								target: (e.target as HTMLElement)?.className,
-							});
-							setShowModelMenu((s) => {
-								const next = !s;
-								console.log("[Composer] toggling showModelMenu ->", next);
-								return next;
-							});
-						}}
-						onClick={(e) => {
-							// Do not toggle on click; just stop propagation
-							e.preventDefault();
-							e.stopPropagation();
-							console.log("[Composer] pill onClick suppressed");
-						}}
-						title="Select model"
-					>
-						<span>{model}</span>
-						<span className="caret">▾</span>
-						{showModelMenu && (
-							<div className="dropdown-menu" role="listbox">
-								{models.map((m) => (
-									<div
-										key={m}
-										role="option"
-										aria-selected={m === model}
-										className={`dropdown-item ${m === model ? "active" : ""}`}
-										onMouseDown={(e) => {
-											// Select on mousedown to avoid closing-open race
-											e.preventDefault();
-											e.stopPropagation();
-											console.log("[Composer] menu item mousedown", {
-												value: m,
-											});
-											applyModel(m);
-											setShowModelMenu(false);
-										}}
-										onClick={(e) => {
-											console.log("[Composer] menu item click", {
-												value: m,
-											});
-											applyModel(m);
-											setShowModelMenu(false);
-											// prevent bubbling back to pill
-											e.stopPropagation();
-										}}
-									>
-										{m}
-									</div>
-								))}
-							</div>
-						)}
-					</div>
+					<Tooltip content="Select AI model" placement="top">
+						<div
+							className="pill pill-select"
+							role="button"
+							aria-haspopup="listbox"
+							aria-expanded={showModelMenu}
+							onMouseDown={(e) => {
+								// Use mousedown to toggle once and avoid double toggle on click
+								e.preventDefault();
+								e.stopPropagation();
+								console.log("[Composer] pill onMouseDown (toggle)", {
+									target: (e.target as HTMLElement)?.className,
+								});
+								setShowModelMenu((s) => {
+									const next = !s;
+									console.log("[Composer] toggling showModelMenu ->", next);
+									return next;
+								});
+							}}
+							onClick={(e) => {
+								// Do not toggle on click; just stop propagation
+								e.preventDefault();
+								e.stopPropagation();
+								console.log("[Composer] pill onClick suppressed");
+							}}
+						>
+							<span>{model}</span>
+							<span className="caret">▾</span>
+							{showModelMenu && (
+								<div className="dropdown-menu" role="listbox">
+									{models.map((m) => (
+										<div
+											key={m}
+											role="option"
+											aria-selected={m === model}
+											className={`dropdown-item ${m === model ? "active" : ""}`}
+											onMouseDown={(e) => {
+												// Select on mousedown to avoid closing-open race
+												e.preventDefault();
+												e.stopPropagation();
+												console.log("[Composer] menu item mousedown", {
+													value: m,
+												});
+												applyModel(m);
+												setShowModelMenu(false);
+											}}
+											onClick={(e) => {
+												console.log("[Composer] menu item click", {
+													value: m,
+												});
+												applyModel(m);
+												setShowModelMenu(false);
+												// prevent bubbling back to pill
+												e.stopPropagation();
+											}}
+										>
+											{m}
+										</div>
+									))}
+								</div>
+							)}
+						</div>
+					</Tooltip>
 				</div>
 
-				<button
-					onClick={isProcessing ? onStop : onSend}
-					disabled={!isProcessing && (!value.trim() || isLoading || !!disabled)}
-					className={`send-button ${isProcessing ? "stop-mode" : ""}`}
-					title={isProcessing ? "Stop" : "Send"}
+				<Tooltip
+					content={isProcessing ? "Stop generation" : "Send"}
+					placement="left"
 				>
-					{isProcessing ? (
-						<FiSquare size={16} />
-					) : isLoading ? (
-						<div className="loading-dots">
-							<span>•</span>
-							<span>•</span>
-							<span>•</span>
-						</div>
-					) : (
-						<span
-							style={{ fontSize: "10px", fontWeight: "900", color: "#2d2d30" }}
-						>
-							▶
-						</span>
-					)}
-				</button>
+					<button
+						onClick={isProcessing ? onStop : onSend}
+						disabled={
+							!isProcessing && (!value.trim() || isLoading || !!disabled)
+						}
+						className={`send-button ${isProcessing ? "stop-mode" : ""}`}
+					>
+						{isProcessing ? (
+							<FiSquare size={16} />
+						) : isLoading ? (
+							<div className="loading-dots">
+								<span>•</span>
+								<span>•</span>
+								<span>•</span>
+							</div>
+						) : (
+							<span
+								style={{
+									fontSize: "10px",
+									fontWeight: "900",
+									color: "#2d2d30",
+								}}
+							>
+								▶
+							</span>
+						)}
+					</button>
+				</Tooltip>
 			</div>
 		</div>
 	);
