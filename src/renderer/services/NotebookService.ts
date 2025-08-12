@@ -413,6 +413,23 @@ export class NotebookService {
 		cells: NotebookCell[]
 	): Promise<void> {
 		try {
+			// Try to read workspace metadata to get the workspace-specific kernel name and a friendly display name
+			let kernelName = this.kernelName || "python3";
+			let kernelDisplay = "Python 3";
+			try {
+				const metadataContent = await ElectronClient.readFile(
+					`${this.workspacePath}/workspace_metadata.json`
+				);
+				const meta = JSON.parse(metadataContent);
+				if (meta?.kernelName && typeof meta.kernelName === "string") {
+					kernelName = meta.kernelName;
+					kernelDisplay = `Axon Workspace (${
+						(meta.workspaceName as string) || kernelName
+					})`;
+				}
+			} catch (_) {
+				// ignore; fall back to defaults
+			}
 			// Create Jupyter notebook structure
 			const notebook = {
 				cells: cells.map((cell, index) => {
@@ -432,9 +449,9 @@ export class NotebookService {
 				}),
 				metadata: {
 					kernelspec: {
-						display_name: "Python 3",
+						display_name: kernelDisplay,
 						language: "python",
-						name: this.kernelName,
+						name: kernelName,
 					},
 					language_info: {
 						name: "python",

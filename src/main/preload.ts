@@ -131,6 +131,30 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	},
 });
 
+// Bridge selected IPC events to window CustomEvents so React can listen with window.addEventListener
+try {
+	ipcRenderer.on("jupyter-ready", (_evt, data) => {
+		try {
+			const e = new CustomEvent("jupyter-ready", { detail: data });
+			window.dispatchEvent(e);
+		} catch {}
+	});
+	ipcRenderer.on("jupyter-error", (_evt, data) => {
+		try {
+			const e = new CustomEvent("jupyter-ready", {
+				detail: { status: "error", message: String(data) },
+			});
+			window.dispatchEvent(e);
+		} catch {}
+	});
+	ipcRenderer.on("virtual-env-status", (_evt, data) => {
+		try {
+			const e = new CustomEvent("virtual-env-status", { detail: data });
+			window.dispatchEvent(e);
+		} catch {}
+	});
+} catch {}
+
 // Type definitions for the exposed API
 export interface ElectronAPI {
 	readFile: (filePath: string) => Promise<string>;

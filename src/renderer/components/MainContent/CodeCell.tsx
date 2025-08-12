@@ -14,6 +14,7 @@ import {
 	FiEyeOff,
 	FiMessageSquare,
 	FiMoreVertical,
+	FiSquare,
 } from "react-icons/fi";
 import { CellExecutionService } from "../../services/CellExecutionService";
 import { ActionButton } from "@components/shared/StyledComponents";
@@ -745,7 +746,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 								</ActionButton>
 							</Tooltip>
 							<ActionButton
-								onClick={executeCode}
+								onClick={isExecuting ? undefined : executeCode}
 								$variant="primary"
 								disabled={isExecuting || !code.trim()}
 							>
@@ -770,9 +771,22 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 										/>
 									</span>
 								) : (
-									""
+									"Run"
 								)}
 							</ActionButton>
+							{isExecuting && (
+								<ActionButton
+									$variant="secondary"
+									onClick={() => {
+										try {
+											// @ts-ignore - preload provides this method
+											window.electronAPI?.interruptJupyter?.(workspacePath);
+										} catch (_) {}
+									}}
+								>
+									<FiSquare size={12} /> Stop
+								</ActionButton>
+							)}
 						</>
 					)}
 					{onDelete && (

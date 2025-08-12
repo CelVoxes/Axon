@@ -11,6 +11,7 @@ async function runNotebookStep(
 	}) => void,
 	workspacePath?: string
 ) {
+	let unsubscribe: (() => void) | undefined;
 	try {
 		console.log(
 			`Executing notebook step ${stepId} with code:`,
@@ -44,6 +45,17 @@ async function runNotebookStep(
 		if (window.electronAPI && window.electronAPI.onJupyterCodeWriting) {
 			// @ts-ignore - preload provides this method
 			window.electronAPI.onJupyterCodeWriting(streamHandler);
+			unsubscribe = () => {
+				try {
+					// Prefer precise cleanup when supported
+					// @ts-ignore
+					if (window.electronAPI?.removeAllListeners) {
+						// Remove only our handler by clearing and re-attaching would require channel-level api;
+						// fall back to removeAllListeners only when no other consumer is expected.
+						window.electronAPI.removeAllListeners("jupyter-code-writing");
+					}
+				} catch (_) {}
+			};
 		}
 
 		// Execute the code (final result will be handled below)
@@ -78,11 +90,7 @@ async function runNotebookStep(
 	} finally {
 		// Ensure we remove any streaming listeners we added
 		try {
-			if (window.electronAPI && window.electronAPI.removeAllListeners) {
-				// Remove all to avoid listener buildup (no other consumers found)
-				// @ts-ignore
-				window.electronAPI.removeAllListeners("jupyter-code-writing");
-			}
+			if (typeof unsubscribe === "function") unsubscribe();
 		} catch (_) {
 			// ignore cleanup errors
 		}

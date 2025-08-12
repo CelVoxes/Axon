@@ -455,11 +455,10 @@ async def search_datasets_stream(request: SearchRequest):
     
     return StreamingResponse(
         generate(),
-        media_type="text/plain",
+        media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "Content-Type": "text/event-stream",
         }
     )
 
@@ -743,11 +742,10 @@ async def generate_code_stream(request: dict, user=Depends(get_current_user)):
 
         return StreamingResponse(
             generate(),
-            media_type="text/plain",
+            media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
-                "Content-Type": "text/event-stream"
             }
         )
         
@@ -1420,11 +1418,10 @@ async def search_cellxcensus_datasets_stream(request: SearchRequest):
     
     return StreamingResponse(
         generate(),
-        media_type="text/plain",
+        media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "Content-Type": "text/event-stream",
         }
     )
 

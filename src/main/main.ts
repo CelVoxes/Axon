@@ -979,6 +979,15 @@ export class AxonApp {
 			// Note the workspace the server is associated with and reset kernel cache
 			this.currentJupyterWorkspace = workspacePath;
 			this.workspaceKernelMap.clear();
+
+			// Notify renderer that Jupyter is ready (optional token is empty)
+			try {
+				this.mainWindow?.webContents.send("jupyter-ready", {
+					url: `http://127.0.0.1:${this.jupyterPort}`,
+					token: "",
+				});
+			} catch (_) {}
+
 			return { success: true };
 		} catch (error) {
 			console.error("Error starting Jupyter:", error);
@@ -1598,7 +1607,7 @@ export class AxonApp {
 								? (storeIdleMs as number)
 								: Number.isFinite(envIdleMs as any) && (envIdleMs as any) > 0
 								? (envIdleMs as number)
-								: 0; // 0 means disabled
+								: 120000; // default 2 minutes if not configured
 
 						const resetExecutionTimeout = () => {
 							if (!idleTimeoutMs || idleTimeoutMs <= 0) return;
@@ -1692,6 +1701,26 @@ export class AxonApp {
 								resetExecutionTimeout();
 							} else if (
 								msg.parent_header &&
+								(msg.header.msg_type === "execute_result" ||
+									msg.header.msg_type === "display_data")
+							) {
+								try {
+									const data = msg.content?.data || {};
+									const text = (data["text/plain"] as string | undefined) || "";
+									if (text) {
+										output += (output ? "\n" : "") + text + "\n";
+										// Forward as stream-like update for UI continuity
+										this.mainWindow?.webContents.send("jupyter-code-writing", {
+											code: output,
+											timestamp: new Date().toISOString(),
+											type: "stream",
+										});
+									}
+								} catch (_) {
+									// ignore formatting issues
+								}
+							} else if (
+								msg.parent_header &&
 								msg.header.msg_type === "execute_reply"
 							) {
 								console.log(`Execute reply:`, msg.content);
@@ -1707,7 +1736,13 @@ export class AxonApp {
 								}
 								ws.close();
 							} else if (msg.parent_header && msg.header.msg_type === "error") {
-								errorOutput += msg.content.evalue;
+								const tb = Array.isArray(msg.content?.traceback)
+									? (msg.content.traceback as string[]).join("\n")
+									: "";
+								errorOutput +=
+									(errorOutput ? "\n" : "") +
+									(msg.content.evalue || "Error") +
+									(tb ? "\n" + tb : "");
 								console.log(`Execution error: ${msg.content.evalue}`);
 								// Refresh idle timeout on any kernel error message
 								resetExecutionTimeout();
