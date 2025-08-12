@@ -183,11 +183,8 @@ export function useChatController(deps: Dependencies): ChatControllerAPI {
 
 				// Fallback helper
 				addMessage(
-					"I'm here to help with bioinformatics analysis! You can:\n\n" +
-						"• **Ask me to analyze data** (e.g., 'Assess transcriptional subtypes of AML')\n" +
-						"• **Search for datasets** (e.g., 'Find AML gene expression data')\n" +
-						"• **Ask for specific analysis** (e.g., 'Perform differential expression analysis')\n\n" +
-						"What would you like to do?",
+					"To get started, type your question or search for datasets. " +
+						"Attach your data with @ (e.g., @data.csv) and reference a notebook cell with # (e.g., #3).",
 					false
 				);
 			} catch (error) {

@@ -202,14 +202,6 @@ export class CodeQualityService {
 		// Step 3: Execution Testing (if not skipped)
 		if (!skipExecution) {
 			this.updateStatus(`Testing code execution for ${stepTitle}...`);
-			console.log(`CodeQualityService: About to execute code for ${stepTitle}`);
-			console.log(
-				`CodeQualityService: Code to execute length: ${result.lintedCode.length}`
-			);
-			console.log(
-				`CodeQualityService: First 150 chars of code to execute:`,
-				result.lintedCode.substring(0, 150)
-			);
 
 			try {
 				const executionResult = await this.cellExecutionService.executeCell(
@@ -218,14 +210,7 @@ export class CodeQualityService {
 					undefined
 				);
 
-				console.log(
-					`CodeQualityService: Execution completed for ${stepTitle}`,
-					{
-						status: executionResult.status,
-						outputLength: executionResult.output?.length || 0,
-						hasOutput: !!executionResult.output,
-					}
-				);
+				// minimal log
 
 				result.executionPassed = executionResult.status !== "failed";
 				result.executionOutput = executionResult.output;

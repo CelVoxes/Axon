@@ -145,3 +145,9 @@ declare module "*.svg" {
 	const value: string;
 	export default value;
 }
+
+// React-Markdown rehype plugin without types
+declare module "rehype-sanitize" {
+	const plugin: any;
+	export default plugin;
+}

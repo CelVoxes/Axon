@@ -141,6 +141,21 @@ const Pre = styled.pre<{ $wrap?: boolean; $isDiff?: boolean }>`
     .diff-line.hunk { background: rgba(59, 130, 246, 0.12); }
     .diff-line.meta { background: rgba(156, 163, 175, 0.12); }
 
+    /* Collapsed section indicator */
+    .diff-collapsed {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      margin: 6px 0;
+      color: #a3a3a3;
+      background: rgba(31, 41, 55, 0.7);
+      border: 1px dashed ${colors.gray[700]};
+      border-radius: ${borderRadius.sm};
+      cursor: pointer;
+      user-select: none;
+    }
+
     /* When highlight.js marks tokens, also tint them */
     code > span.hljs-addition,
     code .hljs-addition { background: rgba(16, 185, 129, 0.18); display: block; width: 100%; }
@@ -282,7 +297,11 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 	}, [code]);
 
 	// Do not truncate while streaming to avoid contradicting live generation
-	const isLongCode = !isStreaming && code.length > 1000;
+	// Do not truncate diff blocks; we handle length via collapsed hunks
+	const isLongCode =
+		!isStreaming &&
+		(language || "").toLowerCase() !== "diff" &&
+		code.length > 1000;
 	const displayCode = isStreaming
 		? code
 		: isLongCode && !showFullCode
@@ -292,29 +311,98 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 	const [wrap, setWrap] = useState(true);
 	const isDiff = (language || "").toLowerCase() === "diff";
 
-	const diffLines = React.useMemo(() => {
-		if (!isDiff) return [] as Array<{ text: string; cls: string }>;
-		const lines = displayCode.split(/\r?\n/);
-		return lines.map((line) => {
+	type DiffRenderable =
+		| { type: "line"; text: string; cls: string }
+		| {
+				type: "collapsed";
+				id: number;
+				count: number;
+				lines: Array<{ text: string; cls: string }>;
+		  };
+
+	const [expanded, setExpanded] = useState<Record<number, boolean>>({});
+
+	const diffSegments = React.useMemo(() => {
+		if (!isDiff) return [] as DiffRenderable[];
+		const rawLines = displayCode.split(/\r?\n/);
+
+		// Classify lines
+		const classify = (
+			line: string
+		): {
+			text: string;
+			cls: string;
+			kind: "meta" | "hunk" | "add" | "del" | "unchanged";
+		} => {
 			if (
 				line.startsWith("+++ ") ||
 				line.startsWith("--- ") ||
 				line.startsWith("diff ") ||
 				line.startsWith("index ")
 			) {
-				return { text: line, cls: "diff-line meta" };
+				return { text: line, cls: "diff-line meta", kind: "meta" };
 			}
 			if (line.startsWith("@@")) {
-				return { text: line, cls: "diff-line hunk" };
+				return { text: line, cls: "diff-line hunk", kind: "hunk" };
 			}
-			if (line.startsWith("+")) {
-				return { text: line, cls: "diff-line added" };
+			if (line.startsWith("+") && !line.startsWith("+++ ")) {
+				return { text: line, cls: "diff-line added", kind: "add" };
 			}
-			if (line.startsWith("-")) {
-				return { text: line, cls: "diff-line removed" };
+			if (line.startsWith("-") && !line.startsWith("--- ")) {
+				return { text: line, cls: "diff-line removed", kind: "del" };
 			}
-			return { text: line, cls: "diff-line" };
-		});
+			return { text: line, cls: "diff-line", kind: "unchanged" };
+		};
+
+		const classified = rawLines.map(classify);
+		const importantIdx: number[] = [];
+		for (let i = 0; i < classified.length; i++) {
+			const k = classified[i].kind;
+			if (k === "add" || k === "del" || k === "hunk" || k === "meta") {
+				importantIdx.push(i);
+			}
+		}
+
+		// If nothing stands out, fall back to rendering all lines
+		if (importantIdx.length === 0) {
+			return classified.map((c) => ({
+				type: "line",
+				text: c.text,
+				cls: c.cls,
+			})) as DiffRenderable[];
+		}
+
+		const segments: DiffRenderable[] = [];
+		let cursor = 0;
+		let segId = 0;
+		for (const idx of importantIdx) {
+			// Collapse unchanged run before this important line
+			if (idx > cursor) {
+				const lines = classified
+					.slice(cursor, idx)
+					.map((c) => ({ text: c.text, cls: c.cls }));
+				const count = lines.length;
+				if (count > 0) {
+					segments.push({ type: "collapsed", id: segId++, count, lines });
+				}
+			}
+			// Emit the important line itself
+			const c = classified[idx];
+			segments.push({ type: "line", text: c.text, cls: c.cls });
+			cursor = idx + 1;
+		}
+		// Tail unchanged lines
+		if (cursor < classified.length) {
+			const lines = classified
+				.slice(cursor)
+				.map((c) => ({ text: c.text, cls: c.cls }));
+			const count = lines.length;
+			if (count > 0) {
+				segments.push({ type: "collapsed", id: segId++, count, lines });
+			}
+		}
+
+		return segments;
 	}, [displayCode, isDiff]);
 
 	return (
@@ -380,11 +468,46 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 						<Pre $wrap={wrap} $isDiff={isDiff}>
 							{isDiff ? (
 								<code className={`language-${language}`}>
-									{diffLines.map((l, idx) => (
-										<div key={idx} className={l.cls}>
-											{l.text || "\u00A0"}
-										</div>
-									))}
+									{diffSegments.map((seg, idx) => {
+										if (seg.type === "line") {
+											return (
+												<div key={`l-${idx}`} className={seg.cls}>
+													{seg.text || "\u00A0"}
+												</div>
+											);
+										}
+										const isOpen = !!expanded[seg.id];
+										return (
+											<React.Fragment key={`c-${idx}`}>
+												<div
+													className="diff-collapsed"
+													role="button"
+													aria-expanded={isOpen}
+													onClick={(e) => {
+														e.stopPropagation();
+														setExpanded((prev) => ({
+															...prev,
+															[seg.id]: !prev[seg.id],
+														}));
+													}}
+													title={isOpen ? "Hide context" : "Show context"}
+												>
+													{isOpen ? (
+														<FiChevronUp size={12} />
+													) : (
+														<FiChevronDown size={12} />
+													)}
+													{seg.count} hidden lines
+												</div>
+												{isOpen &&
+													seg.lines.map((l, j) => (
+														<div key={`cx-${seg.id}-${j}`} className={l.cls}>
+															{l.text || "\u00A0"}
+														</div>
+													))}
+											</React.Fragment>
+										);
+									})}
 								</code>
 							) : (
 								<Code

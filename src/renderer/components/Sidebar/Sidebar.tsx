@@ -23,6 +23,7 @@ import {
 } from "../shared/utils";
 import { FileItem, ContextMenuState } from "../shared/interfaces";
 import { typography } from "../../styles/design-system";
+import { electronAPI } from "../../utils/electronAPI";
 
 interface SidebarProps {
 	onToggle: () => void;
@@ -639,8 +640,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 			const queue: string[] = [state.currentWorkspace];
 			while (queue.length && !cancelSearchRef.current) {
 				const dir = queue.shift()!;
-				const res = await window.electronAPI.listDirectory(dir);
-				const data = Array.isArray(res) ? res : [];
+				const res = await electronAPI.listDirectory(dir);
+				const data = res.success && Array.isArray(res.data) ? res.data : [];
 				for (const item of data) {
 					if (cancelSearchRef.current) break;
 					if (item.isDirectory) {
@@ -666,9 +667,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 
 					if (searchInContent && isLikelyTextFile(item.name)) {
 						try {
-							const rf = await window.electronAPI.readFile(item.path);
-							if (typeof rf === "string") {
-								const hayRaw = rf;
+							const rf = await electronAPI.readFile(item.path);
+							if (rf.success && typeof rf.data === "string") {
+								const hayRaw = rf.data;
 								const flags = matchCase ? "g" : "gi";
 								const pattern = useRegex
 									? detailedQuery
@@ -694,7 +695,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 											preview: `${matches.length} match${
 												matches.length === 1 ? "" : "es"
 											}`,
-											// @ts-ignore - extend structure locally for UI rendering
+											// matches kept for UI rendering; update type as needed
+											// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+											// @ts-ignore
 											matches,
 										},
 										...prev,
@@ -1030,19 +1033,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 										</div>
 										<div className="actions">
 											{!item.isDirectory && item.name.endsWith(".ipynb") && (
-												<Tooltip
-													content="Open in Jupyter/VS Code"
-													placement="left"
+												<ActionButton
+													onClick={(e) => {
+														e.stopPropagation();
+														openInSystem(item.path);
+													}}
 												>
-													<ActionButton
-														onClick={(e) => {
-															e.stopPropagation();
-															openInSystem(item.path);
-														}}
-													>
-														<FiPlay size={12} />
-													</ActionButton>
-												</Tooltip>
+													<FiPlay size={12} />
+												</ActionButton>
 											)}
 											{!item.isDirectory && (
 												<Tooltip content="Open in editor" placement="left">

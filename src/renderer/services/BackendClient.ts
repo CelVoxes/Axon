@@ -18,10 +18,31 @@ export class BackendClient implements IBackendClient {
 	private onProgress?: (progress: SearchProgress) => void;
 	private abortControllers: Set<AbortController> = new Set();
 	private authToken: string | null = null;
+	private axiosInstance: any;
 
 	constructor(baseUrl?: string) {
 		const cfg = ConfigManager.getInstance().getSection("backend");
 		this.baseUrl = baseUrl || cfg.baseUrl || "http://localhost:8000";
+
+		// Initialize axios instance with base URL and timeout
+		this.axiosInstance = axios.create({
+			baseURL: this.baseUrl,
+			timeout: cfg.timeout || 30000,
+			headers: {
+				"Content-Type": "application/json",
+			},
+		});
+
+		// Attach Authorization header if token is present
+		this.axiosInstance.interceptors.request.use((config: any) => {
+			if (this.authToken) {
+				config.headers = {
+					...(config.headers || {}),
+					Authorization: `Bearer ${this.authToken}`,
+				};
+			}
+			return config;
+		});
 	}
 
 	setAuthToken(token: string | null) {
@@ -51,9 +72,11 @@ export class BackendClient implements IBackendClient {
 		limit?: number;
 		organism?: string;
 	}): Promise<GEODataset[]> {
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
 		try {
 			// Use CellxCensus instead of GEO for better single-cell data
-			const response = await axios.post(
+			const response = await this.axiosInstance.post(
 				`${this.baseUrl}/cellxcensus/search`,
 				{
 					query: query.query,
@@ -61,15 +84,15 @@ export class BackendClient implements IBackendClient {
 					organism: query.organism || "Homo sapiens",
 				},
 				{
-					headers: this.authToken
-						? { Authorization: `Bearer ${this.authToken}` }
-						: undefined,
+					signal: controller.signal,
 				}
 			);
 			return response.data;
 		} catch (error) {
-			console.error("BackendClient: Error searching datasets:", error);
+			log.error("BackendClient: Error searching datasets:", error);
 			throw error;
+		} finally {
+			this.abortControllers.delete(controller);
 		}
 	}
 
@@ -114,17 +137,13 @@ export class BackendClient implements IBackendClient {
 				});
 			}
 
-			const response = await axios.post(
+			const response = await this.axiosInstance.post(
 				`${this.baseUrl}/search/llm`,
 				{
 					...requestPayload,
 					max_attempts: MAX_SEARCH_ATTEMPTS,
 				},
-				{
-					headers: this.authToken
-						? { Authorization: `Bearer ${this.authToken}` }
-						: undefined,
-				}
+				{}
 			);
 
 			log.debug("🔍 Response status:", String(response.status));
@@ -338,23 +357,23 @@ export class BackendClient implements IBackendClient {
 	}
 
 	async simplifyQuery(query: string): Promise<string> {
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
 		try {
-			const response = await axios.post(
+			const response = await this.axiosInstance.post(
 				`${this.baseUrl}/llm/simplify`,
 				{
 					query: query,
 				},
-				{
-					headers: this.authToken
-						? { Authorization: `Bearer ${this.authToken}` }
-						: undefined,
-				}
+				{ signal: controller.signal }
 			);
 			return response.data.simplified_query;
 		} catch (error) {
-			console.error("BackendClient: Error simplifying query:", error);
+			log.warn("BackendClient: Error simplifying query:", error);
 			// Fallback to original query if simplification fails
 			return query;
+		} finally {
+			this.abortControllers.delete(controller);
 		}
 	}
 
@@ -363,25 +382,25 @@ export class BackendClient implements IBackendClient {
 		attempt: number = 1,
 		isFirstAttempt: boolean = true
 	): Promise<string[]> {
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
 		try {
-			const response = await axios.post(
+			const response = await this.axiosInstance.post(
 				`${this.baseUrl}/llm/search-terms`,
 				{
 					query: query,
 					attempt: attempt,
 					is_first_attempt: isFirstAttempt,
 				},
-				{
-					headers: this.authToken
-						? { Authorization: `Bearer ${this.authToken}` }
-						: undefined,
-				}
+				{ signal: controller.signal }
 			);
 			return response.data.terms || [];
 		} catch (error) {
-			console.error("BackendClient: Error generating search terms:", error);
+			log.warn("BackendClient: Error generating search terms:", error);
 			// Fallback to basic term extraction
 			return this.extractBasicTerms(query);
+		} finally {
+			this.abortControllers.delete(controller);
 		}
 	}
 
@@ -392,20 +411,22 @@ export class BackendClient implements IBackendClient {
 		organism?: string,
 		limit: number = 50
 	): Promise<GEODataset[]> {
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
 		try {
 			const url = organism
 				? `${this.baseUrl}/cellxcensus/search/cell_type/${gene}?organism=${organism}&limit=${limit}`
 				: `${this.baseUrl}/cellxcensus/search/cell_type/${gene}?limit=${limit}`;
 
-			const response = await axios.get(url, {
-				headers: this.authToken
-					? { Authorization: `Bearer ${this.authToken}` }
-					: undefined,
+			const response = await this.axiosInstance.get(url, {
+				signal: controller.signal,
 			});
 			return response.data;
 		} catch (error) {
-			console.error("BackendClient: Error searching by gene:", error);
+			log.error("BackendClient: Error searching by gene:", error);
 			throw error;
+		} finally {
+			this.abortControllers.delete(controller);
 		}
 	}
 
@@ -413,19 +434,19 @@ export class BackendClient implements IBackendClient {
 		disease: string,
 		limit: number = 50
 	): Promise<GEODataset[]> {
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
 		try {
-			const response = await axios.get(
+			const response = await this.axiosInstance.get(
 				`${this.baseUrl}/cellxcensus/search/disease/${disease}?limit=${limit}`,
-				{
-					headers: this.authToken
-						? { Authorization: `Bearer ${this.authToken}` }
-						: undefined,
-				}
+				{ signal: controller.signal }
 			);
 			return response.data;
 		} catch (error) {
-			console.error("BackendClient: Error searching by disease:", error);
+			log.error("BackendClient: Error searching by disease:", error);
 			throw error;
+		} finally {
+			this.abortControllers.delete(controller);
 		}
 	}
 
@@ -435,8 +456,10 @@ export class BackendClient implements IBackendClient {
 		context?: string;
 		model?: string;
 	}): Promise<string> {
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
 		try {
-			const response = await axios.post(
+			const response = await this.axiosInstance.post(
 				`${this.baseUrl}/llm/code`,
 				{
 					task_description: request.task_description,
@@ -444,16 +467,14 @@ export class BackendClient implements IBackendClient {
 					context: request.context,
 					model: request.model,
 				},
-				{
-					headers: this.authToken
-						? { Authorization: `Bearer ${this.authToken}` }
-						: undefined,
-				}
+				{ signal: controller.signal }
 			);
 			return response.data.code;
 		} catch (error) {
-			console.error("BackendClient: Error generating code:", error);
+			log.error("BackendClient: Error generating code:", error);
 			throw error;
+		} finally {
+			this.abortControllers.delete(controller);
 		}
 	}
 
@@ -466,22 +487,22 @@ export class BackendClient implements IBackendClient {
 		analysis_type: string;
 		complexity: string;
 	}> {
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
 		try {
-			const response = await axios.post(
+			const response = await this.axiosInstance.post(
 				`${this.baseUrl}/llm/analyze`,
 				{
 					query: query,
 				},
-				{
-					headers: this.authToken
-						? { Authorization: `Bearer ${this.authToken}` }
-						: undefined,
-				}
+				{ signal: controller.signal }
 			);
 			return response.data;
 		} catch (error) {
-			console.error("BackendClient: Error analyzing query:", error);
+			log.error("BackendClient: Error analyzing query:", error);
 			throw error;
+		} finally {
+			this.abortControllers.delete(controller);
 		}
 	}
 
@@ -492,8 +513,10 @@ export class BackendClient implements IBackendClient {
 		available_data?: any[];
 		task_type?: string;
 	}): Promise<any> {
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
 		try {
-			const response = await axios.post(
+			const response = await this.axiosInstance.post(
 				`${this.baseUrl}/llm/plan`,
 				{
 					question: request.question,
@@ -502,16 +525,14 @@ export class BackendClient implements IBackendClient {
 					available_data: request.available_data || [],
 					task_type: request.task_type || "general",
 				},
-				{
-					headers: this.authToken
-						? { Authorization: `Bearer ${this.authToken}` }
-						: undefined,
-				}
+				{ signal: controller.signal }
 			);
 			return response.data;
 		} catch (error) {
-			console.error("BackendClient: Error generating plan:", error);
+			log.error("BackendClient: Error generating plan:", error);
 			throw error;
+		} finally {
+			this.abortControllers.delete(controller);
 		}
 	}
 
@@ -594,12 +615,12 @@ export class BackendClient implements IBackendClient {
 		selectedDatasets: any[];
 		contextInfo?: string;
 	}): Promise<any> {
-		console.log("BackendClient: generateSuggestions called with:", {
+		log.debug("BackendClient: generateSuggestions called with: %o", {
 			...request,
 			query: request.query.substring(0, 100) + "...",
 		});
-		console.log(
-			"BackendClient: Making POST request to:",
+		log.info(
+			"BackendClient: Making POST request to: %s",
 			`${this.baseUrl}/llm/suggestions`
 		);
 
@@ -619,26 +640,26 @@ export class BackendClient implements IBackendClient {
 				body: JSON.stringify(requestBody),
 			});
 
-			console.log("BackendClient: Response status:", response.status);
-			console.log("BackendClient: Response ok:", response.ok);
+			log.debug("BackendClient: Response status: %s", String(response.status));
+			log.debug("BackendClient: Response ok: %s", String(response.ok));
 
 			if (response.ok) {
 				const result = await response.json();
-				console.log("BackendClient: Successful response:", result);
+				log.debug("BackendClient: Successful response: %o", result);
 				return result;
 			} else {
 				const errorText = await response.text();
-				console.error(
+				log.error(
 					`BackendClient: HTTP error ${response.status}: ${response.statusText}`
 				);
-				console.error("BackendClient: Error response body:", errorText);
+				log.error("BackendClient: Error response body: %s", errorText);
 				throw new Error(
 					`HTTP ${response.status}: ${response.statusText} - ${errorText}`
 				);
 			}
 		} catch (error) {
-			console.error("BackendClient: Error generating suggestions:", error);
-			console.error("BackendClient: Error details:", {
+			log.error("BackendClient: Error generating suggestions:", error);
+			log.error("BackendClient: Error details: %o", {
 				message: error instanceof Error ? error.message : String(error),
 				stack: error instanceof Error ? error.stack : undefined,
 				url: `${this.baseUrl}/llm/suggestions`,
@@ -673,7 +694,7 @@ export class BackendClient implements IBackendClient {
 				throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 			}
 		} catch (error) {
-			console.error("BackendClient: Error validating code:", error);
+			log.error("BackendClient: Error validating code:", error);
 			throw error;
 		}
 	}
@@ -685,8 +706,8 @@ export class BackendClient implements IBackendClient {
 		request: any,
 		onChunk: (chunk: string) => void
 	): Promise<any> {
-		console.log("🚀 BackendClient.generateCodeStream: Starting stream request");
-		console.log("🚀 Streaming endpoint:", `${this.baseUrl}/llm/code/stream`);
+		log.info("🚀 BackendClient.generateCodeStream: Starting stream request");
+		log.debug("🚀 Streaming endpoint: %s", `${this.baseUrl}/llm/code/stream`);
 
 		const controller = new AbortController();
 		this.abortControllers.add(controller);
@@ -753,7 +774,7 @@ export class BackendClient implements IBackendClient {
 				throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 			}
 		} catch (error) {
-			console.error("BackendClient: Error generating code fix:", error);
+			log.error("BackendClient: Error generating code fix:", error);
 			throw error;
 		}
 	}

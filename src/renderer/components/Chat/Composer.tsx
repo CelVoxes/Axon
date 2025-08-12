@@ -283,38 +283,31 @@ export const Composer: React.FC<ComposerProps> = ({
 					</Tooltip>
 				</div>
 
-				<Tooltip
-					content={isProcessing ? "Stop generation" : "Send"}
-					placement="left"
+				<button
+					onClick={isProcessing ? onStop : onSend}
+					disabled={!isProcessing && (!value.trim() || isLoading || !!disabled)}
+					className={`send-button ${isProcessing ? "stop-mode" : ""}`}
 				>
-					<button
-						onClick={isProcessing ? onStop : onSend}
-						disabled={
-							!isProcessing && (!value.trim() || isLoading || !!disabled)
-						}
-						className={`send-button ${isProcessing ? "stop-mode" : ""}`}
-					>
-						{isProcessing ? (
-							<FiSquare size={16} />
-						) : isLoading ? (
-							<div className="loading-dots">
-								<span>•</span>
-								<span>•</span>
-								<span>•</span>
-							</div>
-						) : (
-							<span
-								style={{
-									fontSize: "10px",
-									fontWeight: "900",
-									color: "#2d2d30",
-								}}
-							>
-								▶
-							</span>
-						)}
-					</button>
-				</Tooltip>
+					{isProcessing ? (
+						<FiSquare size={16} />
+					) : isLoading ? (
+						<div className="loading-dots">
+							<span>•</span>
+							<span>•</span>
+							<span>•</span>
+						</div>
+					) : (
+						<span
+							style={{
+								fontSize: "10px",
+								fontWeight: "900",
+								color: "#2d2d30",
+							}}
+						>
+							▶
+						</span>
+					)}
+				</button>
 			</div>
 		</div>
 	);

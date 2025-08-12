@@ -6,6 +6,7 @@ import {
 	useWorkspaceContext,
 } from "../../context/AppContext";
 import { BackendClient } from "../../services/BackendClient";
+import { SearchService } from "../../services/SearchService";
 import { SearchConfig } from "../../config/SearchConfig";
 import { useChatIntent } from "../../hooks/useChatIntent";
 import { DatasetSelectionModal } from "./DatasetSelectionModal";
@@ -272,6 +273,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [backendClient, setBackendClient] = useState<BackendClient | null>(
 		null
 	);
+	const searchService = React.useMemo(() => {
+		return backendClient ? new SearchService(backendClient) : null;
+	}, [backendClient]);
 
 	useEffect(() => {
 		// Get the correct backend URL from main process
@@ -1634,9 +1638,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				console.log("🔍 Starting search with query:", userMessage);
 				console.log("🔍 BackendClient baseUrl:", backendClient.getBaseUrl());
 
-				const response = await backendClient.discoverDatasets(userMessage, {
-					limit: SearchConfig.getSearchLimit(),
-				});
+				const response = searchService
+					? await searchService.discoverDatasets(userMessage, {
+							limit: SearchConfig.getSearchLimit(),
+					  })
+					: ({ datasets: [] } as any);
 
 				console.log("🔍 Search response:", response);
 
@@ -1768,9 +1774,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						step: "init",
 						datasetsFound: 0,
 					});
-					const response = await backendClient.discoverDatasets(userMessage, {
-						limit: 50,
-					});
+					const response = searchService
+						? await searchService.discoverDatasets(userMessage, { limit: 50 })
+						: ({ datasets: [] } as any);
 					if (response.datasets && response.datasets.length > 0) {
 						setAvailableDatasets(response.datasets);
 						setShowDatasetModal(true);
@@ -1812,11 +1818,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				} else {
 					// General conversation
 					addMessage(
-						"I'm here to help with bioinformatics analysis! You can:\n\n" +
-							"• **Ask me to analyze data** (e.g., 'Assess transcriptional subtypes of AML')\n" +
-							"• **Search for datasets** (e.g., 'Find AML gene expression data')\n" +
-							"• **Ask for specific analysis** (e.g., 'Perform differential expression analysis')\n\n" +
-							"You can also attach your own data by mentioning files/folders like @data.csv or @my_folder.",
+						"To get started, type your question or search for datasets. " +
+							"Attach your data with @ (e.g., @data.csv) and reference a notebook cell with # (e.g., #3).",
 						false
 					);
 				}
@@ -2071,13 +2074,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					// Set the clicked text as the next message
 					setInputValue(suggestion);
 
-					// Simulate form submission after a brief delay to allow state update
-					setTimeout(() => {
-						const form = document.querySelector("form");
-						if (form) {
-							form.requestSubmit();
-						}
-					}, 10);
+					// Trigger send directly
+					handleSendMessage();
 				}
 			}
 		};
@@ -2096,13 +2094,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			// Just set the clicked text as the next message
 			setInputValue(analysisType);
 
-			// Simulate form submission after a brief delay to allow state update
-			setTimeout(() => {
-				const form = document.querySelector("form");
-				if (form) {
-					form.requestSubmit();
-				}
-			}, 10);
+			// Trigger send directly
+			handleSendMessage();
 		},
 		[setInputValue]
 	);
@@ -3006,7 +2999,31 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	return (
 		<div className={`chat-panel ${className || ""}`}>
 			<div className="chat-header">
-				<h3 style={{ margin: 0, fontSize: 14, color: "#ddd", flex: 1 }}>
+				<h3
+					style={{
+						margin: 0,
+						fontSize: 13,
+						color: "#bbb",
+						fontWeight: 500,
+						flex: 1,
+						minWidth: 0,
+						whiteSpace: "nowrap",
+						overflow: "hidden",
+						textOverflow: "ellipsis",
+					}}
+					title={(() => {
+						const activeId = (analysisState as any).activeChatSessionId as
+							| string
+							| null;
+						const sessions = ((analysisState as any).chatSessions ||
+							[]) as Array<{
+							id: string;
+							title: string;
+						}>;
+						const active = sessions.find((s) => s.id === activeId);
+						return active?.title || "Chat";
+					})()}
+				>
 					{(() => {
 						const activeId = (analysisState as any).activeChatSessionId as
 							| string
@@ -3263,12 +3280,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							onClick={() => {
 								setInputValue(suggestion);
 								setSuggestionButtons([]); // Clear buttons after click
-								setTimeout(() => {
-									const form = document.querySelector("form");
-									if (form) {
-										form.requestSubmit();
-									}
-								}, 10);
+								handleSendMessage();
 							}}
 							style={{
 								background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)",

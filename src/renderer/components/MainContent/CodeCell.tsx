@@ -13,6 +13,7 @@ import {
 	FiEye,
 	FiEyeOff,
 	FiMessageSquare,
+	FiMoreVertical,
 } from "react-icons/fi";
 import { CellExecutionService } from "../../services/CellExecutionService";
 import { ActionButton } from "@components/shared/StyledComponents";
@@ -23,9 +24,8 @@ import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
 import hljs from "highlight.js";
 import { typography } from "../../styles/design-system";
-import { EventManager } from "../../utils/EventManager";
 import { SHORTCUTS } from "../../utils/Constants";
-import { ActionButton as SharedActionButton } from "@components/shared/StyledComponents";
+import rehypeSanitize from "rehype-sanitize";
 
 const CellContainer = styled.div<{ $accentColor?: string }>`
 	position: relative;
@@ -167,11 +167,15 @@ const CellIndexBadge = styled.button`
 
 // Left badge now sits inline inside header to avoid overlap
 
-const ExecutionIndicator = styled.div<{ $hasOutput: boolean }>`
+const ExecutionIndicator = styled.div<{
+	$hasOutput: boolean;
+	$hasError: boolean;
+}>`
 	width: 8px;
 	height: 8px;
 	border-radius: 50%;
-	background: ${(props) => (props.$hasOutput ? "#28a745" : "#6c757d")};
+	background: ${(props) =>
+		props.$hasError ? "#ff6b6b" : props.$hasOutput ? "#28a745" : "#6c757d"};
 `;
 
 const CellActions = styled.div`
@@ -232,6 +236,41 @@ const OutputActions = styled.div`
 	align-items: center;
 `;
 
+const OverflowMenuContainer = styled.div`
+	position: relative;
+	display: inline-block;
+`;
+
+const OverflowMenu = styled.div`
+	position: absolute;
+	right: 0;
+	top: 100%;
+	background: #2d2d30;
+	border: 1px solid #3c3c3c;
+	border-radius: 6px;
+	padding: 6px;
+	z-index: 10;
+	min-width: 180px;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+`;
+
+const OverflowItem = styled.button`
+	width: 100%;
+	background: none;
+	border: none;
+	color: #d4d4d4;
+	text-align: left;
+	padding: 8px 10px;
+	border-radius: 4px;
+	cursor: pointer;
+	display: flex;
+	gap: 8px;
+	align-items: center;
+	&:hover {
+		background: rgba(255, 255, 255, 0.06);
+	}
+`;
+
 const OutputContent = styled.div`
 	margin: 0;
 	font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
@@ -250,10 +289,6 @@ const ErrorOutput = styled(OutputContent)`
 	border: 1px solid rgba(255, 107, 107, 0.3);
 	border-radius: 6px;
 	padding: 12px;
-`;
-
-const SuccessOutput = styled(OutputContent)`
-	color: #51cf66;
 `;
 
 const DataTable = styled.div`
@@ -311,15 +346,6 @@ const ImageOutput = styled.div`
 		border-radius: 6px;
 		border: 1px solid #404040;
 	}
-`;
-
-const ChartContainer = styled.div`
-	margin: 8px 0;
-	padding: 16px;
-	background: #1e1e1e;
-	border: 1px solid #404040;
-	border-radius: 6px;
-	text-align: center;
 `;
 
 const CollapsibleOutput = styled.div<{ $isCollapsed: boolean }>`
@@ -449,6 +475,8 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 	const [isExecuting, setIsExecuting] = useState(false);
 	const [hasError, setHasError] = useState(false);
 	const [copied, setCopied] = useState(false);
+	// Auto-growing editor height for better UX
+	const [editorHeight, setEditorHeight] = useState<number>(260);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const monacoEditorRef = useRef<any>(null);
 
@@ -698,7 +726,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 							#{cellIndex + 1}
 						</CellIndexBadge>
 					)}
-					<ExecutionIndicator $hasOutput={!!output} />
+					<ExecutionIndicator $hasOutput={!!output} $hasError={hasError} />
 					{language.toUpperCase()}
 				</CellType>
 				<CellActions>
@@ -716,54 +744,41 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 									Ask Chat
 								</ActionButton>
 							</Tooltip>
-
-							<Tooltip
-								content={copied ? "Copied" : "Copy code to clipboard"}
-								placement="bottom"
+							<ActionButton
+								onClick={executeCode}
+								$variant="primary"
+								disabled={isExecuting || !code.trim()}
 							>
-								<ActionButton onClick={copyCode} $variant="secondary">
-									{copied ? <FiCheck size={12} /> : <FiCopy size={12} />}
-								</ActionButton>
-							</Tooltip>
-							<Tooltip content="Run this cell" placement="bottom">
-								<ActionButton
-									onClick={executeCode}
-									$variant="primary"
-									disabled={isExecuting || !code.trim()}
-								>
-									<FiPlay size={12} />
-									{isExecuting ? (
-										<span
+								<FiPlay size={12} />
+								{isExecuting ? (
+									<span
+										style={{
+											display: "flex",
+											alignItems: "center",
+											gap: "6px",
+										}}
+									>
+										<div
 											style={{
-												display: "flex",
-												alignItems: "center",
-												gap: "4px",
+												width: "8px",
+												height: "8px",
+												color: "green",
+												borderRadius: "50%",
+												backgroundColor: "currentColor",
+												animation: "pulse 1.5s ease-in-out infinite",
 											}}
-										>
-											<div
-												style={{
-													width: "8px",
-													height: "8px",
-													color: "green",
-													borderRadius: "50%",
-													backgroundColor: "currentColor",
-													animation: "pulse 1.5s ease-in-out infinite",
-												}}
-											/>
-										</span>
-									) : (
-										""
-									)}
-								</ActionButton>
-							</Tooltip>
+										/>
+									</span>
+								) : (
+									""
+								)}
+							</ActionButton>
 						</>
 					)}
 					{onDelete && (
-						<Tooltip content="Delete this cell" placement="bottom">
-							<ActionButton onClick={onDelete} $variant="danger">
-								<FiTrash2 size={12} />
-							</ActionButton>
-						</Tooltip>
+						<ActionButton onClick={onDelete} $variant="danger">
+							<FiTrash2 size={12} />
+						</ActionButton>
 					)}
 				</CellActions>
 			</CellHeader>
@@ -790,7 +805,10 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 						<RichTextOutput>
 							<ReactMarkdown
 								remarkPlugins={[remarkGfm]}
-								rehypePlugins={[rehypeHighlight as unknown as never]}
+								rehypePlugins={[
+									rehypeSanitize as unknown as never,
+									rehypeHighlight as unknown as never,
+								]}
 							>
 								{code || ""}
 							</ReactMarkdown>
@@ -801,7 +819,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 				<>
 					<CellBody style={{ borderTop: "1px solid #404040" }}>
 						<Editor
-							height="260px"
+							height={editorHeight}
 							value={code}
 							onChange={handleEditorChange}
 							language={language === "python" ? "python" : "plaintext"}
@@ -820,6 +838,38 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 											askChatToEditSelection();
 										},
 									});
+									// Auto-grow height with content
+									const updateHeight = () => {
+										try {
+											const contentHeight =
+												(editor as any).getContentHeight?.() ||
+												editor.getScrollHeight?.() ||
+												editorHeight;
+											const minH = 160;
+											const maxH = 900;
+											const next = Math.max(
+												minH,
+												Math.min(maxH, contentHeight + 20)
+											);
+											setEditorHeight(next);
+											const layoutInfo = editor.getLayoutInfo?.();
+											if (layoutInfo) {
+												editor.layout({
+													width: layoutInfo.width,
+													height: next,
+												});
+											}
+										} catch {
+											// ignore
+										}
+									};
+									// Initial and on content size change
+									updateHeight();
+									const d1 = (editor as any).onDidContentSizeChange?.(
+										updateHeight
+									);
+									// Store disposables on the editor instance for cleanup
+									(editor as any)._axon_disposables = [d1].filter(Boolean);
 								} catch (_) {
 									// ignore monaco addAction failures
 								}
@@ -832,6 +882,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 								automaticLayout: true,
 								tabSize: 4,
 								renderWhitespace: "selection",
+								lineNumbers: "on",
 							}}
 						/>
 						{/* Floating toolbar near selection */}
@@ -846,6 +897,8 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 							hasError={hasError}
 							onAddOutputToChat={addOutputToChat}
 							onFixErrorWithChat={hasError ? fixErrorWithChat : undefined}
+							language={language}
+							onClearOutput={clearOutput}
 						/>
 					)}
 				</>
@@ -943,7 +996,10 @@ const renderMarkdown = (data: string) => {
 		<RichTextOutput>
 			<ReactMarkdown
 				remarkPlugins={[remarkGfm]}
-				rehypePlugins={[rehypeHighlight as unknown as never]}
+				rehypePlugins={[
+					rehypeSanitize as unknown as never,
+					rehypeHighlight as unknown as never,
+				]}
 			>
 				{data}
 			</ReactMarkdown>
@@ -956,13 +1012,32 @@ const OutputRenderer: React.FC<{
 	hasError: boolean;
 	onAddOutputToChat?: () => void;
 	onFixErrorWithChat?: () => void;
-}> = ({ output, hasError, onAddOutputToChat, onFixErrorWithChat }) => {
+	onClearOutput?: () => void;
+	language?: "python" | "r" | "markdown";
+}> = ({
+	output,
+	hasError,
+	onAddOutputToChat,
+	onFixErrorWithChat,
+	onClearOutput,
+	language = "python",
+}) => {
 	const [isCollapsed, setIsCollapsed] = useState(false);
 	const [showRaw, setShowRaw] = useState(true);
+	const [menuOpen, setMenuOpen] = useState(false);
+	const menuRef = useRef<HTMLDivElement | null>(null);
 
 	const parsed = parseOutput(output);
 	const outputLength = output.length;
 	const lineCount = output.split("\n").length;
+	const extraChars = Math.max(0, outputLength - 1000);
+	const extraLines = Math.max(0, lineCount - 50);
+	const moreLabel =
+		outputLength > 1000
+			? `${extraChars} more characters`
+			: `${extraLines} more lines`;
+
+	const languageClass = language === "r" ? "language-r" : "language-python";
 
 	const shouldCollapse = outputLength > 1000 || lineCount > 50;
 
@@ -970,6 +1045,19 @@ const OutputRenderer: React.FC<{
 	useEffect(() => {
 		setIsCollapsed(shouldCollapse);
 	}, [shouldCollapse]);
+
+	// Close overflow menu on outside click
+	useEffect(() => {
+		if (!menuOpen) return;
+		const onDocClick = (e: MouseEvent) => {
+			if (!menuRef.current) return;
+			if (!menuRef.current.contains(e.target as Node)) {
+				setMenuOpen(false);
+			}
+		};
+		document.addEventListener("mousedown", onDocClick);
+		return () => document.removeEventListener("mousedown", onDocClick);
+	}, [menuOpen]);
 
 	const copyOutput = async () => {
 		try {
@@ -1027,30 +1115,68 @@ const OutputRenderer: React.FC<{
 							Ask Chat
 						</ActionButton>
 					)}
-
-					<ActionButton onClick={copyOutput} $variant="secondary">
-						<FiCopy size={12} />
-					</ActionButton>
-
-					<ActionButton
-						onClick={() => setShowRaw(!showRaw)}
-						$variant="secondary"
-					>
-						{showRaw ? <FiEyeOff size={12} /> : <FiEye size={12} />}
-					</ActionButton>
-					<ActionButton onClick={downloadOutput} $variant="secondary">
-						<FiDownload size={12} />
-					</ActionButton>
-					{shouldCollapse && (
+					<OverflowMenuContainer ref={menuRef}>
 						<ActionButton
-							onClick={() => setIsCollapsed(!isCollapsed)}
+							aria-label="More actions"
+							$variant="secondary"
+							onClick={() => setMenuOpen((v) => !v)}
+						>
+							<FiMoreVertical size={12} />
+						</ActionButton>
+						{menuOpen && (
+							<OverflowMenu>
+								<OverflowItem
+									onClick={() => {
+										copyOutput();
+										setMenuOpen(false);
+									}}
+								>
+									<FiCopy size={12} /> Copy output
+								</OverflowItem>
+								<OverflowItem
+									onClick={() => {
+										setShowRaw(!showRaw);
+										setMenuOpen(false);
+									}}
+								>
+									{showRaw ? <FiEyeOff size={12} /> : <FiEye size={12} />}{" "}
+									{showRaw ? "Hide raw" : "Show raw"}
+								</OverflowItem>
+								<OverflowItem
+									onClick={() => {
+										downloadOutput();
+										setMenuOpen(false);
+									}}
+								>
+									<FiDownload size={12} /> Download
+								</OverflowItem>
+								{/* Clear output moved outside as a separate button */}
+								{shouldCollapse && (
+									<OverflowItem
+										onClick={() => {
+											setIsCollapsed(!isCollapsed);
+											setMenuOpen(false);
+										}}
+									>
+										{isCollapsed ? (
+											<FiChevronDown size={12} />
+										) : (
+											<FiChevronUp size={12} />
+										)}{" "}
+										{isCollapsed ? "Expand" : "Collapse"}
+									</OverflowItem>
+								)}
+							</OverflowMenu>
+						)}
+					</OverflowMenuContainer>
+					{onClearOutput && (
+						<ActionButton
+							style={{ marginLeft: "auto" }}
+							aria-label="Clear output"
+							onClick={onClearOutput}
 							$variant="secondary"
 						>
-							{isCollapsed ? (
-								<FiChevronDown size={12} />
-							) : (
-								<FiChevronUp size={12} />
-							)}
+							<FiX size={12} />
 						</ActionButton>
 					)}
 				</OutputActions>
@@ -1068,7 +1194,7 @@ const OutputRenderer: React.FC<{
 						<pre>
 							<code
 								ref={outputRef as unknown as React.RefObject<HTMLElement>}
-								className="language-python"
+								className={languageClass}
 							>
 								{output}
 							</code>
@@ -1079,7 +1205,7 @@ const OutputRenderer: React.FC<{
 						<code
 							ref={outputRef as unknown as React.RefObject<HTMLElement>}
 							className={
-								parsed.type === "json" ? "language-json" : "language-python"
+								parsed.type === "json" ? "language-json" : languageClass
 							}
 						>
 							{parsed.type === "json"
@@ -1107,7 +1233,7 @@ const OutputRenderer: React.FC<{
 			{shouldCollapse && isCollapsed && (
 				<ExpandButton onClick={() => setIsCollapsed(false)}>
 					<FiChevronDown size={14} />
-					Show more ({outputLength - 1000} more characters)
+					Show more ({moreLabel})
 				</ExpandButton>
 			)}
 		</OutputContainer>

@@ -9,6 +9,10 @@ import { useWorkspaceContext } from "../../context/AppContext";
 import { typography } from "../../styles/design-system";
 import { EventManager } from "../../utils/EventManager";
 import { electronAPI } from "../../utils/electronAPI";
+import { ElectronClient } from "../../utils/ElectronClient";
+
+// Cache detected Python versions per workspace to avoid repeated kernel calls on save
+const workspacePythonVersionCache = new Map<string, string>();
 
 const EditorContainer = styled.div`
 	width: 100%;
@@ -59,15 +63,37 @@ const NotebookHeader = styled.div`
 
 const NotebookTitle = styled.h1`
 	margin: 0 0 8px 0;
-	color: #ffffff;
-	font-size: ${typography["2xl"]};
-	font-weight: 600;
+	color: #bbbbbb;
+	font-size: ${typography.xl};
+	font-weight: 500;
+	max-width: 100%;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 `;
 
 const NotebookMetadata = styled.div`
 	color: #858585;
 	font-size: ${typography.sm};
 	line-height: 1.4;
+`;
+
+const MetaRow = styled.div`
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+`;
+
+const MetaItem = styled.span`
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 2px 8px;
+	border: 1px solid #404040;
+	border-radius: 999px;
+	color: #cfcfcf;
+	font-size: ${typography.xs};
+	background: #1f1f1f;
 `;
 
 const NotebookActions = styled.div`
@@ -152,6 +178,10 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	// Use a ref to track the current notebook data to avoid closure issues in event handlers
 	const notebookDataRef = useRef<NotebookData | null>(null);
 	const isReadyRef = useRef<boolean>(false);
+	// Debounce save handling
+	const saveDebounceMs = 600;
+	const pendingSaveRef = useRef<NotebookData | null>(null);
+	const saveTimerRef = useRef<number | null>(null);
 
 	// Update the ref whenever notebookData changes
 	useEffect(() => {
@@ -237,22 +267,73 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		}
 	};
 
-	// Function to save notebook to file
+	// Function to save notebook to file (used by manual Save and debounced queue)
 	const saveNotebookToFile = async (notebook: NotebookData) => {
 		try {
-			if (!window.electronAPI || !window.electronAPI.writeFile) {
-				console.error("Electron API not available for writing files");
-				return;
+			// Try to detect the actual Python version from the active kernel
+			try {
+				if (
+					notebook?.metadata?.language_info?.name === "python" &&
+					workspacePath
+				) {
+					let detected = workspacePythonVersionCache.get(workspacePath);
+					if (!detected) {
+						const res = await electronAPI.executeJupyterCode(
+							"import sys\nprint(sys.version.split(' ')[0])",
+							workspacePath
+						);
+						if (res?.success && typeof res.data?.output === "string") {
+							const candidate = res.data.output.trim();
+							if (candidate && /\d+\.\d+(\.\d+)?/.test(candidate)) {
+								detected = candidate;
+								workspacePythonVersionCache.set(workspacePath, candidate);
+							}
+						}
+					}
+					if (detected) {
+						notebook = {
+							...notebook,
+							metadata: {
+								...notebook.metadata,
+								language_info: {
+									...(notebook.metadata.language_info || { name: "python" }),
+									version: detected,
+								},
+							},
+						};
+					}
+				}
+			} catch (_) {
+				// Ignore detection failures; keep existing value
 			}
 
-			await window.electronAPI.writeFile(
+			const writeRes = await electronAPI.writeFile(
 				filePath,
 				JSON.stringify(notebook, null, 2)
 			);
+			if (!writeRes.success) {
+				throw new Error(writeRes.error || "Failed to write file");
+			}
 			console.log("FileEditor: Notebook auto-saved successfully");
 		} catch (error) {
 			console.error("FileEditor: Error auto-saving notebook:", error);
 		}
+	};
+
+	// Debounced queue for notebook saves to reduce disk churn
+	const queueNotebookSave = (notebook: NotebookData) => {
+		pendingSaveRef.current = notebook;
+		if (saveTimerRef.current) {
+			clearTimeout(saveTimerRef.current);
+		}
+		saveTimerRef.current = window.setTimeout(() => {
+			const nb = pendingSaveRef.current;
+			pendingSaveRef.current = null;
+			saveTimerRef.current = null;
+			if (nb) {
+				void saveNotebookToFile(nb);
+			}
+		}, saveDebounceMs);
 	};
 
 	// Add event listeners for notebook cell events
@@ -299,9 +380,9 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					setCellIds((prev) => [...prev, generateCellId()]);
 					setHasChanges(true);
 
-					// Auto-save the notebook and dispatch success event after completion
+					// Auto-save (debounced) and dispatch success event after scheduling
 					try {
-						await saveNotebookToFile(updatedNotebook);
+						queueNotebookSave(updatedNotebook);
 						EventManager.dispatchEvent("notebook-cell-added", {
 							filePath: eventFilePath,
 							cellType,
@@ -389,9 +470,9 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					setNotebookData(updatedNotebook);
 					setHasChanges(true);
 
-					// Auto-save the notebook and dispatch success event after completion
+					// Auto-save (debounced) and dispatch success event after scheduling
 					try {
-						await saveNotebookToFile(updatedNotebook);
+						queueNotebookSave(updatedNotebook);
 						EventManager.dispatchEvent("notebook-cell-updated", {
 							filePath: eventFilePath,
 							cellIndex: actualCellIndex,
@@ -480,9 +561,9 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					});
 					setHasChanges(true);
 
-					// Auto-save the notebook and dispatch success event after completion
+					// Auto-save (debounced) and dispatch success event after scheduling
 					try {
-						await saveNotebookToFile(updatedNotebook);
+						queueNotebookSave(updatedNotebook);
 						EventManager.dispatchEvent("notebook-cell-updated", {
 							filePath: eventFilePath,
 							cellIndex: actualCellIndex,
@@ -590,11 +671,6 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		try {
 			setIsLoading(true);
 
-			// Check if electronAPI is available
-			if (!window.electronAPI || !window.electronAPI.readFile) {
-				throw new Error("Electron API not available for reading files");
-			}
-
 			// If image, read as binary and show an image viewer
 			if (isImageFile(filePath)) {
 				const bin = await electronAPI.readFileBinary(filePath);
@@ -610,7 +686,11 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 				}
 			}
 
-			const fileContent = await window.electronAPI.readFile(filePath);
+			const rf = await electronAPI.readFile(filePath);
+			if (!rf.success || typeof rf.data !== "string") {
+				throw new Error(rf.error || "Failed to read file");
+			}
+			const fileContent = rf.data;
 
 			// Check if it's a .ipynb file
 			if (filePath.endsWith(".ipynb")) {
@@ -698,7 +778,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 							// Create a timestamped backup of the original file before repairing
 							try {
 								const backupPath = `${filePath}.backup_${Date.now()}.txt`;
-								await window.electronAPI.writeFile(backupPath, fileContent);
+								await electronAPI.writeFile(backupPath, fileContent);
 								console.warn(
 									`FileEditor: Wrote backup of original notebook to ${backupPath}`
 								);
@@ -708,7 +788,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 							// Overwrite the original with the repaired JSON
 							try {
-								await window.electronAPI.writeFile(filePath, salvaged.json);
+								await electronAPI.writeFile(filePath, salvaged.json);
 							} catch (e) {
 								console.warn("FileEditor: Failed to write repaired file:", e);
 							}
@@ -788,7 +868,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 						if (cellState) {
 							return {
 								...cell,
-								source: [cellState.code],
+								source: toIpynbSource(cellState.code),
 								outputs: cellState.output
 									? [
 											{
@@ -805,7 +885,8 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 				};
 				await saveNotebookToFile(updatedNotebook);
 			} else {
-				await window.electronAPI.writeFile(filePath, content);
+				const wr = await electronAPI.writeFile(filePath, content);
+				if (!wr.success) throw new Error(wr.error || "Failed to write file");
 			}
 			setHasChanges(false);
 		} catch (error) {
@@ -832,8 +913,8 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		setNotebookData(updatedNotebook);
 		setHasChanges(true);
 
-		// Auto-save the notebook
-		saveNotebookToFile(updatedNotebook);
+		// Auto-save the notebook (debounced)
+		queueNotebookSave(updatedNotebook);
 		setCellIds((prev) => [...prev, generateCellId()]);
 	};
 
@@ -869,7 +950,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 		setNotebookData(updatedNotebook);
 		setHasChanges(true);
-		saveNotebookToFile(updatedNotebook);
+		queueNotebookSave(updatedNotebook);
 		// Maintain stable ids in parallel
 		setCellIds((prev) => {
 			const updated = [...prev];
@@ -904,8 +985,8 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		});
 		setHasChanges(true);
 
-		// Auto-save the notebook
-		saveNotebookToFile(updatedNotebook);
+		// Auto-save the notebook (debounced)
+		queueNotebookSave(updatedNotebook);
 		setCellIds((prev) => prev.filter((_, i) => i !== index));
 	};
 
@@ -920,7 +1001,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		});
 		setHasChanges(true);
 
-		// Auto-save the notebook when cell code is updated
+		// Auto-save the notebook when cell code is updated (debounced)
 		if (notebookData) {
 			const updatedNotebook = {
 				...notebookData,
@@ -934,7 +1015,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					return cell;
 				}),
 			};
-			saveNotebookToFile(updatedNotebook);
+			queueNotebookSave(updatedNotebook);
 		}
 	};
 
@@ -949,7 +1030,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		});
 		setHasChanges(true);
 
-		// Auto-save the notebook when cell output is updated
+		// Auto-save the notebook when cell output is updated (debounced)
 		if (notebookData) {
 			const updatedNotebook = {
 				...notebookData,
@@ -971,7 +1052,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					return cell;
 				}),
 			};
-			saveNotebookToFile(updatedNotebook);
+			queueNotebookSave(updatedNotebook);
 		}
 	};
 
@@ -1019,16 +1100,20 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 				<NotebookHeader>
 					<NotebookTitle>{filePath.split("/").pop()}</NotebookTitle>
 					<NotebookMetadata>
-						{notebookData.metadata.kernelspec && (
-							<div>Kernel: {notebookData.metadata.kernelspec.display_name}</div>
-						)}
-						{notebookData.metadata.language_info && (
-							<div>
-								Language: {notebookData.metadata.language_info.name}{" "}
-								{notebookData.metadata.language_info.version}
-							</div>
-						)}
-						<div>Cells: {notebookData.cells.length}</div>
+						<MetaRow>
+							{notebookData.metadata.kernelspec && (
+								<MetaItem>
+									Kernel: {notebookData.metadata.kernelspec.display_name}
+								</MetaItem>
+							)}
+							{notebookData.metadata.language_info && (
+								<MetaItem>
+									Language: {notebookData.metadata.language_info.name}{" "}
+									{notebookData.metadata.language_info.version}
+								</MetaItem>
+							)}
+							<MetaItem>Cells: {notebookData.cells.length}</MetaItem>
+						</MetaRow>
 					</NotebookMetadata>
 				</NotebookHeader>
 

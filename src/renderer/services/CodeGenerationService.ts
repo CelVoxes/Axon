@@ -17,6 +17,7 @@ import {
 	getExistingImports as sharedGetExistingImports,
 	removeDuplicateImports as sharedRemoveDuplicateImports,
 } from "../utils/ImportUtils";
+import { Logger } from "../utils/Logger";
 
 export class CodeGenerationService implements ICodeGenerator {
 	private backendClient: BackendClient;
@@ -25,6 +26,7 @@ export class CodeGenerationService implements ICodeGenerator {
 		string,
 		{ accumulatedCode: string; startTime: number }
 	>();
+	private log = Logger.createLogger("codeGenerationService");
 
 	constructor(
 		backendClient: BackendClient,
@@ -45,10 +47,7 @@ export class CodeGenerationService implements ICodeGenerator {
 	async generateCode(
 		request: CodeGenerationRequest
 	): Promise<CodeGenerationResult> {
-		console.log(
-			"🎯 CodeGenerationService: generateCode for:",
-			request.stepDescription
-		);
+		this.log.info("generateCode: %s", request.stepDescription);
 
 		const stepId =
 			request.stepId ||
@@ -136,9 +135,10 @@ export class CodeGenerationService implements ICodeGenerator {
 		request: CodeGenerationRequest,
 		stepId: string
 	): Promise<CodeGenerationResult> {
-		console.log(
-			"🎯 CodeGenerationService: generateCodeWithEvents for:",
-			request.stepDescription
+		this.log.debug(
+			"generateCodeWithEvents: %s (%s)",
+			request.stepDescription,
+			stepId
 		);
 
 		return await this.generateDataDrivenStepCodeWithEvents(request, stepId);
@@ -272,23 +272,18 @@ General requirements:
 		request: CodeGenerationRequest,
 		stepId: string
 	): Promise<CodeGenerationResult> {
-		console.log(
-			"🎯 CodeGenerationService: Starting streaming for step:",
-			request.stepDescription,
-			"stepId:",
-			stepId
-		);
+		this.log.debug("stream: start %s (%s)", request.stepDescription, stepId);
 
 		try {
 			// Prepare enhanced context with more detailed information
 			const enhancedContext = this.buildEnhancedContext(request);
 
-			console.log(
-				"🎯 Enhanced context prepared, length:",
+			this.log.debug(
+				"stream: enhanced context length=%d",
 				enhancedContext.length
 			);
-			console.log(
-				"🎯 Making streaming API call to:",
+			this.log.debug(
+				"stream: POST %s",
 				`${this.backendClient.getBaseUrl()}/llm/code/stream`
 			);
 
@@ -325,13 +320,11 @@ General requirements:
 				chunkCallback
 			);
 
-			console.log("🎯 Streaming completed!");
-			console.log("🎯 Total chunks received:", chunkCount);
-			console.log(
-				"🎯 Generated code length:",
+			this.log.debug(
+				"stream: completed, chunks=%d codeLen=%d",
+				chunkCount,
 				generation.accumulatedCode.length
 			);
-			console.log("🎯 Backend result:", result);
 
 			// Use the accumulated code from chunks, not the result
 			const finalGeneratedCode =
@@ -355,7 +348,7 @@ General requirements:
 						existingImports
 				  );
 
-			console.log("🎯 Final code length after cleaning:", finalCode.length);
+			this.log.debug("final code length after cleaning=%d", finalCode.length);
 
 			// Emit completion event
 			EventManager.dispatchEvent("code-generation-completed", {
@@ -374,16 +367,8 @@ General requirements:
 				success: true,
 			};
 		} catch (error) {
-			console.error(
-				"🎯 CodeGenerationService: Error in streaming method:",
-				error
-			);
 			const message = error instanceof Error ? error.message : String(error);
-			console.error("🎯 Error details:", {
-				message,
-				stack: error instanceof Error ? error.stack : undefined,
-				stepDescription: request.stepDescription,
-			});
+			this.log.error("stream error: %s", message);
 
 			// Detect user cancellation and avoid fallback generation
 			const isAborted =
@@ -407,7 +392,7 @@ General requirements:
 			}
 
 			// Fallback to non-streaming method
-			console.log("🎯 Falling back to non-streaming method");
+			this.log.warn("falling back to non-streaming method");
 			return this.generateDataDrivenStepCodeFallback(request, stepId);
 		}
 	}
