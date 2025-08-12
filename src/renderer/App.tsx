@@ -84,20 +84,16 @@ const AppContent: React.FC = () => {
 						{/* Chat toggle */}
 						<button
 							onClick={() => {
-								// Toggle chat open/close
-								const isOpen = uiState.showChatPanel && !uiState.chatCollapsed;
-								if (isOpen) {
-									// Close completely
-									uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: false });
-									uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
+								// Prefer collapse over full close to preserve streaming state
+								const isExpanded =
+									uiState.showChatPanel && !uiState.chatCollapsed;
+								if (isExpanded) {
+									uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: true });
 								} else {
-									// Open and ensure expanded
 									if (!uiState.showChatPanel) {
 										uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
 									}
-									if (uiState.chatCollapsed) {
-										uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
-									}
+									uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
 								}
 							}}
 							style={{
@@ -112,8 +108,8 @@ const AppContent: React.FC = () => {
 							}}
 							title={
 								uiState.showChatPanel && !uiState.chatCollapsed
-									? "Close Chat"
-									: "Open Chat"
+									? "Collapse Chat"
+									: "Expand Chat"
 							}
 						>
 							{uiState.showChatPanel && !uiState.chatCollapsed ? (

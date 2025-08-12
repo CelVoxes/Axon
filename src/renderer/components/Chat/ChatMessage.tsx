@@ -298,9 +298,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 										code={codeContent}
 										language={language}
 										title={headerTitle}
-										isStreaming={
-											message.isStreaming || message.status === "pending"
-										}
+										isStreaming={!!message.isStreaming}
 									/>
 								);
 							},

@@ -193,7 +193,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			const lang: string = String(d.language || "python").toLowerCase();
 			const code: string = String(d.code || "");
 			const out: string = String(d.output || "");
-			const prefix = `Please review the following ${lang} cell output and suggest improvements or next steps.`;
+			const prefix = `Please review the following ${lang} cell output and fix or suggest improvements.`;
 			const body = `\n\nOutput:\n\n\`\`\`text\n${out}\n\`\`\`\n\nCode:\n\n\`\`\`${lang}\n${code}\n\`\`\`\n`;
 			setInputValue(prefix + body);
 			setCodeEditContext({
@@ -754,6 +754,89 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		return Array.from(byId.values());
 	}, []);
 
+	// Helper types and functions for minimal edit application
+	type LineEdit = {
+		startLine: number; // 1-based, inclusive
+		endLine: number; // 1-based, inclusive
+		replacement: string; // exact text to replace the range with
+	};
+
+	const stripCodeFences = (text: string): string => {
+		return text
+			.replace(/^\s*```[a-zA-Z]*\s*/g, "")
+			.replace(/\s*```\s*$/g, "")
+			.trim();
+	};
+
+	const parseJsonEdits = (text: string): LineEdit[] | null => {
+		try {
+			const cleaned = stripCodeFences(text);
+			// Extract JSON array if there is extra prose
+			const arrayMatch = cleaned.match(/\[([\s\S]*)\]$/);
+			const candidate = arrayMatch ? `[${arrayMatch[1]}]` : cleaned;
+			const parsed = JSON.parse(candidate);
+			if (Array.isArray(parsed)) {
+				const edits: LineEdit[] = parsed
+					.map((e) => ({
+						startLine: Number(e.startLine),
+						endLine: Number(e.endLine),
+						replacement: String(e.replacement ?? ""),
+					}))
+					.filter(
+						(e) =>
+							Number.isFinite(e.startLine) &&
+							Number.isFinite(e.endLine) &&
+							e.startLine >= 1 &&
+							e.endLine >= e.startLine
+					);
+				return edits.length > 0 ? edits : null;
+			}
+			// Support single-object edit
+			if (parsed && typeof parsed === "object") {
+				const e = parsed as any;
+				const startLine = Number(e.startLine);
+				const endLine = Number(e.endLine);
+				if (
+					Number.isFinite(startLine) &&
+					Number.isFinite(endLine) &&
+					startLine >= 1 &&
+					endLine >= startLine
+				) {
+					return [
+						{
+							startLine,
+							endLine,
+							replacement: String(e.replacement ?? ""),
+						},
+					];
+				}
+			}
+		} catch (_) {
+			// ignore
+		}
+		return null;
+	};
+
+	const applyLineEdits = (original: string, edits: LineEdit[]): string => {
+		const normalizedOriginal = original.replace(/\r\n/g, "\n");
+		let lines = normalizedOriginal.split("\n");
+		// Apply from bottom-most edit to top to preserve indices
+		const sorted = [...edits].sort((a, b) => b.startLine - a.startLine);
+		for (const edit of sorted) {
+			const startIdx = Math.max(0, Math.min(lines.length, edit.startLine - 1));
+			const endIdx = Math.max(startIdx, Math.min(lines.length, edit.endLine));
+			const replacementLines = String(edit.replacement)
+				.replace(/\r\n/g, "\n")
+				.split("\n");
+			lines = [
+				...lines.slice(0, startIdx),
+				...replacementLines,
+				...lines.slice(endIdx),
+			];
+		}
+		return lines.join("\n");
+	};
+
 	const handleSendMessage = useCallback(async () => {
 		if (!inputValue.trim() || isLoading) return;
 
@@ -1108,9 +1191,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				);
 				const task =
 					`Edit the following ${lang} code according to the user's instruction. ` +
-					`Return only the revised code snippet that should replace the selection, with no fences and no explanations.`;
+					`Return a minimal set of line edits as pure JSON (no backticks, no prose). ` +
+					`The JSON must be an array of objects with fields: startLine (1-based, inclusive), endLine (1-based, inclusive), replacement (string). ` +
+					`Line numbers are relative to ONLY the provided selected snippet, not the whole file.`;
 
-				let editedSnippet = "";
+				let streamedResponse = "";
 				const streamingMessageId = `edit-${Date.now()}`;
 				analysisDispatch({
 					type: "ADD_MESSAGE",
@@ -1126,18 +1211,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				try {
 					await backendClient.generateCodeStream(
 						{
-							task_description: `${task}\n\nUser instruction:\n${userMessage}\n\nOriginal selected code:\n\n\`\`\`${lang}\n${originalSnippet}\n\`\`\`\n`,
+							task_description: `${task}\n\nUser instruction:\n${userMessage}\n\nSelected snippet to edit (context only):\n\n\`\`\`${lang}\n${originalSnippet}\n\`\`\`\n\nReturn ONLY JSON edits.`,
 							language: lang,
 							context: "Notebook code edit-in-place",
 						},
 						(chunk: string) => {
-							editedSnippet += chunk;
+							streamedResponse += chunk;
 							analysisDispatch({
 								type: "UPDATE_MESSAGE",
 								payload: {
 									id: streamingMessageId,
 									updates: {
-										content: `\n\nEdited snippet (streaming):\n\n\`\`\`${lang}\n${editedSnippet}\n\`\`\``,
+										content: `\n\nProposed edits (JSON, streaming):\n\n\`\`\`json\n${streamedResponse}\n\`\`\``,
 										isStreaming: true,
 									},
 								},
@@ -1160,15 +1245,21 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					});
 				}
 
-				const cleaned = editedSnippet
-					.replace(/^\s*```[a-zA-Z]*\s*/g, "")
-					.replace(/\s*```\s*$/g, "")
-					.trim();
+				// Try to parse JSON line edits; fall back to full replacement
+				const edits = parseJsonEdits(streamedResponse);
 				const base = fullCode;
 				const start = selStart;
 				const end = selEnd;
+				let newSelection: string;
+				if (edits) {
+					const withinEdited = applyLineEdits(withinSelection, edits);
+					newSelection = withinEdited;
+				} else {
+					const cleanedFallback = stripCodeFences(streamedResponse);
+					newSelection = cleanedFallback;
+				}
 				const newCode =
-					base.substring(0, start) + cleaned + base.substring(end);
+					base.substring(0, start) + newSelection + base.substring(end);
 
 				await notebookService.updateCellCode(filePath, cellIndex, newCode);
 
@@ -1192,7 +1283,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				} catch (_) {}
 
 				const originalLineCount = withinSelection.split("\n").length;
-				const newLineCount = cleaned.split("\n").length;
+				const newLineCount = newSelection.split("\n").length;
 				const summary = `Applied notebook edit:\n\n- **Cell**: ${cellIndex}\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Status**: ${
 					updateDetail?.success === false ? "save failed" : "saved"
 				}`;
@@ -1252,7 +1343,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 				const unifiedDiff = buildUnifiedDiff(
 					withinSelection,
-					cleaned,
+					newSelection,
 					fileName,
 					startLine
 				);
@@ -1300,10 +1391,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				);
 				const task =
 					`Edit the following ${lang} code according to the user's instruction. ` +
-					`Return only the revised code snippet that should replace the selection, with no fences and no explanations.`;
+					`Return a minimal set of line edits as pure JSON (no backticks, no prose). ` +
+					`The JSON must be an array of objects with fields: startLine (1-based, inclusive), endLine (1-based, inclusive), replacement (string). ` +
+					`Line numbers are relative to ONLY the provided selected snippet, not the whole file.`;
 
-				// Streaming accumulation
-				let editedSnippet = "";
+				// Streaming accumulation (JSON edits)
+				let streamedResponse = "";
 				const streamingMessageId = `edit-${Date.now()}`;
 				analysisDispatch({
 					type: "ADD_MESSAGE",
@@ -1319,19 +1412,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				try {
 					await backendClient.generateCodeStream(
 						{
-							task_description: `${task}\n\nUser instruction:\n${userMessage}\n\nOriginal selected code:\n\n\`\`\`${lang}\n${originalSnippet}\n\`\`\`\n`,
+							task_description: `${task}\n\nUser instruction:\n${userMessage}\n\nSelected snippet to edit (context only):\n\n\`\`\`${lang}\n${originalSnippet}\n\`\`\`\n\nReturn ONLY JSON edits.`,
 							language: lang,
 							context: "Notebook code edit-in-place",
 						},
 						(chunk: string) => {
-							editedSnippet += chunk;
+							streamedResponse += chunk;
 							// Update streaming view as a code block
 							analysisDispatch({
 								type: "UPDATE_MESSAGE",
 								payload: {
 									id: streamingMessageId,
 									updates: {
-										content: `\n\nEdited snippet (streaming):\n\n\`\`\`${lang}\n${editedSnippet}\n\`\`\``,
+										content: `\n\nProposed edits (JSON, streaming):\n\n\`\`\`json\n${streamedResponse}\n\`\`\``,
 										isStreaming: true,
 									},
 								},
@@ -1355,18 +1448,21 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					});
 				}
 
-				// Clean fences if model returned them
-				const cleaned = editedSnippet
-					.replace(/^\s*```[a-zA-Z]*\s*/g, "")
-					.replace(/\s*```\s*$/g, "")
-					.trim();
-
-				// Compute replacement in the full cell code
+				// Try to parse JSON line edits; fall back to full replacement
+				const edits = parseJsonEdits(streamedResponse);
 				const base = fullCode;
 				const start = selStart;
 				const end = selEnd;
+				let newSelection: string;
+				if (edits) {
+					const withinEdited = applyLineEdits(withinSelection, edits);
+					newSelection = withinEdited;
+				} else {
+					const cleanedFallback = stripCodeFences(streamedResponse);
+					newSelection = cleanedFallback;
+				}
 				const newCode =
-					base.substring(0, start) + cleaned + base.substring(end);
+					base.substring(0, start) + newSelection + base.substring(end);
 
 				// Persist into the notebook cell
 				await notebookService.updateCellCode(filePath, cellIndex, newCode);
@@ -1395,7 +1491,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				}
 
 				const originalLineCount = withinSelection.split("\n").length;
-				const newLineCount = cleaned.split("\n").length;
+				const newLineCount = newSelection.split("\n").length;
 				const summary = `Applied notebook edit:\n\n- **Cell**: ${cellIndex}\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Status**: ${
 					updateDetail?.success === false ? "save failed" : "saved"
 				}`;
@@ -1457,7 +1553,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 				const unifiedDiff = buildUnifiedDiff(
 					withinSelection,
-					cleaned,
+					newSelection,
 					fileName,
 					startLine
 				);
@@ -2929,9 +3025,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					</button>
 
 					<button
-						onClick={closeChat}
+						onClick={() => {
+							// If streaming, prefer collapse to preserve ongoing progress
+							if (analysisState.isStreaming) {
+								uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: true });
+							} else {
+								closeChat();
+							}
+						}}
 						className="chat-button"
-						title="Close Chat"
+						title={
+							analysisState.isStreaming
+								? "Collapse Chat (streaming)"
+								: "Close Chat"
+						}
 					>
 						<FiX />
 					</button>

@@ -976,36 +976,17 @@ const OutputRenderer: React.FC<{
 		}
 	}, [showRaw, output, parsed]);
 
-	if (hasError) {
-		return (
-			<ErrorOutput>
-				<OutputStats>
-					<StatItem>Error Output</StatItem>
-					<StatItem>{outputLength} characters</StatItem>
-					<StatItem>{lineCount} lines</StatItem>
-				</OutputStats>
-				<pre>
-					<code
-						ref={outputRef as unknown as React.RefObject<HTMLElement>}
-						className="language-python"
-					>
-						{output}
-					</code>
-				</pre>
-			</ErrorOutput>
-		);
-	}
-
 	return (
 		<OutputContainer>
 			<OutputHeader>
 				<OutputTitle>
-					{parsed.type === "dataframe" && "📊 Data Table"}
-					{parsed.type === "chart" && "📈 Chart"}
-					{parsed.type === "image" && "🖼️ Image"}
-					{parsed.type === "markdown" && "📝 Rich Text"}
-					{parsed.type === "json" && "🔧 JSON"}
-					{parsed.type === "text" && "📄 Output"}
+					{hasError && "❌ Error Output"}
+					{!hasError && parsed.type === "dataframe" && "📊 Data Table"}
+					{!hasError && parsed.type === "chart" && "📈 Chart"}
+					{!hasError && parsed.type === "image" && "🖼️ Image"}
+					{!hasError && parsed.type === "markdown" && "📝 Rich Text"}
+					{!hasError && parsed.type === "json" && "🔧 JSON"}
+					{!hasError && parsed.type === "text" && "📄 Output"}
 				</OutputTitle>
 				<OutputActions>
 					{onAddOutputToChat && (
@@ -1014,12 +995,7 @@ const OutputRenderer: React.FC<{
 							Ask Chat
 						</ActionButton>
 					)}
-					{hasError && onFixErrorWithChat && (
-						<ActionButton onClick={onFixErrorWithChat} $variant="secondary">
-							<FiMessageSquare size={12} />
-							Ask Chat to Fix Error
-						</ActionButton>
-					)}
+
 					<ActionButton onClick={copyOutput} $variant="secondary">
 						<FiCopy size={12} />
 					</ActionButton>
@@ -1051,11 +1027,22 @@ const OutputRenderer: React.FC<{
 			<OutputStats>
 				<StatItem>{outputLength} characters</StatItem>
 				<StatItem>{lineCount} lines</StatItem>
-				<StatItem>{parsed.type} format</StatItem>
+				<StatItem>{hasError ? "error" : `${parsed.type} format`}</StatItem>
 			</OutputStats>
 
 			<CollapsibleOutput $isCollapsed={shouldCollapse && isCollapsed}>
-				{showRaw ? (
+				{hasError ? (
+					<ErrorOutput>
+						<pre>
+							<code
+								ref={outputRef as unknown as React.RefObject<HTMLElement>}
+								className="language-python"
+							>
+								{output}
+							</code>
+						</pre>
+					</ErrorOutput>
+				) : showRaw ? (
 					<pre>
 						<code
 							ref={outputRef as unknown as React.RefObject<HTMLElement>}

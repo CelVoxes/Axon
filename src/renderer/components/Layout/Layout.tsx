@@ -1,7 +1,7 @@
 import React, { useState, useContext } from "react";
 import styled from "styled-components";
 import { throttle } from "../shared/utils";
-import { useUIContext } from "../../context/AppContext";
+import { useUIContext, useAnalysisContext } from "../../context/AppContext";
 
 interface LayoutProps {
 	children: React.ReactNode;
@@ -127,6 +127,7 @@ const Header: React.FC<LayoutHeaderProps> = ({ children }) => {
 
 const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 	const { state: uiState } = useUIContext();
+	const { state: analysisState } = useAnalysisContext();
 	const [leftPaneWidth, setLeftPaneWidth] = useState(240);
 	const [rightPaneWidth, setRightPaneWidth] = useState(400);
 	const [isResizingLeft, setIsResizingLeft] = useState(false);
@@ -194,7 +195,8 @@ const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 		(child: any) => child?.props?.["data-layout-role"] === "chat"
 	);
 	const isLeftPaneVisible = Boolean(leftPane) && uiState.showSidebar;
-	const isRightPaneVisible = Boolean(rightPane) && uiState.showChatPanel;
+	const isRightPaneVisible =
+		Boolean(rightPane) && (uiState.showChatPanel || analysisState.isStreaming);
 
 	return (
 		<LayoutBodyContainer>
