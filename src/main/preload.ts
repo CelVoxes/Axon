@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		ipcRenderer.invoke("fs-read-file-binary", filePath),
 	writeFile: (filePath: string, content: string) =>
 		ipcRenderer.invoke("fs-write-file", filePath, content),
+	deleteFile: (filePath: string) => ipcRenderer.invoke("delete-file", filePath),
+	deleteDirectory: (dirPath: string) =>
+		ipcRenderer.invoke("delete-directory", dirPath),
 	createDirectory: async (dirPath: string) => {
 		const result = await ipcRenderer.invoke("fs-create-directory", dirPath);
 		try {
@@ -135,6 +138,12 @@ export interface ElectronAPI {
 		filePath: string
 	) => Promise<{ dataUrl: string; mime: string }>;
 	writeFile: (filePath: string, content: string) => Promise<boolean>;
+	deleteFile: (
+		filePath: string
+	) => Promise<{ success: boolean; error?: string } | boolean>;
+	deleteDirectory: (
+		dirPath: string
+	) => Promise<{ success: boolean; error?: string } | boolean>;
 	createDirectory: (dirPath: string) => Promise<boolean>;
 	directoryExists: (dirPath: string) => Promise<boolean>;
 	listDirectory: (

@@ -686,10 +686,6 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 				<CellActions>
 					{language !== "markdown" && (
 						<>
-							<ActionButton onClick={copyCode} $variant="secondary">
-								{copied ? <FiCheck size={12} /> : <FiCopy size={12} />}
-								{copied ? "Copied" : "Copy"}
-							</ActionButton>
 							<ActionButton
 								onClick={askChatToEditSelection}
 								$variant="secondary"
@@ -697,20 +693,44 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 								<FiMessageSquare size={12} />
 								Ask Chat
 							</ActionButton>
+
+							<ActionButton onClick={copyCode} $variant="secondary">
+								{copied ? <FiCheck size={12} /> : <FiCopy size={12} />}
+							</ActionButton>
 							<ActionButton
 								onClick={executeCode}
 								$variant="primary"
 								disabled={isExecuting || !code.trim()}
 							>
 								<FiPlay size={12} />
-								{isExecuting ? "Running..." : "Run"}
+								{isExecuting ? (
+									<span
+										style={{
+											display: "flex",
+											alignItems: "center",
+											gap: "4px",
+										}}
+									>
+										<div
+											style={{
+												width: "8px",
+												height: "8px",
+												color: "green",
+												borderRadius: "50%",
+												backgroundColor: "currentColor",
+												animation: "pulse 1.5s ease-in-out infinite",
+											}}
+										/>
+									</span>
+								) : (
+									""
+								)}
 							</ActionButton>
 						</>
 					)}
 					{onDelete && (
 						<ActionButton onClick={onDelete} $variant="danger">
 							<FiTrash2 size={12} />
-							Delete
 						</ActionButton>
 					)}
 				</CellActions>
@@ -914,6 +934,11 @@ const OutputRenderer: React.FC<{
 
 	const shouldCollapse = outputLength > 1000 || lineCount > 50;
 
+	// Initialize collapsed state based on content size
+	useEffect(() => {
+		setIsCollapsed(shouldCollapse);
+	}, [shouldCollapse]);
+
 	const copyOutput = async () => {
 		try {
 			await navigator.clipboard.writeText(output);
@@ -986,7 +1011,7 @@ const OutputRenderer: React.FC<{
 					{onAddOutputToChat && (
 						<ActionButton onClick={onAddOutputToChat} $variant="secondary">
 							<FiMessageSquare size={12} />
-							Add Output to Chat
+							Ask Chat
 						</ActionButton>
 					)}
 					{hasError && onFixErrorWithChat && (
@@ -997,7 +1022,16 @@ const OutputRenderer: React.FC<{
 					)}
 					<ActionButton onClick={copyOutput} $variant="secondary">
 						<FiCopy size={12} />
-						Copy
+					</ActionButton>
+
+					<ActionButton
+						onClick={() => setShowRaw(!showRaw)}
+						$variant="secondary"
+					>
+						{showRaw ? <FiEyeOff size={12} /> : <FiEye size={12} />}
+					</ActionButton>
+					<ActionButton onClick={downloadOutput} $variant="secondary">
+						<FiDownload size={12} />
 					</ActionButton>
 					{shouldCollapse && (
 						<ActionButton
@@ -1009,20 +1043,8 @@ const OutputRenderer: React.FC<{
 							) : (
 								<FiChevronUp size={12} />
 							)}
-							{isCollapsed ? "Expand" : "Collapse"}
 						</ActionButton>
 					)}
-					<ActionButton
-						onClick={() => setShowRaw(!showRaw)}
-						$variant="secondary"
-					>
-						{showRaw ? <FiEyeOff size={12} /> : <FiEye size={12} />}
-						{showRaw ? "Hide Raw" : "Show Raw"}
-					</ActionButton>
-					<ActionButton onClick={downloadOutput} $variant="secondary">
-						<FiDownload size={12} />
-						Download
-					</ActionButton>
 				</OutputActions>
 			</OutputHeader>
 
@@ -1032,7 +1054,7 @@ const OutputRenderer: React.FC<{
 				<StatItem>{parsed.type} format</StatItem>
 			</OutputStats>
 
-			<CollapsibleOutput $isCollapsed={isCollapsed && !showRaw}>
+			<CollapsibleOutput $isCollapsed={shouldCollapse && isCollapsed}>
 				{showRaw ? (
 					<pre>
 						<code
@@ -1063,7 +1085,7 @@ const OutputRenderer: React.FC<{
 				)}
 			</CollapsibleOutput>
 
-			{shouldCollapse && isCollapsed && !showRaw && (
+			{shouldCollapse && isCollapsed && (
 				<ExpandButton onClick={() => setIsCollapsed(false)}>
 					<FiChevronDown size={14} />
 					Show more ({outputLength - 1000} more characters)

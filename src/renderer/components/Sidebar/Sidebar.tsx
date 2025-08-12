@@ -10,6 +10,7 @@ import {
 	FiCopy,
 	FiExternalLink,
 	FiTrash2,
+	FiSearch,
 } from "react-icons/fi";
 import { useWorkspaceContext } from "../../context/AppContext";
 import { ActionButton, EmptyState } from "@components/shared/StyledComponents";
@@ -58,6 +59,33 @@ const HeaderActions = styled.div`
 `;
 
 // Using shared ActionButton component
+
+const Tabs = styled.div`
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+`;
+
+const TabButton = styled.button<{ $active?: boolean }>`
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	border-radius: 6px;
+	border: 1px solid #3e3e42;
+	background-color: ${(p) => (p.$active ? "#3a3a3f" : "#2d2d30")};
+	color: ${(p) => (p.$active ? "#ffffff" : "#cccccc")};
+	cursor: pointer;
+	padding: 0;
+	transition: background-color 0.15s ease, color 0.15s ease,
+		border-color 0.15s ease;
+
+	&:hover {
+		background-color: ${(p) => (p.$active ? "#44444a" : "#35353a")};
+		color: #ffffff;
+	}
+`;
 
 const SearchContainer = styled.div`
 	padding: 8px 12px;
@@ -222,9 +250,23 @@ const FileTypeIcon = ({ fileName }: { fileName: string }) => {
 
 export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 	const { state, dispatch } = useWorkspaceContext();
+	const [activeTab, setActiveTab] = useState<"explorer" | "search">("explorer");
 	const [currentPath, setCurrentPath] = useState<string>("");
 	const [currentFiles, setCurrentFiles] = useState<FileItem[]>([]);
 	const [searchTerm, setSearchTerm] = useState<string>("");
+
+	// Detailed search state
+	const [detailedQuery, setDetailedQuery] = useState<string>("");
+	const [searchInContent, setSearchInContent] = useState<boolean>(false);
+	const [matchCase, setMatchCase] = useState<boolean>(false);
+	const [useRegex, setUseRegex] = useState<boolean>(false);
+	const [extensionsFilter, setExtensionsFilter] = useState<string>("");
+	const [isSearching, setIsSearching] = useState<boolean>(false);
+	const [cancelSearch, setCancelSearch] = useState<boolean>(false);
+	const [searchResults, setSearchResults] = useState<
+		{ path: string; isDirectory: boolean; preview?: string }[]
+	>([]);
+	const [searchError, setSearchError] = useState<string | null>(null);
 
 	// Debounced search term for better performance
 	const debouncedSearchTerm = useMemo(() => searchTerm, [searchTerm]);
@@ -362,14 +404,149 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		return breadcrumbs;
 	};
 
-	const filteredFiles = React.useMemo(
-		() =>
-			currentFiles.filter((item) =>
-				item.name.toLowerCase().includes(debouncedSearchTerm.toLowerCase())
-			),
-		[currentFiles, debouncedSearchTerm]
-	);
+	const filteredFiles = currentFiles;
 
+	const buildMatcher = () => {
+		try {
+			if (!detailedQuery) return null;
+			if (useRegex) {
+				return new RegExp(detailedQuery, matchCase ? "g" : "gi");
+			}
+			const q = matchCase ? detailedQuery : detailedQuery.toLowerCase();
+			return {
+				test: (s: string) => (matchCase ? s : s.toLowerCase()).includes(q),
+			} as { test: (s: string) => boolean };
+		} catch (e: any) {
+			setSearchError(e?.message || String(e));
+			return null;
+		}
+	};
+
+	const shouldConsiderFile = (name: string): boolean => {
+		if (!extensionsFilter.trim()) return true;
+		const allowed = extensionsFilter
+			.split(",")
+			.map((s) => s.trim().toLowerCase())
+			.filter(Boolean);
+		const lower = name.toLowerCase();
+		return allowed.some((ext) =>
+			lower.endsWith(ext.startsWith(".") ? ext : `.${ext}`)
+		);
+	};
+
+	const isLikelyTextFile = (fileName: string): boolean => {
+		const textExts = [
+			".txt",
+			".md",
+			".py",
+			".ts",
+			".tsx",
+			".js",
+			".jsx",
+			".json",
+			".css",
+			".scss",
+			".html",
+			".yml",
+			".yaml",
+			".ipynb",
+		];
+		const lower = fileName.toLowerCase();
+		return textExts.some((ext) => lower.endsWith(ext));
+	};
+
+	const runDetailedSearch = async () => {
+		if (!state.currentWorkspace) return;
+		setSearchError(null);
+		setSearchResults([]);
+		setIsSearching(true);
+		setCancelSearch(false);
+
+		const matcher: any = buildMatcher();
+		if (!matcher) {
+			setIsSearching(false);
+			return;
+		}
+
+		try {
+			const queue: string[] = [state.currentWorkspace];
+			while (queue.length && !cancelSearch) {
+				const dir = queue.shift()!;
+				const res = await window.electronAPI.listDirectory(dir);
+				const data = Array.isArray(res) ? res : [];
+				for (const item of data) {
+					if (cancelSearch) break;
+					if (item.isDirectory) {
+						queue.push(item.path);
+						if (matcher.test && matcher.test(item.name)) {
+							setSearchResults((prev) => [
+								{ path: item.path, isDirectory: true },
+								...prev,
+							]);
+						}
+						continue;
+					}
+
+					if (!shouldConsiderFile(item.name)) continue;
+					const nameMatches = matcher.test ? matcher.test(item.name) : false;
+					if (nameMatches) {
+						setSearchResults((prev) => [
+							{ path: item.path, isDirectory: false },
+							...prev,
+						]);
+					}
+
+					if (searchInContent && isLikelyTextFile(item.name)) {
+						try {
+							const rf = await window.electronAPI.readFile(item.path);
+							if (typeof rf === "string") {
+								const hayRaw = rf;
+								const hay = matchCase ? hayRaw : hayRaw.toLowerCase();
+								let found = false;
+								if (useRegex) {
+									found = matcher.test(hayRaw);
+								} else {
+									const needle = matchCase
+										? detailedQuery
+										: detailedQuery.toLowerCase();
+									found = hay.includes(needle);
+								}
+								if (found) {
+									const idx = useRegex
+										? hayRaw.match(matcher)?.index ??
+										  hay.indexOf(
+												matchCase ? detailedQuery : detailedQuery.toLowerCase()
+										  )
+										: hay.indexOf(
+												matchCase ? detailedQuery : detailedQuery.toLowerCase()
+										  );
+									const safeIdx = Math.max(0, idx || 0);
+									const start = Math.max(0, safeIdx - 40);
+									const end = Math.min(
+										hayRaw.length,
+										safeIdx + (detailedQuery.length || 1) + 40
+									);
+									const snippet = hayRaw.slice(start, end).replace(/\n/g, " ");
+									setSearchResults((prev) => [
+										{ path: item.path, isDirectory: false, preview: snippet },
+										...prev,
+									]);
+								}
+							}
+						} catch {
+							// ignore unreadable files
+						}
+					}
+				}
+			}
+		} catch (e: any) {
+			setSearchError(e?.message || String(e));
+		} finally {
+			setIsSearching(false);
+		}
+	};
+
+	const stopSearch = () => setCancelSearch(true);
 	const handleContextMenuAction = async (action: string) => {
 		if (!contextMenu.item) return;
 
@@ -436,27 +613,132 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 
 	return (
 		<SidebarContainer $collapsed={false} {...props}>
-			{/* Explorer Section */}
+			{/* Tabs Header */}
 			<SidebarHeader>
-				Explorer
-				<HeaderActions>
-					<ActionButton
-						onClick={() => loadDirectory(currentPath)}
-						title="Refresh"
+				<Tabs>
+					<TabButton
+						$active={activeTab === "explorer"}
+						onClick={() => setActiveTab("explorer")}
+						title="Explorer"
 					>
-						<FiRefreshCw size={12} />
-					</ActionButton>
+						<FiFolder size={14} />
+					</TabButton>
+					<TabButton
+						$active={activeTab === "search"}
+						onClick={() => setActiveTab("search")}
+						title="Search"
+					>
+						<FiSearch size={14} />
+					</TabButton>
+				</Tabs>
+
+				<HeaderActions>
+					{activeTab === "explorer" && (
+						<ActionButton
+							onClick={() => loadDirectory(currentPath)}
+							title="Refresh"
+						>
+							<FiRefreshCw size={12} />
+						</ActionButton>
+					)}
 				</HeaderActions>
 			</SidebarHeader>
 
-			{/* Search */}
-			<SearchContainer>
-				<SearchInput
-					placeholder="Search files..."
-					value={searchTerm}
-					onChange={(e) => setSearchTerm(e.target.value)}
-				/>
-			</SearchContainer>
+			{activeTab === "explorer" ? null : (
+				<SearchContainer>
+					<div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+						<input
+							style={{
+								width: "100%",
+								padding: "6px 8px",
+								backgroundColor: "#3c3c3c",
+								border: "1px solid #5a5a5a",
+								borderRadius: 4,
+								color: "#cccccc",
+							}}
+							placeholder="Search term (supports regex if enabled)"
+							value={detailedQuery}
+							onChange={(e) => setDetailedQuery(e.target.value)}
+						/>
+						<div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+							<label
+								style={{
+									display: "flex",
+									gap: 6,
+									alignItems: "center",
+									color: "#cccccc",
+									fontSize: 12,
+								}}
+							>
+								<input
+									type="checkbox"
+									checked={searchInContent}
+									onChange={(e) => setSearchInContent(e.target.checked)}
+								/>
+								Search in file contents
+							</label>
+							<label
+								style={{
+									display: "flex",
+									gap: 6,
+									alignItems: "center",
+									color: "#cccccc",
+									fontSize: 12,
+								}}
+							>
+								<input
+									type="checkbox"
+									checked={matchCase}
+									onChange={(e) => setMatchCase(e.target.checked)}
+								/>
+								Match case
+							</label>
+							<label
+								style={{
+									display: "flex",
+									gap: 6,
+									alignItems: "center",
+									color: "#cccccc",
+									fontSize: 12,
+								}}
+							>
+								<input
+									type="checkbox"
+									checked={useRegex}
+									onChange={(e) => setUseRegex(e.target.checked)}
+								/>
+								Use regex
+							</label>
+						</div>
+						<input
+							style={{
+								width: "100%",
+								padding: "6px 8px",
+								backgroundColor: "#3c3c3c",
+								border: "1px solid #5a5a5a",
+								borderRadius: 4,
+								color: "#cccccc",
+							}}
+							placeholder="Extensions filter (e.g. .ts,.tsx,.py)"
+							value={extensionsFilter}
+							onChange={(e) => setExtensionsFilter(e.target.value)}
+						/>
+						<div style={{ display: "flex", gap: 8 }}>
+							<ActionButton
+								onClick={isSearching ? stopSearch : runDetailedSearch}
+								title={isSearching ? "Stop" : "Search"}
+							>
+								{isSearching ? "Stop" : "Search"}
+							</ActionButton>
+							{searchError && (
+								<span style={{ color: "#f48771", fontSize: 12 }}>
+									{searchError}
+								</span>
+							)}
+						</div>
+					</div>
+				</SearchContainer>
+			)}
 
 			{state.currentWorkspace && (
 				<BreadcrumbNav>

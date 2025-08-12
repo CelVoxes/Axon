@@ -200,7 +200,7 @@ export class AxonApp {
 				submenu: [
 					{
 						label: "Open Folder",
-						accelerator: "⌘O",
+						accelerator: process.platform === "darwin" ? "Cmd+O" : "Ctrl+O",
 						click: async () => {
 							// Just trigger the same action as the UI buttons
 							this.mainWindow?.webContents.send("trigger-open-workspace");

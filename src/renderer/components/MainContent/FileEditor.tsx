@@ -620,15 +620,122 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					}, 1000); // Increased delay to ensure component is fully ready
 				} catch (parseError) {
 					console.error("Error parsing notebook:", parseError);
-					setContent(
-						`// Error parsing notebook: ${
-							parseError instanceof Error
-								? parseError.message
-								: String(parseError)
-						}`
-					);
-					setNotebookData(null);
-					setCellIds([]);
+
+					// Attempt to salvage by trimming trailing non-JSON content
+					try {
+						const trySalvage = (): {
+							json: string;
+							obj: NotebookData;
+						} | null => {
+							const raw = String(fileContent);
+							// Fast path: if error message contains a position, try slicing up to that
+							let candidates: number[] = [];
+							try {
+								const m = String(
+									parseError instanceof Error ? parseError.message : ""
+								).match(/position\s+(\d+)/i);
+								if (m) {
+									const pos = parseInt(m[1], 10);
+									if (Number.isFinite(pos) && pos > 0 && pos <= raw.length) {
+										candidates.push(pos);
+									}
+								}
+							} catch {}
+							// Always include last '}' positions (scan up to 200 candidates max)
+							const maxScan = 200;
+							let found = 0;
+							for (let i = raw.length - 1; i >= 0 && found < maxScan; i--) {
+								if (raw[i] === "}") {
+									candidates.push(i + 1); // slice end exclusive
+									found++;
+								}
+							}
+							// Deduplicate keeping order
+							const seen = new Set<number>();
+							candidates = candidates.filter((i) => {
+								if (seen.has(i)) return false;
+								seen.add(i);
+								return true;
+							});
+							for (const endIdx of candidates) {
+								const slice = raw.slice(0, endIdx).trimEnd();
+								try {
+									const obj = JSON.parse(slice);
+									// Basic notebook shape validation
+									if (
+										obj &&
+										typeof obj === "object" &&
+										Array.isArray((obj as any).cells) &&
+										typeof (obj as any).nbformat === "number"
+									) {
+										return { json: JSON.stringify(obj, null, 2), obj };
+									}
+								} catch {}
+							}
+							return null;
+						};
+
+						const salvaged = trySalvage();
+						if (salvaged) {
+							console.warn(
+								`FileEditor: Salvaged corrupted notebook by trimming trailing content. Repairing file: ${filePath}`
+							);
+							// Create a timestamped backup of the original file before repairing
+							try {
+								const backupPath = `${filePath}.backup_${Date.now()}.txt`;
+								await window.electronAPI.writeFile(backupPath, fileContent);
+								console.warn(
+									`FileEditor: Wrote backup of original notebook to ${backupPath}`
+								);
+							} catch (e) {
+								console.warn("FileEditor: Failed to write backup:", e);
+							}
+
+							// Overwrite the original with the repaired JSON
+							try {
+								await window.electronAPI.writeFile(filePath, salvaged.json);
+							} catch (e) {
+								console.warn("FileEditor: Failed to write repaired file:", e);
+							}
+
+							// Load salvaged notebook into editor state
+							setNotebookData(salvaged.obj);
+							setContent("");
+							setCellIds(
+								(salvaged.obj.cells || []).map(() => generateCellId())
+							);
+
+							// Dispatch notebook-ready event
+							setTimeout((): void => {
+								const notebookReadyEvent = new CustomEvent("notebook-ready", {
+									detail: { filePath },
+								});
+								window.dispatchEvent(notebookReadyEvent);
+							}, 500);
+						} else {
+							// Could not salvage
+							setContent(
+								`// Error parsing notebook: ${
+									parseError instanceof Error
+										? parseError.message
+										: String(parseError)
+								}`
+							);
+							setNotebookData(null);
+							setCellIds([]);
+						}
+					} catch (salvageError) {
+						console.error("FileEditor: Salvage attempt failed:", salvageError);
+						setContent(
+							`// Error parsing notebook: ${
+								parseError instanceof Error
+									? parseError.message
+									: String(parseError)
+							}`
+						);
+						setNotebookData(null);
+						setCellIds([]);
+					}
 				}
 			} else {
 				setContent(fileContent);

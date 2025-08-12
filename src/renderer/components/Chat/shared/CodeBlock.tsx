@@ -30,11 +30,11 @@ const Header = styled.div<{ $disabled?: boolean }>`
 	justify-content: space-between;
 	padding: 10px 12px;
 	background: #222;
-	cursor: ${(p) => (p.$disabled ? "default" : "pointer")};
+	cursor: pointer;
 	text-align: left;
 
 	&:hover {
-		background: ${(p) => (p.$disabled ? colors.gray[800] : colors.gray[700])};
+		background: ${colors.gray[700]};
 	}
 `;
 
@@ -216,9 +216,8 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 	}, [isStreaming]);
 
 	const handleToggle = useCallback(() => {
-		if (isStreaming) return; // prevent collapsing during streaming
 		setIsExpanded((prev) => !prev);
-	}, [isStreaming]);
+	}, []);
 
 	// Track user scroll to pause autoscroll when scrolled up
 	useEffect(() => {
@@ -322,14 +321,13 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
 		<Container>
 			<Header
 				role="button"
-				tabIndex={isStreaming ? -1 : 0}
+				tabIndex={0}
 				onClick={handleToggle}
-				$disabled={isStreaming}
-				aria-disabled={isStreaming}
+				$disabled={false}
+				aria-disabled={false}
 				aria-expanded={isExpanded}
 				aria-label={isExpanded ? "Collapse code" : "Expand code"}
 				onKeyDown={(e) => {
-					if (isStreaming) return;
 					if (e.key === "Enter" || e.key === " ") {
 						e.preventDefault();
 						handleToggle();

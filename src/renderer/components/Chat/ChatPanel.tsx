@@ -1763,6 +1763,96 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					data_insights: [],
 					next_steps: [],
 				});
+
+				// Generate and surface short suggestions as clickable buttons
+				try {
+					// Build data types list from selected datasets
+					let dataTypes = selectedDatasets
+						.map((d) => (d as any).dataType || (d as any).data_type || "")
+						.filter(Boolean);
+					if (dataTypes.length === 0) {
+						dataTypes = selectedDatasets.map((dataset) => {
+							const title = String((dataset as any).title || "").toLowerCase();
+							const description = String(
+								(dataset as any).description || ""
+							).toLowerCase();
+							const platform = String(
+								(dataset as any).platform || ""
+							).toLowerCase();
+							if (
+								title.includes("single-cell") ||
+								description.includes("single-cell") ||
+								platform.includes("single-cell")
+							) {
+								return "single_cell_expression";
+							}
+							if (
+								title.includes("rna-seq") ||
+								description.includes("rna-seq") ||
+								platform.includes("rna-seq")
+							) {
+								return "RNA-seq";
+							}
+							return "expression_matrix";
+						});
+						// Unique
+						dataTypes = dataTypes.filter((dt, i, arr) => arr.indexOf(dt) === i);
+					}
+
+					let suggestedLabels: string[] | null = null;
+					if (suggestionsService) {
+						try {
+							const s = await suggestionsService.generateSuggestions(
+								dataTypes,
+								`Analyze ${selectedDatasets.length} dataset(s)`,
+								selectedDatasets as any,
+								"Dataset selection context"
+							);
+							if (s?.suggestions?.length) {
+								suggestedLabels = s.suggestions
+									.map((x: any) => x.title)
+									.slice(0, 3);
+							}
+						} catch (err) {
+							console.log(
+								"ChatPanel: Backend suggestions failed, using fallback:",
+								err
+							);
+						}
+					}
+
+					if (!suggestedLabels) {
+						const joined = dataTypes.join(", ").toLowerCase();
+						if (
+							joined.includes("single-cell") ||
+							joined.includes("single_cell")
+						) {
+							suggestedLabels = [
+								"Perform quality control",
+								"Create cell clustering",
+								"Identify marker genes",
+							];
+						} else if (joined.includes("rna-seq") || joined.includes("rna")) {
+							suggestedLabels = [
+								"Perform differential expression",
+								"Create gene plots",
+								"Analyze pathways",
+							];
+						} else {
+							suggestedLabels = [
+								"Perform exploratory analysis",
+								"Create visualizations",
+								"Run statistical tests",
+							];
+						}
+					}
+
+					if (suggestedLabels?.length) {
+						setSuggestionButtons(suggestedLabels);
+					}
+				} catch (e) {
+					console.warn("Suggestion generation failed", e);
+				}
 			}
 		},
 		[
