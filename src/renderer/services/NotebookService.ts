@@ -71,12 +71,17 @@ export class NotebookService {
 
 		// Ensure newlines are preserved when the FileEditor converts to ipynb source
 		const normalized = content.replace(/\r\n/g, "\n");
+		// Attach the acknowledgement listener BEFORE dispatch to avoid race conditions
+		const ackPromise = EventManager.waitForEvent<any>(
+			"notebook-cell-added",
+			15000
+		);
 		EventManager.dispatchEvent("add-notebook-cell", {
 			filePath: notebookPath,
 			cellType: "markdown",
 			content: normalized,
 		});
-		await EventManager.waitForEvent("notebook-cell-added");
+		await ackPromise;
 	}
 
 	/**
@@ -95,12 +100,17 @@ export class NotebookService {
 			`NotebookService: Adding code cell with ${code.length} characters to ${notebookPath}`
 		);
 
+		// Attach the acknowledgement listener BEFORE dispatch to avoid race conditions
+		const ackPromise = EventManager.waitForEvent<any>(
+			"notebook-cell-added",
+			15000
+		);
 		EventManager.dispatchEvent("add-notebook-cell", {
 			filePath: notebookPath,
 			cellType: "code",
 			content: code,
 		});
-		await EventManager.waitForEvent("notebook-cell-added");
+		await ackPromise;
 	}
 
 	/**

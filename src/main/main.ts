@@ -11,6 +11,9 @@ export class AxonApp {
 	private mainWindow: BrowserWindow | null = null;
 	private bioragServer: ChildProcess | null = null;
 	private jupyterProcess: ChildProcess | null = null;
+	// Track cancellable processes for virtual env creation and installation
+	private venvCreateProcess: ChildProcess | null = null;
+	private venvInstallProcess: ChildProcess | null = null;
 	private jupyterPort: number = 8888;
 	private bioragPort: number = 8000;
 	// Track a single active kernel per workspace to avoid spawning multiple kernels unnecessarily
@@ -20,6 +23,64 @@ export class AxonApp {
 		new Map();
 	// Track which workspace the current Jupyter server was started for
 	private currentJupyterWorkspace: string | null = null;
+
+	// Ensure the configured Jupyter port is available; if occupied, try to free it or switch to an available port
+	private async ensureJupyterPortAvailable(): Promise<void> {
+		try {
+			const desiredPort = this.jupyterPort;
+			const isAvailable = await new Promise<boolean>((resolve) => {
+				const net = require("net");
+				const tester = net
+					.createServer()
+					.once("error", () => resolve(false))
+					.once("listening", () => {
+						tester.once("close", () => resolve(true)).close();
+					})
+					.listen(desiredPort, "127.0.0.1");
+			});
+
+			if (isAvailable) return;
+
+			// Try to free the port gracefully
+			try {
+				const { exec } = require("child_process");
+				const { promisify } = require("util");
+				const execAsync = promisify(exec);
+				if (process.platform === "win32") {
+					await execAsync(
+						`for /f "tokens=5" %a in ('netstat -ano ^| findstr :${desiredPort}') do taskkill /f /pid %a`
+					).catch(() => {});
+				} else {
+					await execAsync(`lsof -ti:${desiredPort} | xargs kill -9`).catch(
+						() => {}
+					);
+				}
+			} catch (_) {}
+
+			// Recheck; if still not available, find a new port
+			const recheckAvailable = await new Promise<boolean>((resolve) => {
+				const net = require("net");
+				const tester = net
+					.createServer()
+					.once("error", () => resolve(false))
+					.once("listening", () => {
+						tester.once("close", () => resolve(true)).close();
+					})
+					.listen(desiredPort, "127.0.0.1");
+			});
+
+			if (!recheckAvailable) {
+				const getPort = require("get-port");
+				const newPort = await getPort({ port: getPort.makeRange(8889, 8999) });
+				console.log(
+					`Port ${desiredPort} busy; switching Jupyter to ${newPort}`
+				);
+				this.jupyterPort = newPort;
+			}
+		} catch (error) {
+			console.warn("Failed to ensure Jupyter port availability:", error);
+		}
+	}
 
 	constructor() {
 		this.initializeApp();
@@ -260,7 +321,10 @@ export class AxonApp {
 
 			// Start the BioRAG API server with the available port
 			const pythonPath = await this.findPythonPath();
-			const backendPath = path.join(__dirname, "..", "..", "backend");
+			// In dev, backend lives in repo root; in production, it's placed under process.resourcesPath via extraResources
+			const backendWorkingDir = app.isPackaged
+				? process.resourcesPath
+				: path.join(__dirname, "..", "..");
 
 			this.bioragServer = spawn(
 				pythonPath,
@@ -274,7 +338,7 @@ export class AxonApp {
 					this.bioragPort.toString(),
 				],
 				{
-					cwd: path.dirname(backendPath),
+					cwd: backendWorkingDir,
 					stdio: "pipe",
 				}
 			);
@@ -769,6 +833,9 @@ export class AxonApp {
 
 			console.log("Starting Jupyter server...");
 
+			// Ensure desired port is available; if not, free it or pick an available one
+			await this.ensureJupyterPortAvailable();
+
 			// Find Python path
 			const pythonPath = await this.findPythonPath();
 
@@ -1178,6 +1245,7 @@ export class AxonApp {
 					cwd: workspacePath,
 					stdio: "pipe",
 				});
+				this.venvCreateProcess = createVenvProcess;
 
 				// Add timeout for virtual environment creation
 				await new Promise<void>((resolve, reject) => {
@@ -1208,6 +1276,7 @@ export class AxonApp {
 						console.log(
 							`Virtual environment creation completed with code: ${code}`
 						);
+						this.venvCreateProcess = null;
 
 						if (code === 0) {
 							console.log("Virtual environment created successfully");
@@ -1266,6 +1335,7 @@ export class AxonApp {
 					cwd: workspacePath,
 					stdio: "pipe",
 				});
+				this.venvInstallProcess = installProcess;
 
 				await new Promise<void>((resolve, reject) => {
 					let stdout = "";
@@ -1303,6 +1373,7 @@ export class AxonApp {
 					installProcess.on("close", (code) => {
 						clearTimeout(timeout);
 						console.log(`Package installation completed with code: ${code}`);
+						this.venvInstallProcess = null;
 
 						if (code === 0) {
 							console.log("Jupyter infrastructure installed successfully");
@@ -1363,6 +1434,37 @@ export class AxonApp {
 					success: false,
 					error: error instanceof Error ? error.message : String(error),
 				};
+			}
+		});
+
+		// Allow renderer to cancel any ongoing virtual env creation/installation
+		ipcMain.handle("cancel-virtual-env", async () => {
+			try {
+				let cancelled = false;
+				if (this.venvInstallProcess && !this.venvInstallProcess.killed) {
+					try {
+						this.venvInstallProcess.kill("SIGKILL");
+					} catch {}
+					this.venvInstallProcess = null;
+					cancelled = true;
+				}
+				if (this.venvCreateProcess && !this.venvCreateProcess.killed) {
+					try {
+						this.venvCreateProcess.kill("SIGKILL");
+					} catch {}
+					this.venvCreateProcess = null;
+					cancelled = true;
+				}
+				if (cancelled) {
+					this.mainWindow?.webContents.send("virtual-env-status", {
+						status: "cancelled",
+						message: "Virtual environment setup cancelled",
+						timestamp: new Date().toISOString(),
+					});
+				}
+				return { success: true, cancelled };
+			} catch (e: any) {
+				return { success: false, error: e?.message || String(e) };
 			}
 		});
 
@@ -1543,39 +1645,9 @@ export class AxonApp {
 						`Using kernel: ${kernelName} for workspace: ${workspacePath}`
 					);
 
-					// Get CSRF token first
-					let csrfToken = "";
-					try {
-						const csrfResponse = await fetch(
-							`http://127.0.0.1:${this.jupyterPort}/api/security/csrf`
-						);
-						if (csrfResponse.ok) {
-							const csrfData = await csrfResponse.json();
-							csrfToken = csrfData.token;
-							console.log("Got CSRF token:", csrfToken);
-						}
-					} catch (error) {
-						console.warn("Failed to get CSRF token:", error);
-						// Try alternative approach - get token from cookies
-						try {
-							const cookieResponse = await fetch(
-								`http://127.0.0.1:${this.jupyterPort}/`
-							);
-							const cookies = cookieResponse.headers.get("set-cookie");
-							if (cookies) {
-								const xsrfMatch = cookies.match(/_xsrf=([^;]+)/);
-								if (xsrfMatch) {
-									csrfToken = xsrfMatch[1];
-									console.log("Got CSRF token from cookies:", csrfToken);
-								}
-							}
-						} catch (cookieError) {
-							console.warn(
-								"Failed to get CSRF token from cookies:",
-								cookieError
-							);
-						}
-					}
+					// CSRF is disabled via NotebookApp.token='' and disable_check_xsrf=True
+					// Skip CSRF retrieval to avoid transient connection issues on startup
+					const csrfToken = undefined;
 
 					// 1. Find or create a single kernel id for the workspace using new centralized helper
 					const kernelId = await this.getOrCreateKernelId(

@@ -23,6 +23,8 @@ import {
 } from "../shared/utils";
 import { FileItem, ContextMenuState } from "../shared/interfaces";
 import { typography } from "../../styles/design-system";
+import { BackendClient } from "../../services/BackendClient";
+import { AuthService } from "../../services/AuthService";
 import { electronAPI } from "../../utils/electronAPI";
 
 interface SidebarProps {
@@ -342,6 +344,21 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 
 	// Debounced search term for better performance
 	const debouncedSearchTerm = useMemo(() => searchTerm, [searchTerm]);
+	// Optional: simple sign-in button using Firebase Google popup
+	const [authService, setAuthService] = useState<AuthService | null>(null);
+	useEffect(() => {
+		(async () => {
+			try {
+				// Initialize lightweight backend client just for auth call
+				const backendUrl = await window.electronAPI.getBioragUrl();
+				const client = new BackendClient(backendUrl);
+				setAuthService(new AuthService(client));
+			} catch {
+				const client = new BackendClient("http://localhost:8000");
+				setAuthService(new AuthService(client));
+			}
+		})();
+	}, []);
 	const [contextMenu, setContextMenu] = useState<{
 		visible: boolean;
 		x: number;
@@ -842,6 +859,20 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 				</Tabs>
 
 				<HeaderActions>
+					{authService && (
+						<ActionButton
+							onClick={async () => {
+								try {
+									await authService.loginWithFirebaseGooglePopup();
+									alert("Signed in");
+								} catch (e: any) {
+									alert(e?.message || String(e));
+								}
+							}}
+						>
+							Sign in
+						</ActionButton>
+					)}
 					{activeTab === "explorer" && (
 						<Tooltip content="Refresh file list" placement="bottom">
 							<ActionButton onClick={() => loadDirectory(currentPath)}>

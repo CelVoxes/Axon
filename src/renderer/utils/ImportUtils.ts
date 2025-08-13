@@ -47,11 +47,11 @@ export function removeDuplicateImports(
 
 	for (const line of lines) {
 		const trimmedLine = line.trim();
-		if (
-			trimmedLine.startsWith("import ") ||
-			trimmedLine.startsWith("from ") ||
-			/^import\s+\w+/.test(trimmedLine)
-		) {
+		// Only deduplicate top-level imports (column 0). Do NOT touch indented imports
+		// to avoid breaking blocks like try/except or function scopes.
+		const isTopLevelImport =
+			line.startsWith("import ") || line.startsWith("from ");
+		if (isTopLevelImport) {
 			if (!existingImports.has(trimmedLine)) {
 				filteredLines.push(line);
 				existingImports.add(trimmedLine);

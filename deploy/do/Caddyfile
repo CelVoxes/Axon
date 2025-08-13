@@ -1,0 +1,24 @@
+{$DOMAIN} {
+    encode zstd gzip
+
+    @sse {
+        header Accept *text/event-stream*
+    }
+
+    handle @sse {
+        header Cache-Control "no-cache"
+        header Connection "keep-alive"
+        reverse_proxy api:8000
+    }
+
+    reverse_proxy api:8000
+
+    header {
+        Access-Control-Allow-Origin "*"
+        Access-Control-Allow-Headers "Authorization, Content-Type"
+        Access-Control-Allow-Methods "GET, POST, OPTIONS"
+        Access-Control-Expose-Headers "Content-Type, Authorization"
+    }
+}
+
+

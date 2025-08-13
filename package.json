@@ -37,6 +37,7 @@
     "webpack-require-from": "^1.8.6"
   },
   "dependencies": {
+    "firebase": "^10.12.0",
     "@monaco-editor/react": "^4.5.0",
     "@types/ws": "^8.5.0",
     "axios": "^1.5.0",
@@ -69,14 +70,23 @@
       "dist/**/*",
       "node_modules/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend"
+      }
+    ],
     "mac": {
-      "icon": "src/png/axon-very-rounded-150.icns"
+      "icon": "src/png/axon-very-rounded-150.icns",
+      "target": ["dmg", "zip"]
     },
     "win": {
-      "icon": "src/png/axon-very-rounded-150.png"
+      "icon": "src/png/axon-very-rounded-150.png",
+      "target": ["nsis", "zip"]
     },
     "linux": {
-      "icon": "src/png/axon-very-rounded-150.png"
+      "icon": "src/png/axon-very-rounded-150.png",
+      "target": ["AppImage", "deb"]
     }
   }
 }

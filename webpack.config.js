@@ -10,6 +10,14 @@ module.exports = (env, argv) => {
 
 	return {
 		target: "electron-renderer",
+    // Ensure Node built-ins are not externalized; we want browser polyfills
+    externalsPresets: {
+      node: false,
+      electron: false,
+      electronRenderer: false,
+      web: true,
+    },
+		externals: [],
 		entry: {
 			main: "./src/renderer/index.tsx",
 		},
@@ -20,6 +28,12 @@ module.exports = (env, argv) => {
 		},
 		module: {
 			rules: [
+				{
+					test: /\.m?js$/,
+					resolve: {
+						fullySpecified: false,
+					},
+				},
 				{
 					test: /\.tsx?$/,
 					use: "ts-loader",
@@ -42,9 +56,13 @@ module.exports = (env, argv) => {
 		},
 		resolve: {
 			extensions: [".tsx", ".ts", ".js"],
+			mainFields: ["browser", "module", "main"],
 			alias: {
 				"@components": path.resolve(__dirname, "src/renderer/components"),
+				undici: false,
 			},
+			// Prefer browser conditions when resolving package exports
+			conditionNames: ["webpack", "browser", "import", "module", "default"],
 			fallback: {
 				path: false,
 				fs: false,
@@ -55,7 +73,7 @@ module.exports = (env, argv) => {
 				ws: false,
 				crypto: false,
 				stream: false,
-				buffer: false,
+				buffer: require.resolve("buffer/"),
 				process: false,
 				url: false,
 				querystring: false,
@@ -94,6 +112,21 @@ module.exports = (env, argv) => {
 			// Add global polyfill for Node.js compatibility
 			new (require("webpack").DefinePlugin)({
 				global: "window",
+				"process.env.FIREBASE_API_KEY": JSON.stringify(
+					process.env.FIREBASE_API_KEY || ""
+				),
+				"process.env.FIREBASE_AUTH_DOMAIN": JSON.stringify(
+					process.env.FIREBASE_AUTH_DOMAIN || ""
+				),
+				"process.env.FIREBASE_PROJECT_ID": JSON.stringify(
+					process.env.FIREBASE_PROJECT_ID || ""
+				),
+				"process.env.FIREBASE_APP_ID": JSON.stringify(
+					process.env.FIREBASE_APP_ID || ""
+				),
+			}),
+			new (require("webpack").ProvidePlugin)({
+				Buffer: ["buffer", "Buffer"],
 			}),
 		],
 		devtool: isProduction ? false : "source-map",

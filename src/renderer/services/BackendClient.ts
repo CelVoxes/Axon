@@ -33,8 +33,21 @@ export class BackendClient implements IBackendClient {
 			},
 		});
 
+		// Try to seed token from localStorage if present
+		try {
+			const stored = localStorage.getItem("axon.auth.token");
+			if (stored) this.authToken = stored;
+		} catch {}
+
 		// Attach Authorization header if token is present
 		this.axiosInstance.interceptors.request.use((config: any) => {
+			// Always attempt to read latest token from storage if not set
+			if (!this.authToken) {
+				try {
+					const stored = localStorage.getItem("axon.auth.token");
+					if (stored) this.authToken = stored;
+				} catch {}
+			}
 			if (this.authToken) {
 				config.headers = {
 					...(config.headers || {}),
@@ -500,6 +513,33 @@ export class BackendClient implements IBackendClient {
 			return response.data;
 		} catch (error) {
 			log.error("BackendClient: Error analyzing query:", error);
+			throw error;
+		} finally {
+			this.abortControllers.delete(controller);
+		}
+	}
+
+	/**
+	 * Classify chat intent using backend LLM analyzer. Returns a simplified intent string.
+	 */
+	async classifyIntent(message: string): Promise<{
+		intent: string;
+		entities?: string[];
+		data_types?: string[];
+		analysis_type?: string;
+		complexity?: string;
+	}> {
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
+		try {
+			const response = await this.axiosInstance.post(
+				`${this.baseUrl}/llm/analyze`,
+				{ query: message },
+				{ signal: controller.signal }
+			);
+			return response.data;
+		} catch (error) {
+			log.error("BackendClient: Error classifying intent:", error);
 			throw error;
 		} finally {
 			this.abortControllers.delete(controller);

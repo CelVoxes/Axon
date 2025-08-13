@@ -89,6 +89,18 @@ export const DATA_HINT_WORDS: string[] = [
 	"protein",
 	"disease",
 	"cell",
+	// Neurodegenerative diseases and common biomedical filters
+	"alzheimer",
+	"alzheimers",
+	"parkinson",
+	"parkinson's",
+	"neurodegenerative",
+	"brain",
+	"neurology",
+	"scRNA",
+	"single-cell",
+	"bulk rna-seq",
+	"microarray",
 ];
 
 // Suggestion requests keywords

@@ -1,0 +1,17 @@
+# Ignore everything by default, then include backend for the API image
+**
+!backend/**
+!prisma/**
+
+# Common junk
+.git
+.venv
+__pycache__
+node_modules
+dist
+build
+.pytest_cache
+.mypy_cache
+*.log
+
+

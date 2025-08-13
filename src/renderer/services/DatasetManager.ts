@@ -111,7 +111,15 @@ export class DatasetManager {
 		try {
 			// If dataset directly references a local path, honor it
 			if ((dataset as any).localPath) {
-				return [(dataset as any).localPath as string];
+				const p = (dataset as any).localPath as string;
+				// If it's a directory, return signal for 10x-style folder rather than trying to read as file
+				const info = await ElectronClient.getFileInfo(p).catch(
+					() => null as any
+				);
+				if (info && info.isDirectory) {
+					return [p];
+				}
+				return [p];
 			}
 
 			// Otherwise search the workspace directory heuristically
@@ -137,6 +145,22 @@ export class DatasetManager {
 
 	async analyzeFileType(filePath: string): Promise<FileAnalysis> {
 		try {
+			// Detect directory-based 10x MTX structure early
+			const info = await ElectronClient.getFileInfo(filePath).catch(
+				() => null as any
+			);
+			if (info && info.isDirectory) {
+				// Heuristics: matrix.mtx present -> MTX dataset
+				const entries = await ElectronClient.listDirectory(filePath).catch(
+					() => []
+				);
+				const names = entries.map((e) => e.name.toLowerCase());
+				if (names.includes("matrix.mtx") || names.includes("matrix.mtx.gz")) {
+					return { dataType: "single_cell_expression", format: "mtx" };
+				}
+				return { dataType: "unknown", format: "unknown" };
+			}
+
 			// For large/binary files, avoid reading whole content unnecessarily
 			let content = "";
 			try {

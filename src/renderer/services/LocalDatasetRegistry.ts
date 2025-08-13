@@ -164,10 +164,25 @@ export class LocalDatasetRegistry {
 	resolveMention(token: string): LocalDatasetEntry[] {
 		const norm = token.trim().toLowerCase();
 		if (!norm) return [];
-		return this.datasets.filter((d) => {
+
+		// 1) Prefer exact alias matches (e.g., selecting an item from suggestions inserts its alias)
+		const exactAliasMatches = this.datasets.filter((d) => {
 			const alias = (d.alias || "").toLowerCase();
+			return alias === norm;
+		});
+		if (exactAliasMatches.length > 0) return exactAliasMatches;
+
+		// 2) Next prefer exact title matches
+		const exactTitleMatches = this.datasets.filter((d) => {
 			const base = (d.title || "").toLowerCase();
-			return alias === norm || base === norm || base.includes(norm);
+			return base === norm;
+		});
+		if (exactTitleMatches.length > 0) return exactTitleMatches;
+
+		// 3) Finally fall back to substring match on title for convenience when user types freely
+		return this.datasets.filter((d) => {
+			const base = (d.title || "").toLowerCase();
+			return base.includes(norm);
 		});
 	}
 }

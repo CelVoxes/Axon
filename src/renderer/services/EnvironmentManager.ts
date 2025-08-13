@@ -317,11 +317,15 @@ export class EnvironmentManager {
 	 */
 	async generatePackageInstallationCode(
 		datasets: Dataset[],
-		analysisSteps?: any[]
+		analysisSteps?: any[],
+		workspaceDir?: string
 	): Promise<string> {
-		// Get required packages from dataset analysis
+		// Get required packages from dataset analysis (use workspace when available)
 		const dataAnalysis =
-			await this.datasetManager.analyzeDataTypesAndSelectTools(datasets, "");
+			await this.datasetManager.analyzeDataTypesAndSelectTools(
+				datasets,
+				workspaceDir || ""
+			);
 
 		// Collect all required packages
 		const requiredPackages = new Set<string>();
@@ -334,12 +338,64 @@ export class EnvironmentManager {
 		requiredPackages.add("numpy");
 		requiredPackages.add("matplotlib");
 
+		// Heuristic: Include single-cell stack if any dataset hints at single-cell formats or platforms
+		const mentionsSingleCell = (text?: string) => {
+			const t = (text || "").toLowerCase();
+			return (
+				t.includes("single-cell") ||
+				t.includes("single cell") ||
+				t.includes("scrnaseq") ||
+				t.includes("sc-rna-seq") ||
+				t.includes("10x") ||
+				t.includes("dropseq") ||
+				t.includes("smart-seq")
+			);
+		};
+		const needsScanpy =
+			dataAnalysis.recommendedTools.includes("scanpy") ||
+			datasets.some((d: any) => {
+				const url = String(d?.url || "").toLowerCase();
+				const fmt = String(d?.fileFormat || "").toLowerCase();
+				const title = String(d?.title || "");
+				const desc = String(d?.description || "");
+				const plat = String(d?.platform || "");
+				const localPath = String((d as any)?.localPath || "").toLowerCase();
+				const isDir = Boolean((d as any)?.isLocalDirectory);
+				return (
+					url.endsWith(".h5ad") ||
+					url.endsWith(".loom") ||
+					fmt === "h5ad" ||
+					fmt === "loom" ||
+					fmt === "mtx" ||
+					localPath.endsWith(".h5ad") ||
+					localPath.endsWith(".loom") ||
+					isDir ||
+					mentionsSingleCell(title) ||
+					mentionsSingleCell(desc) ||
+					mentionsSingleCell(plat)
+				);
+			});
+		if (needsScanpy) {
+			requiredPackages.add("scanpy");
+			requiredPackages.add("anndata");
+			requiredPackages.add("scipy");
+			// Common extras used in single-cell workflows
+			requiredPackages.add("leidenalg");
+			requiredPackages.add("umap-learn");
+			requiredPackages.add("scikit-learn");
+			requiredPackages.add("seaborn");
+			requiredPackages.add("plotly");
+		}
+
 		console.log(
 			"📦 Packages for notebook cell installation:",
 			Array.from(requiredPackages)
 		);
 
-		const packages = Array.from(requiredPackages);
+		// Ensure stable ordering for reproducibility
+		const packages = Array.from(requiredPackages).sort((a, b) =>
+			a.localeCompare(b)
+		);
 
 		return `# Install required packages
 import subprocess

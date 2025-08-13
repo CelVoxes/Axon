@@ -1,0 +1,27 @@
+spec:
+  name: axon-api
+  region: nyc
+  services:
+    - name: api
+      dockerfile_path: backend/Dockerfile
+      github:
+        branch: main
+        repo: your-org/Axon
+      http_port: 8000
+      instance_count: 1
+      instance_size_slug: basic-xxs
+      routes:
+        - path: /
+      envs:
+        - key: OPENAI_API_KEY
+          scope: RUN_AND_BUILD_TIME
+          value: ""
+        - key: DATABASE_URL
+          scope: RUN_AND_BUILD_TIME
+          value: ""
+        - key: FIREBASE_PROJECT_ID
+          scope: RUN_AND_BUILD_TIME
+          value: ""
+        - key: GOOGLE_CLIENT_ID
+          scope: RUN_AND_BUILD_TIME
+          value: ""

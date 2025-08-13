@@ -959,7 +959,10 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				return false;
 			}
 			// Step 1: Ensure environment is ready and executor workspace is correct
-			await this.ensureEnvironmentReady(workspaceDir);
+			if (!options?.skipEnvCells) {
+				await this.ensureEnvironmentReady(workspaceDir);
+			}
+			// Always set workspace path so downstream services know the context
 			this.workspacePath = workspaceDir;
 			this.codeExecutor.updateWorkspacePath(this.workspacePath);
 
@@ -973,7 +976,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				const packageCode =
 					await this.environmentManager.generatePackageInstallationCode(
 						datasets,
-						analysisSteps
+						analysisSteps,
+						workspaceDir
 					);
 				// Validate (lint/clean) without executing; execution will happen after adding to notebook
 				const packageTestResult = await this.codeQualityService.validateAndTest(
@@ -989,13 +993,6 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 						finalPackageCode
 					);
 					this.updateStatus("Package installation cell added");
-
-					// Execute the just-added cell with real-time streaming to notebook
-					await this.executeAndStreamNotebookCell(
-						notebookPath,
-						finalPackageCode,
-						"Package installation"
-					);
 				}
 			}
 
@@ -1039,12 +1036,6 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 					// Add to global context to prevent re-downloading
 					this.addCodeToContext("data-download", finalDataDownloadCode);
 					this.updateStatus("Data download cell added");
-
-					await this.executeAndStreamNotebookCell(
-						notebookPath,
-						finalDataDownloadCode,
-						"Data download"
-					);
 				} else {
 					this.updateStatus(
 						"No remote datasets to download; skipping download step"
@@ -1066,12 +1057,6 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				await this.notebookService.addCodeCell(notebookPath, localPrepCode);
 				this.addCodeToContext("local-data-prep", localPrepCode);
 				this.updateStatus("Local data preparation cell added");
-
-				await this.executeAndStreamNotebookCell(
-					notebookPath,
-					localPrepCode,
-					"Local data preparation"
-				);
 			}
 
 			// Step 4: Generate and add analysis step codes
@@ -1095,21 +1080,9 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 					`Added analysis step ${i + 1} of ${analysisSteps.length}`
 				);
 
-				// Execute and stream this step's output in real time; auto-fix on failure
-				const result = await this.executeAndStreamNotebookCell(
-					notebookPath,
-					stepCode,
-					step.description
-				);
-
-				// Update global context with the final executed code if it differs (e.g., after auto-fix)
-				if (result && typeof result.analysis === "object") {
-					// no-op: reserved for future richer analysis handling
-				}
-
 				// Small delay between steps
 				if (i < analysisSteps.length - 1) {
-					await AsyncUtils.sleep(500);
+					await AsyncUtils.sleep(200);
 				}
 			}
 

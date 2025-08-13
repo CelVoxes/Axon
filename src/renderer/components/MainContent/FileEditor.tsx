@@ -46,6 +46,8 @@ const NotebookContainer = styled.div`
 	overflow-y: auto;
 	padding: 16px;
 	background: #1e1e1e;
+	/* Let wheel events bubble when a child reaches its scroll boundary */
+	overscroll-behavior: contain;
 
 	/* Add some spacing between cells */
 	> * + * {
@@ -539,12 +541,22 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 				) {
 					// Update cell code
 					const updatedCells = [...currentNotebookData.cells];
+					const incomingEditedByChatAt = (event as any)?.detail
+						?.editedByChatAt as string | undefined;
+					const existingMeta =
+						(updatedCells[actualCellIndex] as any)?.metadata || {};
 					updatedCells[actualCellIndex] = {
 						...updatedCells[actualCellIndex],
 						source: toIpynbSource(code),
+						metadata: {
+							...existingMeta,
+							...(incomingEditedByChatAt
+								? { editedByChatAt: incomingEditedByChatAt }
+								: {}),
+						},
 						outputs: [], // Clear outputs when code changes
 						execution_count: null, // Reset execution count
-					};
+					} as any;
 
 					const updatedNotebook = {
 						...currentNotebookData,
@@ -554,9 +566,14 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					setNotebookData(updatedNotebook);
 					// Update in-memory editor state for immediate UI reflection
 					setCellStates((prev) => {
-						const next = [...prev];
+						const next = [...prev] as any[];
 						const prevEntry = next[actualCellIndex] || { code: "", output: "" };
-						next[actualCellIndex] = { ...prevEntry, code };
+						next[actualCellIndex] = {
+							...prevEntry,
+							code,
+							editedByChatAt:
+								incomingEditedByChatAt || prevEntry.editedByChatAt,
+						};
 						return next;
 					});
 					setHasChanges(true);
@@ -1159,9 +1176,10 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					}
 
 					// Get current cell state (code and output)
-					const currentCellState = cellStates[index] || {
+					const currentCellState = (cellStates[index] as any) || {
 						code: cellContent,
 						output: cellOutput,
+						editedByChatAt: undefined as string | undefined,
 					};
 
 					return (
@@ -1173,6 +1191,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 								workspacePath={workspacePath}
 								filePath={filePath}
 								cellIndex={index}
+								editedByChatAt={currentCellState.editedByChatAt}
 								onExecute={(code, output) => {
 									updateCellCode(index, code);
 									updateCellOutput(index, output);

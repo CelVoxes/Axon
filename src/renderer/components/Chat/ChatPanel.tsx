@@ -68,6 +68,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [showSearchDetails, setShowSearchDetails] = useState(false);
 	const [validationErrors, setValidationErrors] = useState<string[]>([]);
 	const [validationWarnings, setValidationWarnings] = useState<string[]>([]);
+	const [validationSuccessMessage, setValidationSuccessMessage] =
+		useState<string>("");
 	const [availableDatasets, setAvailableDatasets] = useState<any[]>([]);
 	const [suggestionButtons, setSuggestionButtons] = useState<string[]>([]);
 	const [virtualEnvStatus, setVirtualEnvStatus] = useState("");
@@ -158,12 +160,31 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 	// Prefill composer when user triggers chat-edit-selection from an editor
 	useEffect(() => {
+		// Deduplicate rapid successive events (e.g., multiple notebooks emitting)
+		let lastPayloadKey = "";
+		let lastAt = 0;
+		const DEDUPE_MS = 250;
+
 		const cleanup = EventManager.createManagedListener(
 			"chat-edit-selection",
 			(event) => {
 				const detail = event.detail || {};
 				const snippet: string = String(detail.selectedText || "");
 				const lang: string = String(detail.language || "python");
+				const filePath: string = String(detail.filePath || "");
+				const cellIndex: string = String(
+					detail.cellIndex === 0 || detail.cellIndex
+						? String(detail.cellIndex)
+						: ""
+				);
+				const payloadKey = `${filePath}|${cellIndex}|${lang}|${snippet}`;
+				const now = Date.now();
+				if (payloadKey === lastPayloadKey && now - lastAt < DEDUPE_MS) {
+					return;
+				}
+				lastPayloadKey = payloadKey;
+				lastAt = now;
+
 				const prefix = `Please edit the selected ${lang} code.\n`;
 				const fenced = "\n```" + lang + "\n" + snippet + "\n```\n";
 				setInputValue(prefix + fenced);
@@ -538,6 +559,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 		};
 
+		const handleValidationSuccess = (event: Event) => {
+			if (!isMounted) return;
+			const customEvent = event as CustomEvent<{
+				stepId: string;
+				message?: string;
+			}>;
+			const { message } = customEvent.detail || {};
+			setValidationSuccessMessage(message || "No linter errors found");
+			addMessage(message || "No linter errors found", false);
+		};
+
 		// Add event listeners
 		EventManager.addEventListener(
 			"code-generation-started",
@@ -558,6 +590,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		EventManager.addEventListener(
 			"code-validation-error",
 			handleValidationError
+		);
+		EventManager.addEventListener(
+			"code-validation-success",
+			handleValidationSuccess
 		);
 
 		return () => {
@@ -581,6 +617,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			EventManager.removeEventListener(
 				"code-validation-error",
 				handleValidationError
+			);
+			EventManager.removeEventListener(
+				"code-validation-success",
+				handleValidationSuccess
 			);
 		};
 	}, [analysisDispatch]); // Remove addMessage from deps since it's defined after this useEffect
@@ -1221,9 +1261,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				);
 				const task =
 					`Edit the following ${lang} code according to the user's instruction. ` +
-					`Return a minimal set of line edits as pure JSON (no backticks, no prose). ` +
-					`The JSON must be an array of objects with fields: startLine (1-based, inclusive), endLine (1-based, inclusive), replacement (string). ` +
-					`Line numbers are relative to ONLY the provided selected snippet, not the whole file.`;
+					`Return ONLY the fully revised snippet for the selected region, with no explanations, no prose, and no JSON. ` +
+					`Do NOT include code fences (no triple backticks). Output the updated snippet as plain ${lang} text.`;
 
 				let streamedResponse = "";
 				const streamingMessageId = `edit-${Date.now()}`;
@@ -1231,32 +1270,58 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					type: "ADD_MESSAGE",
 					payload: {
 						id: streamingMessageId,
-						content: "",
+						content: "Streaming edited code…",
 						isUser: false,
 						isStreaming: true,
 						code: "",
+						codeLanguage: lang,
+						codeTitle: "Edited snippet (streaming)",
 					},
 				});
 
 				try {
+					// Prepare bases for incremental in-place updates
+					const base = fullCode;
+					const start = selStart;
+					const end = selEnd;
+					let lastCellUpdate = 0;
 					await backendClient.generateCodeStream(
 						{
-							task_description: `${task}\n\nUser instruction:\n${userMessage}\n\nSelected snippet to edit (context only):\n\n\`\`\`${lang}\n${originalSnippet}\n\`\`\`\n\nReturn ONLY JSON edits.`,
+							task_description: `${task}\n\nUser instruction:\n${userMessage}\n\nSelected snippet to edit (context only):\n\n\`\`\`${lang}\n${originalSnippet}\n\`\`\`\n\nReturn ONLY the revised snippet as plain ${lang}.`,
 							language: lang,
 							context: "Notebook code edit-in-place",
 						},
 						(chunk: string) => {
 							streamedResponse += chunk;
+							const cleanedSnippet = stripCodeFences(streamedResponse);
+
+							// Update chat message with the edited snippet so far
 							analysisDispatch({
 								type: "UPDATE_MESSAGE",
 								payload: {
 									id: streamingMessageId,
 									updates: {
-										content: `Applying edits to selection…`,
+										content: `Streaming edited code…`,
+										code: cleanedSnippet,
+										codeLanguage: lang,
+										codeTitle: "Edited snippet (streaming)",
 										isStreaming: true,
 									},
 								},
 							});
+
+							// Throttled live update of the notebook cell so changes are visible during streaming
+							const now = Date.now();
+							if (now - lastCellUpdate > 100) {
+								const partialNewCode =
+									base.substring(0, start) +
+									cleanedSnippet +
+									base.substring(end);
+								notebookService
+									.updateCellCode(filePath, cellIndex, partialNewCode)
+									.catch(() => {});
+								lastCellUpdate = now;
+							}
 						}
 					);
 				} catch (e) {
@@ -1275,23 +1340,32 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					});
 				}
 
-				// Try to parse JSON line edits; fall back to full replacement
-				const edits = parseJsonEdits(streamedResponse);
+				// Use the streamed edited snippet; fallback to JSON edits if the model returned them
+				let newSelection: string;
 				const base = fullCode;
 				const start = selStart;
 				const end = selEnd;
-				let newSelection: string;
-				if (edits) {
-					const withinEdited = applyLineEdits(withinSelection, edits);
-					newSelection = withinEdited;
+				const cleanedFinal = stripCodeFences(streamedResponse);
+				const jsonFallback = parseJsonEdits(streamedResponse);
+				if (jsonFallback) {
+					newSelection = applyLineEdits(withinSelection, jsonFallback);
 				} else {
-					const cleanedFallback = stripCodeFences(streamedResponse);
-					newSelection = cleanedFallback;
+					newSelection = cleanedFinal;
 				}
 				const newCode =
 					base.substring(0, start) + newSelection + base.substring(end);
 
 				await notebookService.updateCellCode(filePath, cellIndex, newCode);
+
+				// Let the notebook UI know this cell was updated by Chat for visibility
+				try {
+					EventManager.dispatchEvent("update-notebook-cell-code", {
+						filePath,
+						cellIndex,
+						code: newCode,
+						editedByChatAt: new Date().toISOString(),
+					});
+				} catch (_) {}
 
 				let updateDetail: any = null;
 				try {
@@ -1425,39 +1499,65 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					`The JSON must be an array of objects with fields: startLine (1-based, inclusive), endLine (1-based, inclusive), replacement (string). ` +
 					`Line numbers are relative to ONLY the provided selected snippet, not the whole file.`;
 
-				// Streaming accumulation (JSON edits)
+				// Streaming accumulation (edited code)
 				let streamedResponse = "";
 				const streamingMessageId = `edit-${Date.now()}`;
 				analysisDispatch({
 					type: "ADD_MESSAGE",
 					payload: {
 						id: streamingMessageId,
-						content: "",
+						content: "Streaming edited code…",
 						isUser: false,
 						isStreaming: true,
 						code: "",
+						codeLanguage: lang,
+						codeTitle: "Edited snippet (streaming)",
 					},
 				});
 
 				try {
+					// Prepare bases for incremental in-place updates
+					const base = fullCode;
+					const start = selStart;
+					const end = selEnd;
+					let lastCellUpdate = 0;
 					await backendClient.generateCodeStream(
 						{
-							task_description: `${task}\n\nUser instruction:\n${userMessage}\n\nSelected snippet to edit (context only):\n\n\`\`\`${lang}\n${originalSnippet}\n\`\`\`\n\nReturn ONLY JSON edits.`,
+							task_description: `${task}\n\nUser instruction:\n${userMessage}\n\nSelected snippet to edit (context only):\n\n\`\`\`${lang}\n${originalSnippet}\n\`\`\`\n\nReturn ONLY the revised snippet as plain ${lang}.`,
 							language: lang,
 							context: "Notebook code edit-in-place",
 						},
 						(chunk: string) => {
 							streamedResponse += chunk;
+							const cleanedSnippet = stripCodeFences(streamedResponse);
+
+							// Update chat message with the edited snippet so far
 							analysisDispatch({
 								type: "UPDATE_MESSAGE",
 								payload: {
 									id: streamingMessageId,
 									updates: {
-										content: `Applying edits to selection…`,
+										content: `Streaming edited code…`,
+										code: cleanedSnippet,
+										codeLanguage: lang,
+										codeTitle: "Edited snippet (streaming)",
 										isStreaming: true,
 									},
 								},
 							});
+
+							// Throttled live update of the notebook cell so changes are visible during streaming
+							const now = Date.now();
+							if (now - lastCellUpdate > 100) {
+								const partialNewCode =
+									base.substring(0, start) +
+									cleanedSnippet +
+									base.substring(end);
+								notebookService
+									.updateCellCode(filePath, cellIndex, partialNewCode)
+									.catch(() => {});
+								lastCellUpdate = now;
+							}
 						}
 					);
 				} catch (e) {
@@ -1599,7 +1699,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				await handleSuggestionsRequest(userMessage);
 			}
 			// Use intelligent detection to understand if user wants to search for datasets
-			else if (shouldSearchForDatasets(userMessage)) {
+			else if (await shouldSearchForDatasets(userMessage)) {
 				console.log("🔍 Detected search request for:", userMessage);
 				// Search for datasets
 				if (isMounted) {
@@ -1748,6 +1848,26 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						}
 					})();
 				} else if (isAnalysis) {
+					// If the user referenced @tokens but none resolved to local data, do not start a remote search.
+					// Ask the user to attach or register the local data instead of triggering dataset discovery.
+					if (
+						Array.isArray(tokens) &&
+						tokens.length > 0 &&
+						allMentionDatasets.length === 0
+					) {
+						addMessage(
+							`I detected data mention(s) ${tokens
+								.map((t) => `@${t}`)
+								.join(", ")} but couldn't find matching local data.\n\n` +
+								`- Attach files or folders using the paperclip button, then reference them with @alias (e.g., @data.csv).\n` +
+								`- Or type the absolute/relative path after @ (e.g., @data/file.csv).`,
+							false
+						);
+						setIsLoading(false);
+						setIsProcessing(false);
+						setProgressMessage("");
+						return;
+					}
 					// Existing behavior: guide the user to dataset search if nothing is open/selected
 					addMessage(
 						`Analysis Request Detected!\n\n` +
@@ -2699,6 +2819,32 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 		} catch {}
 
+		try {
+			// Cancel any ongoing virtual environment creation/installation
+			void (window as any).electronAPI?.cancelVirtualEnv?.();
+		} catch {}
+
+		// Mark the most recent streaming message as cancelled so it doesn't stay pending
+		try {
+			for (let i = analysisState.messages.length - 1; i >= 0; i--) {
+				const m = analysisState.messages[i] as any;
+				if (m && m.isStreaming) {
+					analysisDispatch({
+						type: "UPDATE_MESSAGE",
+						payload: {
+							id: m.id,
+							updates: {
+								isStreaming: false,
+								status: "failed" as any,
+								content: `${m.content || ""}\n\nCancelled by user.`,
+							},
+						},
+					});
+					break;
+				}
+			}
+		} catch {}
+
 		setIsLoading(false);
 		setIsProcessing(false);
 		setProgressMessage("");
@@ -2898,10 +3044,22 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 	// Support external requests to insert a mention into the composer (from cells)
 	useEffect(() => {
+		// Deduplicate rapid successive mention insertions
+		let lastKey = "";
+		let lastTs = 0;
+		const DEDUPE_MS = 250;
 		const onInsertMention = (e: Event) => {
 			const ce = e as CustomEvent<{ alias?: string; filePath?: string }>;
-			const alias = ce.detail?.alias;
+			const alias = ce.detail?.alias || "";
+			const fp = ce.detail?.filePath || "";
 			if (!alias) return;
+			const key = `${fp}|${alias}`;
+			const now = Date.now();
+			if (key === lastKey && now - lastTs < DEDUPE_MS) {
+				return;
+			}
+			lastKey = key;
+			lastTs = now;
 			setInputValue(
 				(prev) =>
 					(prev.endsWith(" ") || prev.length === 0 ? prev : prev + " ") +

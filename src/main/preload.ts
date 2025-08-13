@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		ipcRenderer.invoke("create-virtual-env", workspacePath),
 	installPackages: (workspacePath: string, packages: string[]) =>
 		ipcRenderer.invoke("install-packages", workspacePath, packages),
+	cancelVirtualEnv: () => ipcRenderer.invoke("cancel-virtual-env"),
 
 	// Dialog operations
 	showOpenDialog: (options: any) =>
@@ -135,7 +136,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
 try {
 	ipcRenderer.on("jupyter-ready", (_evt, data) => {
 		try {
-			const e = new CustomEvent("jupyter-ready", { detail: data });
+			const e = new CustomEvent("jupyter-ready", {
+				detail: { status: "ready", ...(data || {}) },
+			});
 			window.dispatchEvent(e);
 		} catch {}
 	});
@@ -200,6 +203,11 @@ export interface ElectronAPI {
 	) => Promise<{
 		success: boolean;
 		packages?: string[];
+		error?: string;
+	}>;
+	cancelVirtualEnv: () => Promise<{
+		success: boolean;
+		cancelled?: boolean;
 		error?: string;
 	}>;
 

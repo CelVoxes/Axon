@@ -77,6 +77,50 @@ export class CodeQualityService {
 		}
 	}
 
+	private normalizePythonCode(rawCode: string): string {
+		if (!rawCode) return "";
+		let code = String(rawCode);
+		// Normalize newlines and strip BOM/zero-width no-break spaces
+		code = code
+			.replace(/\r\n/g, "\n")
+			.replace(/^\ufeff/, "")
+			.replace(/[\u200B\u200C\u200D\uFEFF]/g, "");
+		// Remove surrounding markdown code fences if present
+		code = code
+			.replace(/```\s*python\s*/gi, "")
+			.replace(/```/g, "")
+			.trim();
+
+		const lines = code.split("\n");
+		// Convert leading tabs to 4 spaces to avoid mixed-indentation errors
+		for (let i = 0; i < lines.length; i++) {
+			lines[i] = lines[i].replace(/^\t+/, (m) => " ".repeat(4 * m.length));
+		}
+		const nonEmpty = lines.filter((l) => l.trim().length > 0);
+		if (nonEmpty.length === 0) return code;
+		const anyAtCol0 = nonEmpty.some((l) => !/^\s/.test(l));
+		if (!anyAtCol0) {
+			const leading = nonEmpty.map((l) => l.match(/^[\t ]*/)?.[0] ?? "");
+			let common = leading[0] || "";
+			for (let i = 1; i < leading.length && common.length > 0; i++) {
+				const s = leading[i];
+				let j = 0;
+				const max = Math.min(common.length, s.length);
+				while (j < max && common[j] === s[j]) j++;
+				common = common.slice(0, j);
+			}
+			if (common) {
+				for (let i = 0; i < lines.length; i++) {
+					const line = lines[i];
+					if (line.startsWith(common)) lines[i] = line.slice(common.length);
+				}
+				code = lines.join("\n");
+			}
+		}
+
+		return code.trimEnd();
+	}
+
 	/**
 	 * Comprehensive code quality check: validation + cleaning + execution
 	 */
@@ -189,6 +233,13 @@ export class CodeQualityService {
 					}
 				} else {
 					this.updateStatus(`✅ Code validation passed for ${stepTitle}`);
+					// Emit a success event so UI can display a green banner like in the screenshot
+					try {
+						this.codeGenerationService.emitValidationSuccess(
+							stepId,
+							`No linter errors found in ${stepTitle}`
+						);
+					} catch (_) {}
 				}
 			} catch (error) {
 				result.isValid = false;
@@ -307,11 +358,8 @@ export class CodeQualityService {
 			`CodeQualityService: Original code preview: ${code.substring(0, 100)}...`
 		);
 
-		// Remove markdown code blocks if present
-		let cleanedCode = code
-			.replace(/```python\s*/gi, "") // Remove ```python (case insensitive)
-			.replace(/```/g, "") // Remove ALL ``` occurrences
-			.trim();
+		// Normalize and strip code-fence artifacts first
+		let cleanedCode = this.normalizePythonCode(code);
 
 		console.log(
 			`CodeQualityService: Cleaned code length: ${cleanedCode.length}`
@@ -441,6 +489,23 @@ print("Code placeholder - original code was empty or only contained markdown")`;
 		// seaborn
 		if (needs(/\bsns\./) && missing("import seaborn as sns")) {
 			lines.push("import seaborn as sns");
+		}
+
+		// scanpy (alias sc)
+		if (
+			(needs(/\bsc\./) || needs(/\bscanpy\./)) &&
+			missing("import scanpy as sc")
+		) {
+			lines.push("import scanpy as sc");
+		}
+
+		// anndata
+		if (needs(/\banndata\./) && missing("import anndata")) {
+			lines.push("import anndata");
+		}
+		// anndata alias (ad)
+		if (needs(/\bad\./) && missing("import anndata as ad")) {
+			lines.push("import anndata as ad");
 		}
 
 		if (lines.length === 0) return code;
@@ -746,8 +811,8 @@ except Exception as e:
 	}
 
 	private addDirectoryCreation(code: string): string {
-		// Prepare the directory creation snippet
-		const directorySnippet = `# Create output directories
+		// Prepare the directory creation snippet (unindented core)
+		const directorySnippetCore = `# Create output directories
 results_dir = Path('results')
 figures_dir = Path('figures')
 results_dir.mkdir(exist_ok=True)
@@ -762,6 +827,7 @@ figures_dir.mkdir(exist_ok=True)`;
 		// - comments
 		// - lines starting with "import " or "from "
 		let insertIndex = 0;
+		let detectedIndent = "";
 		for (let i = 0; i < lines.length; i++) {
 			const trimmed = lines[i].trim();
 			if (
@@ -771,6 +837,14 @@ figures_dir.mkdir(exist_ok=True)`;
 				trimmed.startsWith("from ")
 			) {
 				insertIndex = i + 1;
+				// Capture indentation of the first import line to preserve block scope
+				if (
+					detectedIndent === "" &&
+					(trimmed.startsWith("import ") || trimmed.startsWith("from "))
+				) {
+					const match = lines[i].match(/^(\s*)/);
+					detectedIndent = match ? match[1] : "";
+				}
 				continue;
 			}
 			break;
@@ -780,13 +854,23 @@ figures_dir.mkdir(exist_ok=True)`;
 		const hasPathImport = code.includes("from pathlib import Path");
 		const updatedLines = [...lines];
 		if (!hasPathImport) {
-			// Insert the import at the end of the import block
-			updatedLines.splice(insertIndex, 0, "from pathlib import Path");
+			// Insert the import at the end of the import block, respecting current indentation
+			const pathImportLine = `${detectedIndent}from pathlib import Path`;
+			updatedLines.splice(insertIndex, 0, pathImportLine);
 			insertIndex += 1; // Maintain insertion order for the snippet
 		}
 
-		// Insert the directory snippet right after imports and add a spacer line
-		updatedLines.splice(insertIndex, 0, directorySnippet, "");
+		// Insert the directory snippet right after imports and add a spacer line, respecting indentation
+		const directorySnippet = directorySnippetCore
+			.split("\n")
+			.map((line) => (line ? `${detectedIndent}${line}` : line))
+			.join("\n");
+		updatedLines.splice(
+			insertIndex,
+			0,
+			directorySnippet,
+			detectedIndent ? detectedIndent : ""
+		);
 
 		return updatedLines.join("\n");
 	}

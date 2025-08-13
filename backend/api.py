@@ -30,17 +30,36 @@ from .llm_service import get_llm_service
 # Optional: Prisma DB client (Postgres) - lazy import to avoid tooling errors
 db = None  # type: ignore
 
-# Simple auth dependency that decodes Google-issued ID token or bearer JWT
+# Simple auth dependency that decodes Firebase or Google-issued ID token
 async def get_current_user(authorization: Optional[str] = Header(default=None)) -> Optional[dict]:
     """Optionally authenticate user from Authorization: Bearer <token>.
-    - Accepts Google ID tokens (verify signature via google-auth) or signed JWTs.
+    - Accepts Firebase ID tokens (preferred) or Google ID tokens and verifies signature via google-auth.
     - Returns minimal user info dict { 'email': str, 'name': str, 'sub': str } or None.
     """
     if not authorization or not authorization.lower().startswith("bearer "):
         return None
     token = authorization.split(" ", 1)[1].strip()
 
-    # Try Google ID token verification first
+    # Try Firebase ID token verification first
+    try:
+        from google.oauth2 import id_token as google_id_token
+        from google.auth.transport import requests as google_requests
+        request = google_requests.Request()
+        firebase_project_id = os.getenv("FIREBASE_PROJECT_ID")
+        payload = google_id_token.verify_firebase_token(
+            token, request, audience=firebase_project_id
+        )
+        user_info = {
+            "email": payload.get("email"),
+            "name": payload.get("name"),
+            # Firebase payload commonly includes 'user_id' as the UID; fall back to 'sub'
+            "sub": payload.get("user_id") or payload.get("sub"),
+        }
+        return user_info
+    except Exception:
+        pass
+
+    # Then try Google ID token verification
     try:
         from google.oauth2 import id_token
         from google.auth.transport import requests as google_requests
@@ -293,19 +312,38 @@ async def root():
 
 @app.post("/auth/google", response_model=GoogleAuthResponse)
 async def auth_google(request: GoogleAuthRequest):
-    """Verify Google ID token, upsert user, and issue backend JWT."""
+    """Verify Firebase or Google ID token, upsert user, and echo token as access token.
+
+    This endpoint remains named '/auth/google' for backward compatibility, but
+    it accepts Firebase Authentication ID tokens as well. The token returned should
+    be sent in 'Authorization: Bearer <token>' for subsequent requests.
+    """
     try:
-        from google.oauth2 import id_token
+        from google.oauth2 import id_token as google_id_token
         from google.auth.transport import requests as google_requests
         g_request = google_requests.Request()
-        payload = id_token.verify_oauth2_token(request.id_token, g_request)
+
+        payload = None
+        # Prefer Firebase verification when FIREBASE_PROJECT_ID is provided
+        try:
+            firebase_project_id = os.getenv("FIREBASE_PROJECT_ID")
+            payload = google_id_token.verify_firebase_token(
+                request.id_token, g_request, audience=firebase_project_id
+            )
+        except Exception:
+            payload = None
+
+        if payload is None:
+            # Fallback to Google ID token verification
+            payload = google_id_token.verify_oauth2_token(request.id_token, g_request)
+
         user_info = {
             "email": payload.get("email"),
             "name": payload.get("name"),
-            "sub": payload.get("sub"),
+            "sub": payload.get("user_id") or payload.get("sub"),
         }
         if not user_info.get("email"):
-            raise HTTPException(status_code=400, detail="Invalid Google token: no email")
+            raise HTTPException(status_code=400, detail="Invalid token: no email")
 
         await ensure_db_connected()
         if db:
@@ -316,12 +354,15 @@ async def auth_google(request: GoogleAuthRequest):
                 "update": {"name": user_info.get("name")},
             })
 
-        # For now, return the Google ID token as access token; frontend sends it as Bearer
-        return GoogleAuthResponse(access_token=request.id_token, email=cast(str, user_info["email"]), name=user_info.get("name"))
+        return GoogleAuthResponse(
+            access_token=request.id_token,
+            email=cast(str, user_info["email"]),
+            name=user_info.get("name"),
+        )
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Google auth failed: {e}")
+        raise HTTPException(status_code=401, detail=f"Auth failed: {e}")
 
 @app.post("/search", response_model=List[DatasetResponse])
 async def search_datasets(request: SearchRequest, user=Depends(get_current_user)):

@@ -65,16 +65,18 @@ The platform now includes intelligent auto-execution capabilities:
 - Deploy the FastAPI backend (`backend/`) to your server (e.g., DigitalOcean). Set environment variables:
   - `OPENAI_API_KEY` (and optional `ANTHROPIC_API_KEY`)
   - `DATABASE_URL` (Postgres connection string)
-  - `BACKEND_JWT_SECRET` (used for issuing/verifying backend JWTs)
 - Database uses Prisma (Python) with Postgres. After installing backend requirements:
   - `pip install -r backend/requirements.txt`
   - `pip install prisma`
   - `prisma generate`
   - `prisma migrate deploy`
 
-### Google Sign-In
+### Authentication (Firebase)
 
-- Backend exposes `POST /auth/google` with body `{ id_token: string }` from Google Sign-In.
+- Enable Firebase Authentication (Google provider) and set env vars:
+  - `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_PROJECT_ID`, `FIREBASE_APP_ID`
+- The renderer uses Firebase to obtain an ID token, then calls `POST /auth/google` with `{ id_token }`.
+- The backend verifies Firebase tokens via `google.oauth2.id_token.verify_firebase_token`.
 - On success, backend upserts user and returns `{ access_token, email, name }`.
 - Send `Authorization: Bearer <access_token>` in subsequent requests; usage and messages are logged per user.
 

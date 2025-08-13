@@ -575,6 +575,17 @@ print("Step completed successfully!")
 		} as CodeValidationErrorEvent);
 	}
 
+	/**
+	 * Method to emit validation success as an event
+	 */
+	emitValidationSuccess(stepId: string, message?: string): void {
+		EventManager.dispatchEvent("code-validation-success", {
+			stepId,
+			message: message || "No linter errors found",
+			timestamp: Date.now(),
+		});
+	}
+
 	extractPythonCode(response: string): string | null {
 		// Extract Python code from LLM response
 		const codeBlockRegex = /```(?:python)?\s*([\s\S]*?)```/;

@@ -1,16 +1,37 @@
 ## Backend on DigitalOcean
 
+### Initial server setup
+
+- Create a Droplet (Ubuntu LTS recommended) with at least 2GB RAM.
+- Point your domain DNS A record to the droplet public IP (e.g., `api.example.com`).
+- Optional but recommended firewall (UFW):
+
+```bash
+sudo apt update && sudo apt install -y ufw
+sudo ufw allow OpenSSH
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw enable
+sudo ufw status
+```
+
 - **Provision Postgres**
 
   - Create a managed DB or install Postgres on the droplet.
   - Note the `DATABASE_URL` (include SSL params if managed).
 
+Example managed DB URL:
+
+```
+postgresql://<user>:<password>@<host>:25060/<db>?sslmode=require
+```
+
 - **Set environment variables**
 
   - `OPENAI_API_KEY`
   - `DATABASE_URL`
-  - `GOOGLE_CLIENT_ID`
-  - `BACKEND_JWT_SECRET`
+  - `FIREBASE_PROJECT_ID` (backend token verification)
+  - `GOOGLE_CLIENT_ID` (optional fallback for Google ID tokens)
   - Persist via systemd `Environment` or an `.env`/secret manager.
 
 - **Install and migrate**
@@ -43,6 +64,7 @@ After=network.target
 WorkingDirectory=/opt/axon
 Environment=OPENAI_API_KEY=****
 Environment=DATABASE_URL=****
+Environment=FIREBASE_PROJECT_ID=your-firebase-project-id
 Environment=GOOGLE_CLIENT_ID=****
 ExecStart=/opt/axon/.venv/bin/uvicorn backend.api:app --host 0.0.0.0 --port 8000 --workers 2
 Restart=always
@@ -51,24 +73,57 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
-## TLS and Reverse Proxy
+## Containerized deployment (recommended)
 
-- Use Nginx or Caddy to terminate TLS and proxy to `127.0.0.1:8000`.
-- For SSE/streaming, disable buffering.
+- Prereqs: a DNS A record for your domain (e.g., `api.example.com`) pointing to your droplet’s public IP.
+- The `deploy/do` directory includes a ready-to-use compose setup with Caddy for automatic TLS.
 
-```nginx
-location / {
-  proxy_pass http://127.0.0.1:8000;
-  proxy_http_version 1.1;
-  proxy_set_header Host $host;
-  proxy_set_header X-Real-IP $remote_addr;
-  proxy_set_header Connection "";
-  proxy_buffering off;
-  proxy_read_timeout 3600s;
-}
+Steps:
+
+```bash
+sudo apt update && sudo apt install -y docker.io docker-compose-plugin
+sudo usermod -aG docker $USER && newgrp docker
+
+git clone https://github.com/<your-org>/Axon.git /opt/axon
+cd /opt/axon/deploy/do
+cp env.example .env  # or .env.example depending on your choice
+
+# Edit .env and set DOMAIN, OPENAI_API_KEY, DATABASE_URL, FIREBASE_PROJECT_ID, GOOGLE_CLIENT_ID
+
+docker compose up -d --build
 ```
 
-- **CORS (prod)**: replace `allow_origins=["*"]` with your trusted origins.
+- Caddy will request/renew Let’s Encrypt certs automatically.
+- API will be available at `https://$DOMAIN`.
+- Prisma migrations run on container start when `DATABASE_URL` is set.
+
+To update:
+
+```bash
+cd /opt/axon
+git pull
+cd deploy/do
+docker compose pull --ignore-pull-failures
+docker compose up -d --build
+```
+
+To view logs:
+
+```bash
+docker compose logs -f | cat
+```
+
+To rollback:
+
+```bash
+docker compose ps # identify previous image id for api
+docker compose up -d api@sha256:<old>  # or use an image tag
+```
+
+Security notes:
+
+- Set CORS allow origins in `backend/api.py` to your domain(s) in production.
+- Keep `.env` outside version control; use a secret manager if possible.
 
 ## Frontend (Electron) → DO Backend
 
@@ -76,24 +131,31 @@ location / {
 
 ```bash
 export BACKEND_URL="https://your-domain"
+# Firebase config for renderer (DefinePlugin injects at build time)
+export FIREBASE_API_KEY="..."
+export FIREBASE_AUTH_DOMAIN="your-app.firebaseapp.com"
+export FIREBASE_PROJECT_ID="your-project-id"
+export FIREBASE_APP_ID="1:1234567890:web:abcdef"
 npm run dev
 ```
 
 - The app now uses `BACKEND_URL` via `get-biorag-url`.
 
-## Google Sign-in
+## Firebase Authentication
 
-- **Create OAuth client** in Google Cloud Console (Web app).
-- **Get ID token**, then call:
+- Enable Google provider in Firebase Console → Authentication.
+- Configure renderer env vars above so Firebase initializes.
+- The app signs in with Firebase Google popup; the Firebase ID token is sent to the backend.
+- You can manually test by calling:
 
 ```bash
-# exchange ID token with backend (verification + user upsert)
+# exchange Firebase ID token with backend (verification + user upsert)
 curl -X POST https://your-backend/auth/google \
   -H "Content-Type: application/json" \
-  -d '{"id_token":"<GOOGLE_ID_TOKEN>"}'
+  -d '{"id_token":"<FIREBASE_ID_TOKEN>"}'
 ```
 
-- Backend returns `{ access_token, email, name }` (currently echoes Google ID token).
+- Backend returns `{ access_token, email, name }` (echoes the provided Firebase token).
 - Renderer stores it; all requests include:
 
 ```
@@ -112,7 +174,7 @@ curl https://your-backend/health
 
 ```bash
 curl -X POST https://your-backend/search/llm \
-  -H "Authorization: Bearer <GOOGLE_ID_TOKEN>" \
+  -H "Authorization: Bearer <FIREBASE_ID_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{"query":"breast cancer", "limit": 10}'
 ```
@@ -136,8 +198,14 @@ curl -X POST https://your-backend/search/llm \
 - Keep secrets in env/secret manager, not in repo.
 - Tighten CORS to known origins.
 
+## DigitalOcean App Platform (alternative)
+
+- Use `deploy/do/app.yaml` as a starting spec.
+- Point it at your repo, set env vars (OPENAI_API_KEY, DATABASE_URL, FIREBASE_PROJECT_ID, GOOGLE_CLIENT_ID).
+- App Platform builds the Dockerfile and deploys with managed TLS.
+
 ## Next Steps (optional)
 
-- Add Google Sign-In button in `Sidebar` using `AuthService`.
+- Add Sign-In button in UI using `AuthService.loginWithFirebaseGooglePopup()`.
 - Add a “Usage” panel (per-user token totals from `UsageLog`).
 - Configure automated backups for Postgres and monitoring/logging.

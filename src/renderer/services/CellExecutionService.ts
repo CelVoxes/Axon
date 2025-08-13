@@ -1,6 +1,56 @@
 // Centralized notebook step execution logic
 import { ErrorUtils } from "../utils/ErrorUtils";
 import { Cell, ExecutionResult, ICodeExecutor } from "./types";
+
+function normalizePythonCode(rawCode: string): string {
+	if (!rawCode) return "";
+	let code = String(rawCode);
+	// Normalize newlines and strip BOM/zero-width no-break spaces
+	code = code
+		.replace(/\r\n/g, "\n")
+		.replace(/^\ufeff/, "")
+		.replace(/[\u200B\u200C\u200D\uFEFF]/g, "");
+	// Remove surrounding markdown code fences if present
+	code = code
+		.replace(/```\s*python\s*/gi, "")
+		.replace(/```/g, "")
+		.trim();
+
+	// If any non-empty line starts at column 0, avoid dedenting to preserve intended structure
+	const lines = code.split("\n");
+	// Convert leading tabs to 4 spaces to avoid mixed-indentation errors
+	for (let i = 0; i < lines.length; i++) {
+		lines[i] = lines[i].replace(/^\t+/, (m) => " ".repeat(4 * m.length));
+	}
+	const nonEmpty = lines.filter((l) => l.trim().length > 0);
+	const anyAtCol0 = nonEmpty.some((l) => !/^\s/.test(l));
+	if (nonEmpty.length === 0) return code;
+
+	if (!anyAtCol0) {
+		// Compute common leading whitespace prefix across all non-empty lines
+		const leading = nonEmpty.map((l) => l.match(/^[\t ]*/)?.[0] ?? "");
+		let common = leading[0] || "";
+		for (let i = 1; i < leading.length && common.length > 0; i++) {
+			const s = leading[i];
+			let j = 0;
+			const max = Math.min(common.length, s.length);
+			while (j < max && common[j] === s[j]) j++;
+			common = common.slice(0, j);
+		}
+		if (common) {
+			// Remove the common prefix from all lines that have it
+			for (let i = 0; i < lines.length; i++) {
+				const line = lines[i];
+				if (line.startsWith(common)) {
+					lines[i] = line.slice(common.length);
+				}
+			}
+			code = lines.join("\n");
+		}
+	}
+
+	return code.trimEnd();
+}
 async function runNotebookStep(
 	stepId: string,
 	code: string,
@@ -143,9 +193,10 @@ export class CellExecutionService implements ICodeExecutor {
 			let errorMessage = "";
 
 			// Add timeout wrapper for execution
+			const preparedCode = normalizePythonCode(cell.code);
 			const executionPromise = runNotebookStep(
 				cell.id,
-				cell.code,
+				preparedCode,
 				(payload: {
 					output: string | null;
 					error: string | null;
@@ -238,6 +289,8 @@ export class CellExecutionService implements ICodeExecutor {
 			"ValueError",
 			"FileNotFoundError",
 			"PermissionError",
+			"IndentationError",
+			"SyntaxError",
 		];
 
 		// Don't retry timeout errors as they likely indicate problematic code

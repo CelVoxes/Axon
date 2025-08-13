@@ -72,6 +72,12 @@ const MonacoSelectionToolbar: React.FC<SelectionToolbarProps> = ({
 
 		const updateFromSelection = () => {
 			try {
+				// Only show the toolbar for the actively focused editor
+				const hasFocus = editor.hasTextFocus?.() ?? false;
+				if (!hasFocus) {
+					setVisible(false);
+					return;
+				}
 				const selection = editor.getSelection?.();
 				const model = editor.getModel?.();
 				const hasSelection = !!selection && !selection.isEmpty?.();
@@ -100,6 +106,9 @@ const MonacoSelectionToolbar: React.FC<SelectionToolbarProps> = ({
 		const disposables: any[] = [];
 		disposables.push(editor.onDidChangeCursorSelection?.(updateFromSelection));
 		disposables.push(editor.onDidScrollChange?.(updateFromSelection));
+		// React to editor focus/blur to avoid showing across multiple notebooks
+		disposables.push(editor.onDidFocusEditorText?.(updateFromSelection));
+		disposables.push(editor.onDidBlurEditorText?.(() => setVisible(false)));
 		// Update once on mount
 		updateFromSelection();
 
@@ -278,6 +287,9 @@ const OutputContent = styled.div`
 	font-size: ${typography.base};
 	line-height: 1.4;
 	color: #d4d4d4;
+	/* Allow native wheel chaining so when this block reaches its scroll end, the parent notebook scrolls */
+	overscroll-behavior: contain;
+	overflow-y: auto;
 	pre code {
 		font-family: inherit;
 		font-size: ${typography.sm};
@@ -351,13 +363,14 @@ const ImageOutput = styled.div`
 
 const CollapsibleOutput = styled.div<{ $isCollapsed: boolean }>`
 	max-height: ${(props) => (props.$isCollapsed ? "200px" : "none")};
-	overflow: hidden;
+	overflow: auto; /* allow internal scroll when collapsed */
+	overscroll-behavior: contain; /* pass wheel to parent when at edge */
 	position: relative;
 
 	${(props) =>
 		props.$isCollapsed &&
 		`
-		&::after {
+        &::after {
 			content: '';
 			position: absolute;
 			bottom: 0;
@@ -458,6 +471,8 @@ interface CodeCellProps {
 	filePath?: string;
 	/** Optional: index of this cell within the notebook (when editing a .ipynb) */
 	cellIndex?: number;
+	/** Optional: timestamp when chat last edited this cell */
+	editedByChatAt?: string;
 }
 
 export const CodeCell: React.FC<CodeCellProps> = ({
@@ -470,6 +485,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 	onDelete,
 	filePath,
 	cellIndex,
+	editedByChatAt,
 }) => {
 	const [code, setCode] = useState(initialCode);
 	const [output, setOutput] = useState<string>(initialOutput);
@@ -796,6 +812,19 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 					)}
 				</CellActions>
 			</CellHeader>
+			{editedByChatAt && (
+				<div
+					style={{
+						padding: "6px 12px",
+						background: "#1f2a37",
+						borderBottom: "1px solid #253041",
+						color: "#93c5fd",
+						fontSize: "11px",
+					}}
+				>
+					Edited by Chat • {new Date(editedByChatAt).toLocaleString()}
+				</div>
+			)}
 
 			{/* Editable Markdown and Code with live preview for Markdown */}
 			{language === "markdown" ? (
@@ -897,6 +926,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 								tabSize: 4,
 								renderWhitespace: "selection",
 								lineNumbers: "on",
+								scrollbar: { alwaysConsumeMouseWheel: false },
 							}}
 						/>
 						{/* Floating toolbar near selection */}

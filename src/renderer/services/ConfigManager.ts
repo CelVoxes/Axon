@@ -48,6 +48,13 @@ export interface AppConfig {
 		enableHotReload: boolean;
 		enableProfiling: boolean;
 	};
+
+	// Feature flags
+	features: {
+		enableLlmIntent: boolean;
+		llmIntentTimeoutMs: number;
+		llmIntentMinConfidence: number; // reserved for future models that return confidence
+	};
 }
 
 export class ConfigManager {
@@ -145,6 +152,23 @@ export class ConfigManager {
 		if (process.env.NODE_ENV === "development") {
 			this.config.development.enableDebugMode = true;
 		}
+
+		// Feature flags
+		if (process.env.ENABLE_LLM_INTENT) {
+			this.config.features.enableLlmIntent =
+				process.env.ENABLE_LLM_INTENT === "1" ||
+				process.env.ENABLE_LLM_INTENT?.toLowerCase() === "true";
+		}
+		if (process.env.LLM_INTENT_TIMEOUT_MS) {
+			const v = parseInt(process.env.LLM_INTENT_TIMEOUT_MS, 10);
+			if (!Number.isNaN(v) && v > 0)
+				this.config.features.llmIntentTimeoutMs = v;
+		}
+		if (process.env.LLM_INTENT_MIN_CONFIDENCE) {
+			const v = parseFloat(process.env.LLM_INTENT_MIN_CONFIDENCE);
+			if (!Number.isNaN(v) && v >= 0 && v <= 1)
+				this.config.features.llmIntentMinConfidence = v;
+		}
 	}
 
 	/**
@@ -212,6 +236,11 @@ export class ConfigManager {
 				enableDebugMode: false,
 				enableHotReload: false,
 				enableProfiling: false,
+			},
+			features: {
+				enableLlmIntent: false,
+				llmIntentTimeoutMs: 700,
+				llmIntentMinConfidence: 0.6,
 			},
 		};
 	}
