@@ -94,7 +94,7 @@ try:
                     except Exception:
                         sig = None
                     doc = inspect.getdoc(obj) or ''
-                    summary = doc.split('\n')[0] if doc else ''
+                    summary = doc.split('\\n')[0] if doc else ''
                     entries.append({
                         'qualifiedName': qual,
                         'modulePath': module_path,

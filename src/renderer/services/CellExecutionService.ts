@@ -153,6 +153,7 @@ export { Cell, ExecutionResult } from "./types";
 
 export class CellExecutionService implements ICodeExecutor {
 	private workspacePath: string;
+	private activeExecutions: Map<string, AbortController> = new Map();
 
 	constructor(workspacePath: string) {
 		this.workspacePath = workspacePath;
@@ -163,6 +164,21 @@ export class CellExecutionService implements ICodeExecutor {
 			`CellExecutionService: Updating workspace path from ${this.workspacePath} to ${newWorkspacePath}`
 		);
 		this.workspacePath = newWorkspacePath;
+	}
+
+	stopExecution(cellId: string): void {
+		const controller = this.activeExecutions.get(cellId);
+		if (controller) {
+			controller.abort();
+			this.activeExecutions.delete(cellId);
+		}
+	}
+
+	stopAllExecutions(): void {
+		for (const controller of this.activeExecutions.values()) {
+			controller.abort();
+		}
+		this.activeExecutions.clear();
 	}
 
 	async executeCellWithAnalysis(
@@ -183,6 +199,10 @@ export class CellExecutionService implements ICodeExecutor {
 		);
 		console.log(`CellExecutionService: Workspace path: ${this.workspacePath}`);
 
+		// Create abort controller for this execution
+		const abortController = new AbortController();
+		this.activeExecutions.set(cell.id, abortController);
+
 		// Update cell status to running
 		onProgress?.({ status: "running" });
 
@@ -202,6 +222,11 @@ export class CellExecutionService implements ICodeExecutor {
 					error: string | null;
 					isStream?: boolean;
 				}) => {
+					// Check if execution was aborted
+					if (abortController.signal.aborted) {
+						return;
+					}
+
 					// During streaming, keep status as running; mark failed on error; final completion handled below
 					const status = payload.error
 						? "failed"
@@ -224,9 +249,15 @@ export class CellExecutionService implements ICodeExecutor {
 				this.workspacePath
 			);
 
-			// Await execution to complete. Timeout is managed in the main process via
-			// an optional idle-timeout that resets on streamed output.
-			await executionPromise;
+			// Create a race between execution and abort signal
+			await Promise.race([
+				executionPromise,
+				new Promise<void>((_, reject) => {
+					abortController.signal.addEventListener('abort', () => {
+						reject(new Error('Execution was cancelled'));
+					});
+				})
+			]);
 
 			if (hasError) {
 				console.log(
@@ -267,11 +298,25 @@ export class CellExecutionService implements ICodeExecutor {
 				`CellExecutionService: Error executing cell ${cell.title}:`,
 				error
 			);
+			
+			// Check if the error was due to cancellation
+			if (error instanceof Error && error.message === 'Execution was cancelled') {
+				onProgress?.({ status: "cancelled" });
+				return {
+					status: "cancelled",
+					output: "Execution was cancelled",
+					shouldRetry: false,
+				};
+			}
+			
 			return {
 				status: "failed",
 				output: ErrorUtils.getErrorMessage(error),
 				shouldRetry: true, // Retry on unexpected errors
 			};
+		} finally {
+			// Clean up the abort controller
+			this.activeExecutions.delete(cell.id);
 		}
 	}
 

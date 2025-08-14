@@ -137,13 +137,13 @@ export interface Cell {
 	language: "python" | "r" | "markdown";
 	output: string;
 	hasError: boolean;
-	status: "pending" | "running" | "completed" | "failed";
+	status: "pending" | "running" | "completed" | "failed" | "cancelled";
 	title?: string;
 	isMarkdown?: boolean;
 }
 
 export interface ExecutionResult {
-	status: "completed" | "failed";
+	status: "completed" | "failed" | "cancelled";
 	output: string;
 	shouldRetry: boolean;
 	analysis?: any;

@@ -605,6 +605,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 	const [isExecuting, setIsExecuting] = useState(false);
 	const [hasError, setHasError] = useState(false);
 	const [copied, setCopied] = useState(false);
+	const [currentExecutionId, setCurrentExecutionId] = useState<string | null>(null);
 	// Auto-growing editor height for better UX
 	const [editorHeight, setEditorHeight] = useState<number>(260);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -639,10 +640,22 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		return "#404040";
 	}, [code, output, hasError, language]);
 
+	const stopExecution = () => {
+		if (currentExecutionId && cellExecutionService) {
+			cellExecutionService.stopExecution(currentExecutionId);
+			// Also call the Jupyter interrupt for good measure
+			try {
+				window.electronAPI?.interruptJupyter?.(workspacePath);
+			} catch (_) {}
+		}
+	};
+
 	const executeCode = async () => {
 		if (!code.trim() || language === "markdown" || !cellExecutionService)
 			return;
 
+		const executionId = `codecell-${Date.now()}`;
+		setCurrentExecutionId(executionId);
 		setIsExecuting(true);
 		setOutput("");
 		setHasError(false);
@@ -652,7 +665,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 
 			// Use CellExecutionService instead of direct API call
 			const result = await cellExecutionService.executeCell(
-				`codecell-${Date.now()}`, // Generate a unique ID
+				executionId,
 				code,
 				(updates) => {
 					// Handle real-time updates if needed
@@ -670,6 +683,10 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 				setOutput(result.output || "Code executed successfully");
 				setHasError(false);
 				onExecute?.(code, result.output || "");
+			} else if (result.status === "cancelled") {
+				setOutput(result.output || "Execution was cancelled");
+				setHasError(false);
+				onExecute?.(code, result.output || "");
 			} else {
 				setOutput(result.output || "Execution failed");
 				setHasError(true);
@@ -684,6 +701,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 			onExecute?.(code, errorMessage);
 		} finally {
 			setIsExecuting(false);
+			setCurrentExecutionId(null);
 		}
 	};
 
@@ -906,12 +924,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 							{isExecuting && (
 								<ActionButton
 									$variant="secondary"
-									onClick={() => {
-										try {
-											// @ts-ignore - preload provides this method
-											window.electronAPI?.interruptJupyter?.(workspacePath);
-										} catch (_) {}
-									}}
+									onClick={stopExecution}
 								>
 									<FiSquare size={12} /> Stop
 								</ActionButton>
