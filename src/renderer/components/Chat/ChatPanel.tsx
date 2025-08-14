@@ -417,6 +417,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			const customEvent = event as CustomEvent<CodeGenerationStartedEvent>;
 			const { stepId, stepDescription } = customEvent.detail;
 
+			// Clear any lingering validation banners when a new generation starts
+			setValidationErrors([]);
+			setValidationWarnings([]);
+			setValidationSuccessMessage("");
+
 			// Create new streaming message
 			const messageId = `streaming-${stepId}`;
 			activeStreams.current.set(stepId, { messageId, accumulatedCode: "" });
@@ -507,6 +512,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			const { errors, warnings, originalCode, fixedCode } = customEvent.detail;
 
 			// Set validation errors for display (UI will show them)
+			setValidationSuccessMessage("");
 			setValidationErrors(errors);
 			setValidationWarnings(warnings);
 
@@ -574,6 +580,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				message?: string;
 			}>;
 			const { message } = customEvent.detail || {};
+			// Clear any previous errors/warnings when lints pass
+			setValidationErrors([]);
+			setValidationWarnings([]);
 			setValidationSuccessMessage(message || "No linter errors found");
 			addMessage(message || "No linter errors found", false);
 		};
@@ -893,6 +902,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const handleSendMessage = useCallback(async () => {
 		if (!inputValue.trim() || isLoading) return;
 
+		// Clear lingering validation status for a fresh conversation cycle
+		setValidationErrors([]);
+		setValidationWarnings([]);
+		setValidationSuccessMessage("");
+
 		const userMessage = inputValue.trim();
 
 		// Ask mode: simple Q&A, no environment creation/editing/search
@@ -911,10 +925,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					);
 					return;
 				}
-				// Build lightweight context from recent messages
+				// Build lightweight context from recent messages, including any code snippets
 				const recent = (analysisState.messages || []).slice(-10);
 				const context = recent
-					.map((m: any) => (typeof m.content === "string" ? m.content : ""))
+					.map((m: any) => {
+						const text = typeof m.content === "string" ? m.content : "";
+						const codeStr =
+							typeof m.code === "string" && m.code.trim().length > 0
+								? `\n\n\`\`\`${m.codeLanguage || "python"}\n${m.code}\n\`\`\`\n`
+								: "";
+						return text + codeStr;
+					})
 					.filter(Boolean)
 					.join("\n\n");
 				const answer = await backendClient.askQuestion({

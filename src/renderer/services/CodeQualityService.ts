@@ -410,6 +410,19 @@ print("Code placeholder - original code was empty or only contained markdown")`;
 		// Check for potentially problematic code patterns
 		cleanedCode = this.addSafetyChecks(cleanedCode);
 
+		// Final pass: deduplicate imports against global code context so we don't
+		// re-add imports in every new cell. This keeps imports in a single setup cell.
+		try {
+			if (options.globalCodeContext) {
+				const existingImports = this.getExistingImports(
+					options.globalCodeContext
+				);
+				cleanedCode = this.removeDuplicateImports(cleanedCode, existingImports);
+			}
+		} catch (_) {
+			// best-effort dedup; ignore errors silently
+		}
+
 		return cleanedCode;
 	}
 

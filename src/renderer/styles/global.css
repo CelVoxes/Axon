@@ -1168,8 +1168,8 @@ textarea:focus {
 }
 
 .error-message {
-	color: #e6e6e6;
-	font-size: var(--font-size-base);
+	color: #9ca3af;
+	font-size: var(--font-size-sm);
 	line-height: 1.4;
 }
 
