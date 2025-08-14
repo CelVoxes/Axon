@@ -133,6 +133,10 @@ const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 	const [isResizingLeft, setIsResizingLeft] = useState(false);
 	const [isResizingRight, setIsResizingRight] = useState(false);
 
+	// Avoid re-rendering heavy children on every mousemove by mutating pane widths directly
+	const leftPaneRef = React.useRef<HTMLDivElement | null>(null);
+	const rightPaneRef = React.useRef<HTMLDivElement | null>(null);
+
 	const handleMouseDown = (side: "left" | "right") => (e: React.MouseEvent) => {
 		e.preventDefault();
 		if (side === "left") {
@@ -144,21 +148,29 @@ const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 
 	React.useEffect(() => {
 		let animationFrameId: number;
+		let liveLeftWidth = leftPaneWidth;
+		let liveRightWidth = rightPaneWidth;
 
 		const handleMouseMove = throttle((e: MouseEvent) => {
-			// Use requestAnimationFrame for better performance
+			// Use requestAnimationFrame for smoother visual updates
 			cancelAnimationFrame(animationFrameId);
 			animationFrameId = requestAnimationFrame(() => {
 				if (isResizingLeft) {
 					const newWidth = Math.max(200, Math.min(500, e.clientX));
-					setLeftPaneWidth(newWidth);
+					if (leftPaneRef.current) {
+						leftPaneRef.current.style.width = `${newWidth}px`;
+					}
+					liveLeftWidth = newWidth;
 				} else if (isResizingRight) {
 					// Calculate width from the right edge of the window
 					const newWidth = Math.max(
 						300,
 						Math.min(600, window.innerWidth - e.clientX)
 					);
-					setRightPaneWidth(newWidth);
+					if (rightPaneRef.current) {
+						rightPaneRef.current.style.width = `${newWidth}px`;
+					}
+					liveRightWidth = newWidth;
 				}
 			});
 		}, 16); // ~60fps
@@ -166,6 +178,9 @@ const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 		const handleMouseUp = () => {
 			setIsResizingLeft(false);
 			setIsResizingRight(false);
+			// Commit final sizes to state once per interaction to avoid thrash
+			setLeftPaneWidth(liveLeftWidth);
+			setRightPaneWidth(liveRightWidth);
 		};
 
 		if (isResizingLeft || isResizingRight) {
@@ -182,17 +197,32 @@ const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 			document.body.style.userSelect = "";
 			cancelAnimationFrame(animationFrameId);
 		};
-	}, [isResizingLeft, isResizingRight, leftPaneWidth]);
+	}, [isResizingLeft, isResizingRight]);
 
-	const childrenArray = React.Children.toArray(children);
-	const leftPane = childrenArray.find(
-		(child: any) => child?.props?.["data-layout-role"] === "sidebar"
+	const childrenArray = React.useMemo(
+		() => React.Children.toArray(children),
+		[children]
 	);
-	const mainPane = childrenArray.find(
-		(child: any) => child?.props?.["data-layout-role"] === "main"
+	const leftPane = React.useMemo(
+		() =>
+			childrenArray.find(
+				(child: any) => child?.props?.["data-layout-role"] === "sidebar"
+			),
+		[childrenArray]
 	);
-	const rightPane = childrenArray.find(
-		(child: any) => child?.props?.["data-layout-role"] === "chat"
+	const mainPane = React.useMemo(
+		() =>
+			childrenArray.find(
+				(child: any) => child?.props?.["data-layout-role"] === "main"
+			),
+		[childrenArray]
+	);
+	const rightPane = React.useMemo(
+		() =>
+			childrenArray.find(
+				(child: any) => child?.props?.["data-layout-role"] === "chat"
+			),
+		[childrenArray]
 	);
 	const isLeftPaneVisible = Boolean(leftPane) && uiState.showSidebar;
 	const isRightPaneVisible =
@@ -203,7 +233,12 @@ const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 			{/* Left section with sidebar */}
 			{isLeftPaneVisible && (
 				<>
-					<ResizablePane width={leftPaneWidth} $minWidth={200} $maxWidth={500}>
+					<ResizablePane
+						ref={leftPaneRef}
+						width={leftPaneWidth}
+						$minWidth={200}
+						$maxWidth={500}
+					>
 						{leftPane}
 					</ResizablePane>
 					<Resizer onMouseDown={handleMouseDown("left")} />
@@ -221,6 +256,7 @@ const Body: React.FC<LayoutBodyProps> = ({ children }) => {
 						$isDisabled={uiState.chatCollapsed}
 					/>
 					<ResizablePane
+						ref={rightPaneRef}
 						width={uiState.chatCollapsed ? 40 : rightPaneWidth}
 						$minWidth={uiState.chatCollapsed ? 40 : 300}
 						$maxWidth={uiState.chatCollapsed ? 40 : 600}

@@ -1,6 +1,7 @@
 import React from "react";
 import styled from "styled-components";
-import { FiSquare } from "react-icons/fi";
+import { FiSquare, FiFolder, FiX } from "react-icons/fi";
+import { getFileTypeIcon } from "../shared/utils";
 import { ConfigManager } from "../../services/ConfigManager";
 import { Tooltip } from "@components/shared/Tooltip";
 
@@ -8,12 +9,8 @@ import { Tooltip } from "@components/shared/Tooltip";
 const MentionsBar = styled.div<{ $visible: boolean }>`
 	display: ${(p) => (p.$visible ? "flex" : "none")};
 	flex-wrap: wrap;
-	gap: 6px;
-	padding: 6px 8px;
-	margin-bottom: 8px;
+
 	background: #2d2d30;
-	border: 1px solid #3e3e42;
-	border-radius: 6px;
 	max-height: 72px;
 	overflow-y: auto;
 `;
@@ -22,13 +19,12 @@ const MentionChip = styled.span`
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
-	padding: 3px 8px;
-	border-radius: 12px;
-	font-size: 12px;
-	line-height: 16px;
-	background: #374151;
+	padding: 2px 6px;
+	border-radius: 5px;
+	font-size: 11px;
+	line-height: 14px;
+	background: #333;
 	color: #e5e7eb;
-	border: 1px solid #4b5563;
 `;
 
 interface ComposerProps {
@@ -42,6 +38,8 @@ interface ComposerProps {
 	onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
 	mode?: "Agent" | "Ask";
 	onModeChange?: (mode: "Agent" | "Ask") => void;
+	suggestedMentions?: Array<{ label: string; alias: string }>;
+	onInsertAlias?: (alias: string) => void;
 }
 
 export const Composer: React.FC<ComposerProps> = ({
@@ -55,6 +53,8 @@ export const Composer: React.FC<ComposerProps> = ({
 	onKeyDown,
 	mode = "Agent",
 	onModeChange,
+	suggestedMentions = [],
+	onInsertAlias,
 }) => {
 	const [model, setModel] = React.useState<string>(
 		ConfigManager.getInstance().getDefaultModel()
@@ -68,6 +68,52 @@ export const Composer: React.FC<ComposerProps> = ({
 	const [showModeMenu, setShowModeMenu] = React.useState(false);
 	const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const rafIdRef = React.useRef<number | null>(null);
+	const [hoveredMention, setHoveredMention] = React.useState<string | null>(
+		null
+	);
+
+	// Insert an "@" mention trigger above the composer to show available items
+	const handleOpenMentions = React.useCallback(() => {
+		const alreadyInMention = /@([^\s@]*)$/.test(value);
+		const nextValue = alreadyInMention
+			? value
+			: value + (value.length === 0 || value.endsWith(" ") ? "" : " ") + "@";
+		onChange(nextValue);
+		// Focus textarea after updating
+		requestAnimationFrame(() => {
+			textareaRef.current?.focus();
+		});
+	}, [value, onChange]);
+
+	const handleInsertAlias = React.useCallback(
+		(alias: string) => {
+			if (onInsertAlias) {
+				onInsertAlias(alias);
+				return;
+			}
+			// Fallback: insert locally and focus
+			const needsSpace = value.length > 0 && !value.endsWith(" ");
+			const next = `${value}${needsSpace ? " " : ""}${alias} `;
+			onChange(next);
+			requestAnimationFrame(() => textareaRef.current?.focus());
+		},
+		[value, onChange, onInsertAlias]
+	);
+
+	const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+	const removeMention = React.useCallback(
+		(alias: string) => {
+			const esc = escapeRegExp(alias);
+			// Match start or whitespace before, and whitespace or end after
+			const re = new RegExp(`(^|\\s)@${esc}(?=\\s|$)`, "g");
+			let next = value.replace(re, (m, p1) => p1);
+			// Collapse repeated spaces introduced by removal
+			next = next.replace(/\s{2,}/g, " ");
+			onChange(next);
+		},
+		[value, onChange]
+	);
 
 	const resizeTextarea = React.useCallback((el: HTMLTextAreaElement) => {
 		// Read max-height from computed styles to avoid hardcoding
@@ -150,20 +196,145 @@ export const Composer: React.FC<ComposerProps> = ({
 		return Array.from(tokens);
 	}, [value]);
 
+	// Aliases explicitly mentioned with @ in the composer (without the leading @)
+	const mentionedFileAliases = React.useMemo(() => {
+		const seen = new Set<string>();
+		const list: string[] = [];
+		try {
+			for (const m of value.matchAll(/@([^\s@]+)/g)) {
+				const alias = String(m[1] || "").trim();
+				if (alias && !seen.has(alias)) {
+					seen.add(alias);
+					list.push(alias);
+				}
+			}
+		} catch (_) {}
+		return list;
+	}, [value]);
+
 	return (
 		<div className="chat-input-container">
-			<MentionsBar $visible={mentionTokens.length > 0}>
-				{mentionTokens.map((t) => (
-					<MentionChip key={t} title={t}>
-						{t}
-					</MentionChip>
-				))}
-			</MentionsBar>
+			{/* Top actions above composer */}
+			<div
+				style={{
+					display: "flex",
+					justifyContent: "flex-start",
+					marginBottom: 8,
+				}}
+			>
+				<Tooltip
+					content="Insert a mention (@) to add files, data, or cells"
+					placement="top"
+				>
+					<div
+						className="pill pill-select"
+						role="button"
+						aria-label="Insert @ mention"
+						onMouseDown={(e) => {
+							e.preventDefault();
+							e.stopPropagation();
+							handleOpenMentions();
+						}}
+						onClick={(e) => {
+							e.preventDefault();
+							e.stopPropagation();
+						}}
+					>
+						<span style={{ fontWeight: 700 }}>@</span>
+					</div>
+				</Tooltip>
+
+				{/* Mentioned files (from current input) */}
+				<div
+					style={{ display: "flex", gap: 6, flexWrap: "wrap", marginLeft: 6 }}
+				>
+					{mentionedFileAliases.map((alias) => {
+						const label = alias.split("/").pop() || alias;
+						const isDir = alias.endsWith("/") || !label.includes(".");
+						return (
+							<MentionChip
+								key={`m-${alias}`}
+								title={alias}
+								style={{ cursor: "default" }}
+								onMouseEnter={() => setHoveredMention(alias)}
+								onMouseLeave={() =>
+									setHoveredMention((prev) => (prev === alias ? null : prev))
+								}
+							>
+								<span
+									style={{
+										display: "inline-flex",
+										alignItems: "center",
+										opacity: 0.85,
+										fontSize: 12,
+									}}
+								>
+									{hoveredMention === alias ? (
+										<span
+											role="button"
+											aria-label={`Remove ${alias}`}
+											onMouseDown={(e) => {
+												e.preventDefault();
+												e.stopPropagation();
+												removeMention(alias);
+											}}
+											style={{ display: "inline-flex", alignItems: "center" }}
+										>
+											<FiX size={12} />
+										</span>
+									) : isDir ? (
+										<FiFolder size={12} />
+									) : (
+										getFileTypeIcon(label)
+									)}
+								</span>
+								<span style={{ fontSize: 11 }}>{label}</span>
+							</MentionChip>
+						);
+					})}
+
+					{/* Quick add suggestions */}
+					{suggestedMentions.slice(0, 6).map((s) => (
+						<MentionChip
+							key={s.alias}
+							onMouseDown={(e) => {
+								e.preventDefault();
+								e.stopPropagation();
+								handleInsertAlias(s.alias);
+							}}
+							title={s.alias}
+							style={{ cursor: "pointer", fontSize: 11, padding: "2px 6px" }}
+						>
+							<span
+								style={{
+									display: "inline-flex",
+									alignItems: "center",
+									opacity: 0.8,
+								}}
+							>
+								<span style={{ fontSize: 12 }}>
+									{(() => {
+										const label = s.alias.split("/").pop() || s.alias;
+										const isDir = s.alias.endsWith("/") || !label.includes(".");
+										return isDir ? (
+											<FiFolder size={12} />
+										) : (
+											getFileTypeIcon(label)
+										);
+									})()}
+								</span>
+							</span>
+							<span style={{ fontSize: 11 }}>{s.label}</span>
+						</MentionChip>
+					))}
+				</div>
+			</div>
+			<MentionsBar $visible={false} />
 			<textarea
 				value={value}
 				onChange={handleTextareaChange}
 				onKeyDown={handleKeyDownInternal}
-				placeholder="Plan, analyze, or ask me anything"
+				placeholder="Plan, search, build anything"
 				disabled={!!disabled || isLoading}
 				rows={2}
 				ref={textareaRef}

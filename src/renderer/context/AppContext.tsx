@@ -2,6 +2,7 @@ import React, {
 	createContext,
 	useContext,
 	useEffect,
+	useMemo,
 	useReducer,
 	useRef,
 } from "react";
@@ -281,11 +282,86 @@ const AppContext = createContext<{
 	dispatch: React.Dispatch<AppAction>;
 } | null>(null);
 
+// Fine-grained slice contexts to reduce unnecessary re-renders
+const WorkspaceContext = createContext<{
+	state: Pick<
+		AppState,
+		"currentWorkspace" | "fileTree" | "openFiles" | "activeFile"
+	>;
+	dispatch: React.Dispatch<AppAction>;
+} | null>(null);
+
+const AnalysisContext = createContext<{
+	state: Pick<
+		AppState,
+		| "bioragConnected"
+		| "isAnalyzing"
+		| "jupyterUrl"
+		| "messages"
+		| "currentMessage"
+		| "isStreaming"
+		| "analysisStatus"
+		| "activeChatSessionId"
+		| "chatSessions"
+	>;
+	dispatch: React.Dispatch<AppAction>;
+} | null>(null);
+
+const UIOnlyContext = createContext<{
+	state: Pick<AppState, "chatCollapsed" | "showChatPanel" | "showSidebar">;
+	dispatch: React.Dispatch<AppAction>;
+} | null>(null);
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 	children,
 }) => {
 	const [state, dispatch] = useReducer(appReducer, initialState);
 	const restoredWorkspaceRef = useRef<string | null>(null);
+
+	// Memoize slice states so provider values only change when relevant fields change
+	const workspaceSlice = useMemo(
+		() => ({
+			currentWorkspace: state.currentWorkspace,
+			fileTree: state.fileTree,
+			openFiles: state.openFiles,
+			activeFile: state.activeFile,
+		}),
+		[state.currentWorkspace, state.fileTree, state.openFiles, state.activeFile]
+	);
+
+	const analysisSlice = useMemo(
+		() => ({
+			bioragConnected: state.bioragConnected,
+			isAnalyzing: state.isAnalyzing,
+			jupyterUrl: state.jupyterUrl,
+			messages: state.messages,
+			currentMessage: state.currentMessage,
+			isStreaming: state.isStreaming,
+			analysisStatus: state.analysisStatus,
+			activeChatSessionId: state.activeChatSessionId,
+			chatSessions: state.chatSessions,
+		}),
+		[
+			state.bioragConnected,
+			state.isAnalyzing,
+			state.jupyterUrl,
+			state.messages,
+			state.currentMessage,
+			state.isStreaming,
+			state.analysisStatus,
+			state.activeChatSessionId,
+			state.chatSessions,
+		]
+	);
+
+	const uiSlice = useMemo(
+		() => ({
+			chatCollapsed: state.chatCollapsed,
+			showChatPanel: state.showChatPanel,
+			showSidebar: state.showSidebar,
+		}),
+		[state.chatCollapsed, state.showChatPanel, state.showSidebar]
+	);
 
 	// Note: We intentionally do not auto-open the last workspace on boot.
 
@@ -470,7 +546,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
 	return (
 		<AppContext.Provider value={{ state, dispatch }}>
-			{children}
+			<WorkspaceContext.Provider value={{ state: workspaceSlice, dispatch }}>
+				<AnalysisContext.Provider value={{ state: analysisSlice, dispatch }}>
+					<UIOnlyContext.Provider value={{ state: uiSlice, dispatch }}>
+						{children}
+					</UIOnlyContext.Provider>
+				</AnalysisContext.Provider>
+			</WorkspaceContext.Provider>
 		</AppContext.Provider>
 	);
 };
@@ -485,44 +567,25 @@ export const useAppContext = () => {
 
 // Convenience hooks for specific state sections
 export const useWorkspaceContext = () => {
-	const { state, dispatch } = useAppContext();
-	return {
-		state: {
-			currentWorkspace: state.currentWorkspace,
-			fileTree: state.fileTree,
-			openFiles: state.openFiles,
-			activeFile: state.activeFile,
-		},
-		dispatch,
-	};
+	const ctx = useContext(WorkspaceContext);
+	if (!ctx) {
+		throw new Error("useWorkspaceContext must be used within an AppProvider");
+	}
+	return ctx;
 };
 
 export const useAnalysisContext = () => {
-	const { state, dispatch } = useAppContext();
-	return {
-		state: {
-			bioragConnected: state.bioragConnected,
-			isAnalyzing: state.isAnalyzing,
-			jupyterUrl: state.jupyterUrl,
-			messages: state.messages,
-			currentMessage: state.currentMessage,
-			isStreaming: state.isStreaming,
-			analysisStatus: state.analysisStatus,
-			activeChatSessionId: state.activeChatSessionId,
-			chatSessions: state.chatSessions,
-		},
-		dispatch,
-	};
+	const ctx = useContext(AnalysisContext);
+	if (!ctx) {
+		throw new Error("useAnalysisContext must be used within an AppProvider");
+	}
+	return ctx;
 };
 
 export const useUIContext = () => {
-	const { state, dispatch } = useAppContext();
-	return {
-		state: {
-			chatCollapsed: state.chatCollapsed,
-			showChatPanel: state.showChatPanel,
-			showSidebar: state.showSidebar,
-		},
-		dispatch,
-	};
+	const ctx = useContext(UIOnlyContext);
+	if (!ctx) {
+		throw new Error("useUIContext must be used within an AppProvider");
+	}
+	return ctx;
 };

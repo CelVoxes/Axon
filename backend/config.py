@@ -28,6 +28,11 @@ DEFAULT_ORGANISM = "Homo sapiens"
 # LLM Configuration
 DEFAULT_LLM_MODEL = "gpt-4.1"  # Uses Chain-of-Thought reasoning internally
 
+# Caching
+CACHE_SEARCH_TTL_SECONDS = 15 * 60  # 15 minutes
+CACHE_METADATA_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+CACHE_MAX_SEARCH_ENTRIES = 256
+
 class SearchConfig:
     """Centralized search configuration."""
     
@@ -59,3 +64,19 @@ class SearchConfig:
     def get_default_llm_model() -> str:
         """Get the default LLM model."""
         return DEFAULT_LLM_MODEL 
+
+    # Caching helpers
+    @staticmethod
+    def get_cache_search_ttl_seconds() -> int:
+        """TTL for cached search results in seconds."""
+        return CACHE_SEARCH_TTL_SECONDS
+
+    @staticmethod
+    def get_cache_metadata_ttl_seconds() -> int:
+        """TTL for cached metadata (CellxCensus datasets listing) in seconds."""
+        return CACHE_METADATA_TTL_SECONDS
+
+    @staticmethod
+    def get_cache_max_search_entries() -> int:
+        """Maximum number of cached search entries to retain in memory."""
+        return CACHE_MAX_SEARCH_ENTRIES

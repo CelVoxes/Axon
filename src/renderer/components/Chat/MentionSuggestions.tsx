@@ -2,7 +2,7 @@ import React from "react";
 import styled from "styled-components";
 import { typography } from "../../styles/design-system";
 import type { LocalDatasetEntry } from "../../services/LocalDatasetRegistry";
-import { FiFolder } from "react-icons/fi";
+import { FiFolder, FiX } from "react-icons/fi";
 import { getFileTypeIcon } from "../shared/utils";
 
 const MenuContainer = styled.div`
@@ -99,6 +99,7 @@ export interface MentionSuggestionsProps {
 	}>;
 	query: string;
 	onSelect: (item: LocalDatasetEntry) => void;
+	onRemoveLocal?: (item: LocalDatasetEntry) => void; // optional removal handler for local registry items
 	onSelectWorkspace?: (item: LocalDatasetEntry) => void;
 	onSelectCell?: (item: {
 		id: string;
@@ -124,6 +125,7 @@ export const MentionSuggestions: React.FC<MentionSuggestionsProps> = ({
 	cellItems = [],
 	query,
 	onSelect,
+	onRemoveLocal,
 	onSelectWorkspace,
 	onSelectCell,
 	activeLocalIndex = -1,
@@ -225,6 +227,23 @@ export const MentionSuggestions: React.FC<MentionSuggestionsProps> = ({
 								)}
 							</Alias>
 							<Meta>{shorten((d.title || d.id).replace(/^.*\//, ""), 24)}</Meta>
+							{typeof onRemoveLocal === "function" && (
+								<span
+									title="Remove from local mentions"
+									onClick={(e) => {
+										e.stopPropagation();
+										onRemoveLocal(d);
+									}}
+									style={{
+										marginLeft: 8,
+										color: "#888",
+										display: "inline-flex",
+										alignItems: "center",
+									}}
+								>
+									<FiX size={14} />
+								</span>
+							)}
 						</Item>
 					))
 				)}

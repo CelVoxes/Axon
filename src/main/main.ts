@@ -1310,16 +1310,9 @@ export class AxonApp {
 					timestamp: new Date().toISOString(),
 				});
 
-				// Install basic Jupyter infrastructure and commonly needed packages
-				const basicPackages = [
-					"jupyter",
-					"notebook",
-					"ipykernel",
-					"pandas",
-					"numpy",
-					"matplotlib",
-					"seaborn",
-				];
+				// Install only Jupyter infrastructure here. Scientific stack will be
+				// resolved together later with analysis packages to avoid version conflicts.
+				const basicPackages = ["jupyter", "notebook", "ipykernel"];
 
 				// Notify about basic infrastructure installation
 				this.mainWindow?.webContents.send("virtual-env-status", {
@@ -1656,18 +1649,37 @@ export class AxonApp {
 						csrfToken
 					);
 
+					// Optional small delay after server/kernel readiness to avoid race with channel registration
+					try {
+						const storeDelay = store.get("wsPostReadyDelayMs") as any as
+							| number
+							| undefined;
+						const envDelay = process.env.WS_POST_READY_DELAY_MS
+							? parseInt(process.env.WS_POST_READY_DELAY_MS, 10)
+							: undefined;
+						const postReadyDelayMs =
+							Number.isFinite(storeDelay as any) && (storeDelay as any) >= 0
+								? (storeDelay as number)
+								: Number.isFinite(envDelay as any) && (envDelay as any) >= 0
+								? (envDelay as number)
+								: 1000;
+						if (postReadyDelayMs > 0) {
+							await new Promise((r) => setTimeout(r, postReadyDelayMs));
+						}
+					} catch (_) {}
+
 					const wsUrl = `ws://127.0.0.1:${this.jupyterPort}/api/kernels/${kernelId}/channels`;
 					console.log(`Connecting to WebSocket: ${wsUrl}`);
 
-					// 2. Open a WebSocket connection
+					// 2. Open a WebSocket connection with retries and configurable timeouts
 					console.log(`Attempting to connect to WebSocket: ${wsUrl}`);
-					const ws = new WebSocket(wsUrl);
 
 					return new Promise((resolve) => {
 						let output = "";
 						let errorOutput = "";
 						let executionTimeoutId: NodeJS.Timeout | null = null;
-						// Allow configuring idle timeout via store or env; 0/undefined disables timeout
+
+						// Configurable idle timeout (ms)
 						const storeIdleMs = store.get("executionIdleTimeoutMs") as any as
 							| number
 							| undefined;
@@ -1679,149 +1691,214 @@ export class AxonApp {
 								? (storeIdleMs as number)
 								: Number.isFinite(envIdleMs as any) && (envIdleMs as any) > 0
 								? (envIdleMs as number)
-								: 120000; // default 2 minutes if not configured
+								: 120000; // default 2 minutes
 
-						const resetExecutionTimeout = () => {
-							if (!idleTimeoutMs || idleTimeoutMs <= 0) return;
-							if (executionTimeoutId) clearTimeout(executionTimeoutId);
-							executionTimeoutId = setTimeout(() => {
-								console.log("Jupyter execution idle timeout");
+						// Configurable WS connection timeout and retry settings
+						const storeConnMs = store.get("wsConnectionTimeoutMs") as any as
+							| number
+							| undefined;
+						const envConnMs = process.env.WS_CONNECTION_TIMEOUT_MS
+							? parseInt(process.env.WS_CONNECTION_TIMEOUT_MS, 10)
+							: undefined;
+						const wsConnectionTimeoutMs =
+							Number.isFinite(storeConnMs as any) && (storeConnMs as any) > 0
+								? (storeConnMs as number)
+								: Number.isFinite(envConnMs as any) && (envConnMs as any) > 0
+								? (envConnMs as number)
+								: 30000; // default 30s
+
+						const storeMaxAttempts = store.get(
+							"wsConnectMaxAttempts"
+						) as any as number | undefined;
+						const envMaxAttempts = process.env.WS_CONNECT_MAX_ATTEMPTS
+							? parseInt(process.env.WS_CONNECT_MAX_ATTEMPTS, 10)
+							: undefined;
+						const maxAttempts =
+							Number.isFinite(storeMaxAttempts as any) &&
+							(storeMaxAttempts as any) > 0
+								? (storeMaxAttempts as number)
+								: Number.isFinite(envMaxAttempts as any) &&
+								  (envMaxAttempts as any) > 0
+								? (envMaxAttempts as number)
+								: 3;
+
+						const storeBackoff = store.get("wsConnectBackoffMs") as any as
+							| number
+							| undefined;
+						const envBackoff = process.env.WS_CONNECT_BACKOFF_MS
+							? parseInt(process.env.WS_CONNECT_BACKOFF_MS, 10)
+							: undefined;
+						const backoffMs =
+							Number.isFinite(storeBackoff as any) && (storeBackoff as any) >= 0
+								? (storeBackoff as number)
+								: Number.isFinite(envBackoff as any) && (envBackoff as any) >= 0
+								? (envBackoff as number)
+								: 1000;
+
+						const attemptConnect = (attempt: number) => {
+							console.log(
+								`Attempting to connect to WebSocket (${attempt}/${maxAttempts})...`
+							);
+							const ws = new WebSocket(wsUrl);
+
+							// Local reset function bound to this socket
+							const resetExecutionTimeoutLocal = () => {
+								if (!idleTimeoutMs || idleTimeoutMs <= 0) return;
+								if (executionTimeoutId) clearTimeout(executionTimeoutId);
+								executionTimeoutId = setTimeout(() => {
+									console.log("Jupyter execution idle timeout");
+									try {
+										ws.close();
+									} catch (_) {}
+									resolve({ success: false, error: "Execution idle timeout" });
+								}, idleTimeoutMs);
+							};
+
+							const connectionTimeout = setTimeout(() => {
+								console.error("WebSocket connection timeout");
 								try {
 									ws.close();
 								} catch (_) {}
-								resolve({ success: false, error: "Execution idle timeout" });
-							}, idleTimeoutMs);
-						};
+								if (attempt < maxAttempts) {
+									setTimeout(() => attemptConnect(attempt + 1), backoffMs);
+								} else {
+									resolve({
+										success: false,
+										error: "WebSocket connection timeout",
+									});
+								}
+							}, wsConnectionTimeoutMs);
 
-						// Add connection timeout
-						const connectionTimeout = setTimeout(() => {
-							console.error("WebSocket connection timeout");
-							ws.close();
-							resolve({
-								success: false,
-								error: "WebSocket connection timeout",
+							ws.on("open", () => {
+								console.log("Jupyter WebSocket connection opened.");
+								clearTimeout(connectionTimeout);
+								resetExecutionTimeoutLocal();
+
+								// 3. Send an execute_request message
+								const msgId = uuidv4();
+								const executeRequest = {
+									header: {
+										msg_id: msgId,
+										username: "user",
+										session: uuidv4(),
+										msg_type: "execute_request",
+										version: "5.3",
+									},
+									parent_header: {},
+									metadata: {},
+									content: {
+										code: code,
+										silent: false,
+										store_history: true,
+										user_expressions: {},
+										allow_stdin: false,
+										stop_on_error: true,
+									},
+									channel: "shell",
+								};
+								ws.send(JSON.stringify(executeRequest));
 							});
-						}, 10000);
 
-						// Initialize idle timeout (will be refreshed on activity)
-						resetExecutionTimeout();
-
-						ws.on("open", () => {
-							console.log("Jupyter WebSocket connection opened.");
-							clearTimeout(connectionTimeout); // Clear connection timeout
-
-							// 3. Send an execute_request message
-							const msgId = uuidv4();
-							const executeRequest = {
-								header: {
-									msg_id: msgId,
-									username: "user",
-									session: uuidv4(),
-									msg_type: "execute_request",
-									version: "5.3",
-								},
-								parent_header: {},
-								metadata: {},
-								content: {
-									code: code,
-									silent: false,
-									store_history: true,
-									user_expressions: {},
-									allow_stdin: false,
-									stop_on_error: true,
-								},
-								channel: "shell",
-							};
-							ws.send(JSON.stringify(executeRequest));
-						});
-
-						ws.on("error", (error: any) => {
-							console.error("WebSocket error:", error);
-							if (executionTimeoutId) clearTimeout(executionTimeoutId);
-							resolve({
-								success: false,
-								error: `WebSocket error: ${error.message}`,
-							});
-						});
-
-						ws.on("close", (code: any, reason: any) => {
-							console.log(`WebSocket closed: ${code} - ${reason}`);
-							if (!output && !errorOutput) {
+							ws.on("error", (error: any) => {
+								console.error("WebSocket error:", error);
 								if (executionTimeoutId) clearTimeout(executionTimeoutId);
-								resolve({
-									success: false,
-									error: `WebSocket closed unexpectedly: ${reason}`,
-								});
-							}
-						});
+								clearTimeout(connectionTimeout);
+								if (attempt < maxAttempts) {
+									setTimeout(() => attemptConnect(attempt + 1), backoffMs);
+								} else {
+									resolve({
+										success: false,
+										error: `WebSocket error: ${error.message}`,
+									});
+								}
+							});
 
-						ws.on("message", (data: any) => {
-							const msg = JSON.parse(data.toString());
-							// Only log important WebSocket messages
-
-							// 4. Listen for execute_reply and stream messages
-							if (msg.parent_header && msg.header.msg_type === "stream") {
-								output += msg.content.text;
-								console.log(`Stream output: ${msg.content.text}`);
-								// Notify renderer about streamed output
-								this.mainWindow?.webContents.send("jupyter-code-writing", {
-									code: output, // Send the current accumulated output
-									timestamp: new Date().toISOString(),
-									type: "stream",
-								});
-								// Refresh idle timeout on activity
-								resetExecutionTimeout();
-							} else if (
-								msg.parent_header &&
-								(msg.header.msg_type === "execute_result" ||
-									msg.header.msg_type === "display_data")
-							) {
-								try {
-									const data = msg.content?.data || {};
-									const text = (data["text/plain"] as string | undefined) || "";
-									if (text) {
-										output += (output ? "\n" : "") + text + "\n";
-										// Forward as stream-like update for UI continuity
-										this.mainWindow?.webContents.send("jupyter-code-writing", {
-											code: output,
-											timestamp: new Date().toISOString(),
-											type: "stream",
+							ws.on("close", (code: any, reason: any) => {
+								console.log(`WebSocket closed: ${code} - ${reason}`);
+								if (!output && !errorOutput) {
+									if (executionTimeoutId) clearTimeout(executionTimeoutId);
+									clearTimeout(connectionTimeout);
+									if (attempt < maxAttempts) {
+										setTimeout(() => attemptConnect(attempt + 1), backoffMs);
+									} else {
+										resolve({
+											success: false,
+											error: `WebSocket closed unexpectedly: ${reason}`,
 										});
 									}
-								} catch (_) {
-									// ignore formatting issues
 								}
-							} else if (
-								msg.parent_header &&
-								msg.header.msg_type === "execute_reply"
-							) {
-								console.log(`Execute reply:`, msg.content);
-								if (msg.content.status === "ok") {
-									console.log(`Execution successful, output: ${output}`);
-									if (executionTimeoutId) clearTimeout(executionTimeoutId);
-									resolve({ success: true, output });
-								} else {
-									errorOutput += msg.content.evalue;
-									console.log(`Execution failed, error: ${errorOutput}`);
-									if (executionTimeoutId) clearTimeout(executionTimeoutId);
-									resolve({ success: false, error: errorOutput });
-								}
-								ws.close();
-							} else if (msg.parent_header && msg.header.msg_type === "error") {
-								const tb = Array.isArray(msg.content?.traceback)
-									? (msg.content.traceback as string[]).join("\n")
-									: "";
-								errorOutput +=
-									(errorOutput ? "\n" : "") +
-									(msg.content.evalue || "Error") +
-									(tb ? "\n" + tb : "");
-								console.log(`Execution error: ${msg.content.evalue}`);
-								// Refresh idle timeout on any kernel error message
-								resetExecutionTimeout();
-							}
-						});
+							});
 
-						// Note: error and close handlers are already defined above
+							ws.on("message", (data: any) => {
+								const msg = JSON.parse(data.toString());
+								// 4. Listen for execute_reply and stream messages
+								if (msg.parent_header && msg.header.msg_type === "stream") {
+									output += msg.content.text;
+									console.log(`Stream output: ${msg.content.text}`);
+									this.mainWindow?.webContents.send("jupyter-code-writing", {
+										code: output,
+										timestamp: new Date().toISOString(),
+										type: "stream",
+									});
+									resetExecutionTimeoutLocal();
+								} else if (
+									msg.parent_header &&
+									(msg.header.msg_type === "execute_result" ||
+										msg.header.msg_type === "display_data")
+								) {
+									try {
+										const dataObj = msg.content?.data || {};
+										const text =
+											(dataObj["text/plain"] as string | undefined) || "";
+										if (text) {
+											output += (output ? "\n" : "") + text + "\n";
+											this.mainWindow?.webContents.send(
+												"jupyter-code-writing",
+												{
+													code: output,
+													timestamp: new Date().toISOString(),
+													type: "stream",
+												}
+											);
+										}
+									} catch (_) {}
+								} else if (
+									msg.parent_header &&
+									msg.header.msg_type === "execute_reply"
+								) {
+									console.log(`Execute reply:`, msg.content);
+									if (msg.content.status === "ok") {
+										console.log(`Execution successful, output: ${output}`);
+										if (executionTimeoutId) clearTimeout(executionTimeoutId);
+										resolve({ success: true, output });
+									} else {
+										errorOutput += msg.content.evalue;
+										console.log(`Execution failed, error: ${errorOutput}`);
+										if (executionTimeoutId) clearTimeout(executionTimeoutId);
+										resolve({ success: false, error: errorOutput });
+									}
+									try {
+										ws.close();
+									} catch (_) {}
+								} else if (
+									msg.parent_header &&
+									msg.header.msg_type === "error"
+								) {
+									const tb = Array.isArray(msg.content?.traceback)
+										? (msg.content.traceback as string[]).join("\n")
+										: "";
+									errorOutput +=
+										(errorOutput ? "\n" : "") +
+										(msg.content.evalue || "Error") +
+										(tb ? "\n" + tb : "");
+									console.log(`Execution error: ${msg.content.evalue}`);
+									resetExecutionTimeoutLocal();
+								}
+							});
+						};
+
+						// Start first attempt
+						attemptConnect(1);
 					});
 				} catch (error) {
 					console.error("Jupyter execution error:", error);

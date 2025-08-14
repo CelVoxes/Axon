@@ -94,6 +94,7 @@ export class SearchService {
 			searchSteps.push(`Generated terms: ${searchTerms.join(", ")}`);
 
 			// Step 3: Execute searches with different strategies
+			const processedTerms = new Set<string>();
 			for (let attempt = 0; attempt < maxAttempts; attempt++) {
 				const progress = 20 + (attempt * 60) / maxAttempts;
 				this.updateProgress({
@@ -104,14 +105,21 @@ export class SearchService {
 
 				const currentTerms =
 					attempt === 0
-						? searchTerms
-						: await this.backendClient.generateSearchTerms(
-								simplifiedQuery,
-								attempt + 1,
-								false
-						  );
+						? searchTerms.slice(0, 1)
+						: (
+								await this.backendClient.generateSearchTerms(
+									simplifiedQuery,
+									attempt + 1,
+									false
+								)
+						  ).slice(0, 1);
 
 				for (const term of currentTerms) {
+					// Avoid sending duplicate requests for the same term across attempts
+					if (processedTerms.has(term)) {
+						continue;
+					}
+					processedTerms.add(term);
 					this.updateProgress({
 						message: `Searching for: ${term}`,
 						step: "search",
@@ -120,11 +128,15 @@ export class SearchService {
 					});
 
 					try {
-						const datasets = await this.backendClient.searchDatasets({
-							query: term,
-							limit: options?.limit || 20,
-							organism: options?.organism,
-						});
+						// Prefer streaming endpoint for better progress updates
+						const datasets = await this.backendClient.searchDatasetsStream(
+							{
+								query: term,
+								limit: options?.limit || 20,
+								organism: options?.organism,
+							},
+							this.onProgress
+						);
 
 						allDatasets.push(...datasets);
 						usedSearchTerms.push(term);

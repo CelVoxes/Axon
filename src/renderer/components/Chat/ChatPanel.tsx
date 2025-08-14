@@ -71,6 +71,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [validationSuccessMessage, setValidationSuccessMessage] =
 		useState<string>("");
 	const [availableDatasets, setAvailableDatasets] = useState<any[]>([]);
+	// Suggestions disabled per request
 	const [suggestionButtons, setSuggestionButtons] = useState<string[]>([]);
 	const [virtualEnvStatus, setVirtualEnvStatus] = useState("");
 	const [recentMessages, setRecentMessages] = useState<string[]>([]);
@@ -144,6 +145,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [activeLocalIndex, setActiveLocalIndex] = useState<number>(-1);
 	const [activeWorkspaceIndex, setActiveWorkspaceIndex] = useState<number>(-1);
 	const [activeCellIndex, setActiveCellIndex] = useState<number>(-1);
+
+	// Suggested quick mentions (e.g., open/active files) to show as chips above the composer
+	const suggestedMentions = React.useMemo(() => {
+		// Per user request: do not derive mentions from open files
+		return [] as Array<{ label: string; alias: string }>;
+	}, []);
 
 	// Selection-based code edit context (set when user triggers Ask Chat from a notebook cell)
 	interface CodeEditContext {
@@ -1275,7 +1282,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						isStreaming: true,
 						code: "",
 						codeLanguage: lang,
-						codeTitle: "Edited snippet (streaming)",
+						codeTitle: "Edited snippet",
 					},
 				});
 
@@ -1304,7 +1311,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 										content: `Streaming edited code…`,
 										code: cleanedSnippet,
 										codeLanguage: lang,
-										codeTitle: "Edited snippet (streaming)",
+										codeTitle: "Edited snippet",
 										isStreaming: true,
 									},
 								},
@@ -1495,9 +1502,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				);
 				const task =
 					`Edit the following ${lang} code according to the user's instruction. ` +
-					`Return a minimal set of line edits as pure JSON (no backticks, no prose). ` +
-					`The JSON must be an array of objects with fields: startLine (1-based, inclusive), endLine (1-based, inclusive), replacement (string). ` +
-					`Line numbers are relative to ONLY the provided selected snippet, not the whole file.`;
+					`Return ONLY the fully revised snippet for the selected region, with no explanations, no prose, and no JSON. ` +
+					`Do NOT include code fences (no triple backticks). Output the updated snippet as plain ${lang} text.`;
 
 				// Streaming accumulation (edited code)
 				let streamedResponse = "";
@@ -1511,7 +1517,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						isStreaming: true,
 						code: "",
 						codeLanguage: lang,
-						codeTitle: "Edited snippet (streaming)",
+						codeTitle: "Edited snippet",
 					},
 				});
 
@@ -1540,7 +1546,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 										content: `Streaming edited code…`,
 										code: cleanedSnippet,
 										codeLanguage: lang,
-										codeTitle: "Edited snippet (streaming)",
+										codeTitle: "Edited snippet",
 										isStreaming: true,
 									},
 								},
@@ -1577,19 +1583,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					});
 				}
 
-				// Try to parse JSON line edits; fall back to full replacement
-				const edits = parseJsonEdits(streamedResponse);
+				// Use the streamed edited snippet directly (no JSON edits)
 				const base = fullCode;
 				const start = selStart;
 				const end = selEnd;
-				let newSelection: string;
-				if (edits) {
-					const withinEdited = applyLineEdits(withinSelection, edits);
-					newSelection = withinEdited;
-				} else {
-					const cleanedFallback = stripCodeFences(streamedResponse);
-					newSelection = cleanedFallback;
-				}
+				const newSelection: string = stripCodeFences(streamedResponse);
 				const newCode =
 					base.substring(0, start) + newSelection + base.substring(end);
 
@@ -1718,12 +1716,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					return;
 				}
 
-				// Set up progress callback for real-time updates
-				backendClient.setProgressCallback((progress) => {
-					if (isMounted) {
-						updateProgressData(progress);
-					}
-				});
+				// Set up progress callback for real-time updates (use SearchService to ensure UI wiring)
+				if (searchService) {
+					searchService.setProgressCallback((progress: any) => {
+						if (isMounted) {
+							updateProgressData(progress);
+						}
+					});
+				} else {
+					backendClient.setProgressCallback((progress) => {
+						if (isMounted) {
+							updateProgressData(progress);
+						}
+					});
+				}
 
 				// Initialize search progress
 				if (isMounted) {
@@ -1885,9 +1891,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						);
 						return;
 					}
-					backendClient.setProgressCallback((progress) => {
-						updateProgressData(progress);
-					});
+					if (searchService) {
+						searchService.setProgressCallback((progress: any) => {
+							updateProgressData(progress);
+						});
+					} else {
+						backendClient.setProgressCallback((progress) => {
+							updateProgressData(progress);
+						});
+					}
 					setSearchProgress({
 						message: "Initializing search...",
 						progress: 0,
@@ -1984,6 +1996,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				// Store selected datasets for analysis
 				setSelectedDatasets(selectedDatasets);
 
+				// Give users a readable pause before auto-suggestions or downstream actions
+				await new Promise((resolve) => setTimeout(resolve, 600));
+
 				// Show initial selection message
 				let responseContent = `## Selected ${selectedDatasets.length} Datasets\n\n`;
 
@@ -2008,94 +2023,43 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					next_steps: [],
 				});
 
-				// Generate and surface short suggestions as clickable buttons
+				// Example queries UI will be rendered below the composer when datasets are selected
+
+				// Per request: no analysis suggestions. Post only a concise single-cell tip when applicable.
 				try {
-					// Build data types list from selected datasets
 					let dataTypes = selectedDatasets
 						.map((d) => (d as any).dataType || (d as any).data_type || "")
 						.filter(Boolean);
 					if (dataTypes.length === 0) {
-						dataTypes = selectedDatasets.map((dataset) => {
-							const title = String((dataset as any).title || "").toLowerCase();
-							const description = String(
-								(dataset as any).description || ""
-							).toLowerCase();
-							const platform = String(
-								(dataset as any).platform || ""
-							).toLowerCase();
-							if (
-								title.includes("single-cell") ||
-								description.includes("single-cell") ||
-								platform.includes("single-cell")
-							) {
-								return "single_cell_expression";
-							}
-							if (
-								title.includes("rna-seq") ||
-								description.includes("rna-seq") ||
-								platform.includes("rna-seq")
-							) {
-								return "RNA-seq";
-							}
-							return "expression_matrix";
-						});
-						// Unique
-						dataTypes = dataTypes.filter((dt, i, arr) => arr.indexOf(dt) === i);
+						dataTypes = selectedDatasets
+							.map((dataset) => {
+								const t = String((dataset as any).title || "").toLowerCase();
+								const d = String(
+									(dataset as any).description || ""
+								).toLowerCase();
+								const p = String((dataset as any).platform || "").toLowerCase();
+								if (
+									t.includes("single-cell") ||
+									d.includes("single-cell") ||
+									p.includes("single-cell")
+								) {
+									return "single_cell_expression";
+								}
+								return "";
+							})
+							.filter(Boolean);
 					}
-
-					let suggestedLabels: string[] | null = null;
-					if (suggestionsService) {
-						try {
-							const s = await suggestionsService.generateSuggestions(
-								dataTypes,
-								`Analyze ${selectedDatasets.length} dataset(s)`,
-								selectedDatasets as any,
-								"Dataset selection context"
-							);
-							if (s?.suggestions?.length) {
-								suggestedLabels = s.suggestions
-									.map((x: any) => x.title)
-									.slice(0, 3);
-							}
-						} catch (err) {
-							console.log(
-								"ChatPanel: Backend suggestions failed, using fallback:",
-								err
-							);
-						}
-					}
-
-					if (!suggestedLabels) {
-						const joined = dataTypes.join(", ").toLowerCase();
-						if (
-							joined.includes("single-cell") ||
-							joined.includes("single_cell")
-						) {
-							suggestedLabels = [
-								"Perform quality control",
-								"Create cell clustering",
-								"Identify marker genes",
-							];
-						} else if (joined.includes("rna-seq") || joined.includes("rna")) {
-							suggestedLabels = [
-								"Perform differential expression",
-								"Create gene plots",
-								"Analyze pathways",
-							];
-						} else {
-							suggestedLabels = [
-								"Perform exploratory analysis",
-								"Create visualizations",
-								"Run statistical tests",
-							];
-						}
-					}
-
-					if (suggestedLabels?.length) {
-						setSuggestionButtons(suggestedLabels);
+					const isSingleCell = (dataTypes || [])
+						.map((x) => String(x).toLowerCase())
+						.some((x) => x.includes("single") || x.includes("scrna"));
+					if (isSingleCell) {
+						addMessage(
+							"Tip: For single-cell data, start with quality control (QC), then cluster cells (e.g., PCA/UMAP + Leiden), and identify marker genes for each cluster.",
+							false
+						);
 					}
 				} catch (e) {
-					console.warn("Suggestion generation failed", e);
+					console.warn("Single-cell tip generation failed", e);
 				}
 			}
 		},
@@ -3123,6 +3087,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 				<SearchProgressView progress={searchProgress} />
 
+				{/* Show example queries as soon as results are available (before selection) */}
+				{availableDatasets.length > 0 && selectedDatasets.length === 0 && (
+					<div style={{ marginTop: 12 }}>
+						<ExamplesComponent
+							onExampleSelect={(example) => {
+								setInputValue(example);
+								handleSendMessage();
+							}}
+						/>
+					</div>
+				)}
+
 				<EnvironmentStatus
 					virtualEnvStatus={virtualEnvStatus}
 					showLog={showVirtualEnvLog}
@@ -3152,6 +3128,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		virtualEnvStatus,
 		showVirtualEnvLog,
 		isAutoExecuting,
+		availableDatasets,
+		selectedDatasets,
+		handleSendMessage,
 	]);
 
 	return (
@@ -3368,6 +3347,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				onKeyDown={handleComposerKeyDown}
 				mode={chatMode}
 				onModeChange={(m) => setChatMode(m)}
+				suggestedMentions={[]}
+				onInsertAlias={(alias: string) => {
+					setInputValue((prev) => {
+						const needsSpace = prev.length > 0 && !prev.endsWith(" ");
+						return `${prev}${needsSpace ? " " : ""}${alias} `;
+					});
+					setMentionOpen(false);
+					setMentionQuery("");
+				}}
 			/>
 
 			{/* @ mention suggestions menu */}
@@ -3378,6 +3366,31 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				cellItems={cellMentionItems}
 				hideWorkspace={/#[^\s#]*$/.test(inputValue)}
 				query={mentionQuery}
+				onRemoveLocal={async (item) => {
+					try {
+						const registry = localRegistryRef.current;
+						if (!registry) return;
+						await registry.remove(item.id);
+						// refresh items
+						const updated = registry.list();
+						// Filter against current query token
+						const token = mentionQuery.toLowerCase();
+						const filtered = token
+							? updated.filter(
+									(d) =>
+										(d.alias || "").toLowerCase().includes(token) ||
+										(d.title || "").toLowerCase().includes(token)
+							  )
+							: updated;
+						// Update only local items; keep workspace/cell lists intact
+						// Force re-render by toggling mention open briefly if needed
+						// (not strictly necessary since props change)
+						// No-op
+					} catch (e) {
+						// eslint-disable-next-line no-console
+						console.warn("Failed to remove local mention", e);
+					}
+				}}
 				hideLocal={true}
 				hideFolders={false}
 				activeWorkspaceIndex={activeWorkspaceIndex}
@@ -3421,41 +3434,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				}}
 			/>
 
-			{/* Suggestion Buttons */}
-			{suggestionButtons.length > 0 && (
-				<div
-					style={{
-						padding: "16px",
-						display: "flex",
-						gap: "8px",
-						flexWrap: "wrap",
-						borderTop: "1px solid #444",
-					}}
-				>
-					{suggestionButtons.map((suggestion, index) => (
-						<button
-							key={index}
-							onClick={() => {
-								setInputValue(suggestion);
-								setSuggestionButtons([]); // Clear buttons after click
-								handleSendMessage();
-							}}
-							style={{
-								background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)",
-								color: "white",
-								border: "none",
-								padding: "8px 16px",
-								borderRadius: "20px",
-								cursor: "pointer",
-								fontSize: "14px",
-								fontWeight: "500",
-							}}
-						>
-							{suggestion}
-						</button>
-					))}
-				</div>
-			)}
+			{/* Suggestions removed per request */}
 
 			{/* Dataset Selection Modal */}
 			<DatasetSelectionModal

@@ -328,6 +328,7 @@ textarea:focus {
 	flex-shrink: 0;
 	min-height: 60px;
 	border-radius: 0 0 8px 8px;
+	margin-bottom: 2px;
 }
 
 .chat-input-container textarea {
@@ -340,7 +341,7 @@ textarea:focus {
 	font-size: var(--font-size-base);
 	font-family: inherit;
 	resize: none;
-	min-height: 36px;
+	min-height: 72px;
 	max-height: 120px;
 	line-height: 1.4;
 	transition: border-color 0.2s ease;
@@ -380,7 +381,6 @@ textarea:focus {
 	align-items: center;
 	justify-content: space-between;
 	gap: 8px;
-	margin-top: 8px;
 }
 
 .chat-controls-left {
@@ -392,12 +392,11 @@ textarea:focus {
 .pill {
 	display: inline-flex;
 	align-items: center;
-	gap: 6px;
-	background: #2d2d30;
+	background: #333;
 	color: #d4d4d4;
 	border: 1px solid #3c3c3c;
-	border-radius: 14px;
-	padding: 4px 10px;
+	border-radius: 5px;
+	padding: 2px 5px;
 	font-size: var(--font-size-sm);
 }
 

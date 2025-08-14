@@ -27,6 +27,9 @@ import { BackendClient } from "../../services/BackendClient";
 import { AuthService } from "../../services/AuthService";
 import { electronAPI } from "../../utils/electronAPI";
 
+// Visual constants for the tree
+const INDENT_WIDTH = 6; // further reduced indentation per level
+
 interface SidebarProps {
 	onToggle: () => void;
 	"data-layout-role"?: string;
@@ -133,7 +136,7 @@ const FileItem = styled.div<{
 }>`
 	display: flex;
 	align-items: center;
-	padding: 4px 8px 4px ${(props) => 8 + props.$level * 16}px;
+	padding: 4px 8px;
 	cursor: pointer;
 	color: #cccccc;
 	height: 24px;
@@ -144,7 +147,7 @@ const FileItem = styled.div<{
 	}
 
 	.icon {
-		margin-right: 6px;
+		margin-right: 4px;
 		width: 16px;
 		height: 16px;
 		display: flex;
@@ -180,6 +183,20 @@ const FileItem = styled.div<{
 	&:hover .actions {
 		display: flex;
 	}
+`;
+
+const IndentGuides = styled.div<{ $level: number }>`
+	display: inline-flex;
+	width: ${(p) => p.$level * INDENT_WIDTH}px;
+	height: 100%;
+	margin-right: 2px;
+	pointer-events: none;
+`;
+
+const Guide = styled.span`
+	width: ${INDENT_WIDTH}px;
+	height: 100%;
+	display: inline-block;
 `;
 
 const ContextMenu = styled.div<{ $visible: boolean; $x: number; $y: number }>`
@@ -219,7 +236,6 @@ const ContextMenuItem = styled.div`
 const BreadcrumbNav = styled.div`
 	padding: 8px 12px;
 	font-size: ${typography.sm};
-	color: #858585;
 	border-bottom: 1px solid #3e3e42;
 	background-color: #2d2d30;
 	display: flex;
@@ -229,7 +245,6 @@ const BreadcrumbNav = styled.div`
 
 	.nav-item {
 		cursor: pointer;
-		color: #007acc;
 
 		&:hover {
 			text-decoration: underline;
@@ -327,6 +342,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 	const [currentFiles, setCurrentFiles] = useState<FileItem[]>([]);
 	const [searchTerm, setSearchTerm] = useState<string>("");
 
+	// Tree state: cache children per directory and which directories are expanded
+	const [dirChildren, setDirChildren] = useState<Record<string, FileItem[]>>(
+		{}
+	);
+	const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
+
 	// Detailed search state
 	const [detailedQuery, setDetailedQuery] = useState<string>("");
 	const [searchInContent, setSearchInContent] = useState<boolean>(true);
@@ -370,6 +391,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 	useEffect(() => {
 		if (state.currentWorkspace) {
 			setCurrentPath(state.currentWorkspace);
+			setDirChildren({});
+			setExpandedDirs(new Set([state.currentWorkspace]));
 			loadDirectory(state.currentWorkspace);
 		}
 	}, [state.currentWorkspace]);
@@ -419,10 +442,32 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 			});
 
 			setCurrentFiles(sortedFiles);
+			setDirChildren((prev) => ({ ...prev, [dirPath]: sortedFiles }));
 		} catch (error) {
 			console.error("Error loading directory:", error);
 			setCurrentFiles([]);
 		}
+	};
+
+	const toggleDirectory = async (item: FileItem) => {
+		if (!item.isDirectory) return;
+		setExpandedDirs((prev) => {
+			const next = new Set(prev);
+			if (next.has(item.path)) next.delete(item.path);
+			else next.add(item.path);
+			return next;
+		});
+
+		if (!dirChildren[item.path]) {
+			await loadDirectory(item.path);
+		}
+	};
+
+	const refreshTree = async () => {
+		if (!state.currentWorkspace) return;
+		const targets = new Set<string>(expandedDirs);
+		targets.add(state.currentWorkspace);
+		await Promise.all(Array.from(targets).map((p) => loadDirectory(p)));
 	};
 
 	const openInSystem = async (filePath: string) => {
@@ -441,8 +486,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 
 	const handleItemClick = (item: FileItem) => {
 		if (item.isDirectory) {
-			setCurrentPath(item.path);
-			loadDirectory(item.path);
+			void toggleDirectory(item);
 		} else {
 			dispatch({ type: "OPEN_FILE", payload: item.path });
 		}
@@ -496,7 +540,84 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		return breadcrumbs;
 	};
 
-	const filteredFiles = currentFiles;
+	// Tree rendering
+	const renderTree = (dirPath: string, level: number): React.ReactNode => {
+		const children = dirChildren[dirPath] || [];
+		return children.map((item) => {
+			const isExpanded = item.isDirectory && expandedDirs.has(item.path);
+			return (
+				<React.Fragment key={item.path}>
+					<FileItem
+						$isDirectory={item.isDirectory}
+						$level={level}
+						$isActive={state.activeFile === item.path}
+						$fileName={item.name}
+						onClick={() => handleItemClick(item)}
+						onContextMenu={(e) => handleItemRightClick(e, item)}
+					>
+						<IndentGuides $level={level} />
+						<div className="icon">
+							{item.isDirectory ? (
+								<FiChevronRight
+									size={16}
+									style={{
+										transform: isExpanded ? "rotate(90deg)" : undefined,
+									}}
+								/>
+							) : (
+								<FileTypeIcon fileName={item.name} />
+							)}
+						</div>
+						<div className="name">{item.name}</div>
+						<div className="meta">
+							{item.size && !item.isDirectory && (
+								<span>{formatFileSize(item.size)}</span>
+							)}
+							{item.modified && <span>{formatDate(item.modified)}</span>}
+						</div>
+						<div className="actions">
+							{!item.isDirectory && item.name.endsWith(".ipynb") && (
+								<ActionButton
+									onClick={(e) => {
+										e.stopPropagation();
+										openInSystem(item.path);
+									}}
+								>
+									<FiPlay size={12} />
+								</ActionButton>
+							)}
+							{!item.isDirectory && (
+								<Tooltip content="Open in editor" placement="left">
+									<ActionButton
+										onClick={(e) => {
+											e.stopPropagation();
+											dispatch({
+												type: "OPEN_FILE",
+												payload: item.path,
+											});
+										}}
+									>
+										<FiEdit3 size={12} />
+									</ActionButton>
+								</Tooltip>
+							)}
+							<Tooltip content="More options" placement="left">
+								<ActionButton
+									onClick={(e) => {
+										e.stopPropagation();
+										handleItemRightClick(e, item);
+									}}
+								>
+									<FiMoreVertical size={12} />
+								</ActionButton>
+							</Tooltip>
+						</div>
+					</FileItem>
+					{isExpanded && renderTree(item.path, level + 1)}
+				</React.Fragment>
+			);
+		});
+	};
 
 	const buildMatcher = () => {
 		try {
@@ -815,8 +936,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 						}
 
 						if (result.success) {
-							// Refresh the file tree
-							loadDirectory(currentPath);
+							// Refresh expanded tree (includes parent)
+							await refreshTree();
 						} else {
 							throw new Error(result.error || "Unknown error occurred");
 						}
@@ -859,7 +980,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 				</Tabs>
 
 				<HeaderActions>
-					{authService && (
+					{/* {authService && (
 						<ActionButton
 							onClick={async () => {
 								try {
@@ -872,10 +993,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 						>
 							Sign in
 						</ActionButton>
-					)}
+					)} */}
 					{activeTab === "explorer" && (
 						<Tooltip content="Refresh file list" placement="bottom">
-							<ActionButton onClick={() => loadDirectory(currentPath)}>
+							<ActionButton onClick={() => refreshTree()}>
 								<FiRefreshCw size={12} />
 							</ActionButton>
 						</Tooltip>
@@ -1018,89 +1139,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 					<SidebarContent>
 						{state.currentWorkspace ? (
 							<FileTree>
-								{currentPath !== state.currentWorkspace && (
-									<FileItem
-										$isDirectory={true}
-										$level={0}
-										$isActive={false}
-										$fileName=".."
-										onClick={navigateToParent}
-									>
-										<div className="icon">
-											<FiChevronRight
-												size={12}
-												style={{ transform: "rotate(180deg)" }}
-											/>
-										</div>
-										<div className="name">..</div>
-									</FileItem>
-								)}
-
-								{filteredFiles.map((item) => (
-									<FileItem
-										key={item.path}
-										$isDirectory={item.isDirectory}
-										$level={0}
-										$isActive={state.activeFile === item.path}
-										$fileName={item.name}
-										onClick={() => handleItemClick(item)}
-										onContextMenu={(e) => handleItemRightClick(e, item)}
-									>
-										<div className="icon">
-											{item.isDirectory ? (
-												<FiFolder size={12} />
-											) : (
-												<FileTypeIcon fileName={item.name} />
-											)}
-										</div>
-										<div className="name">{item.name}</div>
-										<div className="meta">
-											{item.size && !item.isDirectory && (
-												<span>{formatFileSize(item.size)}</span>
-											)}
-											{item.modified && (
-												<span>{formatDate(item.modified)}</span>
-											)}
-										</div>
-										<div className="actions">
-											{!item.isDirectory && item.name.endsWith(".ipynb") && (
-												<ActionButton
-													onClick={(e) => {
-														e.stopPropagation();
-														openInSystem(item.path);
-													}}
-												>
-													<FiPlay size={12} />
-												</ActionButton>
-											)}
-											{!item.isDirectory && (
-												<Tooltip content="Open in editor" placement="left">
-													<ActionButton
-														onClick={(e) => {
-															e.stopPropagation();
-															dispatch({
-																type: "OPEN_FILE",
-																payload: item.path,
-															});
-														}}
-													>
-														<FiEdit3 size={12} />
-													</ActionButton>
-												</Tooltip>
-											)}
-											<Tooltip content="More options" placement="left">
-												<ActionButton
-													onClick={(e) => {
-														e.stopPropagation();
-														handleItemRightClick(e, item);
-													}}
-												>
-													<FiMoreVertical size={12} />
-												</ActionButton>
-											</Tooltip>
-										</div>
-									</FileItem>
-								))}
+								{state.currentWorkspace &&
+									renderTree(state.currentWorkspace, 0)}
 							</FileTree>
 						) : (
 							<EmptyState>

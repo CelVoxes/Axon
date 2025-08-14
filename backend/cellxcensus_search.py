@@ -34,6 +34,9 @@ class CellxCensusSearch:
         self._lock = asyncio.Lock()
         self.census: Any = None
         self.progress_callback: Optional[Callable[[Dict[str, Any]], Union[None, Awaitable[None]]]] = None
+        # In-memory caches
+        self._metadata_cache: Dict[str, Any] = {}
+        self._search_cache: Dict[str, Any] = {}
     
     def set_progress_callback(self, callback):
         """Set the progress callback function."""
@@ -101,6 +104,22 @@ class CellxCensusSearch:
     ) -> List[Dict[str, Any]]:
         """Find single-cell datasets using LLM-guided search."""
         limit = SearchConfig.get_search_limit(limit)
+        # Cache lookup for search
+        try:
+            now = time.time()
+            cache_ttl = SearchConfig.get_cache_search_ttl_seconds()
+            key = f"q::{(query or '').strip().lower()}|org::{(organism or '').strip().lower()}|lim::{limit}"
+            cached = self._search_cache.get(key)
+            if cached and (now - cached['ts'] < cache_ttl):
+                await self._send_progress_update({
+                    'step': 'cache_hit',
+                    'progress': 90,
+                    'message': 'Returning cached results',
+                    'datasetsFound': len(cached['value'])
+                })
+                return (cached['value'] or [])[:limit]
+        except Exception:
+            pass
         
         await self._send_progress_update({
             'step': 'init',
@@ -149,6 +168,20 @@ class CellxCensusSearch:
                     'datasetsFound': len(enhanced_datasets)
                 })
                 
+                # Store search results
+                try:
+                    key = f"q::{(query or '').strip().lower()}|org::{(organism or '').strip().lower()}|lim::{limit}"
+                    self._search_cache[key] = {'ts': now, 'value': enhanced_datasets}
+                    # Trim cache if needed
+                    try:
+                        max_entries = SearchConfig.get_cache_max_search_entries()
+                        if len(self._search_cache) > max_entries:
+                            oldest_key = min(self._search_cache.items(), key=lambda kv: kv[1]['ts'])[0]
+                            self._search_cache.pop(oldest_key, None)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
                 return enhanced_datasets[:limit]
             else:
                 await self._send_progress_update({
@@ -178,15 +211,22 @@ class CellxCensusSearch:
                 'datasetsFound': 0
             })
             
-            # Load all dataset metadata
+            # Load all dataset metadata (with cache)
             loop = asyncio.get_event_loop()
             census = self.census
             assert census is not None, "Census must be initialized"
             
-            datasets_df = await loop.run_in_executor(
-                None,
-                lambda: census['census_info']['datasets'].read().concat().to_pandas()
-            )
+            now = time.time()
+            md_ttl = SearchConfig.get_cache_metadata_ttl_seconds()
+            cached_md = self._metadata_cache.get('datasets_df')
+            if cached_md and (now - cached_md['ts'] < md_ttl):
+                datasets_df = cached_md['value']
+            else:
+                datasets_df = await loop.run_in_executor(
+                    None,
+                    lambda: census['census_info']['datasets'].read().concat().to_pandas()
+                )
+                self._metadata_cache['datasets_df'] = {'ts': now, 'value': datasets_df}
             
             # Debug: Print available columns to understand metadata structure
             # if len(datasets_df) > 0:
@@ -200,8 +240,14 @@ class CellxCensusSearch:
                 'datasetsFound': 0
             })
             
-            # Convert dataset metadata to searchable format
-            datasets = await self._convert_metadata_to_datasets(datasets_df, organism)
+            # Convert dataset metadata to searchable format (cache by organism)
+            conv_key = f"convert::{str(organism or '').lower()}"
+            cached_conv = self._metadata_cache.get(conv_key)
+            if cached_conv and (now - cached_conv['ts'] < md_ttl):
+                datasets = cached_conv['value']
+            else:
+                datasets = await self._convert_metadata_to_datasets(datasets_df, organism)
+                self._metadata_cache[conv_key] = {'ts': now, 'value': datasets}
             
             await self._send_progress_update({
                 'step': 'processing',
@@ -399,11 +445,22 @@ class SimpleCellxCensusClient:
     """Simple client interface for CellxCensus operations."""
     
     def __init__(self):
-        self.search_client = CellxCensusSearch()
+        # Initialize CellxCensus search if available; otherwise, fall back to GEO at call time
+        try:
+            self.search_client = CellxCensusSearch()
+            self._init_error: Optional[Exception] = None
+        except Exception as e:
+            # Defer to GEO fallback when CellxCensus is not available or fails to init
+            print(f"⚠️ CellxCensus unavailable, will fall back to GEO search when called: {e}")
+            self.search_client = None
+            self._init_error = e
+        self._progress_callback: Optional[Callable[[Dict[str, Any]], Union[None, Awaitable[None]]]] = None
     
     def set_progress_callback(self, callback):
         """Set the progress callback function."""
-        self.search_client.set_progress_callback(callback)
+        self._progress_callback = callback
+        if self.search_client:
+            self.search_client.set_progress_callback(callback)
     
     async def find_similar_datasets(
         self, 
@@ -413,6 +470,21 @@ class SimpleCellxCensusClient:
     ) -> List[Dict[str, Any]]:
         """Find similar datasets using intelligent search."""
         limit = SearchConfig.get_search_limit(limit)
+        # If CellxCensus search client is not available, gracefully fall back to GEO
+        if not self.search_client:
+            try:
+                try:
+                    from .geo_search import SimpleGEOClient  # type: ignore
+                except ImportError:
+                    from geo_search import SimpleGEOClient  # type: ignore
+                geo_client = SimpleGEOClient()
+                if self._progress_callback:
+                    geo_client.set_progress_callback(self._progress_callback)
+                return await geo_client.find_similar_datasets(query, limit, organism)
+            except Exception as fallback_error:
+                print(f"❌ GEO fallback failed: {fallback_error}")
+                return []
+        # Normal CellxCensus path
         try:
             return await self.search_client.search_datasets(query, limit, organism)
         finally:
@@ -420,4 +492,5 @@ class SimpleCellxCensusClient:
     
     async def cleanup(self):
         """Clean up resources."""
-        await self.search_client.close_census()
+        if self.search_client:
+            await self.search_client.close_census()

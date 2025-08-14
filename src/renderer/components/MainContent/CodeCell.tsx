@@ -30,12 +30,13 @@ import rehypeSanitize from "rehype-sanitize";
 
 const CellContainer = styled.div<{ $accentColor?: string }>`
 	position: relative;
-	margin: 16px 0;
+	margin: 0 0 16px 0; /* remove top margin so sticky header can align flush */
 	border: 1px solid #404040;
 	border-left: 4px solid ${(props) => props.$accentColor || "transparent"};
 	border-radius: 8px;
-	overflow: hidden;
+	overflow: visible; /* allow sticky header to position correctly */
 	background: #1e1e1e;
+	border-top: none; /* let header own the top edge to avoid gap */
 `;
 
 const FloatingToolbar = styled.div`
@@ -145,6 +146,13 @@ const CellHeader = styled.div`
 	padding: 8px 12px;
 	background: #2d2d30;
 	border-bottom: 1px solid #404040;
+	position: sticky;
+	top: 0; /* stick to the very top of the notebook scroller */
+	border-top: 1px solid #404040; /* replace container's removed top border */
+	border-top-left-radius: 8px;
+	border-top-right-radius: 8px;
+	z-index: 2;
+	box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.15);
 `;
 
 const CellType = styled.div`
@@ -214,8 +222,36 @@ const CodeInput = styled.textarea`
 	}
 `;
 
+// Polished markdown input area for a nicer writing experience
+const MarkdownInput = styled.textarea`
+	width: 100%;
+	min-height: 140px;
+	background: #1a1b1e;
+	border: 1px solid #30363d;
+	color: #e6e6e6;
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu,
+		"Helvetica Neue", Arial, sans-serif;
+	font-size: ${typography.base};
+	line-height: 1.6;
+	padding: 14px 16px;
+	resize: vertical;
+	outline: none;
+	border-radius: 8px;
+
+	&::placeholder {
+		color: #8a8f98;
+	}
+
+	&:focus {
+		border-color: #4b9ce6;
+		box-shadow: 0 0 0 2px rgba(75, 156, 230, 0.15);
+	}
+`;
+
 const CellBody = styled.div`
 	position: relative;
+	z-index: 1;
+	padding-top: 8px; /* slight spacing to avoid header overlap without creating a gap */
 `;
 
 const OutputContainer = styled.div`
@@ -288,7 +324,7 @@ const OutputContent = styled.div`
 	line-height: 1.4;
 	color: #d4d4d4;
 	/* Allow native wheel chaining so when this block reaches its scroll end, the parent notebook scrolls */
-	overscroll-behavior: contain;
+	overscroll-behavior: auto;
 	overflow-y: auto;
 	pre code {
 		font-family: inherit;
@@ -364,7 +400,7 @@ const ImageOutput = styled.div`
 const CollapsibleOutput = styled.div<{ $isCollapsed: boolean }>`
 	max-height: ${(props) => (props.$isCollapsed ? "200px" : "none")};
 	overflow: auto; /* allow internal scroll when collapsed */
-	overscroll-behavior: contain; /* pass wheel to parent when at edge */
+	overscroll-behavior: auto; /* pass wheel to parent when at edge */
 	position: relative;
 
 	${(props) =>
@@ -402,9 +438,12 @@ const ExpandButton = styled.button`
 `;
 
 const RichTextOutput = styled.div`
-	color: #d4d4d4;
-	line-height: 1.6;
+	color: #e6e6e6;
+	line-height: 1.7;
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu,
+		"Helvetica Neue", Arial, sans-serif;
 
+	/* Headings */
 	h1,
 	h2,
 	h3,
@@ -412,36 +451,112 @@ const RichTextOutput = styled.div`
 	h5,
 	h6 {
 		color: #ffffff;
-		margin: 16px 0 8px 0;
+		margin: 16px 0 10px 0;
+		line-height: 1.3;
+	}
+	h1 {
+		font-size: 1.6rem;
+	}
+	h2 {
+		font-size: 1.4rem;
+		padding-bottom: 6px;
+		border-bottom: 1px solid #30363d;
+	}
+	h3 {
+		font-size: 1.2rem;
 	}
 
+	/* Paragraphs & links */
 	p {
-		margin: 8px 0;
+		margin: 10px 0;
+	}
+	a {
+		color: #7cc4ff;
+		text-decoration: none;
+	}
+	a:hover {
+		text-decoration: underline;
 	}
 
+	/* Inline code */
 	code {
-		background: rgba(255, 255, 255, 0.1);
-		padding: 2px 4px;
-		border-radius: 3px;
+		background: #2a2f36;
+		padding: 2px 6px;
+		border-radius: 4px;
+		border: 1px solid #3a3f47;
 		font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+		font-size: ${typography.sm};
 	}
 
+	/* Code blocks */
 	pre {
-		background: #1e1e1e;
+		background: #0f1115;
 		padding: 12px;
-		border-radius: 6px;
+		border-radius: 8px;
+		border: 1px solid #30363d;
 		overflow-x: auto;
-		margin: 8px 0;
+		margin: 10px 0;
+		box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
 	}
 
+	/* Lists */
 	ul,
 	ol {
-		margin: 8px 0;
-		padding-left: 20px;
+		margin: 10px 0;
+		padding-left: 22px;
+	}
+	li {
+		margin: 6px 0;
 	}
 
-	li {
-		margin: 4px 0;
+	/* Blockquote */
+	blockquote {
+		margin: 10px 0;
+		padding: 8px 12px;
+		background: #1c1f24;
+		border-left: 4px solid #3b82f6;
+		border-radius: 6px;
+		color: #cfd6df;
+	}
+
+	/* Tables */
+	table {
+		width: 100%;
+		border-collapse: collapse;
+		margin: 10px 0;
+		border: 1px solid #30363d;
+		border-radius: 6px;
+		overflow: hidden;
+	}
+	th,
+	td {
+		border: 1px solid #30363d;
+		padding: 8px 10px;
+		text-align: left;
+	}
+	th {
+		background: #23262b;
+		color: #ffffff;
+	}
+	tr:nth-child(even) td {
+		background: #1b1e22;
+	}
+
+	/* Images */
+	img {
+		max-width: 100%;
+		height: auto;
+		border-radius: 6px;
+		border: 1px solid #30363d;
+		margin: 8px 0;
+	}
+
+	/* Horizontal rule */
+	hr {
+		border: none;
+		height: 1px;
+		background: #30363d;
+		margin: 14px 0;
 	}
 `;
 
@@ -829,7 +944,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 			{/* Editable Markdown and Code with live preview for Markdown */}
 			{language === "markdown" ? (
 				<>
-					<CodeInput
+					<MarkdownInput
 						ref={textareaRef}
 						value={code}
 						onChange={handleCodeChange}
@@ -926,7 +1041,15 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 								tabSize: 4,
 								renderWhitespace: "selection",
 								lineNumbers: "on",
-								scrollbar: { alwaysConsumeMouseWheel: false },
+								smoothScrolling: true,
+								scrollbar: {
+									alwaysConsumeMouseWheel: false,
+									vertical: "visible",
+									horizontal: "visible",
+									verticalScrollbarSize: 8,
+									horizontalScrollbarSize: 8,
+									useShadows: false,
+								},
 							}}
 						/>
 						{/* Floating toolbar near selection */}

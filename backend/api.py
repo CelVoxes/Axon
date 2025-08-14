@@ -1370,7 +1370,7 @@ async def search_cellxcensus_datasets(request: SearchRequest):
             organism=request.organism
         )
         
-        # Convert to DatasetResponse format
+        # Convert to DatasetResponse format. Preserve actual source (may be GEO if we fell back)
         results = []
         for dataset in datasets:
             results.append(DatasetResponse(
@@ -1378,10 +1378,10 @@ async def search_cellxcensus_datasets(request: SearchRequest):
                 title=dataset.get('title', ''),
                 description=dataset.get('description', ''),
                 organism=dataset.get('organism', ''),
-                sample_count=dataset.get('sample_count', ''),
+                sample_count=str(dataset.get('sample_count', '0')),
                 platform=dataset.get('platform', ''),
                 similarity_score=dataset.get('similarity_score', 0.0),
-                source='CellxCensus'
+                source=dataset.get('source', 'CellxCensus')
             ))
         
         return results

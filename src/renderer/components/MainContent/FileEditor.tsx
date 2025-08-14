@@ -44,19 +44,22 @@ const EditorContent = styled.div`
 const NotebookContainer = styled.div`
 	flex: 1;
 	overflow-y: auto;
-	padding: 16px;
+	/* Remove top padding so sticky cell headers can sit flush at the very top */
+	padding: 0 16px 16px 16px;
 	background: #1e1e1e;
-	/* Let wheel events bubble when a child reaches its scroll boundary */
-	overscroll-behavior: contain;
+	/* Natural scroll chaining to parent when children reach their edge */
+	overscroll-behavior: auto;
+	scrollbar-gutter: stable both-edges;
 
 	/* Add some spacing between cells */
 	> * + * {
-		margin-top: 8px;
+		margin-top: 16px; /* separation between sections (header/controls/cells) */
 	}
 `;
 
 const NotebookHeader = styled.div`
 	margin-bottom: 24px;
+	margin-top: 24px;
 	padding: 16px;
 	background: #2d2d30;
 	border-radius: 8px;

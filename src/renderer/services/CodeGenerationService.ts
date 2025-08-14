@@ -18,6 +18,7 @@ import {
 	removeDuplicateImports as sharedRemoveDuplicateImports,
 } from "../utils/ImportUtils";
 import { Logger } from "../utils/Logger";
+import { ScanpyDocsService } from "./ScanpyDocsService";
 
 export class CodeGenerationService implements ICodeGenerator {
 	private backendClient: BackendClient;
@@ -244,6 +245,29 @@ General requirements:
 		return context;
 	}
 
+	/**
+	 * Build enhanced context and augment with Scanpy RAG snippets (version-aware docstrings)
+	 */
+	private async buildEnhancedContextWithDocs(
+		request: CodeGenerationRequest
+	): Promise<string> {
+		let context = this.buildEnhancedContext(request);
+		try {
+			const rag =
+				await ScanpyDocsService.getInstance().buildRagContextForRequest(
+					request.stepDescription,
+					request.originalQuestion,
+					request.workingDir
+				);
+			if (rag && rag.trim()) {
+				context += `\n\nAuthoritative Scanpy references (from installed environment):\n${rag}\n\nStrict rules:\n- Prefer APIs present above; do not invent parameters.\n- If an API is not present, adapt to available alternatives.\n- Cite the function names you used.`;
+			}
+		} catch (e) {
+			// Best-effort; silently continue without RAG if unavailable
+		}
+		return context;
+	}
+
 	// Note: Code cleaning and validation is now handled by CodeQualityService
 
 	private async generateDataDrivenStepCodeWithEvents(
@@ -275,8 +299,8 @@ General requirements:
 		this.log.debug("stream: start %s (%s)", request.stepDescription, stepId);
 
 		try {
-			// Prepare enhanced context with more detailed information
-			const enhancedContext = this.buildEnhancedContext(request);
+			// Prepare enhanced context with more detailed information + Scanpy RAG
+			const enhancedContext = await this.buildEnhancedContextWithDocs(request);
 
 			this.log.debug(
 				"stream: enhanced context length=%d",

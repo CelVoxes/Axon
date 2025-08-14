@@ -333,10 +333,7 @@ export class EnvironmentManager {
 		// Add packages from data analysis
 		dataAnalysis.recommendedTools.forEach((pkg) => requiredPackages.add(pkg));
 
-		// Add common packages (avoid duplicates since we're using a Set)
-		requiredPackages.add("pandas");
-		requiredPackages.add("numpy");
-		requiredPackages.add("matplotlib");
+		// Avoid forcing base scientific packages; allow resolver to pick versions with the tools
 
 		// Heuristic: Include single-cell stack if any dataset hints at single-cell formats or platforms
 		const mentionsSingleCell = (text?: string) => {
@@ -397,21 +394,25 @@ export class EnvironmentManager {
 			a.localeCompare(b)
 		);
 
-		return `# Install required packages
+		return `# Install required packages as a single pip transaction for consistent dependency resolution
 import subprocess
 import sys
 
 required_packages = ${JSON.stringify(packages)}
 
-print("Installing required packages...")
-for package in required_packages:
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-        print(f"✓ Installed {package}")
-    except subprocess.CalledProcessError:
-        print(f"⚠ Failed to install {package}")
+print("Installing required packages as one pip call...")
+try:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", *required_packages])
+    print("✓ All packages installed")
+except subprocess.CalledProcessError:
+    print("⚠ Failed to install one or more packages")
 
-print("\\nAll packages installed!")`;
+# Optional: verify dependency conflicts
+try:
+    subprocess.check_call([sys.executable, "-m", "pip", "check"])  # verifies dependency conflicts
+    print("Dependency check passed")
+except subprocess.CalledProcessError:
+    print("⚠ Dependency conflicts detected")`;
 	}
 
 	/**
