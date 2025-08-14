@@ -44,8 +44,8 @@ const EditorContent = styled.div`
 const NotebookContainer = styled.div`
 	flex: 1;
 	overflow-y: auto;
-	/* Remove top padding so sticky cell headers can sit flush at the very top */
-	padding: 0 16px 16px 16px;
+	/* Add back a tiny top padding to smooth sticky overlap without a visual gap */
+	padding: 2px 16px 16px 16px;
 	background: #1e1e1e;
 	/* Natural scroll chaining to parent when children reach their edge */
 	overscroll-behavior: auto;
@@ -59,7 +59,7 @@ const NotebookContainer = styled.div`
 
 const NotebookHeader = styled.div`
 	margin-bottom: 24px;
-	margin-top: 24px;
+	margin-top: 16px;
 	padding: 16px;
 	background: #2d2d30;
 	border-radius: 8px;

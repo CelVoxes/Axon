@@ -87,6 +87,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		useState<DataTypeSuggestions | null>(null);
 	const localRegistryRef = useRef<LocalDatasetRegistry | null>(null);
 	const [showHistoryMenu, setShowHistoryMenu] = useState<boolean>(false);
+	const [showExamples, setShowExamples] = useState<boolean>(true);
 
 	// Chat mode: "Agent" (default) or "Ask"
 	const [chatMode, setChatMode] = useState<"Agent" | "Ask">("Agent");
@@ -3088,11 +3089,27 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				<SearchProgressView progress={searchProgress} />
 
 				{/* Show example queries as soon as results are available (before selection) */}
-				{availableDatasets.length > 0 && selectedDatasets.length === 0 && (
+				{showExamples &&
+					availableDatasets.length > 0 &&
+					selectedDatasets.length === 0 && (
+						<div style={{ marginTop: 12 }}>
+							<ExamplesComponent
+								onExampleSelect={(example) => {
+									setInputValue(example);
+									setShowExamples(false);
+									handleSendMessage();
+								}}
+							/>
+						</div>
+					)}
+
+				{/* Show example queries after datasets are selected */}
+				{showExamples && selectedDatasets.length > 0 && (
 					<div style={{ marginTop: 12 }}>
 						<ExamplesComponent
 							onExampleSelect={(example) => {
 								setInputValue(example);
+								setShowExamples(false);
 								handleSendMessage();
 							}}
 						/>
@@ -3196,6 +3213,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								setAgentInstance(null);
 								setVirtualEnvStatus("");
 								setShowHistoryMenu(false);
+								setShowExamples(true);
 								suggestionsService?.startNewConversation?.();
 							}}
 							className="chat-button"

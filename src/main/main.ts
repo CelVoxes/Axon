@@ -23,6 +23,8 @@ export class AxonApp {
 		new Map();
 	// Track which workspace the current Jupyter server was started for
 	private currentJupyterWorkspace: string | null = null;
+	// FS watchers per workspace root
+	private workspaceWatchers: Map<string, fs.FSWatcher> = new Map();
 
 	// Ensure the configured Jupyter port is available; if occupied, try to free it or switch to an available port
 	private async ensureJupyterPortAvailable(): Promise<void> {
@@ -480,6 +482,26 @@ export class AxonApp {
 	}
 
 	/**
+	 * Normalize a workspace path to a stable canonical form for map keys and comparisons.
+	 * Uses realpath (resolves symlinks) when possible, falling back to path.resolve.
+	 */
+	private normalizeWorkspacePath(workspacePath: string): string {
+		try {
+			// Prefer native realpath to preserve case on Windows when available
+			// eslint-disable-next-line @typescript-eslint/no-var-requires
+			return fs.realpathSync.native
+				? (fs.realpathSync.native as any)(workspacePath)
+				: fs.realpathSync(workspacePath);
+		} catch (_) {
+			try {
+				return path.resolve(workspacePath);
+			} catch (_) {
+				return workspacePath;
+			}
+		}
+	}
+
+	/**
 	 * Get workspace metadata including the kernel name
 	 */
 	private async getWorkspaceMetadata(workspacePath: string): Promise<any> {
@@ -786,6 +808,7 @@ export class AxonApp {
 		try {
 			// Check if Jupyter is already running and healthy
 			if (this.jupyterProcess) {
+				let needRestart = false;
 				try {
 					const controller = new AbortController();
 					const timeoutId = setTimeout(() => controller.abort(), 5000);
@@ -804,31 +827,40 @@ export class AxonApp {
 						// If server is healthy but workspace changed, restart to adopt new kernelspec path
 						if (
 							this.currentJupyterWorkspace &&
-							path.resolve(this.currentJupyterWorkspace) !==
-								path.resolve(workspacePath)
+							this.normalizeWorkspacePath(this.currentJupyterWorkspace) !==
+								this.normalizeWorkspacePath(workspacePath)
 						) {
 							console.log(
-								`Jupyter running for a different workspace (current: ${this.currentJupyterWorkspace}). Restarting for: ${workspacePath}`
+								`Jupyter running for a different workspace (current: ${this.currentJupyterWorkspace}). Will restart for: ${workspacePath}`
 							);
+							needRestart = true;
 						} else {
 							console.log(
 								"Jupyter is already running and healthy for this workspace"
 							);
 							return { success: true };
 						}
+					} else {
+						// Status endpoint not OK
+						needRestart = true;
 					}
 				} catch (error) {
 					console.log("Jupyter health check failed, will restart");
+					needRestart = true;
 				}
 
-				console.log("Jupyter is running but not healthy, restarting...");
-				this.jupyterProcess.kill();
-				this.jupyterProcess = null;
-				this.currentJupyterWorkspace = null;
-				// Clear cached kernel ids since server will be restarted
-				this.workspaceKernelMap.clear();
-				// Wait a moment for the process to fully stop
-				await new Promise((resolve) => setTimeout(resolve, 2000));
+				if (needRestart) {
+					console.log(
+						"Jupyter is running but not healthy or workspace changed, restarting..."
+					);
+					this.jupyterProcess.kill();
+					this.jupyterProcess = null;
+					this.currentJupyterWorkspace = null;
+					// Clear cached kernel ids since server will be restarted
+					this.workspaceKernelMap.clear();
+					// Wait a moment for the process to fully stop
+					await new Promise((resolve) => setTimeout(resolve, 2000));
+				}
 			}
 
 			console.log("Starting Jupyter server...");
@@ -1044,7 +1076,7 @@ export class AxonApp {
 			});
 
 			// Note the workspace the server is associated with and reset kernel cache
-			this.currentJupyterWorkspace = workspacePath;
+			this.currentJupyterWorkspace = this.normalizeWorkspacePath(workspacePath);
 			this.workspaceKernelMap.clear();
 
 			// Notify renderer that Jupyter is ready (optional token is empty)
@@ -1202,6 +1234,60 @@ export class AxonApp {
 				}));
 			} catch (error) {
 				throw error;
+			}
+		});
+
+		// Start filesystem watcher for a directory (recursive on supported platforms)
+		ipcMain.handle("fs-watch-start", async (_: any, dirPath: string) => {
+			try {
+				if (!dirPath || typeof dirPath !== "string") {
+					throw new Error("Invalid directory path");
+				}
+				// Close any existing watcher for this path first
+				try {
+					const existing = this.workspaceWatchers.get(dirPath);
+					existing?.close();
+				} catch {}
+
+				const useRecursive = process.platform !== "linux"; // recursive not supported on Linux
+				const watcher = fs.watch(
+					dirPath,
+					{ recursive: useRecursive },
+					(_eventType, _filename) => {
+						// Notify renderer to refresh tree; we don't pass payload to keep renderer simple
+						try {
+							this.mainWindow?.webContents.send("fs-watch-event", {
+								root: dirPath,
+							});
+						} catch {}
+					}
+				);
+				this.workspaceWatchers.set(dirPath, watcher);
+				return { success: true };
+			} catch (error) {
+				return {
+					success: false,
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+		});
+
+		// Stop filesystem watcher for a directory
+		ipcMain.handle("fs-watch-stop", async (_: any, dirPath: string) => {
+			try {
+				const watcher = this.workspaceWatchers.get(dirPath);
+				if (watcher) {
+					try {
+						watcher.close();
+					} catch {}
+					this.workspaceWatchers.delete(dirPath);
+				}
+				return { success: true };
+			} catch (error) {
+				return {
+					success: false,
+					error: error instanceof Error ? error.message : String(error),
+				};
 			}
 		});
 

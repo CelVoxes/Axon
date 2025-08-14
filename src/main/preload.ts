@@ -7,11 +7,28 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	readFile: (filePath: string) => ipcRenderer.invoke("fs-read-file", filePath),
 	readFileBinary: (filePath: string) =>
 		ipcRenderer.invoke("fs-read-file-binary", filePath),
-	writeFile: (filePath: string, content: string) =>
-		ipcRenderer.invoke("fs-write-file", filePath, content),
-	deleteFile: (filePath: string) => ipcRenderer.invoke("delete-file", filePath),
-	deleteDirectory: (dirPath: string) =>
-		ipcRenderer.invoke("delete-directory", dirPath),
+	writeFile: async (filePath: string, content: string) => {
+		const result = await ipcRenderer.invoke("fs-write-file", filePath, content);
+		try {
+			// Notify renderer UI to refresh file tree
+			window.dispatchEvent(new Event("refreshFileTree"));
+		} catch {}
+		return result;
+	},
+	deleteFile: async (filePath: string) => {
+		const result = await ipcRenderer.invoke("delete-file", filePath);
+		try {
+			window.dispatchEvent(new Event("refreshFileTree"));
+		} catch {}
+		return result;
+	},
+	deleteDirectory: async (dirPath: string) => {
+		const result = await ipcRenderer.invoke("delete-directory", dirPath);
+		try {
+			window.dispatchEvent(new Event("refreshFileTree"));
+		} catch {}
+		return result;
+	},
 	createDirectory: async (dirPath: string) => {
 		const result = await ipcRenderer.invoke("fs-create-directory", dirPath);
 		try {
@@ -125,6 +142,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	onTriggerOpenWorkspace: (callback: () => void) => {
 		ipcRenderer.on("trigger-open-workspace", () => callback());
 	},
+
+	// FS watch events
+	onFsWatchEvent: (callback: (root: string) => void) => {
+		ipcRenderer.on("fs-watch-event", (_evt, payload: { root: string }) => {
+			if (payload && payload.root) callback(payload.root);
+		});
+	},
+	startFsWatch: (dirPath: string) =>
+		ipcRenderer.invoke("fs-watch-start", dirPath),
+	stopFsWatch: (dirPath: string) =>
+		ipcRenderer.invoke("fs-watch-stop", dirPath),
 
 	// Remove listeners
 	removeAllListeners: (channel: string) => {

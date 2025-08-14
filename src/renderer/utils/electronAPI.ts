@@ -86,9 +86,7 @@ export const electronAPI = {
 	/**
 	 * Safely read a file as binary and return data URL + mime
 	 */
-	async readFileBinary(
-		filePath: string
-	): Promise<{
+	async readFileBinary(filePath: string): Promise<{
 		success: boolean;
 		data?: { dataUrl: string; mime: string };
 		error?: string;
@@ -162,6 +160,23 @@ export const electronAPI = {
 		filePath: string
 	): Promise<{ success: boolean; error?: string }> {
 		return safeElectronAPICall<any>("openFile", filePath);
+	},
+
+	// FS watch integrations
+	onFsWatchEvent(callback: (root: string) => void) {
+		try {
+			(window as any).electronAPI.onFsWatchEvent((payloadRoot: string) => {
+				if (typeof callback === "function") callback(payloadRoot);
+			});
+		} catch (e) {
+			// ignore
+		}
+	},
+	async startFsWatch(dirPath: string) {
+		return safeElectronAPICall<any>("startFsWatch", dirPath);
+	},
+	async stopFsWatch(dirPath: string) {
+		return safeElectronAPICall<any>("stopFsWatch", dirPath);
 	},
 
 	/**

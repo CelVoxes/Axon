@@ -30,13 +30,13 @@ import rehypeSanitize from "rehype-sanitize";
 
 const CellContainer = styled.div<{ $accentColor?: string }>`
 	position: relative;
-	margin: 0 0 16px 0; /* remove top margin so sticky header can align flush */
+	margin: 16px 0;
 	border: 1px solid #404040;
 	border-left: 4px solid ${(props) => props.$accentColor || "transparent"};
 	border-radius: 8px;
 	overflow: visible; /* allow sticky header to position correctly */
 	background: #1e1e1e;
-	border-top: none; /* let header own the top edge to avoid gap */
+	/* container keeps its top border to avoid layout shifts when header sticks */
 `;
 
 const FloatingToolbar = styled.div`
@@ -148,9 +148,7 @@ const CellHeader = styled.div`
 	border-bottom: 1px solid #404040;
 	position: sticky;
 	top: 0; /* stick to the very top of the notebook scroller */
-	border-top: 1px solid #404040; /* replace container's removed top border */
-	border-top-left-radius: 8px;
-	border-top-right-radius: 8px;
+	transform: translateY(-1px); /* overlap container top border without reflow */
 	z-index: 2;
 	box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.15);
 `;

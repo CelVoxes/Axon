@@ -409,6 +409,53 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		return () => window.removeEventListener("refreshFileTree", handleRefresh);
 	}, [currentPath]);
 
+	// Start a filesystem watcher for the current workspace (main process emits fs-watch-event)
+	useEffect(() => {
+		(async () => {
+			try {
+				if (
+					state.currentWorkspace &&
+					(window as any).electronAPI?.startFsWatch
+				) {
+					await (window as any).electronAPI.startFsWatch(
+						state.currentWorkspace
+					);
+				}
+			} catch {}
+		})();
+		return () => {
+			try {
+				if (
+					state.currentWorkspace &&
+					(window as any).electronAPI?.stopFsWatch
+				) {
+					const api = (window as any).electronAPI;
+					if (api && typeof api.stopFsWatch === "function") {
+						try {
+							void api.stopFsWatch(state.currentWorkspace);
+						} catch {}
+					}
+				}
+			} catch {}
+		};
+	}, [state.currentWorkspace]);
+
+	// Listen for fs-watch events bridged from main and refresh tree
+	useEffect(() => {
+		const handler = (_root: string) => {
+			// Refresh all expanded directories for a consistent view
+			void refreshTree();
+		};
+		try {
+			(window as any).electronAPI?.onFsWatchEvent?.(handler);
+		} catch {}
+		return () => {
+			try {
+				(window as any).electronAPI?.removeAllListeners?.("fs-watch-event");
+			} catch {}
+		};
+	}, [state.currentWorkspace]);
+
 	// Close context menu when clicking outside
 	useEffect(() => {
 		const handleClickOutside = () => {
