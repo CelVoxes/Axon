@@ -791,6 +791,8 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 				detail: {
 					alias: mention,
 					filePath: filePath || undefined,
+					selectedCode: selectedText, // Include the actual selected code
+					lineRange: { start: startLine, end: endLine },
 				},
 			});
 			window.dispatchEvent(event);

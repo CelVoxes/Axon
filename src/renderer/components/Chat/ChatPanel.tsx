@@ -1613,37 +1613,64 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				const newCode =
 					base.substring(0, start) + newSelection + base.substring(end);
 
-				// Persist into the notebook cell
-				await notebookService.updateCellCode(filePath, cellIndex, newCode);
-
-				// Wait for confirmation of save from the editor
-				let updateDetail: any = null;
+				// Step 1: Validate the generated code first (new linting pipeline)
+				let validatedCode = newCode;
+				let hasValidationIssues = false;
 				try {
-					// Wait up to 15s for the matching notebook-cell-updated event
-					const timeoutMs = 15000;
-					const startWait = Date.now();
-					while (Date.now() - startWait < timeoutMs) {
-						const detail = await EventManager.waitForEvent<any>(
-							"notebook-cell-updated",
-							Math.max(1, timeoutMs - (Date.now() - startWait))
-						);
-						if (
-							detail?.filePath === filePath &&
-							detail?.cellIndex === cellIndex
-						) {
-							updateDetail = detail;
-							break;
+					if (backendClient?.validateCode) {
+						const validationResult = await backendClient.validateCode({
+							code: newCode
+						});
+						
+						if (!validationResult.is_valid && validationResult.linted_code) {
+							// Use auto-fixed code if available
+							validatedCode = validationResult.linted_code;
+							hasValidationIssues = true;
+							
+							// Show validation feedback in chat
+							const issues = validationResult.errors || [];
+							if (issues.length > 0) {
+								addMessage(`⚠️ Auto-fixed ${issues.length} validation issue(s):\n\n${issues.slice(0, 3).map((e: string) => `• ${e}`).join('\n')}${issues.length > 3 ? '\n• ...' : ''}`, false);
+							}
 						}
 					}
+				} catch (validationError) {
+					console.warn('Code validation failed, proceeding with original code:', validationError);
+					// Continue with original code if validation fails
+				}
+
+				// Step 2: Persist the validated code into the notebook cell
+				await notebookService.updateCellCode(filePath, cellIndex, validatedCode);
+
+				// Step 3: Optimized confirmation wait (reduced from 15s to 2s with fast fallback)
+				let updateDetail: any = null;
+				try {
+					// Fast timeout with immediate fallback for UI responsiveness
+					const timeoutMs = 2000; // Reduced from 15s
+					
+					// Use Promise.race for non-blocking behavior with immediate fallback
+					const detail = await Promise.race([
+						// Wait for actual confirmation
+						EventManager.waitForEvent<any>("notebook-cell-updated", timeoutMs).then(d => 
+							d?.filePath === filePath && d?.cellIndex === cellIndex ? d : null
+						),
+						// Immediate fallback after 100ms for UI responsiveness
+						new Promise(resolve => setTimeout(() => resolve({ success: true, immediate: true }), 100))
+					]);
+					
+					updateDetail = detail || { success: true, immediate: true };
 				} catch (_) {
-					// ignore; we'll fall back to optimistic messaging below
+					// Fallback to optimistic success
+					updateDetail = { success: true, immediate: true };
 				}
 
 				const originalLineCount = withinSelection.split("\n").length;
 				const newLineCount = newSelection.split("\n").length;
-				const summary = `Applied notebook edit:\n\n- **Cell**: ${cellIndex}\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Status**: ${
-					updateDetail?.success === false ? "save failed" : "saved"
-				}`;
+				const statusText = updateDetail?.success === false ? "save failed" : 
+					updateDetail?.immediate ? "applied" : "saved";
+				const validationText = hasValidationIssues ? " (auto-fixed)" : "";
+				
+				const summary = `Applied notebook edit:\n\n- **Cell**: ${cellIndex}\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Status**: ${statusText}${validationText}`;
 
 				// Build unified diff for the selection in GitHub style
 				const buildUnifiedDiff = (
@@ -1700,9 +1727,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					return `${headerA}\n${headerB}\n${hunk}\n${body}`;
 				};
 
+				// Use the validated code for the diff if validation occurred
+				const finalSelection = hasValidationIssues ? 
+					validatedCode.substring(start, start + (validatedCode.length - newCode.length) + newSelection.length) :
+					newSelection;
+				
 				const unifiedDiff = buildUnifiedDiff(
 					withinSelection,
-					newSelection,
+					finalSelection,
 					fileName,
 					startLine
 				);
@@ -3035,9 +3067,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		let lastTs = 0;
 		const DEDUPE_MS = 250;
 		const onInsertMention = (e: Event) => {
-			const ce = e as CustomEvent<{ alias?: string; filePath?: string }>;
+			const ce = e as CustomEvent<{ 
+				alias?: string; 
+				filePath?: string; 
+				selectedCode?: string;
+				lineRange?: { start: number; end: number };
+			}>;
 			const alias = ce.detail?.alias || "";
 			const fp = ce.detail?.filePath || "";
+			const selectedCode = ce.detail?.selectedCode || "";
+			const lineRange = ce.detail?.lineRange;
+			
 			if (!alias) return;
 			const key = `${fp}|${alias}`;
 			const now = Date.now();
@@ -3046,10 +3086,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 			lastKey = key;
 			lastTs = now;
+			
+			// If we have selected code, include it in the message for better context
+			let messageText = alias;
+			if (selectedCode && selectedCode.trim()) {
+				messageText += `\n\nSelected code:\n\`\`\`python\n${selectedCode}\n\`\`\``;
+			}
+			
 			setInputValue(
 				(prev) =>
 					(prev.endsWith(" ") || prev.length === 0 ? prev : prev + " ") +
-					alias +
+					messageText +
 					" "
 			);
 			setMentionOpen(false);

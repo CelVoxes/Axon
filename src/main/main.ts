@@ -853,8 +853,11 @@ export class AxonApp {
 					console.log(
 						"Jupyter is running but not healthy or workspace changed, restarting..."
 					);
-					this.jupyterProcess.kill();
-					this.jupyterProcess = null;
+					// Fix race condition: check if process still exists before killing
+					if (this.jupyterProcess) {
+						this.jupyterProcess.kill();
+						this.jupyterProcess = null;
+					}
 					this.currentJupyterWorkspace = null;
 					// Clear cached kernel ids since server will be restarted
 					this.workspaceKernelMap.clear();

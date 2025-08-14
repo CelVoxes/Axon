@@ -32,6 +32,9 @@ export interface ElectronAPI {
 		code: string,
 		workspacePath?: string
 	) => Promise<{ success: boolean; output?: string; error?: string }>;
+	interruptJupyter: (
+		workspacePath?: string
+	) => Promise<{ success: boolean; error?: string }>;
 	createVirtualEnv: (workspacePath: string) => Promise<{
 		success: boolean;
 		venvPath?: string;
