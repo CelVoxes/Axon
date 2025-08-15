@@ -546,7 +546,6 @@ print("Step completed successfully!")
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 import os
 
 print(f"Executing step ${stepIndex + 1}: ${stepDescription}")

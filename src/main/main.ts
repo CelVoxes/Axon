@@ -1,3 +1,7 @@
+// Load environment variables from .env file
+import dotenv from "dotenv";
+dotenv.config();
+
 import { app, BrowserWindow, ipcMain, shell, dialog, Menu } from "electron";
 import { spawn, ChildProcess } from "child_process";
 import * as path from "path";
@@ -226,7 +230,7 @@ export class AxonApp {
 					? "'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net"
 					: "'self' 'unsafe-inline' http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net";
 
-				const csp = `default-src 'self' http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline' http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net; img-src 'self' data: https: http://127.0.0.1:* http://localhost:*; connect-src 'self' http://127.0.0.1:* http://localhost:* https://localhost:* https://cdn.jsdelivr.net; frame-src 'self' http://127.0.0.1:* http://localhost:*; worker-src 'self' blob:;`;
+				const csp = `default-src 'self' http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net http://axon.celvox.co:*; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline' http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net; img-src 'self' data: https: http://127.0.0.1:* http://localhost:*; connect-src 'self' http://127.0.0.1:* http://localhost:* https://localhost:* https://cdn.jsdelivr.net http://axon.celvox.co:*; frame-src 'self' http://127.0.0.1:* http://localhost:*; worker-src 'self' blob:;`;
 
 				callback({
 					responseHeaders: {
