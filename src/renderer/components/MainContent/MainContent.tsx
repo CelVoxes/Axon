@@ -35,36 +35,64 @@ const TabBar = styled.div`
 	flex-wrap: nowrap;
 	-webkit-overflow-scrolling: touch; /* smooth scrolling */
 	overscroll-behavior-x: contain;
-	/* Always reserve space for a very thin scrollbar to avoid layout shift */
-	scrollbar-width: thin; /* Firefox (cannot set px, thin is the minimum) */
-	scrollbar-color: transparent transparent; /* hidden by default */
 	position: sticky;
 	top: 0;
 	z-index: 100;
+	
+	/* Enhanced scrollbar styling for better visibility */
+	scrollbar-width: thin;
+	scrollbar-color: #555 transparent;
+	
 	&::-webkit-scrollbar {
-		height: 3px; /* thinner and stable height */
+		height: 4px;
 	}
 	&::-webkit-scrollbar-thumb {
-		background: transparent; /* hidden by default */
-		border-radius: 3px;
+		background: #555;
+		border-radius: 2px;
 	}
 	&::-webkit-scrollbar-track {
 		background: transparent;
 	}
-	/* On hover, reveal the thumb without changing height */
-	&:hover {
-		scrollbar-color: #555 transparent;
+	&::-webkit-scrollbar-thumb:hover {
+		background: #777;
 	}
-	&:hover::-webkit-scrollbar {
-		height: 3px;
+	
+	/* Fade indicators for scrollable content */
+	&::before,
+	&::after {
+		content: '';
+		position: absolute;
+		top: 0;
+		width: 20px;
+		height: 100%;
+		pointer-events: none;
+		z-index: 1;
+		transition: opacity 0.2s ease;
 	}
-	&:hover::-webkit-scrollbar-thumb {
-		background: #555;
+	
+	&::before {
+		left: 0;
+		background: linear-gradient(to right, #2d2d30 0%, transparent 100%);
+		opacity: 0;
+	}
+	
+	&::after {
+		right: 0;
+		background: linear-gradient(to left, #2d2d30 0%, transparent 100%);
+		opacity: 0;
+	}
+	
+	&.can-scroll-left::before {
+		opacity: 1;
+	}
+	
+	&.can-scroll-right::after {
+		opacity: 1;
 	}
 `;
 
 const Tab = styled.div<{ $isActive: boolean }>`
-	padding: 8px 16px;
+	padding: 8px 8px 8px 12px;
 	font-size: ${typography.base};
 	cursor: pointer;
 	border-right: 1px solid #3e3e42;
@@ -72,20 +100,46 @@ const Tab = styled.div<{ $isActive: boolean }>`
 	color: ${(props) => (props.$isActive ? "#ffffff" : "#cccccc")};
 	white-space: nowrap;
 	flex: 0 0 auto; /* prevent shrinking/wrapping */
-	max-width: 260px;
-	overflow: hidden;
-	text-overflow: ellipsis;
+	width: 180px; /* Fixed width for consistent sizing */
+	display: flex;
+	align-items: center;
+	gap: 6px;
 
 	&:hover {
 		background-color: ${(props) => (props.$isActive ? "#1e1e1e" : "#383838")};
 	}
 
+	.tab-title {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		line-height: 1.2;
+	}
+
 	.close {
-		margin-left: 8px;
-		opacity: 0.6;
+		flex: 0 0 auto;
+		opacity: 0.5;
+		width: 20px;
+		height: 20px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		border-radius: 3px;
+		font-size: 16px;
+		line-height: 1;
+		margin-left: auto; /* Push to right edge */
+		background-color: transparent;
+		transition: all 0.15s ease;
 
 		&:hover {
 			opacity: 1;
+			background-color: rgba(255, 255, 255, 0.15);
+			transform: scale(1.1);
+		}
+
+		&:active {
+			transform: scale(0.95);
 		}
 	}
 `;
@@ -105,17 +159,6 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 ) => {
 	// Horizontal scrolling for TabBar with mouse wheel (convert vertical wheel to horizontal)
 	const tabBarRef = useRef<HTMLDivElement | null>(null);
-	const handleTabBarWheel = useCallback(
-		(e: React.WheelEvent<HTMLDivElement>) => {
-			const el = tabBarRef.current;
-			if (!el) return;
-			if (Math.abs(e.deltaY) >= Math.abs(e.deltaX)) {
-				el.scrollLeft += e.deltaY;
-				e.preventDefault();
-			}
-		},
-		[]
-	);
 	const { state: workspaceState, dispatch: workspaceDispatch } =
 		useWorkspaceContext();
 	const { state: uiState, dispatch: uiDispatch } = useUIContext();
@@ -127,6 +170,56 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 	const [sshError, setSshError] = useState<string | null>(null);
 	const [showRemoteFolderModal, setShowRemoteFolderModal] = useState(false);
 	const [sshUsername, setSshUsername] = useState<string>("");
+	const [canScrollLeft, setCanScrollLeft] = useState(false);
+	const [canScrollRight, setCanScrollRight] = useState(false);
+
+	// Check scroll capability
+	const checkScrollCapability = useCallback(() => {
+		const el = tabBarRef.current;
+		if (!el) return;
+		
+		const canScrollL = el.scrollLeft > 0;
+		const canScrollR = el.scrollLeft < (el.scrollWidth - el.clientWidth);
+		
+		setCanScrollLeft(canScrollL);
+		setCanScrollRight(canScrollR);
+	}, []);
+
+	// Monitor tab bar scroll capability and handle wheel events
+	useEffect(() => {
+		const el = tabBarRef.current;
+		if (!el) return;
+
+		checkScrollCapability();
+		
+		const handleScroll = () => checkScrollCapability();
+		const handleResize = () => checkScrollCapability();
+		
+		// Handle wheel events for horizontal scrolling (using native listener to avoid passive event issues)
+		const handleWheel = (e: WheelEvent) => {
+			// Only handle vertical scrolling when horizontal scroll is possible
+			if (Math.abs(e.deltaY) >= Math.abs(e.deltaX) && (el.scrollWidth > el.clientWidth)) {
+				// Check if we can scroll in the intended direction
+				const newScrollLeft = el.scrollLeft + e.deltaY;
+				const maxScrollLeft = el.scrollWidth - el.clientWidth;
+				
+				if (newScrollLeft >= 0 && newScrollLeft <= maxScrollLeft) {
+					el.scrollLeft = newScrollLeft;
+					e.preventDefault();
+				}
+			}
+		};
+		
+		el.addEventListener('scroll', handleScroll);
+		el.addEventListener('wheel', handleWheel, { passive: false });
+		window.addEventListener('resize', handleResize);
+		
+		return () => {
+			el.removeEventListener('scroll', handleScroll);
+			el.removeEventListener('wheel', handleWheel);
+			window.removeEventListener('resize', handleResize);
+		};
+	}, [checkScrollCapability, workspaceState.openFiles]);
 
 	useEffect(() => {
 		async function syncRecentWorkspaces() {
@@ -349,6 +442,15 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 		workspaceDispatch({ type: "CLOSE_FILE", payload: filePath });
 	};
 
+	const handleTabMouseDown = (e: React.MouseEvent, filePath: string) => {
+		// Middle click (button 1) closes the tab
+		if (e.button === 1) {
+			e.preventDefault();
+			e.stopPropagation();
+			workspaceDispatch({ type: "CLOSE_FILE", payload: filePath });
+		}
+	};
+
 	const renderTabBar = () => {
 		// Always include the active file in addition to open files (ensures .ipynb doesn't hide others)
 		const files: string[] = Array.from(
@@ -374,9 +476,10 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 					onClick={() =>
 						workspaceDispatch({ type: "SET_ACTIVE_FILE", payload: filePath })
 					}
+					onMouseDown={(e) => handleTabMouseDown(e, filePath)}
 					title={filePath}
 				>
-					{fileName}
+					<span className="tab-title">{fileName}</span>
 					<span className="close" onClick={(e) => handleTabClose(e, filePath)}>
 						×
 					</span>
@@ -498,7 +601,10 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 			{(() => {
 				const tabs = renderTabBar();
 				return tabs && tabs.length > 0 ? (
-					<TabBar ref={tabBarRef} onWheel={handleTabBarWheel}>
+					<TabBar 
+						ref={tabBarRef} 
+						className={`${canScrollLeft ? 'can-scroll-left' : ''} ${canScrollRight ? 'can-scroll-right' : ''}`}
+					>
 						{tabs}
 					</TabBar>
 				) : null;

@@ -11,7 +11,7 @@ import { SearchConfig } from "../../config/SearchConfig";
 import { useChatIntent } from "../../hooks/useChatIntent";
 import { DatasetSelectionModal } from "./DatasetSelectionModal";
 import { ChatMessage } from "./ChatMessage";
-import { FiMinimize2, FiMaximize2, FiPlus, FiClock, FiX } from "react-icons/fi";
+import { FiMinimize2, FiMaximize2, FiPlus, FiClock, FiX, FiTrash2 } from "react-icons/fi";
 import { CodeBlock } from "./shared/CodeBlock";
 import { Composer } from "./Composer";
 import { MentionSuggestions } from "./MentionSuggestions";
@@ -136,6 +136,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		useState<DataTypeSuggestions | null>(null);
 	const localRegistryRef = useRef<LocalDatasetRegistry | null>(null);
 	const [showHistoryMenu, setShowHistoryMenu] = useState<boolean>(false);
+	const [showDeleteMenu, setShowDeleteMenu] = useState<boolean>(false);
 	const [showExamples, setShowExamples] = useState<boolean>(true);
 
 	// Chat mode: "Agent" (default) or "Ask"
@@ -3305,6 +3306,72 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		handleSendMessage,
 	]);
 
+	// Delete chat functions
+	const handleDeleteChat = async (sessionId: string) => {
+		try {
+			const ws = workspaceState.currentWorkspace;
+			if (!ws) return;
+
+			// Remove from sessions list
+			const updatedSessions = analysisState.chatSessions.filter(s => s.id !== sessionId);
+			
+			// Delete session data
+			const sessionKey = `chat:session:${ws}:${sessionId}`;
+			await electronAPI.storeSet(sessionKey, []);
+			
+			// Update sessions list
+			const sessionsKey = `chat:sessions:${ws}`;
+			await electronAPI.storeSet(sessionsKey, updatedSessions);
+			
+			// If deleting the active session, switch to the first available session or create new
+			if (sessionId === analysisState.activeChatSessionId) {
+				if (updatedSessions.length > 0) {
+					analysisDispatch({ type: "SET_ACTIVE_CHAT_SESSION", payload: updatedSessions[0].id });
+				} else {
+					analysisDispatch({ type: "NEW_CHAT_SESSION" });
+				}
+			}
+			
+			// Update local state
+			analysisDispatch({ type: "SET_CHAT_SESSIONS", payload: updatedSessions });
+			setShowDeleteMenu(false);
+		} catch (error) {
+			console.error("Failed to delete chat:", error);
+		}
+	};
+
+	const handleDeleteAllChats = async () => {
+		try {
+			const ws = workspaceState.currentWorkspace;
+			if (!ws) return;
+
+			// Delete all session data
+			for (const session of analysisState.chatSessions) {
+				const sessionKey = `chat:session:${ws}:${session.id}`;
+				await electronAPI.storeSet(sessionKey, []);
+			}
+			
+			// Clear sessions list
+			const sessionsKey = `chat:sessions:${ws}`;
+			await electronAPI.storeSet(sessionsKey, []);
+			
+			// Clear active session
+			const activeKey = `chat:activeSession:${ws}`;
+			await electronAPI.storeSet(activeKey, null);
+			
+			// Clear the local state immediately
+			analysisDispatch({ type: "SET_CHAT_SESSIONS", payload: [] });
+			analysisDispatch({ type: "SET_ACTIVE_CHAT_SESSION", payload: null });
+			analysisDispatch({ type: "SET_CHAT_MESSAGES", payload: [] });
+			
+			// Create new chat session
+			analysisDispatch({ type: "NEW_CHAT_SESSION" });
+			setShowDeleteMenu(false);
+		} catch (error) {
+			console.error("Failed to delete all chats:", error);
+		}
+	};
+
 	return (
 		<div className={`chat-panel ${className || ""}`}>
 			<div className="chat-header">
@@ -3431,9 +3498,76 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 									color: "#999",
 									fontSize: 12,
 									borderBottom: "1px solid #3e3e42",
+									display: "flex",
+									alignItems: "center",
+									justifyContent: "space-between",
+									position: "relative",
 								}}
 							>
-								Sessions
+								<span>Sessions</span>
+								<button
+									style={{
+										background: "none",
+										border: "none",
+										color: "#999",
+										cursor: "pointer",
+										fontSize: 14,
+										padding: "2px 4px",
+										borderRadius: "3px",
+										lineHeight: 1,
+									}}
+									onClick={(e) => {
+										e.stopPropagation();
+										setShowDeleteMenu(!showDeleteMenu);
+									}}
+									onMouseEnter={(e) => {
+										e.currentTarget.style.background = "rgba(255,255,255,0.1)";
+									}}
+									onMouseLeave={(e) => {
+										e.currentTarget.style.background = "none";
+									}}
+								>
+									⋯
+								</button>
+								{showDeleteMenu && (
+									<div
+										style={{
+											position: "absolute",
+											top: "100%",
+											right: 0,
+											background: "#3a3a3a",
+											border: "1px solid #555",
+											borderRadius: "4px",
+											minWidth: "160px",
+											boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+											zIndex: 20,
+										}}
+										onMouseLeave={() => setShowDeleteMenu(false)}
+									>
+										<div
+											style={{
+												padding: "8px 12px",
+												fontSize: 12,
+												color: "#ddd",
+												cursor: "pointer",
+												borderBottom: "1px solid #555",
+											}}
+											onClick={() => {
+												if (window.confirm("Are you sure you want to delete all chat history?")) {
+													handleDeleteAllChats();
+												}
+											}}
+											onMouseEnter={(e) => {
+												e.currentTarget.style.background = "rgba(255,255,255,0.1)";
+											}}
+											onMouseLeave={(e) => {
+												e.currentTarget.style.background = "transparent";
+											}}
+										>
+											Delete All Chats
+										</div>
+									</div>
+								)}
 							</div>
 							{(((analysisState as any).chatSessions || []) as Array<any>)
 								.length === 0 && (
@@ -3504,6 +3638,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 												gap: 2,
 												width: "100%",
 												background: isActive ? "#37373d" : "transparent",
+												position: "relative",
+											}}
+											onMouseEnter={(e) => {
+												const deleteBtn = e.currentTarget.querySelector('.delete-chat-btn') as HTMLElement;
+												if (deleteBtn) deleteBtn.style.opacity = '1';
+											}}
+											onMouseLeave={(e) => {
+												const deleteBtn = e.currentTarget.querySelector('.delete-chat-btn') as HTMLElement;
+												if (deleteBtn) deleteBtn.style.opacity = '0';
 											}}
 										>
 											<div
@@ -3513,9 +3656,51 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 													whiteSpace: "nowrap",
 													overflow: "hidden",
 													textOverflow: "ellipsis",
+													display: "flex",
+													alignItems: "center",
+													justifyContent: "space-between",
+													gap: 8,
 												}}
 											>
-												{s.title || "Untitled"}
+												<span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+													{s.title || "Untitled"}
+												</span>
+												<button
+													className="delete-chat-btn"
+													style={{
+														background: "none",
+														border: "none",
+														color: "#999",
+														cursor: "pointer",
+														fontSize: 12,
+														padding: "2px",
+														borderRadius: "2px",
+														opacity: 0,
+														transition: "opacity 0.2s, background 0.2s",
+														flex: "0 0 auto",
+														width: "16px",
+														height: "16px",
+														display: "flex",
+														alignItems: "center",
+														justifyContent: "center",
+													}}
+													onClick={(e) => {
+														e.stopPropagation();
+														if (window.confirm(`Delete chat "${s.title || 'Untitled'}"?`)) {
+															handleDeleteChat(s.id);
+														}
+													}}
+													onMouseEnter={(e) => {
+														e.currentTarget.style.background = "rgba(255,255,255,0.1)";
+														e.currentTarget.style.color = "#ff6b6b";
+													}}
+													onMouseLeave={(e) => {
+														e.currentTarget.style.background = "none";
+														e.currentTarget.style.color = "#999";
+													}}
+												>
+													<FiTrash2 size={12} />
+												</button>
 											</div>
 											{s.lastMessagePreview && (
 												<div
