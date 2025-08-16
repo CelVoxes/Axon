@@ -728,30 +728,251 @@ export class AxonApp {
 		const { promisify } = require("util");
 		const execFileAsync = promisify(execFile);
 
-		// Try different Python commands in order of preference
-		const pythonCommands = [
-			"python3",
-			"python",
-			"/usr/bin/python3",
-			"/usr/local/bin/python3",
-			"/opt/homebrew/bin/python3", // Homebrew on Apple Silicon
-		];
+		const MINIMUM_PYTHON_VERSION = "3.11.0";
 
-		for (const cmd of pythonCommands) {
+		// Check if we have app-managed Python first
+		const appPythonPath = path.join(app.getPath('userData'), 'python3.11', 'bin', 'python3');
+		if (fs.existsSync(appPythonPath)) {
 			try {
-				const result = await execFileAsync(cmd, ["--version"]);
-				console.log(`Found Python at: ${cmd} - ${result.stdout.trim()}`);
-				return cmd;
+				const version = await this.getPythonVersion(appPythonPath);
+				if (this.isVersionSufficient(version, MINIMUM_PYTHON_VERSION)) {
+					console.log(`Using app-managed Python: ${appPythonPath} - ${version}`);
+					return appPythonPath;
+				}
 			} catch (error) {
-				console.log(`Python command ${cmd} not available`);
-				// Continue to next command
+				console.log("App-managed Python not working, will re-download");
 			}
 		}
 
-		// Fallback to stored preference or default
-		const storedPath = store.get("pythonPath", "python3") as string;
-		console.log(`Using fallback Python path: ${storedPath}`);
-		return storedPath;
+		// Try to find suitable system Python (3.11+)
+		const pythonCommands = [
+			"python3.12",
+			"python3.11",
+			"/opt/homebrew/bin/python3.12",
+			"/opt/homebrew/bin/python3.11", 
+			"/opt/homebrew/bin/python3",
+			"/usr/local/bin/python3.12",
+			"/usr/local/bin/python3.11",
+			"/usr/local/bin/python3",
+			"python3",
+			"python",
+			"/usr/bin/python3",
+		];
+
+		let foundAnyPython = false;
+		for (const cmd of pythonCommands) {
+			try {
+				const version = await this.getPythonVersion(cmd);
+				console.log(`Found Python at: ${cmd} - ${version}`);
+				foundAnyPython = true;
+				
+				if (this.isVersionSufficient(version, MINIMUM_PYTHON_VERSION)) {
+					console.log(`✅ Suitable Python found: ${cmd} - ${version}`);
+					return cmd;
+				} else {
+					console.log(`⚠️ Python too old: ${cmd} - ${version} (need ${MINIMUM_PYTHON_VERSION}+)`);
+				}
+			} catch (error) {
+				console.log(`Python command ${cmd} not available`);
+			}
+		}
+
+		// No suitable Python found, download Python 3.11
+		if (foundAnyPython) {
+			console.log("Found Python but too old, downloading Python 3.11...");
+		} else {
+			console.log("No Python found on system, downloading Python 3.11...");
+		}
+		await this.downloadAndSetupPython();
+		return appPythonPath;
+	}
+
+	private async getPythonVersion(pythonPath: string): Promise<string> {
+		const { execFile } = require("child_process");
+		const { promisify } = require("util");
+		const execFileAsync = promisify(execFile);
+		
+		const result = await execFileAsync(pythonPath, ["--version"]);
+		// Extract version from "Python 3.11.7" format
+		const versionMatch = result.stdout.trim().match(/Python (\d+\.\d+\.\d+)/);
+		return versionMatch ? versionMatch[1] : "0.0.0";
+	}
+
+	private isVersionSufficient(currentVersion: string, minVersion: string): boolean {
+		const current = currentVersion.split('.').map(Number);
+		const minimum = minVersion.split('.').map(Number);
+		
+		for (let i = 0; i < 3; i++) {
+			if (current[i] > minimum[i]) return true;
+			if (current[i] < minimum[i]) return false;
+		}
+		return true; // Equal versions are sufficient
+	}
+
+	private async downloadAndSetupPython(): Promise<void> {
+		// Notify user about Python setup
+		this.mainWindow?.webContents.send("python-setup-status", {
+			status: "required",
+			message: "Setting up Python 3.11 for optimal data science compatibility...",
+			reason: "No suitable Python found on your system (need Python 3.11+)",
+			timestamp: new Date().toISOString(),
+		});
+
+		try {
+			const pythonDir = path.join(app.getPath('userData'), 'python3.11');
+			
+			// Ensure directory exists
+			if (!fs.existsSync(pythonDir)) {
+				fs.mkdirSync(pythonDir, { recursive: true });
+			}
+
+			// Download Python based on platform
+			const platform = process.platform;
+			let downloadUrl: string;
+			let pythonVersion = "3.11.7";
+
+			if (platform === "darwin") {
+				// Use portable Python build for macOS (no sudo required)
+				const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
+				downloadUrl = `https://github.com/indygreg/python-build-standalone/releases/download/20231002/cpython-${pythonVersion}+20231002-${arch}-apple-darwin-install_only.tar.gz`;
+			} else if (platform === "win32") {
+				downloadUrl = `https://www.python.org/ftp/python/${pythonVersion}/python-${pythonVersion}-embed-amd64.zip`;
+			} else {
+				// Linux - use portable Python build
+				downloadUrl = `https://github.com/indygreg/python-build-standalone/releases/download/20231002/cpython-${pythonVersion}+20231002-x86_64-unknown-linux-gnu-install_only.tar.gz`;
+			}
+
+			this.mainWindow?.webContents.send("python-setup-status", {
+				status: "downloading",
+				message: `Downloading Python ${pythonVersion}...`,
+				progress: 0,
+				timestamp: new Date().toISOString(),
+			});
+
+			await this.downloadPythonFromUrl(downloadUrl, pythonDir, pythonVersion);
+
+			this.mainWindow?.webContents.send("python-setup-status", {
+				status: "completed",
+				message: `✅ Python ${pythonVersion} ready for data analysis`,
+				timestamp: new Date().toISOString(),
+			});
+
+		} catch (error) {
+			console.error("Failed to download Python:", error);
+			this.mainWindow?.webContents.send("python-setup-status", {
+				status: "error",
+				message: "Failed to setup Python. Please install Python 3.11+ manually.",
+				error: error instanceof Error ? error.message : String(error),
+				timestamp: new Date().toISOString(),
+			});
+			throw error;
+		}
+	}
+
+	private async downloadPythonFromUrl(url: string, targetDir: string, version: string): Promise<void> {
+		const https = require('https');
+		const fs = require('fs');
+		const path = require('path');
+
+		return new Promise((resolve, reject) => {
+			const fileName = path.basename(url);
+			const filePath = path.join(targetDir, fileName);
+
+			const file = fs.createWriteStream(filePath);
+			let downloadedBytes = 0;
+			let totalBytes = 0;
+
+			const request = https.get(url, (response: any) => {
+				if (response.statusCode !== 200) {
+					reject(new Error(`Download failed: ${response.statusCode}`));
+					return;
+				}
+
+				totalBytes = parseInt(response.headers['content-length'] || '0', 10);
+
+				response.on('data', (chunk: Buffer) => {
+					downloadedBytes += chunk.length;
+					const progress = totalBytes > 0 ? Math.round((downloadedBytes / totalBytes) * 100) : 0;
+					
+					this.mainWindow?.webContents.send("python-setup-status", {
+						status: "downloading",
+						message: `Downloading Python ${version} (${Math.round(downloadedBytes / 1024 / 1024)}MB of ${Math.round(totalBytes / 1024 / 1024)}MB)...`,
+						progress,
+						timestamp: new Date().toISOString(),
+					});
+				});
+
+				response.pipe(file);
+
+				file.on('finish', async () => {
+					file.close();
+					
+					try {
+						// Extract and setup Python based on file type
+						await this.extractAndSetupPython(filePath, targetDir, version);
+						resolve();
+					} catch (error) {
+						reject(error);
+					}
+				});
+			});
+
+			request.on('error', reject);
+			file.on('error', reject);
+		});
+	}
+
+	private async extractAndSetupPython(filePath: string, targetDir: string, version: string): Promise<void> {
+		const { promisify } = require('util');
+		const exec = promisify(require('child_process').exec);
+
+		this.mainWindow?.webContents.send("python-setup-status", {
+			status: "installing",
+			message: `Setting up Python ${version}...`,
+			timestamp: new Date().toISOString(),
+		});
+
+		try {
+			if (filePath.endsWith('.zip')) {
+				// Extract ZIP file (Windows) - pure Node.js implementation
+				const AdmZip = require('adm-zip');
+				const zip = new AdmZip(filePath);
+				zip.extractAllTo(targetDir, true);
+			} else if (filePath.endsWith('.tar.gz')) {
+				// Extract tar.gz file (Linux) - use Node.js if tar not available
+				try {
+					await exec(`tar -xzf "${filePath}" -C "${targetDir}"`);
+				} catch (tarError) {
+					// Fallback: try to extract with Node.js zlib
+					console.log("tar command not available, attempting Node.js extraction...");
+					await this.extractTarGzWithNodeJs(filePath, targetDir);
+				}
+			}
+
+			// Clean up downloaded file
+			fs.unlinkSync(filePath);
+		} catch (error) {
+			console.error("Python extraction failed:", error);
+			throw new Error(`Failed to extract Python: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	private async extractTarGzWithNodeJs(filePath: string, targetDir: string): Promise<void> {
+		const zlib = require('zlib');
+		const tar = require('tar');
+		const fs = require('fs');
+		
+		// Create read stream -> gunzip -> tar extract
+		const readStream = fs.createReadStream(filePath);
+		const gunzip = zlib.createGunzip();
+		
+		return new Promise((resolve, reject) => {
+			readStream
+				.pipe(gunzip)
+				.pipe(tar.extract({ cwd: targetDir }))
+				.on('error', reject)
+				.on('end', resolve);
+		});
 	}
 
 	private async startJupyterIfNeeded(
@@ -1268,6 +1489,47 @@ export class AxonApp {
 			try {
 				console.log(`Creating virtual environment in: ${workspacePath}`);
 
+				// First, look for existing venv in current directory and parent directories
+				const findExistingVenv = (basePath: string): string | null => {
+					const pathParts = basePath.split(path.sep);
+					
+					// Check current directory and up to 3 levels up
+					for (let i = 0; i <= 3 && pathParts.length > i; i++) {
+						const checkPath = pathParts.slice(0, pathParts.length - i).join(path.sep);
+						if (!checkPath) continue;
+						
+						const venvPath = path.join(checkPath, "venv");
+						const pythonExe = process.platform === "win32" 
+							? path.join(venvPath, "Scripts", "python.exe")
+							: path.join(venvPath, "bin", "python");
+							
+						if (fs.existsSync(pythonExe)) {
+							console.log(`Found existing venv at: ${venvPath}`);
+							return checkPath;
+						}
+					}
+					return null;
+				};
+
+				// Check if we should use an existing venv instead of creating a new one
+				const existingWorkspace = findExistingVenv(workspacePath);
+				if (existingWorkspace) {
+					console.log(`Found existing venv at workspace: ${existingWorkspace}`);
+					
+					// Notify renderer about using existing environment
+					this.mainWindow?.webContents.send("virtual-env-status", {
+						status: "existing",
+						message: `Using existing virtual environment from ${existingWorkspace}`,
+						timestamp: new Date().toISOString(),
+					});
+					
+					return {
+						success: true,
+						actualWorkspace: existingWorkspace,
+						message: `Using existing virtual environment from ${existingWorkspace}`,
+					};
+				}
+
 				// Notify renderer about virtual environment creation
 				this.mainWindow?.webContents.send("virtual-env-status", {
 					status: "creating",
@@ -1451,6 +1713,7 @@ export class AxonApp {
 					venvPath: venvPath,
 					pythonPath: pythonVenvPath,
 					kernelName: kernelName,
+					actualWorkspace: workspacePath,
 				};
 			} catch (error) {
 				console.error("Failed to create virtual environment:", error);

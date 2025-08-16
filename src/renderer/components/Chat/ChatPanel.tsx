@@ -48,6 +48,55 @@ import { NotebookService } from "../../services/NotebookService";
 
 // Using Message interface from AnalysisContext
 
+// Utility function to group chat sessions by time periods
+function groupSessionsByTime(sessions: any[]) {
+	const now = new Date();
+	const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+	const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+	const twoDaysAgo = new Date(today.getTime() - 2 * 24 * 60 * 60 * 1000);
+	const threeDaysAgo = new Date(today.getTime() - 3 * 24 * 60 * 60 * 1000);
+	const oneWeekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+	const groups = {
+		today: [] as any[],
+		yesterday: [] as any[],
+		"2d ago": [] as any[],
+		"3d ago": [] as any[],
+		"this week": [] as any[],
+		older: [] as any[]
+	};
+
+	sessions.forEach(session => {
+		const sessionDate = new Date(session.updatedAt || session.createdAt);
+		const sessionDay = new Date(sessionDate.getFullYear(), sessionDate.getMonth(), sessionDate.getDate());
+
+		if (sessionDay.getTime() >= today.getTime()) {
+			groups.today.push(session);
+		} else if (sessionDay.getTime() >= yesterday.getTime()) {
+			groups.yesterday.push(session);
+		} else if (sessionDay.getTime() >= twoDaysAgo.getTime()) {
+			groups["2d ago"].push(session);
+		} else if (sessionDay.getTime() >= threeDaysAgo.getTime()) {
+			groups["3d ago"].push(session);
+		} else if (sessionDay.getTime() >= oneWeekAgo.getTime()) {
+			groups["this week"].push(session);
+		} else {
+			groups.older.push(session);
+		}
+	});
+
+	// Sort sessions within each group by updatedAt (most recent first)
+	Object.keys(groups).forEach(key => {
+		groups[key as keyof typeof groups].sort((a, b) => {
+			const aTime = new Date(a.updatedAt || a.createdAt).getTime();
+			const bTime = new Date(b.updatedAt || b.createdAt).getTime();
+			return bTime - aTime;
+		});
+	});
+
+	return groups;
+}
+
 interface ChatPanelProps {
 	className?: string;
 }
@@ -355,6 +404,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				addMessage(`Installing: ${data.package}`, false);
 			} else if (data.status === "packages_installed") {
 				addMessage(`${data.message}`, false);
+			} else if (data.status === "existing") {
+				addMessage(`♻️ ${data.message}`, false);
 			} else if (data.status === "completed") {
 				addMessage(`${data.message}`, false);
 			} else if (data.status === "error") {
@@ -374,6 +425,36 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 		};
 
+		// Listen for Python setup status updates
+		const handlePythonSetupStatus = (data: any) => {
+			if (!isMounted) return;
+			setVirtualEnvStatus(data.message || "");
+			
+			if (data.status === "required") {
+				addMessage(`🐍 ${data.message}`, false);
+				if (data.reason) {
+					addMessage(`💡 ${data.reason}`, false);
+				}
+				addMessage(`📦 This is a one-time setup for optimal compatibility`, false);
+			} else if (data.status === "downloading") {
+				// Update status but don't spam chat with download progress
+				if (data.progress && data.progress % 25 === 0) {
+					addMessage(`📥 ${data.message}`, false);
+				}
+			} else if (data.status === "installing") {
+				addMessage(`⚙️ ${data.message}`, false);
+			} else if (data.status === "completed") {
+				addMessage(`✅ ${data.message}`, false);
+				addMessage(`🚀 Ready for data analysis with modern Python!`, false);
+			} else if (data.status === "error") {
+				addMessage(`❌ ${data.message}`, false);
+				if (data.error) {
+					addMessage(`Error details: ${data.error}`, false);
+				}
+				addMessage(`💡 You can install Python 3.11+ manually as an alternative`, false);
+			}
+		};
+
 		// Add event listeners
 		window.addEventListener(
 			"virtual-env-status",
@@ -382,6 +463,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		window.addEventListener(
 			"jupyter-ready",
 			handleJupyterReady as EventListener
+		);
+		window.addEventListener(
+			"python-setup-status",
+			handlePythonSetupStatus as EventListener
 		);
 
 		// Cleanup
@@ -394,6 +479,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			window.removeEventListener(
 				"jupyter-ready",
 				handleJupyterReady as EventListener
+			);
+			window.removeEventListener(
+				"python-setup-status",
+				handlePythonSetupStatus as EventListener
 			);
 		};
 	}, []);
@@ -3352,7 +3441,38 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 									No previous chats
 								</div>
 							)}
-							{(((analysisState as any).chatSessions || []) as Array<any>).map(
+							{(() => {
+								const sessions = ((analysisState as any).chatSessions || []) as Array<any>;
+								if (sessions.length === 0) return null;
+								
+								const groupedSessions = groupSessionsByTime(sessions);
+								const groupOrder = ['today', 'yesterday', '2d ago', '3d ago', 'this week', 'older'];
+								
+								return groupOrder.map(groupKey => {
+									const groupSessions = groupedSessions[groupKey as keyof typeof groupedSessions];
+									if (groupSessions.length === 0) return null;
+									
+									return (
+										<div key={groupKey}>
+											<div
+												style={{
+													padding: "8px 12px 4px 12px",
+													color: "#666",
+													fontSize: 11,
+													fontWeight: 600,
+													textTransform: "uppercase",
+													letterSpacing: "0.5px",
+													borderBottom: groupKey !== groupOrder[groupOrder.length - 1] ? "1px solid #2a2a2a" : "none",
+													marginBottom: 2
+												}}
+											>
+												{groupKey === 'today' ? 'Today' : 
+												 groupKey === 'yesterday' ? 'Yesterday' :
+												 groupKey === '2d ago' ? '2d ago' :
+												 groupKey === '3d ago' ? '3d ago' :
+												 groupKey === 'this week' ? 'This week' : 'Older'}
+											</div>
+											{groupSessions.map(
 								(s: any) => {
 									const isActive =
 										s.id === (analysisState as any).activeChatSessionId;
@@ -3412,8 +3532,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 											)}
 										</div>
 									);
-								}
-							)}
+								})}
+						</div>
+					);
+				});
+			})()}
 						</div>
 					)}
 				</div>

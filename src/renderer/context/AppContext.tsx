@@ -317,6 +317,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 }) => {
 	const [state, dispatch] = useReducer(appReducer, initialState);
 	const restoredWorkspaceRef = useRef<string | null>(null);
+	const sessionSwitchingRef = useRef<boolean>(false);
+	const lastPersistedSessionRef = useRef<string | null>(null);
 
 	// Memoize slice states so provider values only change when relevant fields change
 	const workspaceSlice = useMemo(
@@ -466,6 +468,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 				const activeId = state.activeChatSessionId;
 				if (!ws || !activeId) return;
 				if (restoredWorkspaceRef.current !== ws) return;
+				if (sessionSwitchingRef.current) return;
+				
+				// Only persist if we're in the same session as before, to prevent cross-contamination
+				if (lastPersistedSessionRef.current !== activeId) return;
 
 				const sessionKey = `chat:session:${ws}:${activeId}`;
 				await electronAPI.storeSet(sessionKey, state.messages);
@@ -523,11 +529,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
 	// Load messages when active chat session changes
 	useEffect(() => {
+		// Set switching flag immediately when session changes
+		sessionSwitchingRef.current = true;
+		
 		(async () => {
 			try {
 				const ws = state.currentWorkspace;
 				const activeId = state.activeChatSessionId;
-				if (!ws || !activeId) return;
+				if (!ws || !activeId) {
+					sessionSwitchingRef.current = false;
+					return;
+				}
 				const sessionKey = `chat:session:${ws}:${activeId}`;
 				const msgsRes = await electronAPI.storeGet(sessionKey);
 				const restored = (
@@ -538,8 +550,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 					timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
 				}));
 				dispatch({ type: "SET_CHAT_MESSAGES", payload: restored as any });
+				// Allow persistence for this session after loading is complete
+				setTimeout(() => {
+					sessionSwitchingRef.current = false;
+					lastPersistedSessionRef.current = activeId;
+				}, 100);
 			} catch (e) {
 				dispatch({ type: "SET_CHAT_MESSAGES", payload: [] as any });
+				sessionSwitchingRef.current = false;
 			}
 		})();
 	}, [state.currentWorkspace, state.activeChatSessionId]);

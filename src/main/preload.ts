@@ -187,6 +187,12 @@ try {
 			window.dispatchEvent(e);
 		} catch {}
 	});
+	ipcRenderer.on("python-setup-status", (_evt, data) => {
+		try {
+			const e = new CustomEvent("python-setup-status", { detail: data });
+			window.dispatchEvent(e);
+		} catch {}
+	});
 } catch {}
 
 // Type definitions for the exposed API

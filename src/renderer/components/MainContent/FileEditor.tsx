@@ -204,9 +204,16 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			? filePath.substring(0, filePath.lastIndexOf("/"))
 			: undefined;
 		
-		// For notebook files, always use the directory where the notebook is located
-		// This ensures that any local venv or kernels in that directory are used
+		// For notebook files, use intelligent workspace detection
 		if (filePath.endsWith(".ipynb") && fileDirectory) {
+			// Check if there's already a global workspace that contains this file
+			if (workspaceState.currentWorkspace && filePath.startsWith(workspaceState.currentWorkspace)) {
+				return workspaceState.currentWorkspace;
+			}
+			
+			// For notebooks in any directory (including analysis folders), use the directory where the notebook is
+			// This allows the backend to find existing venvs in that directory or create new ones there
+			console.log(`Using notebook directory as workspace: ${fileDirectory}`);
 			return fileDirectory;
 		}
 		

@@ -214,7 +214,8 @@ const MessageTimestamp = styled.div`
 
 const formatTimestamp = (timestamp: Date): string => {
 	const now = new Date();
-	const diff = now.getTime() - timestamp.getTime();
+	const timestampDate = timestamp instanceof Date ? timestamp : new Date(timestamp);
+	const diff = now.getTime() - timestampDate.getTime();
 	const minutes = Math.floor(diff / 60000);
 
 	if (minutes < 1) return "Just now";
@@ -223,7 +224,7 @@ const formatTimestamp = (timestamp: Date): string => {
 	const hours = Math.floor(minutes / 60);
 	if (hours < 24) return `${hours}h ago`;
 
-	return timestamp.toLocaleDateString();
+	return timestampDate.toLocaleDateString();
 };
 
 export const ChatMessage: React.FC<ChatMessageProps> = ({
