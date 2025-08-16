@@ -197,13 +197,41 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	// Get workspace context at the top level to avoid React hooks warning
 	const { state: workspaceState, dispatch: workspaceDispatch } =
 		useWorkspaceContext();
-	// Prefer the directory of the currently open file (e.g., the notebook folder)
-	// Fallback to the globally selected workspace if filePath has no parent
-	const fileDirectory = filePath.includes("/")
-		? filePath.substring(0, filePath.lastIndexOf("/"))
-		: undefined;
-	const workspacePath: string | undefined =
-		fileDirectory || workspaceState.currentWorkspace || undefined;
+	
+	// Find the best workspace path - smart detection of local vs global workspace
+	const findWorkspacePath = (): string | undefined => {
+		const fileDirectory = filePath.includes("/")
+			? filePath.substring(0, filePath.lastIndexOf("/"))
+			: undefined;
+		
+		// For notebook files, always use the directory where the notebook is located
+		// This ensures that any local venv or kernels in that directory are used
+		if (filePath.endsWith(".ipynb") && fileDirectory) {
+			return fileDirectory;
+		}
+		
+		// For non-notebook files, use the previous logic
+		if (fileDirectory) {
+			// If there's no global workspace selected, use file directory
+			if (!workspaceState.currentWorkspace) {
+				return fileDirectory;
+			}
+			
+			// If there is a global workspace, but the file is not under it, 
+			// prefer the file directory
+			if (!filePath.startsWith(workspaceState.currentWorkspace)) {
+				return fileDirectory;
+			}
+			
+			// File is under the global workspace, use global workspace
+			return workspaceState.currentWorkspace;
+		}
+		
+		// No file directory, fall back to global workspace
+		return workspaceState.currentWorkspace || undefined;
+	};
+	
+	const workspacePath: string | undefined = findWorkspacePath();
 
 	// Queue for events that arrive before notebookData is loaded
 	const [pendingEvents, setPendingEvents] = useState<
@@ -273,16 +301,17 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	};
 
 	// Function to save notebook to file (used by manual Save and debounced queue)
-	const saveNotebookToFile = async (notebook: NotebookData) => {
+	const saveNotebookToFile = async (notebook: NotebookData, skipVersionDetection = false) => {
 		try {
-			// Try to detect the actual Python version from the active kernel
-			try {
-				if (
-					notebook?.metadata?.language_info?.name === "python" &&
-					workspacePath
-				) {
+			let finalNotebook = notebook;
+
+			// Only try to detect Python version if explicitly requested and not skipped
+			if (!skipVersionDetection && notebook?.metadata?.language_info?.name === "python" && workspacePath) {
+				try {
 					let detected = workspacePythonVersionCache.get(workspacePath);
 					if (!detected) {
+						// Only attempt version detection if we have an active kernel
+						// This avoids triggering kernel startup just for saving
 						const res = await electronAPI.executeJupyterCode(
 							"import sys\nprint(sys.version.split(' ')[0])",
 							workspacePath
@@ -296,7 +325,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 						}
 					}
 					if (detected) {
-						notebook = {
+						finalNotebook = {
 							...notebook,
 							metadata: {
 								...notebook.metadata,
@@ -307,26 +336,25 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 							},
 						};
 					}
+				} catch (_) {
+					// Ignore detection failures; keep existing value
 				}
-			} catch (_) {
-				// Ignore detection failures; keep existing value
 			}
 
 			const writeRes = await electronAPI.writeFile(
 				filePath,
-				JSON.stringify(notebook, null, 2)
+				JSON.stringify(finalNotebook, null, 2)
 			);
 			if (!writeRes.success) {
 				throw new Error(writeRes.error || "Failed to write file");
 			}
-			console.log("FileEditor: Notebook auto-saved successfully");
 		} catch (error) {
-			console.error("FileEditor: Error auto-saving notebook:", error);
+			console.error("FileEditor: Error saving notebook:", error);
 		}
 	};
 
 	// Debounced queue for notebook saves to reduce disk churn
-	const queueNotebookSave = (notebook: NotebookData) => {
+	const queueNotebookSave = (notebook: NotebookData, skipVersionDetection = true) => {
 		pendingSaveRef.current = notebook;
 		if (saveTimerRef.current) {
 			clearTimeout(saveTimerRef.current);
@@ -336,7 +364,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			pendingSaveRef.current = null;
 			saveTimerRef.current = null;
 			if (nb) {
-				void saveNotebookToFile(nb);
+				void saveNotebookToFile(nb, skipVersionDetection);
 			}
 		}, saveDebounceMs);
 	};
@@ -680,6 +708,21 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		return () => clearInterval(cleanupInterval);
 	}, [filePath]);
 
+	// Add keyboard shortcut for saving (Cmd+S / Ctrl+S)
+	useEffect(() => {
+		const handleKeyDown = (event: KeyboardEvent) => {
+			if ((event.metaKey || event.ctrlKey) && event.key === 's') {
+				event.preventDefault();
+				if (hasChanges) {
+					saveFile();
+				}
+			}
+		};
+
+		window.addEventListener('keydown', handleKeyDown);
+		return () => window.removeEventListener('keydown', handleKeyDown);
+	}, [hasChanges]); // Re-run when hasChanges state updates
+
 	const isImageFile = (p: string) => {
 		const ext = p.split(".").pop()?.toLowerCase();
 		return ext
@@ -721,13 +764,8 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					// Initialize stable ids for each cell
 					setCellIds((notebook.cells || []).map(() => generateCellId()));
 
-					console.log(`FileEditor: Notebook data loaded for ${filePath}`);
-
 					// Dispatch notebook-ready event after a delay to ensure component is fully mounted
 					setTimeout((): void => {
-						console.log(
-							`FileEditor: Dispatching notebook-ready event for ${filePath}`
-						);
 						const notebookReadyEvent = new CustomEvent("notebook-ready", {
 							detail: { filePath },
 						});
@@ -903,7 +941,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 						return cell;
 					}),
 				};
-				await saveNotebookToFile(updatedNotebook);
+				await saveNotebookToFile(updatedNotebook, true); // Skip version detection for manual saves too
 			} else {
 				const wr = await electronAPI.writeFile(filePath, content);
 				if (!wr.success) throw new Error(wr.error || "Failed to write file");

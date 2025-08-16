@@ -63,7 +63,7 @@ export function useChatIntent(): ChatIntentAPI {
 
 		try {
 			const backendUrl = await (window as any).electronAPI?.getBioragUrl?.();
-			const client = new BackendClient(backendUrl || "http://localhost:8000");
+			const client = new BackendClient(backendUrl);
 			const classifyPromise = client.classifyIntent(message);
 			const result = await Promise.race<Promise<any>>([
 				classifyPromise,

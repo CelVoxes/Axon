@@ -25,6 +25,8 @@ export class ScanpyDocsService {
 	// Cache per workspace+version: `${workspace}|${version}` → index
 	private indexCache = new Map<string, ScanpyIndex>();
 	private building = new Map<string, Promise<ScanpyIndex>>();
+	// Cache version detection to avoid repeated kernel execution
+	private versionCache = new Map<string, string | null>();
 
 	static getInstance(): ScanpyDocsService {
 		if (!this.instance) this.instance = new ScanpyDocsService();
@@ -38,6 +40,11 @@ export class ScanpyDocsService {
 	}
 
 	async detectScanpyVersion(workspaceDir: string): Promise<string | null> {
+		// Check cache first to avoid unnecessary kernel execution
+		if (this.versionCache.has(workspaceDir)) {
+			return this.versionCache.get(workspaceDir) || null;
+		}
+
 		const py = [
 			"import json",
 			"try:",
@@ -51,9 +58,14 @@ export class ScanpyDocsService {
 			const res = await ElectronClient.executeJupyterCode(py, workspaceDir);
 			const text = (res.output || "").trim();
 			const obj = JSON.parse(text || "{}");
-			if (obj && obj.ok) return obj.version || null;
-			return null;
+			const version = obj && obj.ok ? obj.version || null : null;
+			
+			// Cache the result
+			this.versionCache.set(workspaceDir, version);
+			return version;
 		} catch {
+			// Cache null result too
+			this.versionCache.set(workspaceDir, null);
 			return null;
 		}
 	}

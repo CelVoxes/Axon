@@ -375,7 +375,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 				const client = new BackendClient(backendUrl);
 				setAuthService(new AuthService(client));
 			} catch {
-				const client = new BackendClient("http://localhost:8000");
+				const client = new BackendClient();
 				setAuthService(new AuthService(client));
 			}
 		})();

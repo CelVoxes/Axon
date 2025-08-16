@@ -14,7 +14,7 @@
     "prepack": "npm run build"
   },
   "author": "Celvox Team",
-  "license": "MIT",
+  "license": "PROPRIETARY",
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/react": "^18.2.0",
@@ -71,14 +71,9 @@
       "dist/**/*",
       "node_modules/**/*"
     ],
-    "extraResources": [
-      {
-        "from": "backend",
-        "to": "backend"
-      }
-    ],
+    "extraResources": [],
     "mac": {
-      "icon": "src/png/axon-very-rounded-150.icns",
+      "icon": "src/png/axon.icns",
       "target": [
         "dmg",
         "zip"

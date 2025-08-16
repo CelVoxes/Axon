@@ -141,59 +141,7 @@ export class AxonApp {
 	}
 
 	private createMainWindow() {
-		// Use PNG for development, ICNS for production on macOS
-		const isDevelopment = process.env.NODE_ENV === "development";
-		const iconPath =
-			process.platform === "darwin" && !isDevelopment
-				? path.join(__dirname, "..", "png", "axon-very-rounded-150.icns")
-				: path.join(__dirname, "..", "png", "axon-very-rounded-150.png");
-
-		// Reduced logging for cleaner output
-		if (!fs.existsSync(iconPath)) {
-			console.log("Default icon not found, searching alternatives...");
-		}
-
-		// Try alternative icon paths if the first one doesn't exist
-		let finalIconPath = iconPath;
-		if (!fs.existsSync(iconPath)) {
-			const alternativePaths = [
-				path.join(app.getAppPath(), "src", "png", "axon-very-rounded-150.png"),
-				path.join(app.getAppPath(), "dist", "png", "axon-very-rounded-150.png"),
-				path.join(
-					__dirname,
-					"..",
-					"..",
-					"src",
-					"png",
-					"axon-very-rounded-150.png"
-				),
-				// Fallback to other rounded versions
-				path.join(app.getAppPath(), "src", "png", "axon-very-rounded.png"),
-				path.join(app.getAppPath(), "dist", "png", "axon-very-rounded.png"),
-				path.join(__dirname, "..", "..", "src", "png", "axon-very-rounded.png"),
-				// Fallback to original rounded
-				path.join(app.getAppPath(), "src", "png", "axon-rounded.png"),
-				path.join(app.getAppPath(), "dist", "png", "axon-rounded.png"),
-				path.join(__dirname, "..", "..", "src", "png", "axon-rounded.png"),
-				// Final fallback to original
-				path.join(app.getAppPath(), "src", "png", "axon.png"),
-				path.join(app.getAppPath(), "dist", "png", "axon.png"),
-				path.join(__dirname, "..", "..", "src", "png", "axon.png"),
-			];
-
-			for (const altPath of alternativePaths) {
-				if (fs.existsSync(altPath)) {
-					finalIconPath = altPath;
-					console.log("Found icon at:", finalIconPath);
-					break;
-				}
-			}
-		}
-
-		// Only log icon path if there were issues finding it
-		if (finalIconPath !== iconPath) {
-			console.log("Using alternative icon path:", finalIconPath);
-		}
+		const iconPath = path.join(__dirname, "..", "png", "axon-apple-120.png");
 
 		this.mainWindow = new BrowserWindow({
 			width: 1400,
@@ -201,7 +149,7 @@ export class AxonApp {
 			minWidth: 1200,
 			minHeight: 700,
 			title: "Axon",
-			icon: finalIconPath,
+			icon: iconPath,
 			webPreferences: {
 				nodeIntegration: false,
 				contextIsolation: true,
@@ -217,8 +165,8 @@ export class AxonApp {
 
 		// Set dock icon programmatically for macOS
 		if (process.platform === "darwin") {
-			app.dock.setIcon(finalIconPath);
-			console.log("Set dock icon to:", finalIconPath);
+			app.dock.setIcon(iconPath);
+			console.log("Set dock icon to:", iconPath);
 		}
 
 		// Set CSP headers for better security
@@ -2018,6 +1966,10 @@ export class AxonApp {
 			return true;
 		});
 
+		ipcMain.on("app-is-packaged", (event) => {
+			event.returnValue = app.isPackaged;
+		});
+
 		// BioRAG API proxy
 		ipcMain.handle("biorag-query", async (_, query: any) => {
 			try {
@@ -2037,11 +1989,12 @@ export class AxonApp {
 		});
 
 		ipcMain.handle("get-biorag-url", () => {
-			const envUrl = process.env.BACKEND_URL;
-			if (envUrl && typeof envUrl === "string" && envUrl.trim().length > 0) {
-				return envUrl.trim();
+			// Use same logic as ConfigManager: local in dev, remote when packaged
+			if (app.isPackaged) {
+				return "http://axon.celvox.co:8002";
+			} else {
+				return `http://localhost:${this.bioragPort}`;
 			}
-			return `http://localhost:${this.bioragPort}`;
 		});
 
 		// SSH session management (top-level, not nested)

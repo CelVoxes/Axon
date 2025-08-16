@@ -5,26 +5,32 @@ const BundleAnalyzerPlugin =
 	require("webpack-bundle-analyzer").BundleAnalyzerPlugin;
 const NodePolyfillPlugin = require("node-polyfill-webpack-plugin");
 
+// Load environment variables from .env file
+require("dotenv").config();
+
 module.exports = (env, argv) => {
 	const isProduction = argv.mode === "production";
 
 	return {
 		target: "electron-renderer",
-    // Ensure Node built-ins are not externalized; we want browser polyfills
-    externalsPresets: {
-      node: false,
-      electron: false,
-      electronRenderer: false,
-      web: true,
-    },
+		// Ensure Node built-ins are not externalized; we want browser polyfills
+		externalsPresets: {
+			node: false,
+			electron: false,
+			electronRenderer: false,
+			web: true,
+		},
 		externals: [],
 		entry: {
 			main: "./src/renderer/index.tsx",
 		},
 		output: {
 			path: path.resolve(__dirname, "dist"),
-			filename: isProduction ? "[name].[contenthash].js" : "[name].js",
-			clean: isProduction ? true : false,
+			filename: isProduction ? "[name].[fullhash].js" : "[name].js",
+			publicPath: "./",
+			clean: {
+				keep: /main\//,
+			},
 		},
 		module: {
 			rules: [
@@ -100,8 +106,12 @@ module.exports = (env, argv) => {
 			new CopyWebpackPlugin({
 				patterns: [
 					{
-						from: "src/png",
-						to: "png",
+						from: "src/png/axon-apple-120.png",
+						to: "png/axon-apple-120.png",
+					},
+					{
+						from: "src/png/axon-no-background.png",
+						to: "png/axon-no-background.png",
 					},
 				],
 			}),
@@ -112,6 +122,9 @@ module.exports = (env, argv) => {
 			// Add global polyfill for Node.js compatibility
 			new (require("webpack").DefinePlugin)({
 				global: "window",
+				"process.env.BACKEND_URL": JSON.stringify(
+					process.env.BACKEND_URL || ""
+				),
 				"process.env.FIREBASE_API_KEY": JSON.stringify(
 					process.env.FIREBASE_API_KEY || ""
 				),
@@ -133,23 +146,35 @@ module.exports = (env, argv) => {
 		optimization: {
 			usedExports: true,
 			sideEffects: false,
+			providedExports: true,
+			innerGraph: true,
+			mangleExports: isProduction,
 			splitChunks: {
 				chunks: "all",
+				minSize: 20000,
+				maxSize: 250000,
 				cacheGroups: {
 					vendor: {
 						test: /[\\/]node_modules[\\/]/,
 						name: "vendors",
 						chunks: "all",
+						priority: 1,
 					},
 					monaco: {
 						test: /[\\/]node_modules[\\/]@monaco-editor[\\/]/,
 						name: "monaco",
 						chunks: "all",
-						priority: 10,
+						priority: 20,
 					},
 					react: {
 						test: /[\\/]node_modules[\\/](react|react-dom)[\\/]/,
 						name: "react",
+						chunks: "all",
+						priority: 15,
+					},
+					lodash: {
+						test: /[\\/]node_modules[\\/]lodash[\\/]/,
+						name: "lodash",
 						chunks: "all",
 						priority: 10,
 					},
@@ -158,8 +183,8 @@ module.exports = (env, argv) => {
 		},
 		performance: {
 			hints: isProduction ? "warning" : false,
-			maxEntrypointSize: 512000,
-			maxAssetSize: 512000,
+			maxEntrypointSize: 5000000,
+			maxAssetSize: 5000000,
 		},
 	};
 };

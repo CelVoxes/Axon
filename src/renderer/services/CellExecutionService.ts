@@ -63,12 +63,6 @@ async function runNotebookStep(
 ) {
 	let unsubscribe: (() => void) | undefined;
 	try {
-		console.log(
-			`Executing notebook step ${stepId} with code:`,
-			code.substring(0, 100) + "..."
-		);
-		console.log(`Workspace path: ${workspacePath}`);
-		console.log(`Code length: ${code.length} characters`);
 
 		// Check if electronAPI is available
 		if (!window.electronAPI || !window.electronAPI.executeJupyterCode) {
@@ -197,7 +191,6 @@ export class CellExecutionService implements ICodeExecutor {
 				200
 			)}...`
 		);
-		console.log(`CellExecutionService: Workspace path: ${this.workspacePath}`);
 
 		// Create abort controller for this execution
 		const abortController = new AbortController();

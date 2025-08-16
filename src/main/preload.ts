@@ -73,6 +73,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	storeSet: (key: string, value: any) =>
 		ipcRenderer.invoke("store-set", key, value),
 
+	// App operations
+	isPackaged: () => ipcRenderer.sendSync("app-is-packaged"),
+
 	// BioRAG operations
 	bioragQuery: (query: any) => ipcRenderer.invoke("biorag-query", query),
 	getBioragPort: () => ipcRenderer.invoke("get-biorag-port"),
@@ -244,6 +247,8 @@ export interface ElectronAPI {
 
 	storeGet: (key: string) => Promise<any>;
 	storeSet: (key: string, value: any) => Promise<boolean>;
+
+	isPackaged: () => boolean;
 
 	bioragQuery: (query: any) => Promise<any>;
 	getBioragPort: () => Promise<any>;

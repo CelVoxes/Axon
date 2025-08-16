@@ -317,11 +317,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				console.log("✅ BackendClient initialized with URL:", backendUrl);
 			} catch (error) {
 				console.error("Failed to get backend URL, using default:", error);
-				const client = new BackendClient("http://localhost:8000");
+				const client = new BackendClient();
 				setBackendClient(client);
-				console.log(
-					"⚠️ BackendClient initialized with default URL: http://localhost:8000"
-				);
+				console.log("⚠️ BackendClient initialized with default configuration");
 			}
 		};
 		initBackendClient();

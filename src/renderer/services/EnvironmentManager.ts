@@ -25,6 +25,8 @@ export class EnvironmentManager {
 	private datasetManager: DatasetManager;
 	private statusCallback?: (status: string) => void;
 	private installedPackages = new Set<string>();
+	// Cache package verification to avoid repeated kernel execution
+	private packageVerificationCache = new Map<string, boolean>();
 
 	constructor(datasetManager: DatasetManager) {
 		this.datasetManager = datasetManager;
@@ -433,6 +435,11 @@ except subprocess.CalledProcessError:
 	 * Verify core packages are available in the environment
 	 */
 	private async verifyCorePackages(workspaceDir: string): Promise<boolean> {
+		// Check cache first to avoid unnecessary kernel execution
+		if (this.packageVerificationCache.has(workspaceDir)) {
+			return this.packageVerificationCache.get(workspaceDir) || false;
+		}
+
 		const testCode = `
 import sys
 print(f"Python path: {sys.path}")
@@ -467,15 +474,20 @@ except ImportError:
 				workspaceDir
 			);
 
-			if (testResult.success) {
+			const success = testResult.success;
+			if (success) {
 				console.log("📦 Package verification result:", testResult.output);
-				return true;
 			} else {
 				console.warn("⚠️ Package verification failed:", testResult.error);
-				return false;
 			}
+
+			// Cache the result
+			this.packageVerificationCache.set(workspaceDir, success);
+			return success;
 		} catch (error) {
 			console.error("Error verifying core packages:", error);
+			// Cache false result
+			this.packageVerificationCache.set(workspaceDir, false);
 			return false;
 		}
 	}

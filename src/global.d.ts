@@ -103,6 +103,18 @@ export interface ElectronAPI {
 	onSetWorkspace: (callback: (workspacePath: string) => void) => void;
 	onTriggerOpenWorkspace: (callback: () => void) => void;
 
+	// Store operations
+	storeGet: (key: string) => Promise<any>;
+	storeSet: (key: string, value: any) => Promise<boolean>;
+
+	// App operations
+	isPackaged: () => boolean;
+
+	// BioRAG operations
+	bioragQuery: (query: any) => Promise<any>;
+	getBioragPort: () => Promise<any>;
+	getBioragUrl: () => Promise<any>;
+
 	removeAllListeners: (channel: string) => void;
 }
 

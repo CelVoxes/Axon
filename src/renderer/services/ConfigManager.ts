@@ -63,7 +63,8 @@ export class ConfigManager {
 
 	private constructor() {
 		this.config = this.loadDefaultConfig();
-		this.loadFromEnvironment();
+		this.loadFromStorage();
+		this.loadFromEnvironment(); // Load environment after storage to ensure env vars take precedence
 	}
 
 	/**
@@ -201,9 +202,15 @@ export class ConfigManager {
 	 * Load default configuration
 	 */
 	private loadDefaultConfig(): AppConfig {
+		// Use electronAPI to check if app is packaged
+		const isPackaged = window.electronAPI?.isPackaged?.() || false;
+		const backendUrl = isPackaged ? "http://axon.celvox.co:8002" : "http://localhost:8000";
+		
+		console.log("ConfigManager: isPackaged =", isPackaged, "backendUrl =", backendUrl);
+		
 		return {
 			backend: {
-				baseUrl: "http://localhost:8000",
+				baseUrl: backendUrl,
 				timeout: 30000,
 				retryAttempts: 3,
 			},
