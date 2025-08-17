@@ -248,9 +248,6 @@ export class AxonApp {
 
 	private async startBioRAGServer() {
 		try {
-			// First, clean up any existing BioRAG processes
-			await this.cleanupExistingBioRAGProcesses();
-
 			// Check if BioRAG server is already running on the configured port
 			const isRunning = await this.checkBioRAGServerRunning();
 			if (isRunning) {
@@ -262,23 +259,30 @@ export class AxonApp {
 				return;
 			}
 
-			// Find an available port starting from the preferred port
-			const availablePort = await this.findAvailablePort(this.bioragPort);
-			if (availablePort !== this.bioragPort) {
-				console.log(
-					`Port ${this.bioragPort} busy, using port ${availablePort} instead`
-				);
-				this.bioragPort = availablePort;
+			// In production, use remote server
+			if (app.isPackaged) {
+				console.log("Using remote BioRAG server at http://axon.celvox.co:8002");
+				this.mainWindow?.webContents.send("biorag-server-ready", {
+					port: 8002,
+					url: "http://axon.celvox.co:8002",
+				});
+				return;
 			}
 
-			console.log(`Starting BioRAG server on port ${this.bioragPort}`);
+			// In development, start local server with simple Python
+			console.log(`Starting local BioRAG server on port ${this.bioragPort}`);
 
-			// Start the BioRAG API server with the available port
-			const pythonPath = await this.findPythonPath();
-			// In dev, backend lives in repo root; in production, it's placed under process.resourcesPath via extraResources
-			const backendWorkingDir = app.isPackaged
-				? process.resourcesPath
-				: path.join(__dirname, "..", "..");
+			// Use simple python3 command - no version checking needed for dev server
+			const pythonPath = "python3";
+			
+			// Report Python version being used for backend
+			try {
+				const version = await this.getPythonVersion(pythonPath);
+				console.log(`BioRAG backend using Python: ${pythonPath} - ${version}`);
+			} catch (error) {
+				console.log(`BioRAG backend using Python: ${pythonPath} (version check failed)`);
+			}
+			const backendWorkingDir = path.join(__dirname, "..", "..");
 
 			this.bioragServer = spawn(
 				pythonPath,
@@ -309,18 +313,6 @@ export class AxonApp {
 				this.bioragServer.stderr.on("data", (data) => {
 					const message = data.toString();
 					console.error("BioRAG Server Error:", message);
-
-					// Log port conflicts but don't restart (port should already be allocated correctly)
-					if (message.includes("address already in use")) {
-						console.log(
-							`Port conflict detected in server stderr - this shouldn't happen as port was pre-allocated`
-						);
-						this.mainWindow?.webContents.send(
-							"biorag-log",
-							`BioRAG server encountered port conflict despite pre-allocation`
-						);
-					}
-
 					this.mainWindow?.webContents.send("biorag-error", message);
 				});
 			}
@@ -339,31 +331,21 @@ export class AxonApp {
 			setTimeout(async () => {
 				const isServerReady = await this.checkBioRAGServerRunning();
 				if (isServerReady) {
-					console.log(
-						`BioRAG server started successfully on port ${this.bioragPort}`
-					);
-					this.mainWindow?.webContents.send(
-						"biorag-log",
-						`BioRAG server is ready on port ${this.bioragPort}`
-					);
-					// Notify renderer about the BioRAG URL
+					console.log(`BioRAG server started successfully on port ${this.bioragPort}`);
 					this.mainWindow?.webContents.send("biorag-server-ready", {
 						port: this.bioragPort,
 						url: `http://localhost:${this.bioragPort}`,
 					});
 				} else {
-					console.log(
-						"BioRAG server may not have started properly, but continuing..."
-					);
+					console.log("BioRAG server may not have started properly, but continuing...");
 				}
 			}, 3000);
+
 		} catch (error) {
 			console.error("Failed to start BioRAG server:", error);
 			this.mainWindow?.webContents.send(
 				"biorag-error",
-				`Failed to start BioRAG server: ${
-					error instanceof Error ? error.message : "Unknown error"
-				}`
+				`Failed to start BioRAG server: ${error instanceof Error ? error.message : "Unknown error"}`
 			);
 		}
 	}
@@ -454,6 +436,145 @@ export class AxonApp {
 	}
 
 	/**
+	 * Centralized method to get the correct venv path for a given directory.
+	 * This handles the distinction between workspace root and analysis folders.
+	 */
+	private getVenvPath(directoryPath: string): string {
+		return path.join(directoryPath, "venv");
+	}
+
+	/**
+	 * Get platform-specific Python executable path within a venv
+	 */
+	private getVenvPythonPath(venvPath: string): string {
+		return process.platform === "win32"
+			? path.join(venvPath, "Scripts", "python.exe")
+			: path.join(venvPath, "bin", "python");
+	}
+
+	/**
+	 * Get platform-specific pip executable path within a venv
+	 */
+	private getVenvPipPath(venvPath: string): string {
+		if (process.platform === "win32") {
+			return path.join(venvPath, "Scripts", "pip.exe");
+		} else if (process.platform === "darwin") {
+			// On macOS, prefer pip3 if it exists
+			const pip3Path = path.join(venvPath, "bin", "pip3");
+			const pipPath = path.join(venvPath, "bin", "pip");
+			return fs.existsSync(pip3Path) ? pip3Path : pipPath;
+		} else {
+			// Linux and other Unix systems
+			return path.join(venvPath, "bin", "pip");
+		}
+	}
+
+	/**
+	 * Search for existing venv in current directory and parent directories (up to 3 levels)
+	 */
+	private findExistingVenv(basePath: string): string | null {
+		console.log(`🔍 Searching for existing venv starting from: ${basePath}`);
+		const pathParts = basePath.split(path.sep);
+		
+		// Check current directory and up to 3 levels up
+		for (let i = 0; i <= 3 && pathParts.length > i; i++) {
+			const checkPath = pathParts.slice(0, pathParts.length - i).join(path.sep);
+			if (!checkPath) continue;
+			
+			const venvPath = this.getVenvPath(checkPath);
+			const pythonExe = this.getVenvPythonPath(venvPath);
+			
+			console.log(`🔍 Checking: ${checkPath} → venv: ${venvPath} → python: ${pythonExe}`);
+			console.log(`🔍 Python executable exists: ${fs.existsSync(pythonExe)}`);
+				
+			if (fs.existsSync(pythonExe)) {
+				console.log(`✅ Found existing venv at: ${venvPath}`);
+				return checkPath;
+			}
+		}
+		console.log(`❌ No existing venv found starting from: ${basePath}`);
+		return null;
+	}
+
+	/**
+	 * Centralized venv creation with timeout and proper error handling
+	 */
+	private async createVirtualEnvironment(workspacePath: string, pythonPath: string): Promise<void> {
+		const venvPath = this.getVenvPath(workspacePath);
+		
+		console.log(`Creating virtual environment with Python: ${pythonPath}`);
+		console.log(`Target venv path: ${venvPath}`);
+
+		const createVenvProcess = spawn(pythonPath, ["-m", "venv", venvPath], {
+			cwd: workspacePath,
+			stdio: "pipe",
+		});
+		
+		// Store reference for cancellation
+		this.venvCreateProcess = createVenvProcess;
+
+		return new Promise<void>((resolve, reject) => {
+			let stdout = "";
+			let stderr = "";
+
+			// Set timeout for the operation
+			const timeout = setTimeout(() => {
+				console.error("Virtual environment creation timed out after 60 seconds");
+				createVenvProcess.kill("SIGKILL");
+				reject(new Error("Virtual environment creation timed out"));
+			}, 60000);
+
+			createVenvProcess.stdout?.on("data", (data) => {
+				stdout += data.toString();
+				console.log(`[venv stdout]: ${data.toString().trim()}`);
+			});
+
+			createVenvProcess.stderr?.on("data", (data) => {
+				stderr += data.toString();
+				console.log(`[venv stderr]: ${data.toString().trim()}`);
+			});
+
+			createVenvProcess.on("close", (code) => {
+				clearTimeout(timeout);
+				console.log(`Virtual environment creation completed with code: ${code}`);
+				this.venvCreateProcess = null;
+
+				if (code === 0) {
+					console.log("Virtual environment created successfully");
+					resolve();
+				} else {
+					reject(new Error(`Virtual environment creation failed with code ${code}: ${stderr || stdout || "Unknown error"}`));
+				}
+			});
+
+			createVenvProcess.on("error", (error) => {
+				clearTimeout(timeout);
+				console.error("Virtual environment creation process error:", error);
+				this.venvCreateProcess = null;
+				reject(error);
+			});
+		});
+	}
+
+	/**
+	 * Centralized method to ensure a venv exists for a given directory
+	 * Returns the directory that contains the venv (might be parent directory)
+	 */
+	private async ensureVirtualEnvironment(workspacePath: string): Promise<string> {
+		// First, look for existing venv in current directory and parent directories
+		const existingWorkspace = this.findExistingVenv(workspacePath);
+		if (existingWorkspace) {
+			console.log(`Using existing venv at workspace: ${existingWorkspace}`);
+			return existingWorkspace;
+		}
+
+		// No existing venv found, create new one
+		const pythonPath = await this.findPythonPath();
+		await this.createVirtualEnvironment(workspacePath, pythonPath);
+		return workspacePath;
+	}
+
+	/**
 	 * Get workspace metadata including the kernel name
 	 */
 	private async getWorkspaceMetadata(workspacePath: string): Promise<any> {
@@ -525,8 +646,8 @@ export class AxonApp {
 			const kernelSpec = {
 				argv: [
 					pythonVenvPath,
-					"-m",
-					"ipykernel_launcher",
+					"-c",
+					"from ipykernel import kernelapp; kernelapp.IPKernelApp.launch_instance()",
 					"-f",
 					"{connection_file}",
 				],
@@ -744,8 +865,14 @@ export class AxonApp {
 			}
 		}
 
-		// Try to find suitable system Python (3.11+)
+		// Try to find suitable Python (3.11+), starting with pyenv
 		const pythonCommands = [
+			// Pyenv-managed Python (preferred for biological analysis)
+			`${process.env.HOME}/.pyenv/bin/python`,
+			`${process.env.HOME}/.pyenv/versions/3.11.7/bin/python`,
+			`${process.env.HOME}/.pyenv/shims/python3`,
+			`${process.env.HOME}/.pyenv/shims/python`,
+			// System Python
 			"python3.12",
 			"python3.11",
 			"/opt/homebrew/bin/python3.12",
@@ -777,11 +904,23 @@ export class AxonApp {
 			}
 		}
 
-		// No suitable Python found, download Python 3.11
+		// No suitable Python found, install Python 3.11 for biological analysis
 		if (foundAnyPython) {
-			console.log("Found Python but too old, downloading Python 3.11...");
+			console.log("Found Python but too old, installing Python 3.11...");
+			this.mainWindow?.webContents.send("python-setup-status", {
+				status: "required",
+				message: "🧬 Your current Python version is too old for biological analysis",
+				reason: "Modern biological packages require Python 3.11+. Installing automatically...",
+				timestamp: new Date().toISOString(),
+			});
 		} else {
-			console.log("No Python found on system, downloading Python 3.11...");
+			console.log("No Python found on system, installing Python 3.11...");
+			this.mainWindow?.webContents.send("python-setup-status", {
+				status: "required", 
+				message: "🧬 Installing Python for biological analysis",
+				reason: "No suitable Python found. Installing Python 3.11+ for biological data analysis...",
+				timestamp: new Date().toISOString(),
+			});
 		}
 		await this.downloadAndSetupPython();
 		return appPythonPath;
@@ -831,10 +970,10 @@ export class AxonApp {
 			let downloadUrl: string;
 			let pythonVersion = "3.11.7";
 
-			if (platform === "darwin") {
-				// Use portable Python build for macOS (no sudo required)
-				const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
-				downloadUrl = `https://github.com/indygreg/python-build-standalone/releases/download/20231002/cpython-${pythonVersion}+20231002-${arch}-apple-darwin-install_only.tar.gz`;
+			if (platform === "darwin" || platform === "linux") {
+				// Install Python via pyenv for virtual environment creation
+				await this.installPythonViaPyenv();
+				return;
 			} else if (platform === "win32") {
 				downloadUrl = `https://www.python.org/ftp/python/${pythonVersion}/python-${pythonVersion}-embed-amd64.zip`;
 			} else {
@@ -869,6 +1008,64 @@ export class AxonApp {
 		}
 	}
 
+	private async installPythonViaPyenv(): Promise<void> {
+		const { promisify } = require('util');
+		const exec = promisify(require('child_process').exec);
+		const pythonVersion = "3.11.7";
+
+		try {
+			this.mainWindow?.webContents.send("python-setup-status", {
+				status: "installing",
+				message: "🔧 Setting up Python environment for biological analysis...",
+				timestamp: new Date().toISOString(),
+			});
+
+			// Check if pyenv is installed, if not install it
+			try {
+				await exec('which pyenv');
+			} catch (error) {
+				console.log('Installing pyenv...');
+				this.mainWindow?.webContents.send("python-setup-status", {
+					status: "installing",
+					message: "📦 Installing Python version manager (pyenv)...",
+					timestamp: new Date().toISOString(),
+				});
+				
+				// Install pyenv via the official installer
+				await exec('curl https://pyenv.run | bash');
+			}
+
+			// Add pyenv to PATH for this session
+			process.env.PATH = `${process.env.HOME}/.pyenv/bin:${process.env.PATH}`;
+
+			// Install Python 3.11.7
+			this.mainWindow?.webContents.send("python-setup-status", {
+				status: "installing",
+				message: `🐍 Installing Python ${pythonVersion} for biological packages...`,
+				timestamp: new Date().toISOString(),
+			});
+
+			await exec(`~/.pyenv/bin/pyenv install ${pythonVersion}`);
+			await exec(`~/.pyenv/bin/pyenv global ${pythonVersion}`);
+
+			this.mainWindow?.webContents.send("python-setup-status", {
+				status: "completed",
+				message: `✅ Python ${pythonVersion} installed and ready for biological analysis!`,
+				timestamp: new Date().toISOString(),
+			});
+
+		} catch (error) {
+			console.error("Failed to install Python via pyenv:", error);
+			this.mainWindow?.webContents.send("python-setup-status", {
+				status: "error",
+				message: "Failed to install Python for biological analysis. Please install Python 3.11+ manually.",
+				error: error instanceof Error ? error.message : String(error),
+				timestamp: new Date().toISOString(),
+			});
+			throw error;
+		}
+	}
+
 	private async downloadPythonFromUrl(url: string, targetDir: string, version: string): Promise<void> {
 		const https = require('https');
 		const fs = require('fs');
@@ -883,6 +1080,15 @@ export class AxonApp {
 			let totalBytes = 0;
 
 			const request = https.get(url, (response: any) => {
+				// Handle redirects (301, 302, 307, 308)
+				if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+					// Follow redirect
+					this.downloadPythonFromUrl(response.headers.location, targetDir, version)
+						.then(resolve)
+						.catch(reject);
+					return;
+				}
+				
 				if (response.statusCode !== 200) {
 					reject(new Error(`Download failed: ${response.statusCode}`));
 					return;
@@ -979,6 +1185,7 @@ export class AxonApp {
 		workspacePath: string
 	): Promise<{ success: boolean; error?: string }> {
 		try {
+			console.log(`🔧 startJupyterIfNeeded called with workspacePath: ${workspacePath}`);
 			// Check if Jupyter is already running and healthy
 			if (this.jupyterProcess) {
 				let needRestart = false;
@@ -1044,65 +1251,13 @@ export class AxonApp {
 			// Ensure desired port is available; if not, free it or pick an available one
 			await this.ensureJupyterPortAvailable();
 
-			// Find Python path
-			const pythonPath = await this.findPythonPath();
+			// Ensure virtual environment exists (will find existing or create new)
+			const actualWorkspacePath = await this.ensureVirtualEnvironment(workspacePath);
+			const venvPath = this.getVenvPath(actualWorkspacePath);
 
-			// Create virtual environment if it doesn't exist
-			const venvPath = path.join(workspacePath, "venv");
-			if (!fs.existsSync(venvPath)) {
-				console.log("Creating virtual environment...");
-				await new Promise<void>((resolve, reject) => {
-					const createVenvProcess = spawn(pythonPath, ["-m", "venv", venvPath]);
-
-					createVenvProcess.on("error", (error: Error) => {
-						console.error("Error creating virtual environment:", error);
-						reject(error);
-					});
-
-					createVenvProcess.on("close", (code) => {
-						if (code === 0) {
-							console.log("Virtual environment created successfully");
-							resolve();
-						} else {
-							reject(
-								new Error(
-									`Failed to create virtual environment, exit code: ${code}`
-								)
-							);
-						}
-					});
-				});
-			}
-
-			// Determine pip and python paths for the virtual environment
-			const isWindows = process.platform === "win32";
-			const isMac = process.platform === "darwin";
-
-			let pipPath: string;
-			if (isWindows) {
-				pipPath = path.join(venvPath, "Scripts", "pip.exe");
-			} else if (isMac) {
-				// On macOS, try pip3 first, then fall back to pip
-				const pip3Path = path.join(venvPath, "bin", "pip3");
-				const pipPathUnix = path.join(venvPath, "bin", "pip");
-
-				if (fs.existsSync(pip3Path)) {
-					pipPath = pip3Path;
-				} else if (fs.existsSync(pipPathUnix)) {
-					pipPath = pipPathUnix;
-				} else {
-					throw new Error(
-						`No pip executable found in virtual environment. Tried: ${pip3Path} and ${pipPathUnix}`
-					);
-				}
-			} else {
-				// Linux and other Unix systems
-				pipPath = path.join(venvPath, "bin", "pip");
-			}
-
-			const pythonVenvPath = isWindows
-				? path.join(venvPath, "Scripts", "python.exe")
-				: path.join(venvPath, "bin", "python");
+			// Get platform-specific pip and python paths for the virtual environment
+			const pipPath = this.getVenvPipPath(venvPath);
+			const pythonVenvPath = this.getVenvPythonPath(venvPath);
 
 			// Verify virtual environment executables exist
 			if (!fs.existsSync(pipPath)) {
@@ -1115,7 +1270,7 @@ export class AxonApp {
 			}
 
 			// Install Jupyter only if missing to avoid repeated slow installs
-			const requiredPackages = ["jupyter", "notebook", "ipykernel"];
+			const requiredPackages = ["jupyter", "notebook", "ipykernel<6.29"];
 			const isPkgInstalled = async (pkg: string): Promise<boolean> => {
 				return await new Promise<boolean>((resolve) => {
 					const p = spawn(pipPath, ["show", pkg], { stdio: "pipe" });
@@ -1273,52 +1428,6 @@ export class AxonApp {
 		}
 	}
 
-	private async cleanupExistingBioRAGProcesses(): Promise<void> {
-		try {
-			const { exec } = require("child_process");
-			const { promisify } = require("util");
-			const execAsync = promisify(exec);
-
-			console.log(
-				`Checking for processes on BioRAG port ${this.bioragPort}...`
-			);
-
-			if (process.platform === "win32") {
-				// Windows: Find and kill process using the BioRAG port
-				await execAsync(`netstat -ano | findstr :${this.bioragPort}`)
-					.then(async (result: any) => {
-						const lines = result.stdout.split("\n");
-						for (const line of lines) {
-							const match = line.match(/\s+(\d+)$/);
-							if (match) {
-								const pid = match[1];
-								await execAsync(`taskkill /PID ${pid} /F`).catch(() => {
-									// Ignore errors if process doesn't exist
-								});
-								console.log(`Killed process ${pid} on port ${this.bioragPort}`);
-							}
-						}
-					})
-					.catch(() => {
-						// No processes found on the port
-						console.log(`No processes found on port ${this.bioragPort}`);
-					});
-			} else {
-				// Unix-like systems: Find and kill process using the BioRAG port
-				await execAsync(`lsof -ti:${this.bioragPort} | xargs kill -9`).catch(
-					() => {
-						// Ignore errors if no process is using the port
-						console.log(`No processes found on port ${this.bioragPort}`);
-					}
-				);
-			}
-		} catch (error) {
-			console.log(
-				`No existing server to kill on port ${this.bioragPort} or error:`,
-				error
-			);
-		}
-	}
 
 	private setupIpcHandlers() {
 		// Dialog operations
@@ -1470,7 +1579,7 @@ export class AxonApp {
 		// Jupyter notebook operations
 		ipcMain.handle("jupyter-start", async (_, workingDir: string) => {
 			try {
-				console.log(`Starting Jupyter in: ${workingDir}`);
+				console.log(`🚀 jupyter-start called with workingDir: ${workingDir}`);
 				const unifiedStart = await this.startJupyterIfNeeded(workingDir);
 				if (unifiedStart.success) {
 					return { success: true, url: `http://127.0.0.1:${this.jupyterPort}` };
@@ -1489,122 +1598,30 @@ export class AxonApp {
 			try {
 				console.log(`Creating virtual environment in: ${workspacePath}`);
 
-				// First, look for existing venv in current directory and parent directories
-				const findExistingVenv = (basePath: string): string | null => {
-					const pathParts = basePath.split(path.sep);
-					
-					// Check current directory and up to 3 levels up
-					for (let i = 0; i <= 3 && pathParts.length > i; i++) {
-						const checkPath = pathParts.slice(0, pathParts.length - i).join(path.sep);
-						if (!checkPath) continue;
-						
-						const venvPath = path.join(checkPath, "venv");
-						const pythonExe = process.platform === "win32" 
-							? path.join(venvPath, "Scripts", "python.exe")
-							: path.join(venvPath, "bin", "python");
-							
-						if (fs.existsSync(pythonExe)) {
-							console.log(`Found existing venv at: ${venvPath}`);
-							return checkPath;
-						}
-					}
-					return null;
-				};
-
-				// Check if we should use an existing venv instead of creating a new one
-				const existingWorkspace = findExistingVenv(workspacePath);
-				if (existingWorkspace) {
-					console.log(`Found existing venv at workspace: ${existingWorkspace}`);
-					
-					// Notify renderer about using existing environment
+				// Use centralized venv management
+				const actualWorkspacePath = await this.ensureVirtualEnvironment(workspacePath);
+				
+				if (actualWorkspacePath !== workspacePath) {
+					// Found existing venv in parent directory
 					this.mainWindow?.webContents.send("virtual-env-status", {
 						status: "existing",
-						message: `Using existing virtual environment from ${existingWorkspace}`,
+						message: `Using existing virtual environment from ${actualWorkspacePath}`,
 						timestamp: new Date().toISOString(),
 					});
 					
 					return {
 						success: true,
-						actualWorkspace: existingWorkspace,
-						message: `Using existing virtual environment from ${existingWorkspace}`,
+						actualWorkspace: actualWorkspacePath,
+						message: `Using existing virtual environment from ${actualWorkspacePath}`,
 					};
 				}
 
-				// Notify renderer about virtual environment creation
-				this.mainWindow?.webContents.send("virtual-env-status", {
-					status: "creating",
-					message: "Creating virtual environment...",
-					timestamp: new Date().toISOString(),
-				});
-
-				const pythonPath = await this.findPythonPath();
-				const venvPath = path.join(workspacePath, "venv");
-
-				// Create virtual environment with timeout and better error handling
-				console.log(`Creating virtual environment with Python: ${pythonPath}`);
-				console.log(`Target venv path: ${venvPath}`);
-
-				const createVenvProcess = spawn(pythonPath, ["-m", "venv", venvPath], {
-					cwd: workspacePath,
-					stdio: "pipe",
-				});
-				this.venvCreateProcess = createVenvProcess;
-
-				// Add timeout for virtual environment creation
-				await new Promise<void>((resolve, reject) => {
-					let stdout = "";
-					let stderr = "";
-
-					// Set timeout for the operation
-					const timeout = setTimeout(() => {
-						console.error(
-							"Virtual environment creation timed out after 60 seconds"
-						);
-						createVenvProcess.kill("SIGKILL");
-						reject(new Error("Virtual environment creation timed out"));
-					}, 60000); // 60 second timeout
-
-					createVenvProcess.stdout?.on("data", (data) => {
-						stdout += data.toString();
-						console.log(`[venv stdout]: ${data.toString().trim()}`);
-					});
-
-					createVenvProcess.stderr?.on("data", (data) => {
-						stderr += data.toString();
-						console.log(`[venv stderr]: ${data.toString().trim()}`);
-					});
-
-					createVenvProcess.on("close", (code) => {
-						clearTimeout(timeout);
-						console.log(
-							`Virtual environment creation completed with code: ${code}`
-						);
-						this.venvCreateProcess = null;
-
-						if (code === 0) {
-							console.log("Virtual environment created successfully");
-							resolve();
-						} else {
-							console.error(`venv stdout: ${stdout}`);
-							console.error(`venv stderr: ${stderr}`);
-							reject(
-								new Error(
-									`Failed to create virtual environment, exit code: ${code}. stderr: ${stderr}`
-								)
-							);
-						}
-					});
-
-					createVenvProcess.on("error", (error) => {
-						clearTimeout(timeout);
-						console.error("Virtual environment creation process error:", error);
-						reject(error);
-					});
-				});
+				// New venv was created at workspacePath
+				const venvPath = this.getVenvPath(workspacePath);
 
 				// Determine the pip path in the virtual environment
-				const pipPath = path.join(venvPath, "bin", "pip");
-				const pythonVenvPath = path.join(venvPath, "bin", "python");
+				const pipPath = this.getVenvPipPath(venvPath);
+				const pythonVenvPath = this.getVenvPythonPath(venvPath);
 
 				// Notify renderer about package installation
 				this.mainWindow?.webContents.send("virtual-env-status", {
@@ -1615,7 +1632,7 @@ export class AxonApp {
 
 				// Install only Jupyter infrastructure here. Scientific stack will be
 				// resolved together later with analysis packages to avoid version conflicts.
-				const basicPackages = ["jupyter", "notebook", "ipykernel"];
+				const basicPackages = ["jupyter", "notebook", "ipykernel<6.29"];
 
 				// Notify about basic infrastructure installation
 				this.mainWindow?.webContents.send("virtual-env-status", {
@@ -1824,6 +1841,7 @@ export class AxonApp {
 
 					const wsPath =
 						workspacePath || this.currentJupyterWorkspace || process.cwd();
+					console.log(`🎯 Using wsPath for execution: ${wsPath} (workspacePath: ${workspacePath}, currentJupyterWorkspace: ${this.currentJupyterWorkspace})`);
 					let kernelId: string | undefined = undefined;
 
 					// Try to find kernelId from workspace map with normalized path
@@ -1886,6 +1904,7 @@ export class AxonApp {
 			"jupyter-execute",
 			async (_, code: string, workspacePath?: string) => {
 				try {
+					console.log(`🎯 jupyter-execute called with workspacePath: ${workspacePath}`);
 					console.log(
 						`Executing code in Jupyter for workspace: ${workspacePath}\n${code.substring(
 							0,
@@ -1921,11 +1940,8 @@ export class AxonApp {
 					let kernelName = "python3";
 					if (workspacePath) {
 						const metadata = await this.getWorkspaceMetadata(workspacePath);
-						const venvPath = path.join(workspacePath, "venv");
-						const pythonVenvPath =
-							process.platform === "win32"
-								? path.join(venvPath, "Scripts", "python.exe")
-								: path.join(venvPath, "bin", "python");
+						const venvPath = this.getVenvPath(workspacePath);
+						const pythonVenvPath = this.getVenvPythonPath(venvPath);
 
 						// Ensure the workspace kernelspec exists and metadata is up to date
 						kernelName = this.ensureWorkspaceKernelSpec(
@@ -2252,7 +2268,7 @@ export class AxonApp {
 		});
 
 		ipcMain.handle("get-biorag-url", () => {
-			// Use same logic as ConfigManager: local in dev, remote when packaged
+			// Use remote server in production, local in development
 			if (app.isPackaged) {
 				return "http://axon.celvox.co:8002";
 			} else {
@@ -2780,7 +2796,7 @@ export class AxonApp {
 						timestamp: new Date().toISOString(),
 					});
 
-					const venvPath = path.join(workspacePath, "venv");
+					const venvPath = this.getVenvPath(workspacePath);
 
 					// Check if virtual environment exists
 					if (!fs.existsSync(venvPath)) {
@@ -2790,30 +2806,7 @@ export class AxonApp {
 					}
 
 					// Determine pip path based on platform
-					const isWindows = process.platform === "win32";
-					const isMac = process.platform === "darwin";
-
-					let pipPath: string;
-					if (isWindows) {
-						pipPath = path.join(venvPath, "Scripts", "pip.exe");
-					} else if (isMac) {
-						// On macOS, try pip3 first, then fall back to pip
-						const pip3Path = path.join(venvPath, "bin", "pip3");
-						const pipPathUnix = path.join(venvPath, "bin", "pip");
-
-						if (fs.existsSync(pip3Path)) {
-							pipPath = pip3Path;
-						} else if (fs.existsSync(pipPathUnix)) {
-							pipPath = pipPathUnix;
-						} else {
-							throw new Error(
-								`No pip executable found in virtual environment. Tried: ${pip3Path} and ${pipPathUnix}`
-							);
-						}
-					} else {
-						// Linux and other Unix systems
-						pipPath = path.join(venvPath, "bin", "pip");
-					}
+					const pipPath = this.getVenvPipPath(venvPath);
 
 					// Verify pip executable exists
 					if (!fs.existsSync(pipPath)) {

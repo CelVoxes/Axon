@@ -8,6 +8,7 @@ import { Tooltip } from "@components/shared/Tooltip";
 import { useWorkspaceContext } from "../../context/AppContext";
 import { typography } from "../../styles/design-system";
 import { EventManager } from "../../utils/EventManager";
+import { findWorkspacePath } from "../../utils/WorkspaceUtils";
 import { electronAPI } from "../../utils/electronAPI";
 import { ElectronClient } from "../../utils/ElectronClient";
 
@@ -198,47 +199,10 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	const { state: workspaceState, dispatch: workspaceDispatch } =
 		useWorkspaceContext();
 	
-	// Find the best workspace path - smart detection of local vs global workspace
-	const findWorkspacePath = (): string | undefined => {
-		const fileDirectory = filePath.includes("/")
-			? filePath.substring(0, filePath.lastIndexOf("/"))
-			: undefined;
-		
-		// For notebook files, use intelligent workspace detection
-		if (filePath.endsWith(".ipynb") && fileDirectory) {
-			// Check if there's already a global workspace that contains this file
-			if (workspaceState.currentWorkspace && filePath.startsWith(workspaceState.currentWorkspace)) {
-				return workspaceState.currentWorkspace;
-			}
-			
-			// For notebooks in any directory (including analysis folders), use the directory where the notebook is
-			// This allows the backend to find existing venvs in that directory or create new ones there
-			console.log(`Using notebook directory as workspace: ${fileDirectory}`);
-			return fileDirectory;
-		}
-		
-		// For non-notebook files, use the previous logic
-		if (fileDirectory) {
-			// If there's no global workspace selected, use file directory
-			if (!workspaceState.currentWorkspace) {
-				return fileDirectory;
-			}
-			
-			// If there is a global workspace, but the file is not under it, 
-			// prefer the file directory
-			if (!filePath.startsWith(workspaceState.currentWorkspace)) {
-				return fileDirectory;
-			}
-			
-			// File is under the global workspace, use global workspace
-			return workspaceState.currentWorkspace;
-		}
-		
-		// No file directory, fall back to global workspace
-		return workspaceState.currentWorkspace || undefined;
-	};
-	
-	const workspacePath: string | undefined = findWorkspacePath();
+	const workspacePath: string | undefined = findWorkspacePath({
+		filePath: filePath || undefined,
+		currentWorkspace: workspaceState.currentWorkspace || undefined
+	});
 
 	// Queue for events that arrive before notebookData is loaded
 	const [pendingEvents, setPendingEvents] = useState<

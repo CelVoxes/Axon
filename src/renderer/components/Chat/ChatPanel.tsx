@@ -9,9 +9,17 @@ import { BackendClient } from "../../services/BackendClient";
 import { SearchService } from "../../services/SearchService";
 import { SearchConfig } from "../../config/SearchConfig";
 import { useChatIntent } from "../../hooks/useChatIntent";
+import { findWorkspacePath } from "../../utils/WorkspaceUtils";
 import { DatasetSelectionModal } from "./DatasetSelectionModal";
 import { ChatMessage } from "./ChatMessage";
-import { FiMinimize2, FiMaximize2, FiPlus, FiClock, FiX, FiTrash2 } from "react-icons/fi";
+import {
+	FiMinimize2,
+	FiMaximize2,
+	FiPlus,
+	FiClock,
+	FiX,
+	FiTrash2,
+} from "react-icons/fi";
 import { CodeBlock } from "./shared/CodeBlock";
 import { Composer } from "./Composer";
 import { MentionSuggestions } from "./MentionSuggestions";
@@ -63,12 +71,16 @@ function groupSessionsByTime(sessions: any[]) {
 		"2d ago": [] as any[],
 		"3d ago": [] as any[],
 		"this week": [] as any[],
-		older: [] as any[]
+		older: [] as any[],
 	};
 
-	sessions.forEach(session => {
+	sessions.forEach((session) => {
 		const sessionDate = new Date(session.updatedAt || session.createdAt);
-		const sessionDay = new Date(sessionDate.getFullYear(), sessionDate.getMonth(), sessionDate.getDate());
+		const sessionDay = new Date(
+			sessionDate.getFullYear(),
+			sessionDate.getMonth(),
+			sessionDate.getDate()
+		);
 
 		if (sessionDay.getTime() >= today.getTime()) {
 			groups.today.push(session);
@@ -86,7 +98,7 @@ function groupSessionsByTime(sessions: any[]) {
 	});
 
 	// Sort sessions within each group by updatedAt (most recent first)
-	Object.keys(groups).forEach(key => {
+	Object.keys(groups).forEach((key) => {
 		groups[key as keyof typeof groups].sort((a, b) => {
 			const aTime = new Date(a.updatedAt || a.createdAt).getTime();
 			const bTime = new Date(b.updatedAt || b.createdAt).getTime();
@@ -124,6 +136,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [suggestionButtons, setSuggestionButtons] = useState<string[]>([]);
 	const [virtualEnvStatus, setVirtualEnvStatus] = useState("");
 	const [recentMessages, setRecentMessages] = useState<string[]>([]);
+	const [showAllMessages, setShowAllMessages] = useState(false);
 	const [processedEvents, setProcessedEvents] = useState<Set<string>>(
 		new Set()
 	);
@@ -430,13 +443,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		const handlePythonSetupStatus = (data: any) => {
 			if (!isMounted) return;
 			setVirtualEnvStatus(data.message || "");
-			
+
 			if (data.status === "required") {
 				addMessage(`🐍 ${data.message}`, false);
 				if (data.reason) {
 					addMessage(`💡 ${data.reason}`, false);
 				}
-				addMessage(`📦 This is a one-time setup for optimal compatibility`, false);
+				addMessage(
+					`📦 This is a one-time setup for optimal compatibility`,
+					false
+				);
 			} else if (data.status === "downloading") {
 				// Update status but don't spam chat with download progress
 				if (data.progress && data.progress % 25 === 0) {
@@ -452,7 +468,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				if (data.error) {
 					addMessage(`Error details: ${data.error}`, false);
 				}
-				addMessage(`💡 You can install Python 3.11+ manually as an alternative`, false);
+				addMessage(
+					`💡 You can install Python 3.11+ manually as an alternative`,
+					false
+				);
 			}
 		};
 
@@ -1331,7 +1350,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					);
 					return;
 				}
-				const wsPath = workspaceState.currentWorkspace || "";
+				const wsPath =
+					findWorkspacePath({
+						filePath: cellMentionContext.filePath || undefined,
+						currentWorkspace: workspaceState.currentWorkspace || undefined,
+					}) || "";
 				const notebookService = new NotebookService({ workspacePath: wsPath });
 
 				const lang = (cellMentionContext.language || "python").toLowerCase();
@@ -1585,7 +1608,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					);
 					return;
 				}
-				const wsPath = workspaceState.currentWorkspace || "";
+				const wsPath =
+					findWorkspacePath({
+						filePath: codeEditContext.filePath || undefined,
+						currentWorkspace: workspaceState.currentWorkspace || undefined,
+					}) || "";
 				const notebookService = new NotebookService({ workspacePath: wsPath });
 
 				// Build LLM prompt to transform only the selected snippet
@@ -1707,45 +1734,65 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				try {
 					if (backendClient?.validateCode) {
 						const validationResult = await backendClient.validateCode({
-							code: newCode
+							code: newCode,
 						});
-						
+
 						if (!validationResult.is_valid && validationResult.linted_code) {
 							// Use auto-fixed code if available
 							validatedCode = validationResult.linted_code;
 							hasValidationIssues = true;
-							
+
 							// Show validation feedback in chat
 							const issues = validationResult.errors || [];
 							if (issues.length > 0) {
-								addMessage(`⚠️ Auto-fixed ${issues.length} validation issue(s):\n\n${issues.slice(0, 3).map((e: string) => `• ${e}`).join('\n')}${issues.length > 3 ? '\n• ...' : ''}`, false);
+								addMessage(
+									`⚠️ Auto-fixed ${
+										issues.length
+									} validation issue(s):\n\n${issues
+										.slice(0, 3)
+										.map((e: string) => `• ${e}`)
+										.join("\n")}${issues.length > 3 ? "\n• ..." : ""}`,
+									false
+								);
 							}
 						}
 					}
 				} catch (validationError) {
-					console.warn('Code validation failed, proceeding with original code:', validationError);
+					console.warn(
+						"Code validation failed, proceeding with original code:",
+						validationError
+					);
 					// Continue with original code if validation fails
 				}
 
 				// Step 2: Persist the validated code into the notebook cell
-				await notebookService.updateCellCode(filePath, cellIndex, validatedCode);
+				await notebookService.updateCellCode(
+					filePath,
+					cellIndex,
+					validatedCode
+				);
 
 				// Step 3: Optimized confirmation wait (reduced from 15s to 2s with fast fallback)
 				let updateDetail: any = null;
 				try {
 					// Fast timeout with immediate fallback for UI responsiveness
 					const timeoutMs = 2000; // Reduced from 15s
-					
+
 					// Use Promise.race for non-blocking behavior with immediate fallback
 					const detail = await Promise.race([
 						// Wait for actual confirmation
-						EventManager.waitForEvent<any>("notebook-cell-updated", timeoutMs).then(d => 
+						EventManager.waitForEvent<any>(
+							"notebook-cell-updated",
+							timeoutMs
+						).then((d) =>
 							d?.filePath === filePath && d?.cellIndex === cellIndex ? d : null
 						),
 						// Immediate fallback after 100ms for UI responsiveness
-						new Promise(resolve => setTimeout(() => resolve({ success: true, immediate: true }), 100))
+						new Promise((resolve) =>
+							setTimeout(() => resolve({ success: true, immediate: true }), 100)
+						),
 					]);
-					
+
 					updateDetail = detail || { success: true, immediate: true };
 				} catch (_) {
 					// Fallback to optimistic success
@@ -1754,10 +1801,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 				const originalLineCount = withinSelection.split("\n").length;
 				const newLineCount = newSelection.split("\n").length;
-				const statusText = updateDetail?.success === false ? "save failed" : 
-					updateDetail?.immediate ? "applied" : "saved";
+				const statusText =
+					updateDetail?.success === false
+						? "save failed"
+						: updateDetail?.immediate
+						? "applied"
+						: "saved";
 				const validationText = hasValidationIssues ? " (auto-fixed)" : "";
-				
+
 				const summary = `Applied notebook edit:\n\n- **Cell**: ${cellIndex}\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Status**: ${statusText}${validationText}`;
 
 				// Build unified diff for the selection in GitHub style
@@ -1816,10 +1867,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				};
 
 				// Use the validated code for the diff if validation occurred
-				const finalSelection = hasValidationIssues ? 
-					validatedCode.substring(start, start + (validatedCode.length - newCode.length) + newSelection.length) :
-					newSelection;
-				
+				const finalSelection = hasValidationIssues
+					? validatedCode.substring(
+							start,
+							start +
+								(validatedCode.length - newCode.length) +
+								newSelection.length
+					  )
+					: newSelection;
+
 				const unifiedDiff = buildUnifiedDiff(
 					withinSelection,
 					finalSelection,
@@ -1965,7 +2021,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					// Reuse the handler below
 					await (async () => {
 						try {
-							const wsDir = workspaceState.currentWorkspace || "";
+							const wsDir =
+								findWorkspacePath({
+									filePath: activeFile,
+									currentWorkspace: workspaceState.currentWorkspace,
+								}) ||
+								workspaceState.currentWorkspace ||
+								"";
 							if (!backendClient || !wsDir)
 								throw new Error("Backend not ready");
 							const agent = new AutonomousAgent(backendClient, wsDir);
@@ -3155,9 +3217,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		let lastTs = 0;
 		const DEDUPE_MS = 250;
 		const onInsertMention = (e: Event) => {
-			const ce = e as CustomEvent<{ 
-				alias?: string; 
-				filePath?: string; 
+			const ce = e as CustomEvent<{
+				alias?: string;
+				filePath?: string;
 				selectedCode?: string;
 				lineRange?: { start: number; end: number };
 			}>;
@@ -3165,7 +3227,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			const fp = ce.detail?.filePath || "";
 			const selectedCode = ce.detail?.selectedCode || "";
 			const lineRange = ce.detail?.lineRange;
-			
+
 			if (!alias) return;
 			const key = `${fp}|${alias}`;
 			const now = Date.now();
@@ -3174,13 +3236,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 			lastKey = key;
 			lastTs = now;
-			
+
 			// If we have selected code, include it in the message for better context
 			let messageText = alias;
 			if (selectedCode && selectedCode.trim()) {
 				messageText += `\n\nSelected code:\n\`\`\`python\n${selectedCode}\n\`\`\``;
 			}
-			
+
 			setInputValue(
 				(prev) =>
 					(prev.endsWith(" ") || prev.length === 0 ? prev : prev + " ") +
@@ -3313,25 +3375,30 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			if (!ws) return;
 
 			// Remove from sessions list
-			const updatedSessions = analysisState.chatSessions.filter(s => s.id !== sessionId);
-			
+			const updatedSessions = analysisState.chatSessions.filter(
+				(s) => s.id !== sessionId
+			);
+
 			// Delete session data
 			const sessionKey = `chat:session:${ws}:${sessionId}`;
 			await electronAPI.storeSet(sessionKey, []);
-			
+
 			// Update sessions list
 			const sessionsKey = `chat:sessions:${ws}`;
 			await electronAPI.storeSet(sessionsKey, updatedSessions);
-			
+
 			// If deleting the active session, switch to the first available session or create new
 			if (sessionId === analysisState.activeChatSessionId) {
 				if (updatedSessions.length > 0) {
-					analysisDispatch({ type: "SET_ACTIVE_CHAT_SESSION", payload: updatedSessions[0].id });
+					analysisDispatch({
+						type: "SET_ACTIVE_CHAT_SESSION",
+						payload: updatedSessions[0].id,
+					});
 				} else {
 					analysisDispatch({ type: "NEW_CHAT_SESSION" });
 				}
 			}
-			
+
 			// Update local state
 			analysisDispatch({ type: "SET_CHAT_SESSIONS", payload: updatedSessions });
 			setShowDeleteMenu(false);
@@ -3350,20 +3417,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				const sessionKey = `chat:session:${ws}:${session.id}`;
 				await electronAPI.storeSet(sessionKey, []);
 			}
-			
+
 			// Clear sessions list
 			const sessionsKey = `chat:sessions:${ws}`;
 			await electronAPI.storeSet(sessionsKey, []);
-			
+
 			// Clear active session
 			const activeKey = `chat:activeSession:${ws}`;
 			await electronAPI.storeSet(activeKey, null);
-			
+
 			// Clear the local state immediately
 			analysisDispatch({ type: "SET_CHAT_SESSIONS", payload: [] });
 			analysisDispatch({ type: "SET_ACTIVE_CHAT_SESSION", payload: null });
 			analysisDispatch({ type: "SET_CHAT_MESSAGES", payload: [] });
-			
+
 			// Create new chat session
 			analysisDispatch({ type: "NEW_CHAT_SESSION" });
 			setShowDeleteMenu(false);
@@ -3553,12 +3620,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 												borderBottom: "1px solid #555",
 											}}
 											onClick={() => {
-												if (window.confirm("Are you sure you want to delete all chat history?")) {
+												if (
+													window.confirm(
+														"Are you sure you want to delete all chat history?"
+													)
+												) {
 													handleDeleteAllChats();
 												}
 											}}
 											onMouseEnter={(e) => {
-												e.currentTarget.style.background = "rgba(255,255,255,0.1)";
+												e.currentTarget.style.background =
+													"rgba(255,255,255,0.1)";
 											}}
 											onMouseLeave={(e) => {
 												e.currentTarget.style.background = "transparent";
@@ -3576,16 +3648,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								</div>
 							)}
 							{(() => {
-								const sessions = ((analysisState as any).chatSessions || []) as Array<any>;
+								const sessions = ((analysisState as any).chatSessions ||
+									[]) as Array<any>;
 								if (sessions.length === 0) return null;
-								
+
 								const groupedSessions = groupSessionsByTime(sessions);
-								const groupOrder = ['today', 'yesterday', '2d ago', '3d ago', 'this week', 'older'];
-								
-								return groupOrder.map(groupKey => {
-									const groupSessions = groupedSessions[groupKey as keyof typeof groupedSessions];
+								const groupOrder = [
+									"today",
+									"yesterday",
+									"2d ago",
+									"3d ago",
+									"this week",
+									"older",
+								];
+
+								return groupOrder.map((groupKey) => {
+									const groupSessions =
+										groupedSessions[groupKey as keyof typeof groupedSessions];
 									if (groupSessions.length === 0) return null;
-									
+
 									return (
 										<div key={groupKey}>
 											<div
@@ -3596,132 +3677,159 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 													fontWeight: 600,
 													textTransform: "uppercase",
 													letterSpacing: "0.5px",
-													borderBottom: groupKey !== groupOrder[groupOrder.length - 1] ? "1px solid #2a2a2a" : "none",
-													marginBottom: 2
+													borderBottom:
+														groupKey !== groupOrder[groupOrder.length - 1]
+															? "1px solid #2a2a2a"
+															: "none",
+													marginBottom: 2,
 												}}
 											>
-												{groupKey === 'today' ? 'Today' : 
-												 groupKey === 'yesterday' ? 'Yesterday' :
-												 groupKey === '2d ago' ? '2d ago' :
-												 groupKey === '3d ago' ? '3d ago' :
-												 groupKey === 'this week' ? 'This week' : 'Older'}
+												{groupKey === "today"
+													? "Today"
+													: groupKey === "yesterday"
+													? "Yesterday"
+													: groupKey === "2d ago"
+													? "2d ago"
+													: groupKey === "3d ago"
+													? "3d ago"
+													: groupKey === "this week"
+													? "This week"
+													: "Older"}
 											</div>
-											{groupSessions.map(
-								(s: any) => {
-									const isActive =
-										s.id === (analysisState as any).activeChatSessionId;
-									return (
-										<div
-											key={s.id}
-											onClick={async () => {
-												setShowHistoryMenu(false);
-												if (s.id === (analysisState as any).activeChatSessionId)
-													return;
-												analysisDispatch({
-													type: "SET_ACTIVE_CHAT_SESSION",
-													payload: s.id,
-												});
-												// Messages for the selected session will be loaded by context effect
-												setSelectedDatasets([]);
-												setAvailableDatasets([]);
-												setCurrentSuggestions(null);
-												setSuggestionButtons([]);
-												setProcessedEvents(new Set());
-												setAgentInstance(null);
-												setVirtualEnvStatus("");
-											}}
-											style={{
-												padding: "10px 12px",
-												cursor: "pointer",
-												display: "flex",
-												flexDirection: "column",
-												gap: 2,
-												width: "100%",
-												background: isActive ? "#37373d" : "transparent",
-												position: "relative",
-											}}
-											onMouseEnter={(e) => {
-												const deleteBtn = e.currentTarget.querySelector('.delete-chat-btn') as HTMLElement;
-												if (deleteBtn) deleteBtn.style.opacity = '1';
-											}}
-											onMouseLeave={(e) => {
-												const deleteBtn = e.currentTarget.querySelector('.delete-chat-btn') as HTMLElement;
-												if (deleteBtn) deleteBtn.style.opacity = '0';
-											}}
-										>
-											<div
-												style={{
-													color: "#ddd",
-													fontSize: 13,
-													whiteSpace: "nowrap",
-													overflow: "hidden",
-													textOverflow: "ellipsis",
-													display: "flex",
-													alignItems: "center",
-													justifyContent: "space-between",
-													gap: 8,
-												}}
-											>
-												<span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
-													{s.title || "Untitled"}
-												</span>
-												<button
-													className="delete-chat-btn"
-													style={{
-														background: "none",
-														border: "none",
-														color: "#999",
-														cursor: "pointer",
-														fontSize: 12,
-														padding: "2px",
-														borderRadius: "2px",
-														opacity: 0,
-														transition: "opacity 0.2s, background 0.2s",
-														flex: "0 0 auto",
-														width: "16px",
-														height: "16px",
-														display: "flex",
-														alignItems: "center",
-														justifyContent: "center",
-													}}
-													onClick={(e) => {
-														e.stopPropagation();
-														if (window.confirm(`Delete chat "${s.title || 'Untitled'}"?`)) {
-															handleDeleteChat(s.id);
-														}
-													}}
-													onMouseEnter={(e) => {
-														e.currentTarget.style.background = "rgba(255,255,255,0.1)";
-														e.currentTarget.style.color = "#ff6b6b";
-													}}
-													onMouseLeave={(e) => {
-														e.currentTarget.style.background = "none";
-														e.currentTarget.style.color = "#999";
-													}}
-												>
-													<FiTrash2 size={12} />
-												</button>
-											</div>
-											{s.lastMessagePreview && (
-												<div
-													style={{
-														color: "#999",
-														fontSize: 11,
-														whiteSpace: "nowrap",
-														overflow: "hidden",
-														textOverflow: "ellipsis",
-													}}
-												>
-													{s.lastMessagePreview}
-												</div>
-											)}
+											{groupSessions.map((s: any) => {
+												const isActive =
+													s.id === (analysisState as any).activeChatSessionId;
+												return (
+													<div
+														key={s.id}
+														onClick={async () => {
+															setShowHistoryMenu(false);
+															if (
+																s.id ===
+																(analysisState as any).activeChatSessionId
+															)
+																return;
+															analysisDispatch({
+																type: "SET_ACTIVE_CHAT_SESSION",
+																payload: s.id,
+															});
+															// Messages for the selected session will be loaded by context effect
+															setSelectedDatasets([]);
+															setAvailableDatasets([]);
+															setCurrentSuggestions(null);
+															setSuggestionButtons([]);
+															setProcessedEvents(new Set());
+															setAgentInstance(null);
+															setVirtualEnvStatus("");
+														}}
+														style={{
+															padding: "10px 12px",
+															cursor: "pointer",
+															display: "flex",
+															flexDirection: "column",
+															gap: 2,
+															width: "100%",
+															background: isActive ? "#37373d" : "transparent",
+															position: "relative",
+														}}
+														onMouseEnter={(e) => {
+															const deleteBtn = e.currentTarget.querySelector(
+																".delete-chat-btn"
+															) as HTMLElement;
+															if (deleteBtn) deleteBtn.style.opacity = "1";
+														}}
+														onMouseLeave={(e) => {
+															const deleteBtn = e.currentTarget.querySelector(
+																".delete-chat-btn"
+															) as HTMLElement;
+															if (deleteBtn) deleteBtn.style.opacity = "0";
+														}}
+													>
+														<div
+															style={{
+																color: "#ddd",
+																fontSize: 13,
+																whiteSpace: "nowrap",
+																overflow: "hidden",
+																textOverflow: "ellipsis",
+																display: "flex",
+																alignItems: "center",
+																justifyContent: "space-between",
+																gap: 8,
+															}}
+														>
+															<span
+																style={{
+																	flex: 1,
+																	minWidth: 0,
+																	overflow: "hidden",
+																	textOverflow: "ellipsis",
+																}}
+															>
+																{s.title || "Untitled"}
+															</span>
+															<button
+																className="delete-chat-btn"
+																style={{
+																	background: "none",
+																	border: "none",
+																	color: "#999",
+																	cursor: "pointer",
+																	fontSize: 12,
+																	padding: "2px",
+																	borderRadius: "2px",
+																	opacity: 0,
+																	transition: "opacity 0.2s, background 0.2s",
+																	flex: "0 0 auto",
+																	width: "16px",
+																	height: "16px",
+																	display: "flex",
+																	alignItems: "center",
+																	justifyContent: "center",
+																}}
+																onClick={(e) => {
+																	e.stopPropagation();
+																	if (
+																		window.confirm(
+																			`Delete chat "${s.title || "Untitled"}"?`
+																		)
+																	) {
+																		handleDeleteChat(s.id);
+																	}
+																}}
+																onMouseEnter={(e) => {
+																	e.currentTarget.style.background =
+																		"rgba(255,255,255,0.1)";
+																	e.currentTarget.style.color = "#ff6b6b";
+																}}
+																onMouseLeave={(e) => {
+																	e.currentTarget.style.background = "none";
+																	e.currentTarget.style.color = "#999";
+																}}
+															>
+																<FiTrash2 size={12} />
+															</button>
+														</div>
+														{s.lastMessagePreview && (
+															<div
+																style={{
+																	color: "#999",
+																	fontSize: 11,
+																	whiteSpace: "nowrap",
+																	overflow: "hidden",
+																	textOverflow: "ellipsis",
+																}}
+															>
+																{s.lastMessagePreview}
+															</div>
+														)}
+													</div>
+												);
+											})}
 										</div>
 									);
-								})}
-						</div>
-					);
-				});
-			})()}
+								});
+							})()}
 						</div>
 					)}
 				</div>
