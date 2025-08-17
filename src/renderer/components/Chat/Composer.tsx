@@ -177,39 +177,54 @@ export const Composer: React.FC<ComposerProps> = ({
 		});
 	}, [value, resizeTextarea]);
 
-	// Extract mention tokens (e.g., @alias and #cell references) and show them above the composer
-	const mentionTokens = React.useMemo(() => {
-		const tokens = new Set<string>();
-		try {
-			const atMatches = Array.from(value.matchAll(/@([^\s@]+)/g)).map(
-				(m) => `@${m[1]}`
-			);
-			const hashMatches = Array.from(value.matchAll(/#([^\s#]+)/g)).map(
-				(m) => `#${m[1]}`
-			);
-			for (const t of atMatches.concat(hashMatches)) {
-				if (t.trim().length > 1) tokens.add(t);
-			}
-		} catch (_) {
-			// ignore parse errors
-		}
-		return Array.from(tokens);
-	}, [value]);
+	// Debounced mention token calculation to avoid expensive regex on every keystroke
+	const [mentionTokens, setMentionTokens] = React.useState<string[]>([]);
+	const [mentionedFileAliases, setMentionedFileAliases] = React.useState<string[]>([]);
+	const mentionDebounceRef = React.useRef<NodeJS.Timeout | null>(null);
 
-	// Aliases explicitly mentioned with @ in the composer (without the leading @)
-	const mentionedFileAliases = React.useMemo(() => {
-		const seen = new Set<string>();
-		const list: string[] = [];
-		try {
-			for (const m of value.matchAll(/@([^\s@]+)/g)) {
-				const alias = String(m[1] || "").trim();
-				if (alias && !seen.has(alias)) {
-					seen.add(alias);
-					list.push(alias);
+	React.useEffect(() => {
+		if (mentionDebounceRef.current) {
+			clearTimeout(mentionDebounceRef.current);
+		}
+		
+		mentionDebounceRef.current = setTimeout(() => {
+			// Extract mention tokens (e.g., @alias and #cell references)
+			const tokens = new Set<string>();
+			try {
+				const atMatches = Array.from(value.matchAll(/@([^\s@]+)/g)).map(
+					(m) => `@${m[1]}`
+				);
+				const hashMatches = Array.from(value.matchAll(/#([^\s#]+)/g)).map(
+					(m) => `#${m[1]}`
+				);
+				for (const t of atMatches.concat(hashMatches)) {
+					if (t.trim().length > 1) tokens.add(t);
 				}
+			} catch (_) {
+				// ignore parse errors
 			}
-		} catch (_) {}
-		return list;
+			setMentionTokens(Array.from(tokens));
+
+			// Aliases explicitly mentioned with @ in the composer (without the leading @)
+			const seen = new Set<string>();
+			const list: string[] = [];
+			try {
+				for (const m of value.matchAll(/@([^\s@]+)/g)) {
+					const alias = String(m[1] || "").trim();
+					if (alias && !seen.has(alias)) {
+						seen.add(alias);
+						list.push(alias);
+					}
+				}
+			} catch (_) {}
+			setMentionedFileAliases(list);
+		}, 100); // 100ms debounce for regex operations
+		
+		return () => {
+			if (mentionDebounceRef.current) {
+				clearTimeout(mentionDebounceRef.current);
+			}
+		};
 	}, [value]);
 
 	return (

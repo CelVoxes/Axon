@@ -140,6 +140,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [processedEvents, setProcessedEvents] = useState<Set<string>>(
 		new Set()
 	);
+	const inputValueRef = React.useRef<string>("");
 	const [agentInstance, setAgentInstance] = useState<any>(null);
 	const [showDatasetModal, setShowDatasetModal] = useState(false);
 	const [showVirtualEnvLog, setShowVirtualEnvLog] = useState(false);
@@ -1007,14 +1008,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	};
 
 	const handleSendMessage = useCallback(async () => {
-		if (!inputValue.trim() || isLoading) return;
+		if (!inputValueRef.current.trim() || isLoading) return;
 
 		// Clear lingering validation status for a fresh conversation cycle
 		setValidationErrors([]);
 		setValidationWarnings([]);
 		setValidationSuccessMessage("");
 
-		const userMessage = inputValue.trim();
+		const userMessage = inputValueRef.current.trim();
 
 		// Ask mode: simple Q&A, no environment creation/editing/search
 		if (chatMode === "Ask") {
@@ -2180,7 +2181,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 		}
 	}, [
-		inputValue,
 		isLoading,
 		backendClient,
 		availableDatasets,
@@ -2849,7 +2849,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			setSelectedDatasets((prev) => mergeSelectedDatasets(prev, [entry]));
 			const alias =
 				entry.alias || (entry.title || entry.id).replace(/\s+/g, "_");
-			const nextInput = inputValue.replace(/@([^\s@]*)$/, `@${alias}`) + " ";
+			const nextInput = inputValueRef.current.replace(/@([^\s@]*)$/, `@${alias}`) + " ";
 			setInputValue(nextInput);
 			setMentionOpen(false);
 			setMentionQuery("");
@@ -2862,7 +2862,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		},
 		[
 			workspaceMentionItems,
-			inputValue,
 			mergeSelectedDatasets,
 			handleSendMessage,
 		]
@@ -2892,7 +2891,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const handleComposerKeyDown = useCallback(
 		(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
 			if (!mentionOpen) return;
-			const isHashContext = /#[^\s#]*$/.test(inputValue);
+			const isHashContext = /#[^\s#]*$/.test(inputValueRef.current);
 			const totalCells = cellMentionItems.length;
 			const totalWs = workspaceMentionItems.length;
 			// Navigate within mention list (cells when using #, workspace when using @)
@@ -2942,7 +2941,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		},
 		[
 			mentionOpen,
-			inputValue,
 			workspaceMentionItems.length,
 			cellMentionItems.length,
 			activeWorkspaceIndex,
@@ -3019,16 +3017,30 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		addMessage("Processing stopped by user.", false);
 	};
 
+	// Debounced processing to avoid performance issues
+	const debouncedCellProcessing = React.useRef<NodeJS.Timeout | null>(null);
+	const debouncedMentionProcessing = React.useRef<NodeJS.Timeout | null>(null);
+	const cellItemsCache = React.useRef<{ activeFile: string; items: any[] } | null>(null);
+	const mentionItemsCache = React.useRef<{ workspace: string; token: string; items: any[] } | null>(null);
+
 	// Composer change handler with @-mention detection
 	const handleComposerChange = useCallback(
 		(next: string) => {
 			setInputValue(next);
+			inputValueRef.current = next;
 			// Support #N / #all shorthands only when a notebook is open
 			const hashMatch = next.match(/#([^\s#]*)$/);
 			if (hashMatch) {
 				setMentionOpen(true);
 				setMentionQuery(hashMatch[1] || "");
-				(async () => {
+				
+				// Clear any existing debounced processing
+				if (debouncedCellProcessing.current) {
+					clearTimeout(debouncedCellProcessing.current);
+				}
+				
+				// Debounce expensive cell processing
+				debouncedCellProcessing.current = setTimeout(async () => {
 					try {
 						// Only show cell items; hide files and local data
 						const activeFile = (workspaceState as any).activeFile as
@@ -3041,6 +3053,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							setCellMentionItems([]);
 							return;
 						}
+
+						// Check cache first to avoid re-reading the same file
+						if (cellItemsCache.current?.activeFile === activeFile) {
+							setCellMentionItems(cellItemsCache.current.items);
+							return;
+						}
+
 						const fileContent = await window.electronAPI.readFile(activeFile);
 						const nb = JSON.parse(fileContent);
 						const items: any[] = [];
@@ -3078,12 +3097,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 										(it.title || "").toLowerCase().includes(q)
 							  )
 							: [allItem, ...items];
+						
+						// Cache the results to avoid re-processing the same file
+						cellItemsCache.current = { activeFile, items: [allItem, ...items] };
+						
 						setCellMentionItems(filtered);
 						setWorkspaceMentionItems([]);
 					} catch {
 						setCellMentionItems([]);
 					}
-				})();
+				}, 150); // 150ms debounce
 				return;
 			}
 
@@ -3091,7 +3114,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			if (match) {
 				setMentionOpen(true);
 				setMentionQuery(match[1] || "");
-				(async () => {
+				
+				// Clear any existing debounced processing
+				if (debouncedMentionProcessing.current) {
+					clearTimeout(debouncedMentionProcessing.current);
+				}
+				
+				// Debounce expensive mention processing
+				debouncedMentionProcessing.current = setTimeout(async () => {
 					try {
 						if (!workspaceState.currentWorkspace) {
 							setWorkspaceMentionItems([]);
@@ -3199,7 +3229,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						setWorkspaceMentionItems([]);
 						setCellMentionItems([]);
 					}
-				})();
+				}, 150); // 150ms debounce
 			} else if (mentionOpen) {
 				setMentionOpen(false);
 				setMentionQuery("");
@@ -3209,6 +3239,26 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		},
 		[mentionOpen, workspaceState.currentWorkspace]
 	);
+
+	// Cleanup debounced processing on unmount or when active file changes
+	React.useEffect(() => {
+		return () => {
+			if (debouncedCellProcessing.current) {
+				clearTimeout(debouncedCellProcessing.current);
+			}
+			if (debouncedMentionProcessing.current) {
+				clearTimeout(debouncedMentionProcessing.current);
+			}
+		};
+	}, []);
+
+	// Clear cache when active file changes
+	React.useEffect(() => {
+		const activeFile = (workspaceState as any).activeFile as string | null;
+		if (cellItemsCache.current && cellItemsCache.current.activeFile !== activeFile) {
+			cellItemsCache.current = null;
+		}
+	}, [(workspaceState as any).activeFile]);
 
 	// Support external requests to insert a mention into the composer (from cells)
 	useEffect(() => {
@@ -3365,7 +3415,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		isAutoExecuting,
 		availableDatasets,
 		selectedDatasets,
-		handleSendMessage,
 	]);
 
 	// Delete chat functions
@@ -3864,7 +3913,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				items={localRegistryRef.current?.list() || []}
 				workspaceItems={workspaceMentionItems}
 				cellItems={cellMentionItems}
-				hideWorkspace={/#[^\s#]*$/.test(inputValue)}
+				hideWorkspace={/#[^\s#]*$/.test(inputValueRef.current)}
 				query={mentionQuery}
 				onRemoveLocal={async (item) => {
 					try {
