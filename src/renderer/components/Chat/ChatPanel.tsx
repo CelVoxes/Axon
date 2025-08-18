@@ -113,6 +113,46 @@ interface ChatPanelProps {
 	className?: string;
 }
 
+// Helper function for simple text edits that don't require AI
+function trySimpleEdit(userMessage: string, content: string): { handled: false } | { handled: true; newContent: string; description: string } {
+	const msg = userMessage.toLowerCase().trim();
+	console.log('trySimpleEdit - message:', msg);
+	console.log('trySimpleEdit - content:', JSON.stringify(content));
+	
+	// Remove item from list/array
+	if (msg.includes('remove') && msg.includes('scipy')) {
+		// Handle Python list format: ["item1","item2","scipy","item3"]
+		// More flexible regex to handle different quote styles and spacing
+		let newContent = content
+			.replace(/,?\s*["']scipy["']\s*,?/gi, '') // Remove "scipy" or 'scipy' with optional commas
+			.replace(/,\s*]/g, ']') // Clean up trailing comma before ]
+			.replace(/\[\s*,/g, '[') // Clean up leading comma after [
+			.replace(/,\s*,/g, ','); // Clean up double commas
+		
+		console.log('trySimpleEdit - newContent:', JSON.stringify(newContent));
+		
+		if (newContent !== content) {
+			return {
+				handled: true,
+				newContent,
+				description: 'Removed "scipy" from list'
+			};
+		} else {
+			console.log('trySimpleEdit - no change detected');
+		}
+	}
+	
+	// Add more simple edit patterns here as needed
+	// e.g., replace X with Y, add item to list, etc.
+	
+	return { handled: false } as const;
+}
+
+// Cache for notebook paths to avoid repeated file system searches
+const notebookPathCache = new Map<string, string>();
+// Cache for parsed notebook content to avoid repeated file reads
+const notebookContentCache = new Map<string, any>();
+
 export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const { isSuggestionsRequest, shouldSearchForDatasets, isAnalysisRequest } =
 		useChatIntent();
@@ -1008,6 +1048,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	};
 
 	const handleSendMessage = useCallback(async () => {
+		console.time('🚀 handleSendMessage total');
 		if (!inputValueRef.current.trim() || isLoading) return;
 
 		// Clear lingering validation status for a fresh conversation cycle
@@ -1015,7 +1056,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		setValidationWarnings([]);
 		setValidationSuccessMessage("");
 
+		console.time('🚀 Initial setup');
 		const userMessage = inputValueRef.current.trim();
+		console.timeEnd('🚀 Initial setup');
 
 		// Ask mode: simple Q&A, no environment creation/editing/search
 		if (chatMode === "Ask") {
@@ -1073,6 +1116,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		// Resolve @mentions to local datasets and auto-attach (Agent mode only)
 		const mentionDatasets = resolveAtMentions(userMessage);
 
+		console.time('🚀 Parse tokens');
 		// Additionally resolve direct workspace/absolute path mentions like @data/file.csv or @path/to/folder
 		const tokens = Array.from(userMessage.matchAll(/@([^\s@]+)/g)).map(
 			(m) => m[1]
@@ -1081,6 +1125,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		const hashTokens = Array.from(userMessage.matchAll(/#(all|\d+)/gi)).map(
 			(m) => m[1]
 		);
+		console.timeEnd('🚀 Parse tokens');
 		const workspaceResolved: LocalDatasetEntry[] = [];
 		let cellMentionContext: null | {
 			filePath: string;
@@ -1093,8 +1138,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			try {
 				const activeFile = (workspaceState as any).activeFile as string | null;
 				if (activeFile && activeFile.endsWith(".ipynb")) {
-					const content = await window.electronAPI.readFile(activeFile);
-					const nb = JSON.parse(content);
+					// Use cached notebook content if available
+					let nb = notebookContentCache.get(activeFile);
+					if (!nb) {
+						const content = await window.electronAPI.readFile(activeFile);
+						nb = JSON.parse(content);
+						notebookContentCache.set(activeFile, nb);
+					}
 					const cells = Array.isArray(nb?.cells) ? nb.cells : [];
 					const wantAll = hashTokens.some(
 						(t) => String(t).toLowerCase() === "all"
@@ -1131,9 +1181,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		}
 
 		if (tokens.length > 0 || hashTokens.length > 0) {
+			console.time('📝 Processing mentions');
 			const wsRoot = workspaceState.currentWorkspace || "";
 			const registry = localRegistryRef.current;
 			for (const token of tokens) {
+				console.time(`📝 Processing token: ${token}`);
 				// Heuristic: consider anything with a slash or starting with / as a path
 				const looksLikePath = token.startsWith("/") || token.includes("/");
 				// Handle notebook cell reference like path.ipynb#3
@@ -1142,17 +1194,106 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					const pathPart = cellRefMatch[1];
 					const index1Based = parseInt(cellRefMatch[2], 10);
 					if (!Number.isNaN(index1Based) && index1Based >= 1) {
-						const candidatePath = pathPart.startsWith("/")
-							? pathPart
-							: wsRoot
-							? `${wsRoot}/${pathPart}`
-							: "";
+						let candidatePath = "";
+						if (pathPart.startsWith("/")) {
+							// Absolute path
+							candidatePath = pathPart;
+						} else if (wsRoot) {
+							// Smart notebook resolution (cached)
+							candidatePath = notebookPathCache.get(pathPart) || "";
+							console.log(`💾 Cache lookup for ${pathPart}: ${candidatePath || 'NOT FOUND'}`);
+							
+							// TEMP: Clear bad cache entries
+							if (candidatePath && candidatePath.includes('/Demo-2/analysis_1755536986367.ipynb')) {
+								console.log(`🗑️ Clearing bad cached path: ${candidatePath}`);
+								notebookPathCache.delete(pathPart);
+								candidatePath = "";
+							}
+							
+							if (!candidatePath) {
+								console.time(`⚡ Fast file lookup: ${pathPart}`);
+								
+								// FAST: Check if it's the currently active file
+								const activeFile = (workspaceState as any).activeFile as string | null;
+								console.log(`⚡ Active file: ${activeFile}`);
+								console.log(`⚡ Looking for: ${pathPart}`);
+								
+								if (activeFile && activeFile.endsWith(pathPart)) {
+									candidatePath = activeFile;
+									console.log(`⚡ Using active file: ${candidatePath}`);
+								} else if (activeFile) {
+									// FAST: Try current directory (where active file is)
+									const activeDir = activeFile.split('/').slice(0, -1).join('/');
+									const testPath = `${activeDir}/${pathPart}`;
+									console.log(`⚡ Testing same directory: ${testPath}`);
+									try {
+										const info = await window.electronAPI.getFileInfo(testPath);
+										if (info && 'size' in info) {
+											candidatePath = testPath;
+											console.log(`⚡ Found in active directory: ${candidatePath}`);
+										} else {
+											console.log(`⚡ Not in active directory, info:`, info);
+										}
+									} catch (e) {
+										console.log(`⚡ Error checking active directory:`, e);
+									}
+								} else {
+									// FALLBACK: Try to find it by searching only the immediate subdirectories
+									console.log(`⚡ No active file, trying subdirectories...`);
+									try {
+										const directories = await window.electronAPI.listDirectory(wsRoot);
+										for (const dir of directories) {
+											if (dir.isDirectory) {
+												const testPath = `${dir.path}/${pathPart}`;
+												try {
+													const info = await window.electronAPI.getFileInfo(testPath);
+													if (info && 'size' in info) {
+														candidatePath = testPath;
+														console.log(`⚡ Found in subdirectory: ${candidatePath}`);
+														break;
+													}
+												} catch (e) {
+													// Continue to next directory
+												}
+											}
+										}
+									} catch (e) {
+										console.log(`⚡ Error listing directories:`, e);
+									}
+								}
+								
+								// FALLBACK: Only if we couldn't find it anywhere else
+								if (!candidatePath) {
+									candidatePath = `${wsRoot}/${pathPart}`;
+									console.log(`⚡ Using fallback path: ${candidatePath}`);
+								}
+								
+								console.timeEnd(`⚡ Fast file lookup: ${pathPart}`);
+								notebookPathCache.set(pathPart, candidatePath);
+							} else {
+								console.log(`📋 Using cached path: ${candidatePath}`);
+							}
+						}
 						if (candidatePath) {
 							try {
-								const fileContent = await window.electronAPI.readFile(
-									candidatePath
-								);
-								const nb = JSON.parse(fileContent);
+								console.log(`🔍 About to read notebook from: ${candidatePath}`);
+								// Check cache first
+								let nb = notebookContentCache.get(candidatePath);
+								if (!nb) {
+									console.time(`📖 File read: ${candidatePath.split('/').pop()}`);
+									console.log(`📖 Reading file: ${candidatePath}`);
+									const fileContent = await window.electronAPI.readFile(
+										candidatePath
+									);
+									console.timeEnd(`📖 File read: ${candidatePath.split('/').pop()}`);
+									console.time(`⚙️ JSON parse: ${candidatePath.split('/').pop()}`);
+									nb = JSON.parse(fileContent);
+									console.timeEnd(`⚙️ JSON parse: ${candidatePath.split('/').pop()}`);
+									notebookContentCache.set(candidatePath, nb);
+									console.log(`💾 Cached notebook: ${candidatePath.split('/').pop()}`);
+								} else {
+									console.log(`📋 Using cached notebook: ${candidatePath.split('/').pop()}`);
+								}
 								const idx0 = index1Based - 1;
 								const cell = Array.isArray(nb?.cells) ? nb.cells[idx0] : null;
 								if (cell) {
@@ -1231,6 +1372,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							}
 						}
 					}
+					console.timeEnd(`📝 Processing token: ${token}`);
 					// skip normal path handling for cell references
 					continue;
 				}
@@ -1254,13 +1396,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				} catch (_) {
 					// ignore failures; not a valid path
 				}
+				console.timeEnd(`📝 Processing token: ${token}`);
 			}
+			console.timeEnd('📝 Processing mentions');
 		}
 
 		const allMentionDatasets = mergeSelectedDatasets(
 			mentionDatasets as any[],
 			workspaceResolved as any[]
 		);
+		console.timeEnd('🚀 handleSendMessage total');
 
 		if (allMentionDatasets.length > 0) {
 			setSelectedDatasets((prev) =>
@@ -1396,14 +1541,47 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				const withinSelection = fullCode.slice(selStart, selEnd);
 				const fileName = filePath.split("/").pop() || filePath;
 
+				// Try simple text manipulations first before using AI
+				const simpleEditResult = trySimpleEdit(userMessage, withinSelection);
+				if (simpleEditResult.handled) {
+					// Direct edit without AI
+					const newCode = beforeSelection + simpleEditResult.newContent + fullCode.slice(selEnd);
+					
+					try {
+						await notebookService.updateCellCode(filePath, cellIndex, newCode);
+						EventManager.dispatchEvent("update-notebook-cell-code", {
+							filePath,
+							cellIndex,
+							code: newCode,
+							editedByChatAt: new Date().toISOString(),
+						});
+						
+						const originalLineCount = withinSelection.split("\n").length;
+						const newLineCount = simpleEditResult.newContent.split("\n").length;
+						addMessage(
+							`✅ Applied simple edit:\n\n- **Cell**: ${cellIndex} in \`${fileName}\`\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Change**: ${simpleEditResult.description}`,
+							false
+						);
+						return;
+					} catch (e) {
+						addMessage(`⚠️ Failed to apply edit: ${e instanceof Error ? e.message : String(e)}`, false);
+						return;
+					}
+				}
+
 				addMessage(
 					`Editing plan:\n\n- **Target**: cell ${cellIndex} in \`${fileName}\`\n- **Scope**: replace lines ${startLine}-${endLine} of the selected code\n- **Process**: I will generate the revised snippet (streaming below), then apply it to the notebook and confirm the save.`,
 					false
 				);
 				const task =
 					`Edit the following ${lang} code according to the user's instruction. ` +
-					`Return ONLY the fully revised snippet for the selected region, with no explanations, no prose, and no JSON. ` +
-					`Do NOT include code fences (no triple backticks). Output the updated snippet as plain ${lang} text.`;
+					`CRITICAL RULES:
+1. Return ONLY the exact replacement for lines ${startLine}-${endLine}
+2. Do NOT add imports, comments, or any other lines
+3. Do NOT include code before or after the specified lines
+4. Do NOT include explanations or markdown formatting
+5. If the original has 2 lines, return exactly 2 lines (unless removing content)
+6. Output ONLY the modified code as plain text`;
 
 				let streamedResponse = "";
 				const streamingMessageId = `edit-${Date.now()}`;
@@ -1428,9 +1606,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					let lastCellUpdate = 0;
 					await backendClient.generateCodeStream(
 						{
-							task_description: `${task}\n\nUser instruction:\n${userMessage}\n\nSelected snippet to edit (context only):\n\n\`\`\`${lang}\n${originalSnippet}\n\`\`\`\n\nReturn ONLY the revised snippet as plain ${lang}.`,
+							task_description: `${task}\n\nUser instruction: ${userMessage}\n\nOriginal code (lines ${startLine}-${endLine}):\n${withinSelection}\n\nIMPORTANT: The original has ${withinSelection.split('\n').length} lines. Return EXACTLY ${withinSelection.split('\n').length} modified lines (no imports, no extra lines). Example format:\nline1\nline2\n\nYour response:`,
 							language: lang,
 							context: "Notebook code edit-in-place",
+							notebook_edit: true,
 						},
 						(chunk: string) => {
 							streamedResponse += chunk;
@@ -1453,7 +1632,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 							// Throttled live update of the notebook cell so changes are visible during streaming
 							const now = Date.now();
-							if (now - lastCellUpdate > 100) {
+							if (now - lastCellUpdate > 500) {
 								const partialNewCode =
 									base.substring(0, start) +
 									cleanedSnippet +
@@ -1640,8 +1819,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				);
 				const task =
 					`Edit the following ${lang} code according to the user's instruction. ` +
-					`Return ONLY the fully revised snippet for the selected region, with no explanations, no prose, and no JSON. ` +
-					`Do NOT include code fences (no triple backticks). Output the updated snippet as plain ${lang} text.`;
+					`CRITICAL RULES:
+1. Return ONLY the exact replacement for lines ${startLine}-${endLine}
+2. Do NOT add imports, comments, or any other lines
+3. Do NOT include code before or after the specified lines
+4. Do NOT include explanations or markdown formatting
+5. If the original has 2 lines, return exactly 2 lines (unless removing content)
+6. Output ONLY the modified code as plain text`;
 
 				// Streaming accumulation (edited code)
 				let streamedResponse = "";
@@ -1667,9 +1851,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					let lastCellUpdate = 0;
 					await backendClient.generateCodeStream(
 						{
-							task_description: `${task}\n\nUser instruction:\n${userMessage}\n\nSelected snippet to edit (context only):\n\n\`\`\`${lang}\n${originalSnippet}\n\`\`\`\n\nReturn ONLY the revised snippet as plain ${lang}.`,
+							task_description: `${task}\n\nUser instruction: ${userMessage}\n\nOriginal code (lines ${startLine}-${endLine}):\n${withinSelection}\n\nIMPORTANT: The original has ${withinSelection.split('\n').length} lines. Return EXACTLY ${withinSelection.split('\n').length} modified lines (no imports, no extra lines). Example format:\nline1\nline2\n\nYour response:`,
 							language: lang,
 							context: "Notebook code edit-in-place",
+							notebook_edit: true,
 						},
 						(chunk: string) => {
 							streamedResponse += chunk;
@@ -1692,7 +1877,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 							// Throttled live update of the notebook cell so changes are visible during streaming
 							const now = Date.now();
-							if (now - lastCellUpdate > 100) {
+							if (now - lastCellUpdate > 500) {
 								const partialNewCode =
 									base.substring(0, start) +
 									cleanedSnippet +
@@ -2020,11 +2205,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					if (isNotebookOpen && isAnalysis && !wantSearch) {
 						// Append new analysis step to the current notebook (skip dataset search)
 						addMessage(
-							`Detected analysis request for the current notebook. I'll add a new step for: ${userMessage}`,
+							`Detected analysis request for the current notebook. Starting background code generation for: ${userMessage}`,
 							false
 						);
-						// Reuse the handler below
-						await (async () => {
+						// Run Agent in background (non-blocking)
+						(async () => {
 							try {
 								const wsDir =
 									findWorkspacePath({
@@ -2052,7 +2237,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 									wsDir,
 									{ skipEnvCells: true }
 								);
-								addMessage("Added analysis step to the open notebook.", false);
+								addMessage("✅ Added analysis step to the open notebook.", false);
 							} catch (e) {
 								addMessage(
 									`Failed to append analysis step: ${
@@ -2061,7 +2246,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 									false
 								);
 							}
-						})();
+						})().finally(() => {
+							// Release chat UI after background operation completes
+							setIsLoading(false);
+							setIsProcessing(false);
+							setProgressMessage("");
+						});
+						return;
 					} else if (isAnalysis && wantSearch) {
 						// If the user referenced @tokens but none resolved to local data, do not start a remote search.
 						// Ask the user to attach or register the local data instead of triggering dataset discovery.
@@ -2157,31 +2348,61 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							setShowSearchDetails(false);
 						}, 2000);
 					} else {
-						// Intent: ADD_CELL — generate code and insert as a new cell into the active notebook
+						// Intent: ADD_CELL — insert a new cell immediately, then fill in code when ready
 						const activeFile = (workspaceState as any).activeFile as
 							| string
 							| null;
 						if (activeFile && activeFile.endsWith(".ipynb")) {
 							try {
 								if (!backendClient) throw new Error("Backend not ready");
-								addMessage(
-									"🧩 Adding a new code cell to the open notebook...",
-									false
-								);
-								const code = await backendClient.generateCode({
-									task_description: userMessage,
-									language: "python",
-									context:
-										"Generated from chat request to add a new analysis cell.",
-								});
-
-								// Dispatch event for FileEditor to add the code cell
+								addMessage("🧩 Creating a new code cell…", false);
+								// Insert placeholder cell immediately so the user sees it while code generates
 								EventManager.dispatchEvent("add-notebook-cell", {
 									filePath: activeFile,
 									cellType: "code",
-									content: code || "# New analysis cell\n",
+									content: "# Generating analysis code…\n",
 								});
-								addMessage("✅ Added a new code cell to the notebook.", false);
+
+								// Generate the code in the background and update the placeholder when ready
+								(async () => {
+                                try {
+                                    const code = await backendClient.generateCode({
+                                        task_description: userMessage,
+                                        language: "python",
+                                        context:
+                                            "Generated from chat request to add a new analysis cell.",
+                                    });
+                                    try {
+                                        EventManager.dispatchEvent("update-notebook-cell-code", {
+                                            filePath: activeFile,
+                                            cellIndex: -1, // most recently added cell
+                                            code: (() => {
+                                                const c = String(code || "# New analysis cell\n");
+                                                return /argparse|parse_args\s*\(/.test(c) && !/sys\.argv\s*=/.test(c)
+                                                    ? (c.includes("import sys") ? "" : "import sys\n") +
+                                                          "sys.argv = ['']\n" +
+                                                          c
+                                                    : c;
+                                            })(),
+                                            editedByChatAt: new Date().toISOString(),
+                                        });
+                                    } catch (_) {}
+										addMessage("✅ Added a new code cell to the notebook.", false);
+									} catch (e) {
+										addMessage(
+											`⚠️ Failed to add a code cell: ${
+												e instanceof Error ? e.message : String(e)
+											}`,
+											false
+										);
+									}
+								})().finally(() => {
+									// Release chat UI after background code generation completes
+									setIsLoading(false);
+									setIsProcessing(false);
+									setProgressMessage("");
+								});
+								return;
 							} catch (e) {
 								addMessage(
 									`⚠️ Failed to add a code cell: ${
@@ -2190,13 +2411,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 									false
 								);
 							}
-						} else {
-							// No active notebook — guide user to open/create one
-							addMessage(
-								"I am a bioinformatics assistant, ask me anything! Use @ to add files/folders, use # to tag cells inside notebooks.",
-								false
-							);
-						}
+                        } else {
+                            // No active notebook — if the user referenced a specific notebook/cell, don't spam guidance.
+                            // Let the mention resolver/edit-in-place handle it, or the user can open the notebook manually.
+                            const hasNotebookCellRef = /@[^\s@]*\.ipynb#\d+/i.test(userMessage);
+                            if (!hasNotebookCellRef) {
+                                addMessage(
+                                    "I am a bioinformatics assistant, ask me anything! Use @ to add files/folders, use # to tag cells inside notebooks.",
+                                    false
+                                );
+                            }
+                        }
 					}
 				}
 			}
@@ -2701,23 +2926,36 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				setProgressMessage("Opening notebook in editor...");
 				addMessage("Notebook opened in editor", false);
 
-				// Step 3: Now start code generation and streaming to chat
-				setProgressMessage("Starting AI code generation...");
-				const codeGenSuccess = await agent.startNotebookCodeGeneration(
-					notebookPath,
-					originalQuery,
-					datasets,
-					analysisResult.steps,
-					analysisResult.workingDirectory
-				);
-
-				if (!codeGenSuccess) {
-					console.warn("Code generation completed with issues");
-					addMessage(
-						"Code generation completed with some issues. Check the notebook for details.",
-						false
-					);
-				}
+				// Step 3: Start code generation in the background (non-blocking)
+				setProgressMessage("Starting AI code generation in background...");
+				(async () => {
+					try {
+						const ok = await agent.startNotebookCodeGeneration(
+							notebookPath,
+							originalQuery,
+							datasets,
+							analysisResult.steps,
+							analysisResult.workingDirectory
+						);
+						if (!ok) {
+							console.warn("Code generation completed with issues");
+							addMessage(
+								"Code generation completed with some issues. Check the notebook for details.",
+								false
+							);
+						}
+					} catch (e) {
+						addMessage(
+							`Code generation failed: ${e instanceof Error ? e.message : String(e)}`,
+							false
+						);
+					} finally {
+						// Release chat UI after background operation completes
+						setIsLoading(false);
+						setIsProcessing(false);
+						setProgressMessage("");
+					}
+				})();
 
 				// Step 4: Notify user that cells are ready for manual execution
 				addMessage(
@@ -3075,6 +3313,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		(next: string) => {
 			setInputValue(next);
 			inputValueRef.current = next;
+			(window as any)._lastMentionChange = Date.now();
 			// Support #N / #all shorthands only when a notebook is open
 			const hashMatch = next.match(/#([^\s#]*)$/);
 			if (hashMatch) {
@@ -3153,7 +3392,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					} catch {
 						setCellMentionItems([]);
 					}
-				}, 150); // 150ms debounce
+				}, 500); // 500ms debounce - longer delay for better performance
 				return;
 			}
 
@@ -3169,6 +3408,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 				// Debounce expensive mention processing
 				debouncedMentionProcessing.current = setTimeout(async () => {
+					// Skip heavy processing if query is still changing rapidly
+					if (Date.now() - (window as any)._lastMentionChange < 100) return;
 					try {
 						if (!workspaceState.currentWorkspace) {
 							setWorkspaceMentionItems([]);
@@ -3276,7 +3517,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						setWorkspaceMentionItems([]);
 						setCellMentionItems([]);
 					}
-				}, 150); // 150ms debounce
+				}, 500); // 500ms debounce - longer delay for better performance
 			} else if (mentionOpen) {
 				setMentionOpen(false);
 				setMentionQuery("");

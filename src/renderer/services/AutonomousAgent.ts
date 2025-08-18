@@ -72,6 +72,21 @@ export class AutonomousAgent {
 	public isRunning: boolean = false;
 	private shouldStopAnalysis: boolean = false;
 	private selectedModel: string = ConfigManager.getInstance().getDefaultModel();
+    // Ensure generated Python code is safe to run inside a notebook (no CLI arg parsing surprises)
+    private sanitizeNotebookPythonCode(code: string): string {
+        try {
+            const c = String(code || "");
+            const needsArgvGuard = /argparse|parse_args\s*\(/.test(c) && !/sys\.argv\s*=/.test(c);
+            if (needsArgvGuard) {
+                const hasImportSys = /\bimport\s+sys\b/.test(c);
+                const prefix = (hasImportSys ? "" : "import sys\n") + "sys.argv = ['']\n";
+                return prefix + c;
+            }
+            return c;
+        } catch (_) {
+            return code;
+        }
+    }
 
 	// Global code context to track all generated code across the conversation
 	private globalCodeContext = new Map<string, string>();
@@ -965,8 +980,9 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 					{ stepTitle: "Package installation", skipExecution: true }
 				);
 				{
-					const finalPackageCode =
-						this.codeQualityService.getBestCode(packageTestResult);
+                    const finalPackageCode = this.sanitizeNotebookPythonCode(
+                        this.codeQualityService.getBestCode(packageTestResult)
+                    );
 					await this.notebookService.addCodeCell(
 						notebookPath,
 						finalPackageCode
@@ -1004,9 +1020,11 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 							"data-download",
 							{ stepTitle: "Data download", skipExecution: true }
 						);
-					const finalDataDownloadCode = this.codeQualityService.getBestCode(
-						dataDownloadValidation
-					);
+                    const finalDataDownloadCode = this.sanitizeNotebookPythonCode(
+                        this.codeQualityService.getBestCode(
+                            dataDownloadValidation
+                        )
+                    );
 					await this.notebookService.addCodeCell(
 						notebookPath,
 						finalDataDownloadCode
@@ -1031,8 +1049,9 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 						"local-data-prep",
 						{ stepTitle: "Local data preparation", skipExecution: true }
 					);
-				const localPrepCode =
-					this.codeQualityService.getBestCode(localPrepValidation);
+                const localPrepCode = this.sanitizeNotebookPythonCode(
+                    this.codeQualityService.getBestCode(localPrepValidation)
+                );
 				await this.notebookService.addCodeCell(notebookPath, localPrepCode);
 				this.addCodeToContext("local-data-prep", localPrepCode);
 				this.updateStatus("Local data preparation cell added");
@@ -1053,7 +1072,10 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 					i + 2
 				);
 				// Add code cell to notebook
-				await this.notebookService.addCodeCell(notebookPath, stepCode);
+                await this.notebookService.addCodeCell(
+                    notebookPath,
+                    this.sanitizeNotebookPythonCode(stepCode)
+                );
 
 				this.updateStatus(
 					`Added analysis step ${i + 1} of ${analysisSteps.length}`

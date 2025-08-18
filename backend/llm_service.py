@@ -355,7 +355,8 @@ Code:
         self, 
         task_description: str, 
         language: str = "python",
-        context: Optional[str] = None
+        context: Optional[str] = None,
+        notebook_edit: bool = False
     ):
         """Generate code with streaming for a given task description."""
         
@@ -365,8 +366,30 @@ Code:
             yield fallback_code
             return
         
-        # Enhanced prompt with better structure and examples
-        prompt = f"""
+        # Use different prompts for notebook edits vs full code generation
+        if notebook_edit:
+            prompt = f"""
+You are editing a specific section of code in a Jupyter notebook. 
+
+TASK: {task_description}
+LANGUAGE: {language}
+
+{f"CONTEXT: {context}" if context else ""}
+
+CRITICAL RULES FOR NOTEBOOK EDITING:
+1. Return ONLY the exact replacement code for the specified lines
+2. Do NOT add imports, comments, or boilerplate code  
+3. Do NOT include directory creation or setup code
+4. Do NOT add explanations, markdown, or non-code text
+5. Output ONLY the modified lines as plain {language} code
+6. Preserve the exact structure and indentation of the original
+7. Make ONLY the specific change requested
+
+Generate the replacement code now:
+"""
+        else:
+            # Enhanced prompt with better structure and examples for full code generation
+            prompt = f"""
 You are an expert Python programmer specializing in data analysis and bioinformatics. 
 Generate clean, well-documented, EXECUTABLE code for the following task.
 

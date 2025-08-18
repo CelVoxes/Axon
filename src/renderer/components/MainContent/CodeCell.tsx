@@ -86,6 +86,7 @@ const MonacoSelectionToolbar: React.FC<SelectionToolbarProps> = ({
 					setVisible(false);
 					return;
 				}
+				console.log('🎯 Selection detected, showing toolbar', { hasSelection, hasFocus });
 				const end = selection.getEndPosition();
 				const layout = editor.getLayoutInfo?.();
 				const editorDom = editor.getDomNode?.();
@@ -97,6 +98,7 @@ const MonacoSelectionToolbar: React.FC<SelectionToolbarProps> = ({
 				}
 				const left = rect.left + (coords.left ?? 0) + layout.contentLeft;
 				const top = rect.top + (coords.top ?? 0) + (coords.height ?? 0) + 6;
+				console.log('🎯 Setting toolbar position', { left, top, visible: true });
 				setPosition({ left, top });
 				setVisible(true);
 			} catch {
@@ -728,7 +730,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		}
 	};
 
-	const askChatToEditSelection = () => {
+    const askChatToEditSelection = () => {
 		let selectedText = "";
 		// Default selection bounds assume entire code
 		let selectionStart = 0;
@@ -786,20 +788,20 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		const cellSuffix = typeof cellIndex === "number" ? `#${cellIndex + 1}` : "";
 		const mention = `@${relPath}${cellSuffix} lines ${startLine}-${endLine}`;
 
-		try {
-			const event = new CustomEvent("chat-insert-mention", {
-				detail: {
-					alias: mention,
-					filePath: filePath || undefined,
-					selectedCode: selectedText, // Include the actual selected code
-					lineRange: { start: startLine, end: endLine },
-				},
-			});
-			window.dispatchEvent(event);
-		} catch (_) {
-			// ignore
-		}
-	};
+        try {
+            // Insert only a mention so Chat uses the #cell and line range context
+            // without duplicating code in the composer
+            const mentionEvt = new CustomEvent("chat-insert-mention", {
+                detail: {
+                    alias: mention,
+                    filePath: filePath || undefined,
+                },
+            });
+            window.dispatchEvent(mentionEvt);
+        } catch (_) {
+            // ignore
+        }
+    };
 
 	const insertCellMentionIntoChat = () => {
 		try {
@@ -816,7 +818,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		}
 	};
 
-	const addOutputToChat = () => {
+    const addOutputToChat = () => {
 		try {
 			const event = new CustomEvent("chat-add-output", {
 				detail: {
@@ -832,7 +834,25 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		} catch {
 			// ignore
 		}
-	};
+    };
+
+    // Global keyboard shortcut for Add-to-Chat (Cmd+L on macOS, Ctrl+L on others)
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => {
+            const isMac = navigator.platform.toLowerCase().includes("mac");
+            const trigger = (isMac ? e.metaKey : e.ctrlKey) && e.key.toLowerCase() === "l";
+            if (!trigger) return;
+            // Only handle when this cell editor or markdown textarea has focus
+            const editorHasFocus = !!(monacoEditorRef.current?.hasTextFocus?.());
+            const mdHasFocus = textareaRef.current === (document.activeElement as any);
+            if (!editorHasFocus && !mdHasFocus) return;
+            e.preventDefault();
+            e.stopPropagation();
+            askChatToEditSelection();
+        };
+        window.addEventListener("keydown", handler, true);
+        return () => window.removeEventListener("keydown", handler, true);
+    }, [code, language]);
 
 	const fixErrorWithChat = () => {
 		try {

@@ -1388,6 +1388,33 @@ export class AxonApp {
 			}
 		});
 
+		// Search for files matching a pattern in a directory
+		ipcMain.handle("fs-find-file", async (_, basePath: string, filename: string) => {
+			try {
+				const findFile = async (dir: string): Promise<string[]> => {
+					const results: string[] = [];
+					try {
+						const items = await fs.promises.readdir(dir, { withFileTypes: true });
+						for (const item of items) {
+							const fullPath = path.join(dir, item.name);
+							if (item.isDirectory()) {
+								const subResults = await findFile(fullPath);
+								results.push(...subResults);
+							} else if (item.name === filename) {
+								results.push(fullPath);
+							}
+						}
+					} catch (e) {
+						// Ignore permission errors and continue
+					}
+					return results;
+				};
+				return await findFile(basePath);
+			} catch (error) {
+				return [];
+			}
+		});
+
 		// File system: write file
 		ipcMain.handle(
 			"fs-write-file",

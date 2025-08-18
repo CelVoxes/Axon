@@ -46,6 +46,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	openFile: (filePath: string) => ipcRenderer.invoke("open-file", filePath),
 	getFileInfo: (filePath: string) =>
 		ipcRenderer.invoke("get-file-info", filePath),
+	findFile: (basePath: string, filename: string) =>
+		ipcRenderer.invoke("fs-find-file", basePath, filename),
 
 	// Jupyter operations
 	startJupyter: (workingDir: string) =>
@@ -214,6 +216,7 @@ export interface ElectronAPI {
 		dirPath: string
 	) => Promise<Array<{ name: string; isDirectory: boolean; path: string }>>;
 	openFile: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+	findFile: (basePath: string, filename: string) => Promise<string[]>;
 
 	startJupyter: (
 		workingDir: string

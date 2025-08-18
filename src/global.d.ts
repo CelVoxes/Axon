@@ -16,6 +16,7 @@ export interface ElectronAPI {
 		modified: string | Date;
 		isDirectory: boolean;
 	}>;
+	findFile: (basePath: string, filename: string) => Promise<string[]>;
 	deleteFile: (
 		filePath: string
 	) => Promise<{ success: boolean; error?: string }>;
