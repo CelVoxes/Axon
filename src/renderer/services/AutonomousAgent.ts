@@ -120,30 +120,6 @@ export class AutonomousAgent {
 			.substr(2, 9)}`;
 	}
 
-	private async updateKernelNameFromWorkspace(): Promise<void> {
-		try {
-			const kernelName = await this.environmentManager.getWorkspaceKernelName(
-				this.workspacePath
-			);
-			console.log(`Retrieved kernel name from workspace: ${kernelName}`);
-
-			// Update the NotebookService with the correct kernel name
-			this.notebookService = new NotebookService({
-				workspacePath: this.workspacePath,
-				kernelName: kernelName,
-			});
-		} catch (error) {
-			console.warn(
-				"Failed to get kernel name from workspace, using default: python3",
-				error
-			);
-			// Use default kernel name on error
-			this.notebookService = new NotebookService({
-				workspacePath: this.workspacePath,
-				kernelName: "python3",
-			});
-		}
-	}
 
 	setModel(model: string) {
 		this.selectedModel = model;
@@ -327,8 +303,11 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				this.workspacePath
 			);
 
-			// Get kernel name from the actual workspace metadata
-			await this.updateKernelNameFromWorkspace();
+			// Initialize NotebookService with simplified kernel approach
+			this.notebookService = new NotebookService({
+				workspacePath: this.workspacePath,
+				kernelName: "python3", // Will be dynamically discovered by JupyterService
+			});
 
 			// Generate data-driven analysis steps
 			this.updateStatus("Generating analysis steps...");

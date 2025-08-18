@@ -25,8 +25,6 @@ export class EnvironmentManager {
 	private datasetManager: DatasetManager;
 	private statusCallback?: (status: string) => void;
 	private installedPackages = new Set<string>();
-	// Cache package verification to avoid repeated kernel execution
-	private packageVerificationCache = new Map<string, boolean>();
 
 	constructor(datasetManager: DatasetManager) {
 		this.datasetManager = datasetManager;
@@ -42,22 +40,6 @@ export class EnvironmentManager {
 		}
 	}
 
-	/**
-	 * Get kernel name from workspace metadata
-	 */
-	async getWorkspaceKernelName(workspaceDir: string): Promise<string> {
-		try {
-			const metadataPath = `${workspaceDir}/workspace_metadata.json`;
-			const content = await ElectronClient.readFile(metadataPath);
-			const metadata = JSON.parse(content);
-			return metadata?.kernelName || "python3";
-		} catch (error) {
-			console.warn(
-				"Could not read workspace kernel name, using default: python3"
-			);
-			return "python3";
-		}
-	}
 
 	/**
 	 * Start Jupyter with workspace kernels if not already running
@@ -91,42 +73,21 @@ export class EnvironmentManager {
 	}
 
 	/**
-	 * Ensure Jupyter is using the workspace's virtual environment kernel
+	 * Simplified kernel readiness check - just verify Jupyter server is running
+	 * since we now use dynamic kernel discovery instead of workspace-specific kernels
 	 */
 	async ensureWorkspaceKernelReady(workspaceDir: string): Promise<boolean> {
 		try {
-			const kernelName = await this.getWorkspaceKernelName(workspaceDir);
-			this.updateStatus(`🔧 Ensuring workspace kernel is ready: ${kernelName}`);
-
-			// Verify that the kernel spec exists in the workspace
-			const kernelsDir = `${workspaceDir}/kernels/${kernelName}`;
-			const kernelSpecPath = `${kernelsDir}/kernel.json`;
-
-			try {
-				const kernelSpecContent = await ElectronClient.readFile(kernelSpecPath);
-				const kernelSpec = JSON.parse(kernelSpecContent);
-
-				// Verify that the kernel spec points to the workspace's virtual environment Python
-				const expectedPythonPath = `${workspaceDir}/venv/bin/python`;
-				if (kernelSpec.argv && kernelSpec.argv[0] === expectedPythonPath) {
-					console.log(`✅ Workspace kernel properly configured: ${kernelName}`);
-					this.updateStatus(`✅ Workspace kernel ready: ${kernelName}`);
-					return true;
-				} else {
-					console.warn(
-						`⚠️ Kernel spec does not point to workspace Python: ${kernelSpec.argv?.[0]}`
-					);
-					this.updateStatus(`⚠️ Kernel configuration issue, using default`);
-					return false;
-				}
-			} catch (readError) {
-				console.warn(`⚠️ Could not read kernel spec: ${kernelSpecPath}`);
-				this.updateStatus(`⚠️ Kernel spec not found, using default`);
-				return false;
-			}
+			this.updateStatus(`🔧 Verifying Jupyter server is ready...`);
+			
+			// Just verify that Jupyter server is running - kernel discovery is handled dynamically
+			await ElectronClient.startJupyter(workspaceDir);
+			
+			this.updateStatus(`✅ Jupyter server ready with dynamic kernel discovery`);
+			return true;
 		} catch (error) {
-			console.warn("Failed to ensure workspace kernel is ready:", error);
-			this.updateStatus("⚠️ Using default kernel");
+			console.warn("Failed to ensure Jupyter server is ready:", error);
+			this.updateStatus("⚠️ Jupyter server issue");
 			return false;
 		}
 	}
@@ -432,62 +393,55 @@ except subprocess.CalledProcessError:
 	}
 
 	/**
-	 * Verify core packages are available in the environment
+	 * Verify core packages are available - delegated to centralized service
+	 * Note: This is now handled by the centralized WorkspaceEnvironmentService in the main process
 	 */
 	private async verifyCorePackages(workspaceDir: string): Promise<boolean> {
-		// Check cache first to avoid unnecessary kernel execution
-		if (this.packageVerificationCache.has(workspaceDir)) {
-			return this.packageVerificationCache.get(workspaceDir) || false;
-		}
-
-		const testCode = `
+		try {
+			// Simple verification using pip list command
+			const checkCode = `
+import subprocess
 import sys
-print(f"Python path: {sys.path}")
-try:
-    import pandas
-    print("✅ pandas available")
-except ImportError:
-    print("❌ pandas not available")
+import json
+
+core_packages = ['pandas', 'numpy', 'matplotlib', 'seaborn']
 
 try:
-    import numpy
-    print("✅ numpy available") 
-except ImportError:
-    print("❌ numpy not available")
-
-try:
-    import matplotlib
-    print("✅ matplotlib available")
-except ImportError:
-    print("❌ matplotlib not available")
-    
-try:
-    import seaborn
-    print("✅ seaborn available")
-except ImportError:
-    print("❌ seaborn not available")
+    result = subprocess.run([sys.executable, "-m", "pip", "list", "--format=json"], 
+                          capture_output=True, text=True, timeout=10)
+    if result.returncode == 0:
+        packages = json.loads(result.stdout)
+        installed = {pkg['name'].lower() for pkg in packages}
+        missing = [pkg for pkg in core_packages if pkg not in installed]
+        
+        if missing:
+            print(f"❌ Missing core packages: {missing}")
+        else:
+            print("✅ All core packages available")
+            
+        print(f"VERIFICATION_RESULT: {len(missing) == 0}")
+    else:
+        print("❌ Failed to list packages")
+        print("VERIFICATION_RESULT: False")
+except Exception as e:
+    print(f"❌ Package verification error: {e}")
+    print("VERIFICATION_RESULT: False")
 `;
 
-		try {
-			const testResult = await ElectronClient.executeJupyterCode(
-				testCode,
-				workspaceDir
-			);
-
-			const success = testResult.success;
-			if (success) {
-				console.log("📦 Package verification result:", testResult.output);
+			const testResult = await ElectronClient.executeJupyterCode(checkCode, workspaceDir);
+			
+			if (testResult.success && testResult.output) {
+				const match = testResult.output.match(/VERIFICATION_RESULT:\s*(True|False)/);
+				const success = match ? match[1] === 'True' : false;
+				
+				console.log("📦 Package verification result:", success ? "✅ Success" : "❌ Failed");
+				return success;
 			} else {
 				console.warn("⚠️ Package verification failed:", testResult.error);
+				return false;
 			}
-
-			// Cache the result
-			this.packageVerificationCache.set(workspaceDir, success);
-			return success;
 		} catch (error) {
 			console.error("Error verifying core packages:", error);
-			// Cache false result
-			this.packageVerificationCache.set(workspaceDir, false);
 			return false;
 		}
 	}

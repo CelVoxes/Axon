@@ -288,7 +288,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			const lang: string = String(d.language || "python").toLowerCase();
 			const code: string = String(d.code || "");
 			const out: string = String(d.output || "");
-			const prefix = `Please review the following ${lang} cell output and fix or suggest improvements.`;
+			const prefix = `Please review the following ${lang} cell output and fix problems.`;
 			const body = `\n\nOutput:\n\n\`\`\`text\n${out}\n\`\`\`\n\nCode:\n\n\`\`\`${lang}\n${code}\n\`\`\`\n`;
 			setInputValue(prefix + body);
 			setCodeEditContext({
@@ -1896,229 +1896,70 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				await handleSuggestionsRequest(userMessage);
 			}
 			// Use intelligent detection to understand if user wants to search for datasets
-			else if (await shouldSearchForDatasets(userMessage)) {
-				console.log("🔍 Detected search request for:", userMessage);
-				// Search for datasets
-				if (isMounted) {
-					setProgressMessage("🔍 Searching for datasets...");
-					setShowSearchDetails(true);
-				}
-
-				// Check if backendClient is available
-				if (!backendClient) {
+			else {
+				const wantSearch = await shouldSearchForDatasets(userMessage);
+				if (wantSearch) {
+					console.log("🔍 Detected search request for:", userMessage);
+					// Search for datasets
 					if (isMounted) {
-						addMessage(
-							"❌ Backend client not initialized. Please wait a moment and try again.",
-							false
-						);
-					}
-					return;
-				}
-
-				// Set up progress callback for real-time updates (use SearchService to ensure UI wiring)
-				if (searchService) {
-					searchService.setProgressCallback((progress: any) => {
-						if (isMounted) {
-							updateProgressData(progress);
-						}
-					});
-				} else {
-					backendClient.setProgressCallback((progress) => {
-						if (isMounted) {
-							updateProgressData(progress);
-						}
-					});
-				}
-
-				// Initialize search progress
-				if (isMounted) {
-					setSearchProgress({
-						message: "Initializing search...",
-						progress: 0,
-						step: "init",
-						datasetsFound: 0,
-					});
-				}
-
-				console.log("🔍 Starting search with query:", userMessage);
-				console.log("🔍 BackendClient baseUrl:", backendClient.getBaseUrl());
-
-				const response = searchService
-					? await searchService.discoverDatasets(userMessage, {
-							limit: SearchConfig.getSearchLimit(),
-					  })
-					: ({ datasets: [] } as any);
-
-				console.log("🔍 Search response:", response);
-
-				if (isMounted && response.datasets && response.datasets.length > 0) {
-					setAvailableDatasets(response.datasets);
-					setShowDatasetModal(true);
-
-					let responseContent = `## 🔍 Found ${response.datasets.length} Datasets\n\n`;
-					responseContent += `I found ${response.datasets.length} datasets that match your search. Please select the ones you'd like to analyze:\n\n`;
-
-					response.datasets
-						.slice(0, 5)
-						.forEach((dataset: any, index: number) => {
-							responseContent += `### ${index + 1}. ${dataset.title}\n`;
-							responseContent += `**ID:** ${dataset.id}\n`;
-							if (dataset.description) {
-								responseContent += `**Description:** ${dataset.description.substring(
-									0,
-									200
-								)}...\n`;
-							}
-							if (dataset.organism) {
-								responseContent += `**Organism:** ${dataset.organism}\n`;
-							}
-							responseContent += `\n`;
-						});
-
-					if (response.datasets.length > 5) {
-						responseContent += `*... and ${
-							response.datasets.length - 5
-						} more datasets*\n\n`;
+						setProgressMessage("🔍 Searching for datasets...");
+						setShowSearchDetails(true);
 					}
 
-					responseContent += `**💡 Tip:** Select the datasets you want to analyze, then specify what analysis you'd like to perform.`;
-
-					addMessage(responseContent, false);
-				} else {
-					console.log("❌ No datasets found. Response:", response);
-					console.log("❌ Response.datasets:", response.datasets);
-					console.log(
-						"❌ Response.datasets.length:",
-						response.datasets?.length
-					);
-					addMessage(
-						"❌ No datasets found matching your search. Try different keywords or be more specific.",
-						false
-					);
-				}
-
-				// Keep progress visible for a moment, then clear
-				setTimeout(() => {
-					setSearchProgress(null);
-					setShowSearchDetails(false);
-				}, 2000);
-			} else if (selectedDatasets.length > 0) {
-				// User has selected datasets and is now specifying analysis
-				await handleAnalysisRequest(userMessage);
-			} else {
-				// If there is an active notebook open, treat as incremental analysis instead of searching
-				const activeFile = (workspaceState as any).activeFile as string | null;
-				const isNotebookOpen = Boolean(
-					activeFile && activeFile.endsWith(".ipynb")
-				);
-				const isAnalysis = isAnalysisRequest(userMessage);
-
-				if (isNotebookOpen && isAnalysis) {
-					// Append new analysis step to the current notebook (skip dataset search)
-					addMessage(
-						`Detected analysis request for the current notebook. I'll add a new step for: ${userMessage}`,
-						false
-					);
-					// Reuse the handler below
-					await (async () => {
-						try {
-							const wsDir =
-								findWorkspacePath({
-									filePath: activeFile,
-									currentWorkspace: workspaceState.currentWorkspace,
-								}) ||
-								workspaceState.currentWorkspace ||
-								"";
-							if (!backendClient || !wsDir)
-								throw new Error("Backend not ready");
-							const agent = new AutonomousAgent(backendClient, wsDir);
-							const steps = [
-								{
-									id: "step_1",
-									description: userMessage,
-									code: "",
-									status: "pending" as const,
-								},
-							];
-							await agent.startNotebookCodeGeneration(
-								activeFile!,
-								userMessage,
-								[],
-								steps as any,
-								wsDir,
-								{ skipEnvCells: true }
-							);
-							addMessage("Added analysis step to the open notebook.", false);
-						} catch (e) {
+					// Check if backendClient is available
+					if (!backendClient) {
+						if (isMounted) {
 							addMessage(
-								`Failed to append analysis step: ${
-									e instanceof Error ? e.message : String(e)
-								}`,
+								"❌ Backend client not initialized. Please wait a moment and try again.",
 								false
 							);
 						}
-					})();
-				} else if (isAnalysis) {
-					// If the user referenced @tokens but none resolved to local data, do not start a remote search.
-					// Ask the user to attach or register the local data instead of triggering dataset discovery.
-					if (
-						Array.isArray(tokens) &&
-						tokens.length > 0 &&
-						allMentionDatasets.length === 0
-					) {
-						addMessage(
-							`I detected data mention(s) ${tokens
-								.map((t) => `@${t}`)
-								.join(", ")} but couldn't find matching local data.\n\n` +
-								`- Attach files or folders using the paperclip button, then reference them with @alias (e.g., @data.csv).\n` +
-								`- Or type the absolute/relative path after @ (e.g., @data/file.csv).`,
-							false
-						);
-						setIsLoading(false);
-						setIsProcessing(false);
-						setProgressMessage("");
 						return;
 					}
-					// Existing behavior: guide the user to dataset search if nothing is open/selected
-					addMessage(
-						`Analysis Request Detected!\n\n` +
-							`I can help you with: ${userMessage}\n\n` +
-							`However, I need to find relevant datasets first. Let me search for datasets related to your analysis:\n\n` +
-							`Searching for: ${userMessage}`,
-						false
-					);
-					setProgressMessage("Searching for relevant datasets...");
-					setShowSearchDetails(true);
-					if (!backendClient) {
-						addMessage(
-							"Backend client not initialized. Please wait a moment and try again.",
-							false
-						);
-						return;
-					}
+
+					// Set up progress callback for real-time updates (use SearchService to ensure UI wiring)
 					if (searchService) {
 						searchService.setProgressCallback((progress: any) => {
-							updateProgressData(progress);
+							if (isMounted) {
+								updateProgressData(progress);
+							}
 						});
 					} else {
 						backendClient.setProgressCallback((progress) => {
-							updateProgressData(progress);
+							if (isMounted) {
+								updateProgressData(progress);
+							}
 						});
 					}
-					setSearchProgress({
-						message: "Initializing search...",
-						progress: 0,
-						step: "init",
-						datasetsFound: 0,
-					});
+
+					// Initialize search progress
+					if (isMounted) {
+						setSearchProgress({
+							message: "Initializing search...",
+							progress: 0,
+							step: "init",
+							datasetsFound: 0,
+						});
+					}
+
+					console.log("🔍 Starting search with query:", userMessage);
+					console.log("🔍 BackendClient baseUrl:", backendClient.getBaseUrl());
+
 					const response = searchService
-						? await searchService.discoverDatasets(userMessage, { limit: 50 })
+						? await searchService.discoverDatasets(userMessage, {
+								limit: SearchConfig.getSearchLimit(),
+						  })
 						: ({ datasets: [] } as any);
-					if (response.datasets && response.datasets.length > 0) {
+
+					console.log("🔍 Search response:", response);
+
+					if (isMounted && response.datasets && response.datasets.length > 0) {
 						setAvailableDatasets(response.datasets);
 						setShowDatasetModal(true);
-						let responseContent = `## Found ${response.datasets.length} Relevant Datasets\n\n`;
-						responseContent += `I found ${response.datasets.length} datasets that could be used for your analysis. Please select the ones you'd like to work with:\n\n`;
+
+						let responseContent = `## 🔍 Found ${response.datasets.length} Datasets\n\n`;
+						responseContent += `I found ${response.datasets.length} datasets that match your search. Please select the ones you'd like to analyze:\n\n`;
+
 						response.datasets
 							.slice(0, 5)
 							.forEach((dataset: any, index: number) => {
@@ -2135,30 +1976,228 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								}
 								responseContent += `\n`;
 							});
+
 						if (response.datasets.length > 5) {
 							responseContent += `*... and ${
 								response.datasets.length - 5
 							} more datasets*\n\n`;
 						}
-						responseContent += `**💡 Tip:** Select the datasets you want to analyze, then I'll proceed with your analysis request.`;
+
+						responseContent += `**💡 Tip:** Select the datasets you want to analyze, then specify what analysis you'd like to perform.`;
+
 						addMessage(responseContent, false);
 					} else {
+						console.log("❌ No datasets found. Response:", response);
+						console.log("❌ Response.datasets:", response.datasets);
+						console.log(
+							"❌ Response.datasets.length:",
+							response.datasets?.length
+						);
 						addMessage(
-							"No datasets found for your analysis request. Try being more specific about the disease, tissue, or organism you're interested in.",
+							"❌ No datasets found matching your search. Try different keywords or be more specific.",
 							false
 						);
 					}
+
+					// Keep progress visible for a moment, then clear
 					setTimeout(() => {
 						setSearchProgress(null);
 						setShowSearchDetails(false);
 					}, 2000);
+				} else if (selectedDatasets.length > 0) {
+					// User has selected datasets and is now specifying analysis
+					await handleAnalysisRequest(userMessage);
 				} else {
-					// General conversation
-					addMessage(
-						"To get started, type your question or search for datasets. " +
-							"Attach your data with @ (e.g., @data.csv) and reference a notebook cell with # (e.g., #3).",
-						false
+					// If there is an active notebook open, treat as incremental analysis instead of searching
+					const activeFile = (workspaceState as any).activeFile as
+						| string
+						| null;
+					const isNotebookOpen = Boolean(
+						activeFile && activeFile.endsWith(".ipynb")
 					);
+					const isAnalysis = isAnalysisRequest(userMessage);
+
+					if (isNotebookOpen && isAnalysis && !wantSearch) {
+						// Append new analysis step to the current notebook (skip dataset search)
+						addMessage(
+							`Detected analysis request for the current notebook. I'll add a new step for: ${userMessage}`,
+							false
+						);
+						// Reuse the handler below
+						await (async () => {
+							try {
+								const wsDir =
+									findWorkspacePath({
+										filePath: activeFile,
+										currentWorkspace: workspaceState.currentWorkspace,
+									}) ||
+									workspaceState.currentWorkspace ||
+									"";
+								if (!backendClient || !wsDir)
+									throw new Error("Backend not ready");
+								const agent = new AutonomousAgent(backendClient, wsDir);
+								const steps = [
+									{
+										id: "step_1",
+										description: userMessage,
+										code: "",
+										status: "pending" as const,
+									},
+								];
+								await agent.startNotebookCodeGeneration(
+									activeFile!,
+									userMessage,
+									[],
+									steps as any,
+									wsDir,
+									{ skipEnvCells: true }
+								);
+								addMessage("Added analysis step to the open notebook.", false);
+							} catch (e) {
+								addMessage(
+									`Failed to append analysis step: ${
+										e instanceof Error ? e.message : String(e)
+									}`,
+									false
+								);
+							}
+						})();
+					} else if (isAnalysis && wantSearch) {
+						// If the user referenced @tokens but none resolved to local data, do not start a remote search.
+						// Ask the user to attach or register the local data instead of triggering dataset discovery.
+						if (
+							Array.isArray(tokens) &&
+							tokens.length > 0 &&
+							allMentionDatasets.length === 0
+						) {
+							addMessage(
+								`I detected data mention(s) ${tokens
+									.map((t) => `@${t}`)
+									.join(", ")} but couldn't find matching local data.\n\n` +
+									`- Attach files or folders using the paperclip button, then reference them with @alias (e.g., @data.csv).\n` +
+									`- Or type the absolute/relative path after @ (e.g., @data/file.csv).`,
+								false
+							);
+							setIsLoading(false);
+							setIsProcessing(false);
+							setProgressMessage("");
+							return;
+						}
+						// Existing behavior: guide the user to dataset search if nothing is open/selected
+						addMessage(
+							`Analysis Request Detected!\n\n` +
+								`I can help you with: ${userMessage}\n\n` +
+								`However, I need to find relevant datasets first. Let me search for datasets related to your analysis:\n\n` +
+								`Searching for: ${userMessage}`,
+							false
+						);
+						setProgressMessage("Searching for relevant datasets...");
+						setShowSearchDetails(true);
+						if (!backendClient) {
+							addMessage(
+								"Backend client not initialized. Please wait a moment and try again.",
+								false
+							);
+							return;
+						}
+						if (searchService) {
+							searchService.setProgressCallback((progress: any) => {
+								updateProgressData(progress);
+							});
+						} else {
+							backendClient.setProgressCallback((progress) => {
+								updateProgressData(progress);
+							});
+						}
+						setSearchProgress({
+							message: "Initializing search...",
+							progress: 0,
+							step: "init",
+							datasetsFound: 0,
+						});
+						const response = searchService
+							? await searchService.discoverDatasets(userMessage, { limit: 50 })
+							: ({ datasets: [] } as any);
+						if (response.datasets && response.datasets.length > 0) {
+							setAvailableDatasets(response.datasets);
+							setShowDatasetModal(true);
+							let responseContent = `## Found ${response.datasets.length} Relevant Datasets\n\n`;
+							responseContent += `I found ${response.datasets.length} datasets that could be used for your analysis. Please select the ones you'd like to work with:\n\n`;
+							response.datasets
+								.slice(0, 5)
+								.forEach((dataset: any, index: number) => {
+									responseContent += `### ${index + 1}. ${dataset.title}\n`;
+									responseContent += `**ID:** ${dataset.id}\n`;
+									if (dataset.description) {
+										responseContent += `**Description:** ${dataset.description.substring(
+											0,
+											200
+										)}...\n`;
+									}
+									if (dataset.organism) {
+										responseContent += `**Organism:** ${dataset.organism}\n`;
+									}
+									responseContent += `\n`;
+								});
+							if (response.datasets.length > 5) {
+								responseContent += `*... and ${
+									response.datasets.length - 5
+								} more datasets*\n\n`;
+							}
+							responseContent += `**💡 Tip:** Select the datasets you want to analyze, then I'll proceed with your analysis request.`;
+							addMessage(responseContent, false);
+						} else {
+							addMessage(
+								"No datasets found for your analysis request. Try being more specific about the disease, tissue, or organism you're interested in.",
+								false
+							);
+						}
+						setTimeout(() => {
+							setSearchProgress(null);
+							setShowSearchDetails(false);
+						}, 2000);
+					} else {
+						// Intent: ADD_CELL — generate code and insert as a new cell into the active notebook
+						const activeFile = (workspaceState as any).activeFile as
+							| string
+							| null;
+						if (activeFile && activeFile.endsWith(".ipynb")) {
+							try {
+								if (!backendClient) throw new Error("Backend not ready");
+								addMessage(
+									"🧩 Adding a new code cell to the open notebook...",
+									false
+								);
+								const code = await backendClient.generateCode({
+									task_description: userMessage,
+									language: "python",
+									context:
+										"Generated from chat request to add a new analysis cell.",
+								});
+
+								// Dispatch event for FileEditor to add the code cell
+								EventManager.dispatchEvent("add-notebook-cell", {
+									filePath: activeFile,
+									cellType: "code",
+									content: code || "# New analysis cell\n",
+								});
+								addMessage("✅ Added a new code cell to the notebook.", false);
+							} catch (e) {
+								addMessage(
+									`⚠️ Failed to add a code cell: ${
+										e instanceof Error ? e.message : String(e)
+									}`,
+									false
+								);
+							}
+						} else {
+							// No active notebook — guide user to open/create one
+							addMessage(
+								"I am a bioinformatics assistant, ask me anything! Use @ to add files/folders, use # to tag cells inside notebooks.",
+								false
+							);
+						}
+					}
 				}
 			}
 		} catch (error) {
@@ -2849,7 +2888,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			setSelectedDatasets((prev) => mergeSelectedDatasets(prev, [entry]));
 			const alias =
 				entry.alias || (entry.title || entry.id).replace(/\s+/g, "_");
-			const nextInput = inputValueRef.current.replace(/@([^\s@]*)$/, `@${alias}`) + " ";
+			const nextInput =
+				inputValueRef.current.replace(/@([^\s@]*)$/, `@${alias}`) + " ";
 			setInputValue(nextInput);
 			setMentionOpen(false);
 			setMentionQuery("");
@@ -2860,11 +2900,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				// No longer sending automatically on Enter selection per UX
 			}
 		},
-		[
-			workspaceMentionItems,
-			mergeSelectedDatasets,
-			handleSendMessage,
-		]
+		[workspaceMentionItems, mergeSelectedDatasets, handleSendMessage]
 	);
 
 	// Choose from notebook cell mentions (for # context)
@@ -2918,14 +2954,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				return;
 			}
 			if (e.key === "Enter") {
-				e.preventDefault();
-				if (isHashContext && totalCells > 0) {
-					const index = activeCellIndex >= 0 ? activeCellIndex : 0;
-					void chooseCellMention(index);
-				} else if (!isHashContext && totalWs > 0) {
-					const index = activeWorkspaceIndex >= 0 ? activeWorkspaceIndex : 0;
-					void chooseWorkspaceMention(index, false);
+				const hasItems = isHashContext ? totalCells > 0 : totalWs > 0;
+				if (hasItems) {
+					e.preventDefault();
+					if (isHashContext) {
+						const index = activeCellIndex >= 0 ? activeCellIndex : 0;
+						void chooseCellMention(index);
+					} else {
+						const index = activeWorkspaceIndex >= 0 ? activeWorkspaceIndex : 0;
+						void chooseWorkspaceMention(index, false);
+					}
 				}
+				// If no items, do not prevent default; let Composer send
 				return;
 			}
 			if (e.key === "Escape") {
@@ -3020,8 +3060,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	// Debounced processing to avoid performance issues
 	const debouncedCellProcessing = React.useRef<NodeJS.Timeout | null>(null);
 	const debouncedMentionProcessing = React.useRef<NodeJS.Timeout | null>(null);
-	const cellItemsCache = React.useRef<{ activeFile: string; items: any[] } | null>(null);
-	const mentionItemsCache = React.useRef<{ workspace: string; token: string; items: any[] } | null>(null);
+	const cellItemsCache = React.useRef<{
+		activeFile: string;
+		items: any[];
+	} | null>(null);
+	const mentionItemsCache = React.useRef<{
+		workspace: string;
+		token: string;
+		items: any[];
+	} | null>(null);
 
 	// Composer change handler with @-mention detection
 	const handleComposerChange = useCallback(
@@ -3033,12 +3080,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			if (hashMatch) {
 				setMentionOpen(true);
 				setMentionQuery(hashMatch[1] || "");
-				
+
 				// Clear any existing debounced processing
 				if (debouncedCellProcessing.current) {
 					clearTimeout(debouncedCellProcessing.current);
 				}
-				
+
 				// Debounce expensive cell processing
 				debouncedCellProcessing.current = setTimeout(async () => {
 					try {
@@ -3097,10 +3144,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 										(it.title || "").toLowerCase().includes(q)
 							  )
 							: [allItem, ...items];
-						
+
 						// Cache the results to avoid re-processing the same file
 						cellItemsCache.current = { activeFile, items: [allItem, ...items] };
-						
+
 						setCellMentionItems(filtered);
 						setWorkspaceMentionItems([]);
 					} catch {
@@ -3114,12 +3161,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			if (match) {
 				setMentionOpen(true);
 				setMentionQuery(match[1] || "");
-				
+
 				// Clear any existing debounced processing
 				if (debouncedMentionProcessing.current) {
 					clearTimeout(debouncedMentionProcessing.current);
 				}
-				
+
 				// Debounce expensive mention processing
 				debouncedMentionProcessing.current = setTimeout(async () => {
 					try {
@@ -3255,7 +3302,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	// Clear cache when active file changes
 	React.useEffect(() => {
 		const activeFile = (workspaceState as any).activeFile as string | null;
-		if (cellItemsCache.current && cellItemsCache.current.activeFile !== activeFile) {
+		if (
+			cellItemsCache.current &&
+			cellItemsCache.current.activeFile !== activeFile
+		) {
 			cellItemsCache.current = null;
 		}
 	}, [(workspaceState as any).activeFile]);

@@ -5,7 +5,9 @@
   "main": "dist/main/main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "NODE_ENV=development concurrently \"npm run build:watch\" \"wait-on dist/main/main.js && electron .\"",
+    "dev": "NODE_ENV=development SPLIT_BACKEND=true concurrently \"npm run build:watch\" \"wait-on dist/main/main.js && electron .\"",
+    "backend": "python -m backend.cli serve --host 0.0.0.0 --port 8001",
+    "dev:full": "NODE_ENV=development concurrently \"npm run build:watch\" \"wait-on dist/main/main.js && electron .\"",
     "build": "tsc && webpack --mode production",
     "build:dev": "tsc && webpack --mode development",
     "build:watch": "concurrently \"tsc --watch\" \"webpack --mode development --watch\"",

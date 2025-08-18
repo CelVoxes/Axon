@@ -848,6 +848,95 @@ JSON response:"""
         except Exception as e:
             print(f"Query analysis error: {e}")
             return self._basic_query_analysis(query)
+
+    async def classify_intent(self, text: str, context: Optional[dict] = None) -> Dict[str, Any]:
+        """Classify user intent into one of two actions for the app backend:
+        - ADD_CELL: user wants to add/execute code in the current notebook
+        - SEARCH_DATA: user wants to find/search/download datasets
+
+        Prefer conservative behavior: default to ADD_CELL unless SEARCH intent is clear.
+        """
+        # 1) Try provider with strict, JSON-only contract
+        if self.provider:
+            try:
+                system = (
+                    "You classify user requests for a Jupyter-based data app into exactly one intent: "
+                    "ADD_CELL or SEARCH_DATA. Be conservative: if ambiguous, choose ADD_CELL. "
+                    "Return compact JSON only."
+                )
+                user = (
+                    "Text: " + text + "\n\n"
+                    "Rules:\n"
+                    "- SEARCH_DATA only if user clearly asks to search/find/browse/fetch/download datasets or mentions data portals (GEO, GSE IDs, CellxCensus, Broad SCP).\n"
+                    "- ADD_CELL if the user asks to write/run code, add a notebook cell, import/plot/analyze, or the request is a code task.\n"
+                    "- If ambiguous or short (e.g., just a gene symbol), use ADD_CELL.\n\n"
+                    "Respond as JSON: {\"intent\": \"ADD_CELL|SEARCH_DATA\", \"confidence\": 0.0-1.0, \"reason\": \"...\"}"
+                )
+                resp = await self.provider.generate(
+                    [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    max_tokens=120,
+                    temperature=0.0,
+                )
+                parsed = json.loads(resp)
+                intent = str(parsed.get("intent", "ADD_CELL")).strip().upper()
+                if intent not in ("ADD_CELL", "SEARCH_DATA"):
+                    intent = "ADD_CELL"
+                conf = parsed.get("confidence")
+                try:
+                    confidence = float(conf)
+                except Exception:
+                    confidence = 0.6 if intent == "SEARCH_DATA" else 0.8
+                reason = parsed.get("reason") or ("LLM classified as " + intent)
+                return {"intent": intent, "confidence": confidence, "reason": reason}
+            except Exception as e:
+                print(f"LLM classify_intent failed, using rules: {e}")
+
+        # 2) Fallback to deterministic rules
+        return self._rule_intent(text)
+
+    def _rule_intent(self, text: str) -> Dict[str, Any]:
+        """Deterministic rule-based classifier for intent. Conservative default to ADD_CELL."""
+        import re
+        t = text.lower().strip()
+
+        # Indicators for dataset search
+        search_keywords = [
+            "search", "find dataset", "find data", "look up", "lookup", "browse datasets",
+            "geo", "gse", "dataset", "datasets", "download data", "fetch data",
+            "cellxcensus", "single cell portal", "broad scp", "broad single cell",
+            "study id", "accession", "metadataset",
+        ]
+        # Indicators for code/cell operations
+        add_cell_keywords = [
+            "add cell", "new cell", "insert cell", "write a cell", "create a cell",
+            "write code", "run code", "execute", "plot", "visualize", "analysis", "analyze",
+            "import", "load", "filter", "compute", "calculate", "draw", "matplotlib",
+            "seaborn", "pandas", "numpy", "scanpy", "differential", "umap", "tsne",
+        ]
+
+        # Regex markers for GEO accessions etc.
+        if re.search(r"\bGSE\d+\b", text, re.IGNORECASE):
+            return {"intent": "SEARCH_DATA", "confidence": 0.9, "reason": "Explicit GEO accession present"}
+
+        # Keyword checks
+        def any_kw(kws: list[str]) -> bool:
+            return any(kw in t for kw in kws)
+
+        if any_kw(search_keywords):
+            return {"intent": "SEARCH_DATA", "confidence": 0.75, "reason": "Search-oriented phrasing detected"}
+
+        if any_kw(add_cell_keywords):
+            return {"intent": "ADD_CELL", "confidence": 0.8, "reason": "Notebook/code action phrasing detected"}
+
+        # Short/ambiguous inputs -> prefer ADD_CELL to avoid random searches
+        if len(t) < 12 or len(t.split()) <= 2:
+            return {"intent": "ADD_CELL", "confidence": 0.6, "reason": "Short/ambiguous query; defaulting to code"}
+
+        # Default conservative choice
+        return {"intent": "ADD_CELL", "confidence": 0.7, "reason": "Conservative default"}
     
     async def generate_plan(
         self, 

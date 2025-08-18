@@ -261,6 +261,8 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 					}
 				} else if (!result.success) {
 					console.warn("Failed to load recent workspaces:", result.error);
+				} else {
+					setRecentWorkspaces([]);
 				}
 			} catch (e) {
 				console.error("Error loading recent workspaces:", e);

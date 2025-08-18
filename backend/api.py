@@ -277,6 +277,14 @@ class AskRequest(BaseModel):
 
 class AskResponse(BaseModel):
     answer: str
+class IntentRequest(BaseModel):
+    text: str
+    context: Optional[Dict[str, Any]] = None
+
+class IntentResponse(BaseModel):
+    intent: str  # "ADD_CELL" | "SEARCH_DATA"
+    confidence: float
+    reason: str
 class GoogleAuthRequest(BaseModel):
     id_token: str
 
@@ -305,7 +313,8 @@ async def root():
             "code_generate": "/llm/code",
             "tool_call": "/llm/tool",
             "query_analyze": "/llm/analyze",
-            "ask": "/llm/ask",
+        "ask": "/llm/ask",
+            "intent": "/llm/intent",
         }
     }
 
@@ -956,6 +965,28 @@ async def ask_question(request: AskRequest, user=Depends(get_current_user)):
         return AskResponse(answer=answer)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ask failed: {str(e)}")
+
+
+@app.post("/llm/intent", response_model=IntentResponse)
+async def classify_intent(request: IntentRequest):
+    """Classify user intent into ADD_CELL or SEARCH_DATA (conservative default to ADD_CELL).
+
+    This endpoint is deterministic even without an LLM provider; it falls back to
+    a rule-based classifier to avoid random search triggers.
+    """
+    try:
+        llm_service = get_llm_service()
+        result = await llm_service.classify_intent(request.text, request.context)
+        # Normalize response
+        intent = str(result.get("intent", "ADD_CELL")).upper()
+        if intent not in ("ADD_CELL", "SEARCH_DATA"):
+            intent = "ADD_CELL"
+        confidence = float(result.get("confidence", 0.7))
+        reason = str(result.get("reason", "")) or f"Classified as {intent}"
+        return IntentResponse(intent=intent, confidence=confidence, reason=reason)
+    except Exception as e:
+        # On any error, be conservative
+        return IntentResponse(intent="ADD_CELL", confidence=0.6, reason=f"Fallback due to error: {e}")
 
 
 @app.get("/search/gene/{gene}")

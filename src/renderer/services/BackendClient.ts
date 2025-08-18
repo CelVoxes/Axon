@@ -523,21 +523,19 @@ export class BackendClient implements IBackendClient {
 	 * Classify chat intent using backend LLM analyzer. Returns a simplified intent string.
 	 */
 	async classifyIntent(message: string): Promise<{
-		intent: string;
-		entities?: string[];
-		data_types?: string[];
-		analysis_type?: string;
-		complexity?: string;
+		intent: string; // "ADD_CELL" | "SEARCH_DATA"
+		confidence?: number;
+		reason?: string;
 	}> {
 		const controller = new AbortController();
 		this.abortControllers.add(controller);
 		try {
 			const response = await this.axiosInstance.post(
-				`${this.baseUrl}/llm/analyze`,
-				{ query: message },
+				`${this.baseUrl}/llm/intent`,
+				{ text: message },
 				{ signal: controller.signal }
 			);
-			return response.data;
+			return response.data as { intent: string; confidence?: number; reason?: string };
 		} catch (error) {
 			log.error("BackendClient: Error classifying intent:", error);
 			throw error;

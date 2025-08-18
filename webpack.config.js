@@ -10,6 +10,7 @@ require("dotenv").config();
 
 module.exports = (env, argv) => {
 	const isProduction = argv.mode === "production";
+	const isFast = env && env.fast;
 
 	return {
 		target: "electron-renderer",
@@ -142,14 +143,14 @@ module.exports = (env, argv) => {
 				Buffer: ["buffer", "Buffer"],
 			}),
 		],
-		devtool: isProduction ? false : "source-map",
+		devtool: isProduction ? false : isFast ? "eval-cheap-module-source-map" : "source-map",
 		optimization: {
 			usedExports: true,
 			sideEffects: false,
 			providedExports: true,
 			innerGraph: true,
 			mangleExports: isProduction,
-			splitChunks: {
+			splitChunks: isFast ? false : {
 				chunks: "all",
 				minSize: 20000,
 				maxSize: 250000,

@@ -2,6 +2,10 @@ node_modules
 dist
 __pycache__
 
+# Build caches
+*.tsbuildinfo
+.eslintcache
+
 .env
 .venv
 .DS_Store

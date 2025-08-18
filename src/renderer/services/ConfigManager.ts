@@ -245,7 +245,7 @@ export class ConfigManager {
 				enableProfiling: false,
 			},
 			features: {
-				enableLlmIntent: false,
+				enableLlmIntent: true,
 				llmIntentTimeoutMs: 700,
 				llmIntentMinConfidence: 0.6,
 			},

@@ -57,7 +57,7 @@ export function useChatIntent(): ChatIntentAPI {
 		}
 
 		// Fallback to LLM classification if enabled
-		const { enableLlmIntent, llmIntentTimeoutMs } =
+		const { enableLlmIntent, llmIntentTimeoutMs, llmIntentMinConfidence } =
 			ConfigManager.getInstance().getSection("features");
 		if (!enableLlmIntent) return false;
 
@@ -74,8 +74,11 @@ export function useChatIntent(): ChatIntentAPI {
 					)
 				),
 			]);
-			const intent = String(result?.intent || "unknown").toLowerCase();
-			if (intent.includes("search")) return true;
+			const intent = String(result?.intent || "unknown").toUpperCase();
+			const confidence = Number(result?.confidence ?? 1);
+			if (intent === "SEARCH_DATA" && confidence >= llmIntentMinConfidence) {
+				return true;
+			}
 			return false;
 		} catch (_) {
 			// On failure/timeout, default to non-search

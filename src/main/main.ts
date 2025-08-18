@@ -7,6 +7,8 @@ import { spawn, ChildProcess } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 import Store from "electron-store";
+import { JupyterService } from "./services/JupyterService";
+import { WorkspaceEnvironmentService } from "./services/WorkspaceEnvironmentService";
 
 // Store for app settings
 const store = new Store();
@@ -19,16 +21,15 @@ export class AxonApp {
 	private venvCreateProcess: ChildProcess | null = null;
 	private venvInstallProcess: ChildProcess | null = null;
 	private jupyterPort: number = 8888;
-	private bioragPort: number = 8000;
-	// Track a single active kernel per workspace to avoid spawning multiple kernels unnecessarily
-	private workspaceKernelMap: Map<string, string> = new Map();
-	// Prevent concurrent kernel creation for the same workspace
-	private workspaceKernelCreationPromises: Map<string, Promise<string>> =
-		new Map();
+	private bioragPort: number = 8001;
 	// Track which workspace the current Jupyter server was started for
 	private currentJupyterWorkspace: string | null = null;
 	// FS watchers per workspace root
 	private workspaceWatchers: Map<string, fs.FSWatcher> = new Map();
+
+	// Centralized services
+	private jupyterService: JupyterService;
+	private workspaceEnvironmentService: WorkspaceEnvironmentService;
 
 	// Ensure the configured Jupyter port is available; if occupied, try to free it or switch to an available port
 	private async ensureJupyterPortAvailable(): Promise<void> {
@@ -89,6 +90,12 @@ export class AxonApp {
 	}
 
 	constructor() {
+		// Initialize centralized services
+		this.jupyterService = new JupyterService(
+			JupyterService.getDefaultConfig(this.jupyterPort)
+		);
+		this.workspaceEnvironmentService = new WorkspaceEnvironmentService();
+		
 		this.initializeApp();
 	}
 
@@ -98,7 +105,15 @@ export class AxonApp {
 			.then(async () => {
 				try {
 					this.createMainWindow();
-					await this.startBioRAGServer();
+					
+					// Start BioRAG server only if not in split mode
+					if (process.env.SPLIT_BACKEND !== "true") {
+						await this.startBioRAGServer();
+					} else {
+						console.log("🔗 Split backend mode - BioRAG server should be started manually");
+						console.log("💡 Run: npm run backend:dev");
+					}
+					
 					this.setupIpcHandlers();
 					this.createMenu();
 				} catch (error) {
@@ -199,6 +214,19 @@ export class AxonApp {
 
 		this.mainWindow.once("ready-to-show", () => {
 			this.mainWindow?.show();
+			
+			// Update services with main window reference
+			this.jupyterService = new JupyterService(
+				JupyterService.getDefaultConfig(this.jupyterPort),
+				this.mainWindow!
+			);
+
+			// Configure workspace environment service with code execution capability
+			this.workspaceEnvironmentService.setCodeExecutionFunction(
+				async (code: string, workspacePath: string) => {
+					return this.executeCodeUsingCentralizedService(code, workspacePath);
+				}
+			);
 		});
 
 		// Handle external links
@@ -248,6 +276,16 @@ export class AxonApp {
 
 	private async startBioRAGServer() {
 		try {
+			// Skip BioRAG server in development if SKIP_BIORAG environment variable is set
+			if (process.env.SKIP_BIORAG === "true") {
+				console.log("⏭️  Skipping BioRAG server startup (SKIP_BIORAG=true)");
+				this.mainWindow?.webContents.send(
+					"biorag-log",
+					"BioRAG server disabled for faster development startup"
+				);
+				return;
+			}
+
 			// Check if BioRAG server is already running on the configured port
 			const isRunning = await this.checkBioRAGServerRunning();
 			if (isRunning) {
@@ -274,13 +312,15 @@ export class AxonApp {
 
 			// Use simple python3 command - no version checking needed for dev server
 			const pythonPath = "python3";
-			
+
 			// Report Python version being used for backend
 			try {
 				const version = await this.getPythonVersion(pythonPath);
 				console.log(`BioRAG backend using Python: ${pythonPath} - ${version}`);
 			} catch (error) {
-				console.log(`BioRAG backend using Python: ${pythonPath} (version check failed)`);
+				console.log(
+					`BioRAG backend using Python: ${pythonPath} (version check failed)`
+				);
 			}
 			const backendWorkingDir = path.join(__dirname, "..", "..");
 
@@ -331,21 +371,26 @@ export class AxonApp {
 			setTimeout(async () => {
 				const isServerReady = await this.checkBioRAGServerRunning();
 				if (isServerReady) {
-					console.log(`BioRAG server started successfully on port ${this.bioragPort}`);
+					console.log(
+						`BioRAG server started successfully on port ${this.bioragPort}`
+					);
 					this.mainWindow?.webContents.send("biorag-server-ready", {
 						port: this.bioragPort,
 						url: `http://localhost:${this.bioragPort}`,
 					});
 				} else {
-					console.log("BioRAG server may not have started properly, but continuing...");
+					console.log(
+						"BioRAG server may not have started properly, but continuing..."
+					);
 				}
 			}, 3000);
-
 		} catch (error) {
 			console.error("Failed to start BioRAG server:", error);
 			this.mainWindow?.webContents.send(
 				"biorag-error",
-				`Failed to start BioRAG server: ${error instanceof Error ? error.message : "Unknown error"}`
+				`Failed to start BioRAG server: ${
+					error instanceof Error ? error.message : "Unknown error"
+				}`
 			);
 		}
 	}
@@ -404,16 +449,6 @@ export class AxonApp {
 		}
 	}
 
-	private generateKernelName(workspacePath: string): string {
-		const workspaceName = path.basename(workspacePath);
-		// Stable, deterministic kernel name per workspace (no timestamp) to avoid proliferation
-		const sanitizedName =
-			workspaceName
-				.replace(/[^a-zA-Z0-9_-]/g, "_")
-				.toLowerCase()
-				.substring(0, 32) || "workspace";
-		return `axon-${sanitizedName}`;
-	}
 
 	/**
 	 * Normalize a workspace path to a stable canonical form for map keys and comparisons.
@@ -475,18 +510,20 @@ export class AxonApp {
 	private findExistingVenv(basePath: string): string | null {
 		console.log(`🔍 Searching for existing venv starting from: ${basePath}`);
 		const pathParts = basePath.split(path.sep);
-		
+
 		// Check current directory and up to 3 levels up
 		for (let i = 0; i <= 3 && pathParts.length > i; i++) {
 			const checkPath = pathParts.slice(0, pathParts.length - i).join(path.sep);
 			if (!checkPath) continue;
-			
+
 			const venvPath = this.getVenvPath(checkPath);
 			const pythonExe = this.getVenvPythonPath(venvPath);
-			
-			console.log(`🔍 Checking: ${checkPath} → venv: ${venvPath} → python: ${pythonExe}`);
+
+			console.log(
+				`🔍 Checking: ${checkPath} → venv: ${venvPath} → python: ${pythonExe}`
+			);
 			console.log(`🔍 Python executable exists: ${fs.existsSync(pythonExe)}`);
-				
+
 			if (fs.existsSync(pythonExe)) {
 				console.log(`✅ Found existing venv at: ${venvPath}`);
 				return checkPath;
@@ -499,9 +536,12 @@ export class AxonApp {
 	/**
 	 * Centralized venv creation with timeout and proper error handling
 	 */
-	private async createVirtualEnvironment(workspacePath: string, pythonPath: string): Promise<void> {
+	private async createVirtualEnvironment(
+		workspacePath: string,
+		pythonPath: string
+	): Promise<void> {
 		const venvPath = this.getVenvPath(workspacePath);
-		
+
 		console.log(`Creating virtual environment with Python: ${pythonPath}`);
 		console.log(`Target venv path: ${venvPath}`);
 
@@ -509,7 +549,7 @@ export class AxonApp {
 			cwd: workspacePath,
 			stdio: "pipe",
 		});
-		
+
 		// Store reference for cancellation
 		this.venvCreateProcess = createVenvProcess;
 
@@ -519,7 +559,9 @@ export class AxonApp {
 
 			// Set timeout for the operation
 			const timeout = setTimeout(() => {
-				console.error("Virtual environment creation timed out after 60 seconds");
+				console.error(
+					"Virtual environment creation timed out after 60 seconds"
+				);
 				createVenvProcess.kill("SIGKILL");
 				reject(new Error("Virtual environment creation timed out"));
 			}, 60000);
@@ -536,14 +578,22 @@ export class AxonApp {
 
 			createVenvProcess.on("close", (code) => {
 				clearTimeout(timeout);
-				console.log(`Virtual environment creation completed with code: ${code}`);
+				console.log(
+					`Virtual environment creation completed with code: ${code}`
+				);
 				this.venvCreateProcess = null;
 
 				if (code === 0) {
 					console.log("Virtual environment created successfully");
 					resolve();
 				} else {
-					reject(new Error(`Virtual environment creation failed with code ${code}: ${stderr || stdout || "Unknown error"}`));
+					reject(
+						new Error(
+							`Virtual environment creation failed with code ${code}: ${
+								stderr || stdout || "Unknown error"
+							}`
+						)
+					);
 				}
 			});
 
@@ -560,7 +610,9 @@ export class AxonApp {
 	 * Centralized method to ensure a venv exists for a given directory
 	 * Returns the directory that contains the venv (might be parent directory)
 	 */
-	private async ensureVirtualEnvironment(workspacePath: string): Promise<string> {
+	private async ensureVirtualEnvironment(
+		workspacePath: string
+	): Promise<string> {
 		// First, look for existing venv in current directory and parent directories
 		const existingWorkspace = this.findExistingVenv(workspacePath);
 		if (existingWorkspace) {
@@ -574,275 +626,10 @@ export class AxonApp {
 		return workspacePath;
 	}
 
-	/**
-	 * Get workspace metadata including the kernel name
-	 */
-	private async getWorkspaceMetadata(workspacePath: string): Promise<any> {
-		try {
-			const metadataPath = path.join(workspacePath, "workspace_metadata.json");
-			if (fs.existsSync(metadataPath)) {
-				const metadataContent = fs.readFileSync(metadataPath, "utf8");
-				return JSON.parse(metadataContent);
-			}
-		} catch (error) {
-			console.warn("Failed to read workspace metadata:", error);
-		}
-		return null;
-	}
 
-	// Removed old compatibility probing helpers that created transient kernels.
 
-	/**
-	 * Ensure a workspace-local kernelspec exists and metadata is updated to reference it.
-	 * Returns the kernelspec name to use.
-	 */
-	private ensureWorkspaceKernelSpec(
-		workspacePath: string,
-		pythonVenvPath: string,
-		venvPath: string
-	): string {
-		try {
-			const kernelsDir = path.join(workspacePath, "kernels");
-			// Read existing metadata if present
-			const metadataPath = path.join(workspacePath, "workspace_metadata.json");
-			let metadata: any = {};
-			if (fs.existsSync(metadataPath)) {
-				try {
-					const content = fs.readFileSync(metadataPath, "utf8");
-					metadata = JSON.parse(content);
-				} catch (e) {
-					console.warn(
-						"Failed to parse workspace metadata, will regenerate kernel info:",
-						e
-					);
-					metadata = {};
-				}
-			}
 
-			// Prefer a stable kernel name derived from the workspace directory
-			const stableKernelName = this.generateKernelName(workspacePath);
-			let kernelName: string = metadata?.kernelName;
-			if (!kernelName || typeof kernelName !== "string") {
-				kernelName = stableKernelName;
-			} else if (kernelName !== stableKernelName) {
-				// Migrate existing metadata to the stable kernel name to avoid proliferation
-				console.log(
-					`Migrating workspace kernel name from '${kernelName}' to stable '${stableKernelName}'`
-				);
-				kernelName = stableKernelName;
-			}
 
-			const kernelDir = path.join(kernelsDir, kernelName);
-			const kernelSpecPath = path.join(kernelDir, "kernel.json");
-
-			if (!fs.existsSync(kernelsDir)) {
-				fs.mkdirSync(kernelsDir, { recursive: true });
-			}
-			if (!fs.existsSync(kernelDir)) {
-				fs.mkdirSync(kernelDir, { recursive: true });
-			}
-
-			// Always ensure kernel.json points to the current venv python
-			const kernelSpec = {
-				argv: [
-					pythonVenvPath,
-					"-c",
-					"from ipykernel import kernelapp; kernelapp.IPKernelApp.launch_instance()",
-					"-f",
-					"{connection_file}",
-				],
-				display_name: `Axon Workspace (${path.basename(workspacePath)})`,
-				language: "python",
-				metadata: { debugger: true },
-			} as any;
-
-			try {
-				// If an existing spec is present but points elsewhere, overwrite it
-				let needsWrite = true;
-				if (fs.existsSync(kernelSpecPath)) {
-					try {
-						const existing = JSON.parse(
-							fs.readFileSync(kernelSpecPath, "utf8")
-						);
-						if (
-							existing &&
-							Array.isArray(existing.argv) &&
-							existing.argv.length > 0 &&
-							existing.argv[0] === pythonVenvPath
-						) {
-							needsWrite = false; // Already correct
-						}
-					} catch (_) {
-						// If parse fails, we'll rewrite it below
-					}
-				}
-				if (needsWrite) {
-					fs.writeFileSync(kernelSpecPath, JSON.stringify(kernelSpec, null, 2));
-					console.log(`Workspace kernel spec written: ${kernelSpecPath}`);
-				}
-			} catch (e) {
-				console.warn("Failed to ensure kernel.json:", e);
-			}
-
-			// Persist/update metadata with kernel info
-			const updatedMetadata = {
-				...(metadata || {}),
-				kernelName,
-				venvPath,
-				pythonPath: pythonVenvPath,
-				lastUpdated: new Date().toISOString(),
-			};
-			try {
-				fs.writeFileSync(
-					metadataPath,
-					JSON.stringify(updatedMetadata, null, 2)
-				);
-			} catch (e) {
-				console.warn("Failed to write workspace metadata:", e);
-			}
-
-			// Opportunistically clean up any old workspace kernel specs to prevent proliferation
-			try {
-				this.cleanupWorkspaceKernelSpecs(workspacePath, kernelName);
-			} catch (cleanupErr) {
-				console.warn(
-					"Failed to cleanup old workspace kernel specs:",
-					cleanupErr
-				);
-			}
-
-			return kernelName;
-		} catch (error) {
-			console.warn("Error ensuring workspace kernelspec:", error);
-			// Fallback to python3 name; server may still have a default kernelspec
-			return "python3";
-		}
-	}
-
-	/**
-	 * Remove old workspace-local kernelspecs except the one we want to keep.
-	 */
-	private cleanupWorkspaceKernelSpecs(
-		workspacePath: string,
-		keepKernelName: string
-	): void {
-		const kernelsDir = path.join(workspacePath, "kernels");
-		if (!fs.existsSync(kernelsDir)) return;
-		const entries = fs.readdirSync(kernelsDir, { withFileTypes: true });
-		for (const entry of entries) {
-			if (!entry.isDirectory()) continue;
-			const name = entry.name;
-			if (name === keepKernelName) continue;
-			// Only touch Axon-managed kernels to be safe
-			if (!name.startsWith("axon-")) continue;
-			try {
-				const target = path.join(kernelsDir, name);
-				fs.rmSync(target, { recursive: true, force: true });
-				console.log(`Removed old workspace kernelspec: ${name}`);
-			} catch (err) {
-				console.warn(`Failed to remove old workspace kernelspec ${name}:`, err);
-			}
-		}
-	}
-
-	/**
-	 * Get or create a kernel ID for the workspace using the provided kernelspec name.
-	 * Ensures only a single kernel is created per workspace even under concurrent calls.
-	 */
-	private async getOrCreateKernelId(
-		workspacePath: string,
-		kernelName: string,
-		csrfToken?: string
-	): Promise<string> {
-		// Reuse cached running kernel if still alive
-		try {
-			const listResponse = await fetch(
-				`http://127.0.0.1:${this.jupyterPort}/api/kernels`
-			);
-			const kernels: any[] = listResponse.ok ? await listResponse.json() : [];
-
-			const cachedId = this.workspaceKernelMap.get(workspacePath);
-			if (cachedId && Array.isArray(kernels)) {
-				const stillRunning = kernels.find((k: any) => k.id === cachedId);
-				if (stillRunning) {
-					return cachedId;
-				} else {
-					// Drop stale cache
-					this.workspaceKernelMap.delete(workspacePath);
-				}
-			}
-
-			// Prefer an existing kernel with the same spec name if present
-			const matching = Array.isArray(kernels)
-				? kernels.find((k: any) => k.name === kernelName)
-				: undefined;
-			if (matching?.id) {
-				this.workspaceKernelMap.set(workspacePath, matching.id);
-				return matching.id;
-			}
-		} catch (err) {
-			console.warn("Failed to list kernels before creation:", err);
-			// Continue to creation path
-		}
-
-		// If a creation is already in-flight for this workspace, await it
-		const inflight = this.workspaceKernelCreationPromises.get(workspacePath);
-		if (inflight) return inflight;
-
-		const createPromise = (async () => {
-			// Create fresh kernel
-			let headers: any = { "Content-Type": "application/json" };
-			if (csrfToken) headers["X-XSRFToken"] = csrfToken;
-
-			// Ensure kernelspecs are visible (best effort)
-			try {
-				await fetch(
-					`http://127.0.0.1:${this.jupyterPort}/api/kernelspecs`
-				).catch(() => undefined);
-			} catch {}
-
-			const createResp = await fetch(
-				`http://127.0.0.1:${this.jupyterPort}/api/kernels`,
-				{
-					method: "POST",
-					headers,
-					body: JSON.stringify({ name: kernelName }),
-				}
-			);
-
-			if (!createResp.ok) {
-				// Final fallback to python3 if custom kernelspec isn't registered yet
-				const fb = await fetch(
-					`http://127.0.0.1:${this.jupyterPort}/api/kernels`,
-					{
-						method: "POST",
-						headers,
-						body: JSON.stringify({ name: "python3" }),
-					}
-				);
-				if (!fb.ok) {
-					const errText = await fb.text().catch(() => "");
-					throw new Error(
-						`Failed to create kernel (fallback also failed): ${errText}`
-					);
-				}
-				const fbKernel = await fb.json();
-				this.workspaceKernelMap.set(workspacePath, fbKernel.id);
-				return fbKernel.id as string;
-			}
-
-			const newKernel = await createResp.json();
-			this.workspaceKernelMap.set(workspacePath, newKernel.id);
-			return newKernel.id as string;
-		})().finally(() => {
-			this.workspaceKernelCreationPromises.delete(workspacePath);
-		});
-
-		this.workspaceKernelCreationPromises.set(workspacePath, createPromise);
-		return createPromise;
-	}
-
-	// Removed global user-level kernel registration; we use workspace-local kernelspecs only.
 
 	private async findPythonPath(): Promise<string> {
 		const { execFile } = require("child_process");
@@ -852,12 +639,19 @@ export class AxonApp {
 		const MINIMUM_PYTHON_VERSION = "3.11.0";
 
 		// Check if we have app-managed Python first
-		const appPythonPath = path.join(app.getPath('userData'), 'python3.11', 'bin', 'python3');
+		const appPythonPath = path.join(
+			app.getPath("userData"),
+			"python3.11",
+			"bin",
+			"python3"
+		);
 		if (fs.existsSync(appPythonPath)) {
 			try {
 				const version = await this.getPythonVersion(appPythonPath);
 				if (this.isVersionSufficient(version, MINIMUM_PYTHON_VERSION)) {
-					console.log(`Using app-managed Python: ${appPythonPath} - ${version}`);
+					console.log(
+						`Using app-managed Python: ${appPythonPath} - ${version}`
+					);
 					return appPythonPath;
 				}
 			} catch (error) {
@@ -876,7 +670,7 @@ export class AxonApp {
 			"python3.12",
 			"python3.11",
 			"/opt/homebrew/bin/python3.12",
-			"/opt/homebrew/bin/python3.11", 
+			"/opt/homebrew/bin/python3.11",
 			"/opt/homebrew/bin/python3",
 			"/usr/local/bin/python3.12",
 			"/usr/local/bin/python3.11",
@@ -892,12 +686,14 @@ export class AxonApp {
 				const version = await this.getPythonVersion(cmd);
 				console.log(`Found Python at: ${cmd} - ${version}`);
 				foundAnyPython = true;
-				
+
 				if (this.isVersionSufficient(version, MINIMUM_PYTHON_VERSION)) {
 					console.log(`✅ Suitable Python found: ${cmd} - ${version}`);
 					return cmd;
 				} else {
-					console.log(`⚠️ Python too old: ${cmd} - ${version} (need ${MINIMUM_PYTHON_VERSION}+)`);
+					console.log(
+						`⚠️ Python too old: ${cmd} - ${version} (need ${MINIMUM_PYTHON_VERSION}+)`
+					);
 				}
 			} catch (error) {
 				console.log(`Python command ${cmd} not available`);
@@ -909,16 +705,19 @@ export class AxonApp {
 			console.log("Found Python but too old, installing Python 3.11...");
 			this.mainWindow?.webContents.send("python-setup-status", {
 				status: "required",
-				message: "🧬 Your current Python version is too old for biological analysis",
-				reason: "Modern biological packages require Python 3.11+. Installing automatically...",
+				message:
+					"🧬 Your current Python version is too old for biological analysis",
+				reason:
+					"Modern biological packages require Python 3.11+. Installing automatically...",
 				timestamp: new Date().toISOString(),
 			});
 		} else {
 			console.log("No Python found on system, installing Python 3.11...");
 			this.mainWindow?.webContents.send("python-setup-status", {
-				status: "required", 
+				status: "required",
 				message: "🧬 Installing Python for biological analysis",
-				reason: "No suitable Python found. Installing Python 3.11+ for biological data analysis...",
+				reason:
+					"No suitable Python found. Installing Python 3.11+ for biological data analysis...",
 				timestamp: new Date().toISOString(),
 			});
 		}
@@ -930,17 +729,20 @@ export class AxonApp {
 		const { execFile } = require("child_process");
 		const { promisify } = require("util");
 		const execFileAsync = promisify(execFile);
-		
+
 		const result = await execFileAsync(pythonPath, ["--version"]);
 		// Extract version from "Python 3.11.7" format
 		const versionMatch = result.stdout.trim().match(/Python (\d+\.\d+\.\d+)/);
 		return versionMatch ? versionMatch[1] : "0.0.0";
 	}
 
-	private isVersionSufficient(currentVersion: string, minVersion: string): boolean {
-		const current = currentVersion.split('.').map(Number);
-		const minimum = minVersion.split('.').map(Number);
-		
+	private isVersionSufficient(
+		currentVersion: string,
+		minVersion: string
+	): boolean {
+		const current = currentVersion.split(".").map(Number);
+		const minimum = minVersion.split(".").map(Number);
+
 		for (let i = 0; i < 3; i++) {
 			if (current[i] > minimum[i]) return true;
 			if (current[i] < minimum[i]) return false;
@@ -952,14 +754,15 @@ export class AxonApp {
 		// Notify user about Python setup
 		this.mainWindow?.webContents.send("python-setup-status", {
 			status: "required",
-			message: "Setting up Python 3.11 for optimal data science compatibility...",
+			message:
+				"Setting up Python 3.11 for optimal data science compatibility...",
 			reason: "No suitable Python found on your system (need Python 3.11+)",
 			timestamp: new Date().toISOString(),
 		});
 
 		try {
-			const pythonDir = path.join(app.getPath('userData'), 'python3.11');
-			
+			const pythonDir = path.join(app.getPath("userData"), "python3.11");
+
 			// Ensure directory exists
 			if (!fs.existsSync(pythonDir)) {
 				fs.mkdirSync(pythonDir, { recursive: true });
@@ -995,12 +798,12 @@ export class AxonApp {
 				message: `✅ Python ${pythonVersion} ready for data analysis`,
 				timestamp: new Date().toISOString(),
 			});
-
 		} catch (error) {
 			console.error("Failed to download Python:", error);
 			this.mainWindow?.webContents.send("python-setup-status", {
 				status: "error",
-				message: "Failed to setup Python. Please install Python 3.11+ manually.",
+				message:
+					"Failed to setup Python. Please install Python 3.11+ manually.",
 				error: error instanceof Error ? error.message : String(error),
 				timestamp: new Date().toISOString(),
 			});
@@ -1009,8 +812,8 @@ export class AxonApp {
 	}
 
 	private async installPythonViaPyenv(): Promise<void> {
-		const { promisify } = require('util');
-		const exec = promisify(require('child_process').exec);
+		const { promisify } = require("util");
+		const exec = promisify(require("child_process").exec);
 		const pythonVersion = "3.11.7";
 
 		try {
@@ -1022,17 +825,17 @@ export class AxonApp {
 
 			// Check if pyenv is installed, if not install it
 			try {
-				await exec('which pyenv');
+				await exec("which pyenv");
 			} catch (error) {
-				console.log('Installing pyenv...');
+				console.log("Installing pyenv...");
 				this.mainWindow?.webContents.send("python-setup-status", {
 					status: "installing",
 					message: "📦 Installing Python version manager (pyenv)...",
 					timestamp: new Date().toISOString(),
 				});
-				
+
 				// Install pyenv via the official installer
-				await exec('curl https://pyenv.run | bash');
+				await exec("curl https://pyenv.run | bash");
 			}
 
 			// Add pyenv to PATH for this session
@@ -1053,12 +856,12 @@ export class AxonApp {
 				message: `✅ Python ${pythonVersion} installed and ready for biological analysis!`,
 				timestamp: new Date().toISOString(),
 			});
-
 		} catch (error) {
 			console.error("Failed to install Python via pyenv:", error);
 			this.mainWindow?.webContents.send("python-setup-status", {
 				status: "error",
-				message: "Failed to install Python for biological analysis. Please install Python 3.11+ manually.",
+				message:
+					"Failed to install Python for biological analysis. Please install Python 3.11+ manually.",
 				error: error instanceof Error ? error.message : String(error),
 				timestamp: new Date().toISOString(),
 			});
@@ -1066,10 +869,14 @@ export class AxonApp {
 		}
 	}
 
-	private async downloadPythonFromUrl(url: string, targetDir: string, version: string): Promise<void> {
-		const https = require('https');
-		const fs = require('fs');
-		const path = require('path');
+	private async downloadPythonFromUrl(
+		url: string,
+		targetDir: string,
+		version: string
+	): Promise<void> {
+		const https = require("https");
+		const fs = require("fs");
+		const path = require("path");
 
 		return new Promise((resolve, reject) => {
 			const fileName = path.basename(url);
@@ -1081,28 +888,41 @@ export class AxonApp {
 
 			const request = https.get(url, (response: any) => {
 				// Handle redirects (301, 302, 307, 308)
-				if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+				if (
+					response.statusCode >= 300 &&
+					response.statusCode < 400 &&
+					response.headers.location
+				) {
 					// Follow redirect
-					this.downloadPythonFromUrl(response.headers.location, targetDir, version)
+					this.downloadPythonFromUrl(
+						response.headers.location,
+						targetDir,
+						version
+					)
 						.then(resolve)
 						.catch(reject);
 					return;
 				}
-				
+
 				if (response.statusCode !== 200) {
 					reject(new Error(`Download failed: ${response.statusCode}`));
 					return;
 				}
 
-				totalBytes = parseInt(response.headers['content-length'] || '0', 10);
+				totalBytes = parseInt(response.headers["content-length"] || "0", 10);
 
-				response.on('data', (chunk: Buffer) => {
+				response.on("data", (chunk: Buffer) => {
 					downloadedBytes += chunk.length;
-					const progress = totalBytes > 0 ? Math.round((downloadedBytes / totalBytes) * 100) : 0;
-					
+					const progress =
+						totalBytes > 0
+							? Math.round((downloadedBytes / totalBytes) * 100)
+							: 0;
+
 					this.mainWindow?.webContents.send("python-setup-status", {
 						status: "downloading",
-						message: `Downloading Python ${version} (${Math.round(downloadedBytes / 1024 / 1024)}MB of ${Math.round(totalBytes / 1024 / 1024)}MB)...`,
+						message: `Downloading Python ${version} (${Math.round(
+							downloadedBytes / 1024 / 1024
+						)}MB of ${Math.round(totalBytes / 1024 / 1024)}MB)...`,
 						progress,
 						timestamp: new Date().toISOString(),
 					});
@@ -1110,9 +930,9 @@ export class AxonApp {
 
 				response.pipe(file);
 
-				file.on('finish', async () => {
+				file.on("finish", async () => {
 					file.close();
-					
+
 					try {
 						// Extract and setup Python based on file type
 						await this.extractAndSetupPython(filePath, targetDir, version);
@@ -1123,14 +943,18 @@ export class AxonApp {
 				});
 			});
 
-			request.on('error', reject);
-			file.on('error', reject);
+			request.on("error", reject);
+			file.on("error", reject);
 		});
 	}
 
-	private async extractAndSetupPython(filePath: string, targetDir: string, version: string): Promise<void> {
-		const { promisify } = require('util');
-		const exec = promisify(require('child_process').exec);
+	private async extractAndSetupPython(
+		filePath: string,
+		targetDir: string,
+		version: string
+	): Promise<void> {
+		const { promisify } = require("util");
+		const exec = promisify(require("child_process").exec);
 
 		this.mainWindow?.webContents.send("python-setup-status", {
 			status: "installing",
@@ -1139,18 +963,20 @@ export class AxonApp {
 		});
 
 		try {
-			if (filePath.endsWith('.zip')) {
+			if (filePath.endsWith(".zip")) {
 				// Extract ZIP file (Windows) - pure Node.js implementation
-				const AdmZip = require('adm-zip');
+				const AdmZip = require("adm-zip");
 				const zip = new AdmZip(filePath);
 				zip.extractAllTo(targetDir, true);
-			} else if (filePath.endsWith('.tar.gz')) {
+			} else if (filePath.endsWith(".tar.gz")) {
 				// Extract tar.gz file (Linux) - use Node.js if tar not available
 				try {
 					await exec(`tar -xzf "${filePath}" -C "${targetDir}"`);
 				} catch (tarError) {
 					// Fallback: try to extract with Node.js zlib
-					console.log("tar command not available, attempting Node.js extraction...");
+					console.log(
+						"tar command not available, attempting Node.js extraction..."
+					);
 					await this.extractTarGzWithNodeJs(filePath, targetDir);
 				}
 			}
@@ -1159,25 +985,32 @@ export class AxonApp {
 			fs.unlinkSync(filePath);
 		} catch (error) {
 			console.error("Python extraction failed:", error);
-			throw new Error(`Failed to extract Python: ${error instanceof Error ? error.message : String(error)}`);
+			throw new Error(
+				`Failed to extract Python: ${
+					error instanceof Error ? error.message : String(error)
+				}`
+			);
 		}
 	}
 
-	private async extractTarGzWithNodeJs(filePath: string, targetDir: string): Promise<void> {
-		const zlib = require('zlib');
-		const tar = require('tar');
-		const fs = require('fs');
-		
+	private async extractTarGzWithNodeJs(
+		filePath: string,
+		targetDir: string
+	): Promise<void> {
+		const zlib = require("zlib");
+		const tar = require("tar");
+		const fs = require("fs");
+
 		// Create read stream -> gunzip -> tar extract
 		const readStream = fs.createReadStream(filePath);
 		const gunzip = zlib.createGunzip();
-		
+
 		return new Promise((resolve, reject) => {
 			readStream
 				.pipe(gunzip)
 				.pipe(tar.extract({ cwd: targetDir }))
-				.on('error', reject)
-				.on('end', resolve);
+				.on("error", reject)
+				.on("end", resolve);
 		});
 	}
 
@@ -1185,7 +1018,9 @@ export class AxonApp {
 		workspacePath: string
 	): Promise<{ success: boolean; error?: string }> {
 		try {
-			console.log(`🔧 startJupyterIfNeeded called with workspacePath: ${workspacePath}`);
+			console.log(
+				`🔧 startJupyterIfNeeded called with workspacePath: ${workspacePath}`
+			);
 			// Check if Jupyter is already running and healthy
 			if (this.jupyterProcess) {
 				let needRestart = false;
@@ -1204,7 +1039,7 @@ export class AxonApp {
 					clearTimeout(timeoutId);
 
 					if (response.ok) {
-						// If server is healthy but workspace changed, restart to adopt new kernelspec path
+						// If server is healthy but workspace changed, restart for new workspace
 						if (
 							this.currentJupyterWorkspace &&
 							this.normalizeWorkspacePath(this.currentJupyterWorkspace) !==
@@ -1239,8 +1074,6 @@ export class AxonApp {
 						this.jupyterProcess = null;
 					}
 					this.currentJupyterWorkspace = null;
-					// Clear cached kernel ids since server will be restarted
-					this.workspaceKernelMap.clear();
 					// Wait a moment for the process to fully stop
 					await new Promise((resolve) => setTimeout(resolve, 2000));
 				}
@@ -1252,7 +1085,9 @@ export class AxonApp {
 			await this.ensureJupyterPortAvailable();
 
 			// Ensure virtual environment exists (will find existing or create new)
-			const actualWorkspacePath = await this.ensureVirtualEnvironment(workspacePath);
+			const actualWorkspacePath = await this.ensureVirtualEnvironment(
+				workspacePath
+			);
 			const venvPath = this.getVenvPath(actualWorkspacePath);
 
 			// Get platform-specific pip and python paths for the virtual environment
@@ -1270,7 +1105,7 @@ export class AxonApp {
 			}
 
 			// Install Jupyter only if missing to avoid repeated slow installs
-			const requiredPackages = ["jupyter", "notebook", "ipykernel<6.29"];
+			const requiredPackages = ["jupyter", "notebook", "ipykernel"];
 			const isPkgInstalled = async (pkg: string): Promise<boolean> => {
 				return await new Promise<boolean>((resolve) => {
 					const p = spawn(pipPath, ["show", pkg], { stdio: "pipe" });
@@ -1311,39 +1146,119 @@ export class AxonApp {
 				);
 			}
 
-			// Ensure a workspace-local kernelspec exists before starting the server
-			const kernelName = this.ensureWorkspaceKernelSpec(
-				workspacePath,
-				pythonVenvPath,
-				venvPath
-			);
 
-			// Start Jupyter server with workspace kernels
+			// Ensure a kernelspec exists inside this workspace venv and points to this venv's python
+			try {
+				const venvKernelDir = path.join(
+					venvPath,
+					"share",
+					"jupyter",
+					"kernels",
+					"python3"
+				);
+				let needKernelInstall = true;
+				try {
+					const kernelJsonPath = path.join(venvKernelDir, "kernel.json");
+					if (fs.existsSync(kernelJsonPath)) {
+						const kernelSpec = JSON.parse(
+							fs.readFileSync(kernelJsonPath, "utf-8")
+						);
+						const argv0: string | undefined = kernelSpec?.argv?.[0];
+						if (argv0 && path.resolve(argv0) === path.resolve(pythonVenvPath)) {
+							needKernelInstall = false;
+						}
+					}
+				} catch (_) {}
+
+				if (needKernelInstall) {
+					console.log("Installing ipykernel kernelspec into workspace venv...");
+					await new Promise<void>((resolve, reject) => {
+						const p = spawn(
+							pythonVenvPath,
+							[
+								"-m",
+								"ipykernel",
+								"install",
+								"--prefix",
+								venvPath,
+								"--name",
+								"python3",
+								"--display-name",
+								"Python 3 (Axon Workspace)",
+							],
+							{ stdio: "pipe" }
+						);
+						let stderr = "";
+						p.stderr?.on("data", (d) => (stderr += d.toString()));
+						p.on("error", reject);
+						p.on("close", (code) => {
+							if (code === 0) return resolve();
+							reject(
+								new Error(
+									`ipykernel install failed (code ${code}): ${stderr}`
+								)
+							);
+						});
+					});
+				}
+			} catch (e) {
+				console.warn(
+					"Proceeding without preinstalled kernelspec; Jupyter may pick a global one",
+					e instanceof Error ? e.message : String(e)
+				);
+			}
+
+
+			// Start Jupyter server
 			console.log(`Starting Jupyter server for workspace: ${workspacePath}`);
-			const workspaceKernelsPath = path.join(workspacePath, "kernels");
-			console.log(`Using workspace kernels from: ${workspaceKernelsPath}`);
 
 			this.jupyterProcess = spawn(
 				pythonVenvPath,
 				[
 					"-m",
 					"jupyter",
-					"notebook",
+					"server",
 					"--no-browser",
 					`--port=${this.jupyterPort}`,
 					"--ip=127.0.0.1",
 					"--allow-root",
-					"--NotebookApp.token=''",
-					"--NotebookApp.password=''",
-					`--KernelSpecManager.kernel_spec_path=${workspaceKernelsPath}`,
-					"--NotebookApp.disable_check_xsrf=True",
-					`--notebook-dir=${workspacePath}`,
+					"--ServerApp.token=''",
+					"--ServerApp.password=''",
+					"--ServerApp.disable_check_xsrf=True",
+					"--ServerApp.websocket_ping_interval=30000",
+					"--ServerApp.websocket_ping_timeout=30000",
+					`--ServerApp.root_dir=${workspacePath}`,
 				],
 				{
 					cwd: workspacePath,
 					stdio: ["pipe", "pipe", "pipe"],
+					env: {
+						...process.env,
+						JUPYTER_PATH: path.join(venvPath, "share", "jupyter"),
+						JUPYTER_DATA_DIR: path.join(venvPath, "share", "jupyter"),
+						JUPYTER_CONFIG_DIR: path.join(venvPath, "etc", "jupyter"),
+					},
 				}
 			);
+
+			// Log Jupyter server output for debugging
+			if (this.jupyterProcess.stdout) {
+				this.jupyterProcess.stdout.on("data", (data) => {
+					const message = data.toString().trim();
+					if (message) {
+						console.log(`[Jupyter stdout]: ${message}`);
+					}
+				});
+			}
+
+			if (this.jupyterProcess.stderr) {
+				this.jupyterProcess.stderr.on("data", (data) => {
+					const message = data.toString().trim();
+					if (message) {
+						console.log(`[Jupyter stderr]: ${message}`);
+					}
+				});
+			}
 
 			this.jupyterProcess.on("error", (error: Error) => {
 				console.error("Jupyter process error:", error);
@@ -1353,8 +1268,6 @@ export class AxonApp {
 				console.log(`Jupyter process closed with code: ${code}`);
 				this.jupyterProcess = null;
 				this.currentJupyterWorkspace = null;
-				// Clear cached kernel ids on shutdown
-				this.workspaceKernelMap.clear();
 			});
 
 			// Wait for Jupyter to start (configurable timeout)
@@ -1406,9 +1319,8 @@ export class AxonApp {
 				checkReady();
 			});
 
-			// Note the workspace the server is associated with and reset kernel cache
+			// Note the workspace the server is associated with
 			this.currentJupyterWorkspace = this.normalizeWorkspacePath(workspacePath);
-			this.workspaceKernelMap.clear();
 
 			// Notify renderer that Jupyter is ready (optional token is empty)
 			try {
@@ -1427,7 +1339,6 @@ export class AxonApp {
 			};
 		}
 	}
-
 
 	private setupIpcHandlers() {
 		// Dialog operations
@@ -1503,6 +1414,16 @@ export class AxonApp {
 			}
 		});
 
+		// Directory existence check
+		ipcMain.handle("directory-exists", async (_, dirPath: string) => {
+			try {
+				const stats = await fs.promises.stat(dirPath);
+				return stats.isDirectory();
+			} catch (error) {
+				return false;
+			}
+		});
+
 		ipcMain.handle("fs-list-directory", async (_, dirPath: string) => {
 			try {
 				// Check if directory exists
@@ -1519,6 +1440,71 @@ export class AxonApp {
 				}));
 			} catch (error) {
 				throw error;
+			}
+		});
+
+		// Open a file using the OS default application
+		ipcMain.handle("open-file", async (_, filePath: string) => {
+			try {
+				const result = await shell.openPath(filePath);
+				if (result) {
+					return { success: false, error: result };
+				}
+				return { success: true };
+			} catch (error) {
+				return {
+					success: false,
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+		});
+
+		// Return basic file info
+		ipcMain.handle("get-file-info", async (_, filePath: string) => {
+			try {
+				const stats = await fs.promises.stat(filePath);
+				return {
+					size: stats.size,
+					created: stats.birthtime,
+					modified: stats.mtime,
+					isDirectory: stats.isDirectory(),
+				};
+			} catch (error) {
+				return {
+					success: false,
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+		});
+
+		// Delete a single file
+		ipcMain.handle("delete-file", async (_, filePath: string) => {
+			try {
+				await fs.promises.unlink(filePath);
+				return { success: true };
+			} catch (error) {
+				return {
+					success: false,
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+		});
+
+		// Delete a directory recursively
+		ipcMain.handle("delete-directory", async (_, dirPath: string) => {
+			try {
+				// Use rm with recursive + force; fallback to rmdir if needed
+				if ((fs.promises as any).rm) {
+					await (fs.promises as any).rm(dirPath, { recursive: true, force: true });
+				} else {
+					await fs.promises.rmdir(dirPath, { recursive: true } as any);
+				}
+				return { success: true };
+			} catch (error) {
+				return {
+					success: false,
+					error: error instanceof Error ? error.message : String(error),
+				};
 			}
 		});
 
@@ -1599,8 +1585,10 @@ export class AxonApp {
 				console.log(`Creating virtual environment in: ${workspacePath}`);
 
 				// Use centralized venv management
-				const actualWorkspacePath = await this.ensureVirtualEnvironment(workspacePath);
-				
+				const actualWorkspacePath = await this.ensureVirtualEnvironment(
+					workspacePath
+				);
+
 				if (actualWorkspacePath !== workspacePath) {
 					// Found existing venv in parent directory
 					this.mainWindow?.webContents.send("virtual-env-status", {
@@ -1608,7 +1596,7 @@ export class AxonApp {
 						message: `Using existing virtual environment from ${actualWorkspacePath}`,
 						timestamp: new Date().toISOString(),
 					});
-					
+
 					return {
 						success: true,
 						actualWorkspace: actualWorkspacePath,
@@ -1632,7 +1620,7 @@ export class AxonApp {
 
 				// Install only Jupyter infrastructure here. Scientific stack will be
 				// resolved together later with analysis packages to avoid version conflicts.
-				const basicPackages = ["jupyter", "notebook", "ipykernel<6.29"];
+				const basicPackages = ["jupyter", "notebook", "ipykernel"];
 
 				// Notify about basic infrastructure installation
 				this.mainWindow?.webContents.send("virtual-env-status", {
@@ -1707,13 +1695,6 @@ export class AxonApp {
 					});
 				});
 
-				// Ensure workspace-local kernelspec and metadata using centralized helper
-				const kernelName = this.ensureWorkspaceKernelSpec(
-					workspacePath,
-					pythonVenvPath,
-					venvPath
-				);
-				console.log(`Workspace kernel ensured: ${kernelName}`);
 
 				// Notify renderer about completion
 				this.mainWindow?.webContents.send("virtual-env-status", {
@@ -1721,7 +1702,6 @@ export class AxonApp {
 					message: "Virtual environment ready!",
 					venvPath: venvPath,
 					pythonPath: pythonVenvPath,
-					kernelName: kernelName,
 					timestamp: new Date().toISOString(),
 				});
 
@@ -1729,7 +1709,6 @@ export class AxonApp {
 					success: true,
 					venvPath: venvPath,
 					pythonPath: pythonVenvPath,
-					kernelName: kernelName,
 					actualWorkspace: workspacePath,
 				};
 			} catch (error) {
@@ -1744,6 +1723,78 @@ export class AxonApp {
 					timestamp: new Date().toISOString(),
 				});
 
+				return {
+					success: false,
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+		});
+
+		// Package installation handler
+		ipcMain.handle("install-packages", async (_, workspacePath: string, packages: string[]) => {
+			try {
+				console.log(`Installing packages in workspace: ${workspacePath}`);
+				console.log(`Packages to install: ${packages.join(", ")}`);
+				
+				const venvPath = this.getVenvPath(workspacePath);
+				const pipPath = this.getVenvPipPath(venvPath);
+				
+				console.log(`Using pip at: ${pipPath}`);
+				
+				const installProcess = spawn(pipPath, ["install", ...packages], {
+					cwd: workspacePath,
+					stdio: "pipe",
+				});
+
+				return new Promise((resolve) => {
+					let stdout = "";
+					let stderr = "";
+
+					const timeout = setTimeout(() => {
+						console.error("Package installation timed out");
+						installProcess.kill("SIGKILL");
+						resolve({
+							success: false,
+							error: "Package installation timed out",
+						});
+					}, 300000); // 5 minutes
+
+					installProcess.stdout?.on("data", (data) => {
+						stdout += data.toString();
+					});
+
+					installProcess.stderr?.on("data", (data) => {
+						stderr += data.toString();
+					});
+
+					installProcess.on("close", (code) => {
+						clearTimeout(timeout);
+						if (code === 0) {
+							console.log("✅ Package installation successful");
+							resolve({
+								success: true,
+								packages: packages,
+							});
+						} else {
+							console.error("❌ Package installation failed:", stderr);
+							resolve({
+								success: false,
+								error: stderr || `Installation failed with code ${code}`,
+							});
+						}
+					});
+
+					installProcess.on("error", (error) => {
+						clearTimeout(timeout);
+						console.error("Package installation process error:", error);
+						resolve({
+							success: false,
+							error: error.message,
+						});
+					});
+				});
+			} catch (error) {
+				console.error("Error in install-packages handler:", error);
 				return {
 					success: false,
 					error: error instanceof Error ? error.message : String(error),
@@ -1830,7 +1881,7 @@ export class AxonApp {
 			}
 		});
 
-		// Interrupt currently running execution on the active kernel for a workspace
+		// Interrupt currently running execution
 		ipcMain.handle(
 			"jupyter-interrupt",
 			async (_: any, workspacePath?: string) => {
@@ -1841,32 +1892,20 @@ export class AxonApp {
 
 					const wsPath =
 						workspacePath || this.currentJupyterWorkspace || process.cwd();
-					console.log(`🎯 Using wsPath for execution: ${wsPath} (workspacePath: ${workspacePath}, currentJupyterWorkspace: ${this.currentJupyterWorkspace})`);
+					console.log(
+						`🎯 Using wsPath for execution: ${wsPath} (workspacePath: ${workspacePath}, currentJupyterWorkspace: ${this.currentJupyterWorkspace})`
+					);
+					// Find any running kernel to interrupt
 					let kernelId: string | undefined = undefined;
-
-					// Try to find kernelId from workspace map with normalized path
 					try {
-						const target = path.resolve(wsPath);
-						for (const [key, id] of this.workspaceKernelMap.entries()) {
-							if (path.resolve(key) === target) {
-								kernelId = id;
-								break;
-							}
-						}
+						const listResponse = await fetch(
+							`http://127.0.0.1:${this.jupyterPort}/api/kernels`
+						);
+						const kernels: any[] = listResponse.ok
+							? await listResponse.json()
+							: [];
+						kernelId = kernels?.[0]?.id;
 					} catch {}
-
-					// Fallback to any running kernel if specific mapping not found
-					if (!kernelId) {
-						try {
-							const listResponse = await fetch(
-								`http://127.0.0.1:${this.jupyterPort}/api/kernels`
-							);
-							const kernels: any[] = listResponse.ok
-								? await listResponse.json()
-								: [];
-							kernelId = kernels?.[0]?.id;
-						} catch {}
-					}
 
 					if (!kernelId) {
 						return { success: false, error: "No active kernel found" };
@@ -1905,17 +1944,8 @@ export class AxonApp {
 			async (_, code: string, workspacePath?: string) => {
 				try {
 					console.log(`🎯 jupyter-execute called with workspacePath: ${workspacePath}`);
-					console.log(
-						`Executing code in Jupyter for workspace: ${workspacePath}\n${code.substring(
-							0,
-							100
-						)}...`
-					);
-
-					// Always ensure Jupyter is running for the correct workspace
-					console.log(
-						"Ensuring Jupyter is running for the correct workspace..."
-					);
+					
+					// Ensure Jupyter is running for the workspace
 					const startResult = await this.startJupyterIfNeeded(
 						workspacePath || process.cwd()
 					);
@@ -1926,300 +1956,8 @@ export class AxonApp {
 						};
 					}
 
-					// Notify renderer that code is being written (for streaming)
-					this.mainWindow?.webContents.send("jupyter-code-writing", {
-						code: code,
-						timestamp: new Date().toISOString(),
-						type: "full_code",
-					});
-
-					const WebSocket = require("ws");
-					const { v4: uuidv4 } = require("uuid");
-
-					// Use the workspace-specific kernel that was created
-					let kernelName = "python3";
-					if (workspacePath) {
-						const metadata = await this.getWorkspaceMetadata(workspacePath);
-						const venvPath = this.getVenvPath(workspacePath);
-						const pythonVenvPath = this.getVenvPythonPath(venvPath);
-
-						// Ensure the workspace kernelspec exists and metadata is up to date
-						kernelName = this.ensureWorkspaceKernelSpec(
-							workspacePath,
-							pythonVenvPath,
-							venvPath
-						);
-						console.log(`Using workspace kernel: ${kernelName}`);
-					}
-
-					console.log(`Looking for workspace kernel: ${kernelName}`);
-
-					console.log(
-						`Using kernel: ${kernelName} for workspace: ${workspacePath}`
-					);
-
-					// CSRF is disabled via NotebookApp.token='' and disable_check_xsrf=True
-					// Skip CSRF retrieval to avoid transient connection issues on startup
-					const csrfToken = undefined;
-
-					// 1. Find or create a single kernel id for the workspace using new centralized helper
-					const kernelId = await this.getOrCreateKernelId(
-						workspacePath || this.currentJupyterWorkspace || process.cwd(),
-						kernelName,
-						csrfToken
-					);
-
-					// Optional small delay after server/kernel readiness to avoid race with channel registration
-					try {
-						const storeDelay = store.get("wsPostReadyDelayMs") as any as
-							| number
-							| undefined;
-						const envDelay = process.env.WS_POST_READY_DELAY_MS
-							? parseInt(process.env.WS_POST_READY_DELAY_MS, 10)
-							: undefined;
-						const postReadyDelayMs =
-							Number.isFinite(storeDelay as any) && (storeDelay as any) >= 0
-								? (storeDelay as number)
-								: Number.isFinite(envDelay as any) && (envDelay as any) >= 0
-								? (envDelay as number)
-								: 1000;
-						if (postReadyDelayMs > 0) {
-							await new Promise((r) => setTimeout(r, postReadyDelayMs));
-						}
-					} catch (_) {}
-
-					const wsUrl = `ws://127.0.0.1:${this.jupyterPort}/api/kernels/${kernelId}/channels`;
-					console.log(`Connecting to WebSocket: ${wsUrl}`);
-
-					// 2. Open a WebSocket connection with retries and configurable timeouts
-					console.log(`Attempting to connect to WebSocket: ${wsUrl}`);
-
-					return new Promise((resolve) => {
-						let output = "";
-						let errorOutput = "";
-						let executionTimeoutId: NodeJS.Timeout | null = null;
-
-						// Configurable idle timeout (ms)
-						const storeIdleMs = store.get("executionIdleTimeoutMs") as any as
-							| number
-							| undefined;
-						const envIdleMs = process.env.EXECUTION_IDLE_TIMEOUT_MS
-							? parseInt(process.env.EXECUTION_IDLE_TIMEOUT_MS, 10)
-							: undefined;
-						const idleTimeoutMs =
-							Number.isFinite(storeIdleMs as any) && (storeIdleMs as any) > 0
-								? (storeIdleMs as number)
-								: Number.isFinite(envIdleMs as any) && (envIdleMs as any) > 0
-								? (envIdleMs as number)
-								: 120000; // default 2 minutes
-
-						// Configurable WS connection timeout and retry settings
-						const storeConnMs = store.get("wsConnectionTimeoutMs") as any as
-							| number
-							| undefined;
-						const envConnMs = process.env.WS_CONNECTION_TIMEOUT_MS
-							? parseInt(process.env.WS_CONNECTION_TIMEOUT_MS, 10)
-							: undefined;
-						const wsConnectionTimeoutMs =
-							Number.isFinite(storeConnMs as any) && (storeConnMs as any) > 0
-								? (storeConnMs as number)
-								: Number.isFinite(envConnMs as any) && (envConnMs as any) > 0
-								? (envConnMs as number)
-								: 30000; // default 30s
-
-						const storeMaxAttempts = store.get(
-							"wsConnectMaxAttempts"
-						) as any as number | undefined;
-						const envMaxAttempts = process.env.WS_CONNECT_MAX_ATTEMPTS
-							? parseInt(process.env.WS_CONNECT_MAX_ATTEMPTS, 10)
-							: undefined;
-						const maxAttempts =
-							Number.isFinite(storeMaxAttempts as any) &&
-							(storeMaxAttempts as any) > 0
-								? (storeMaxAttempts as number)
-								: Number.isFinite(envMaxAttempts as any) &&
-								  (envMaxAttempts as any) > 0
-								? (envMaxAttempts as number)
-								: 3;
-
-						const storeBackoff = store.get("wsConnectBackoffMs") as any as
-							| number
-							| undefined;
-						const envBackoff = process.env.WS_CONNECT_BACKOFF_MS
-							? parseInt(process.env.WS_CONNECT_BACKOFF_MS, 10)
-							: undefined;
-						const backoffMs =
-							Number.isFinite(storeBackoff as any) && (storeBackoff as any) >= 0
-								? (storeBackoff as number)
-								: Number.isFinite(envBackoff as any) && (envBackoff as any) >= 0
-								? (envBackoff as number)
-								: 1000;
-
-						const attemptConnect = (attempt: number) => {
-							console.log(
-								`Attempting to connect to WebSocket (${attempt}/${maxAttempts})...`
-							);
-							const ws = new WebSocket(wsUrl);
-
-							// Local reset function bound to this socket
-							const resetExecutionTimeoutLocal = () => {
-								if (!idleTimeoutMs || idleTimeoutMs <= 0) return;
-								if (executionTimeoutId) clearTimeout(executionTimeoutId);
-								executionTimeoutId = setTimeout(() => {
-									console.log("Jupyter execution idle timeout");
-									try {
-										ws.close();
-									} catch (_) {}
-									resolve({ success: false, error: "Execution idle timeout" });
-								}, idleTimeoutMs);
-							};
-
-							const connectionTimeout = setTimeout(() => {
-								console.error("WebSocket connection timeout");
-								try {
-									ws.close();
-								} catch (_) {}
-								if (attempt < maxAttempts) {
-									setTimeout(() => attemptConnect(attempt + 1), backoffMs);
-								} else {
-									resolve({
-										success: false,
-										error: "WebSocket connection timeout",
-									});
-								}
-							}, wsConnectionTimeoutMs);
-
-							ws.on("open", () => {
-								console.log("Jupyter WebSocket connection opened.");
-								clearTimeout(connectionTimeout);
-								resetExecutionTimeoutLocal();
-
-								// 3. Send an execute_request message
-								const msgId = uuidv4();
-								const executeRequest = {
-									header: {
-										msg_id: msgId,
-										username: "user",
-										session: uuidv4(),
-										msg_type: "execute_request",
-										version: "5.3",
-									},
-									parent_header: {},
-									metadata: {},
-									content: {
-										code: code,
-										silent: false,
-										store_history: true,
-										user_expressions: {},
-										allow_stdin: false,
-										stop_on_error: true,
-									},
-									channel: "shell",
-								};
-								ws.send(JSON.stringify(executeRequest));
-							});
-
-							ws.on("error", (error: any) => {
-								console.error("WebSocket error:", error);
-								if (executionTimeoutId) clearTimeout(executionTimeoutId);
-								clearTimeout(connectionTimeout);
-								if (attempt < maxAttempts) {
-									setTimeout(() => attemptConnect(attempt + 1), backoffMs);
-								} else {
-									resolve({
-										success: false,
-										error: `WebSocket error: ${error.message}`,
-									});
-								}
-							});
-
-							ws.on("close", (code: any, reason: any) => {
-								console.log(`WebSocket closed: ${code} - ${reason}`);
-								if (!output && !errorOutput) {
-									if (executionTimeoutId) clearTimeout(executionTimeoutId);
-									clearTimeout(connectionTimeout);
-									if (attempt < maxAttempts) {
-										setTimeout(() => attemptConnect(attempt + 1), backoffMs);
-									} else {
-										resolve({
-											success: false,
-											error: `WebSocket closed unexpectedly: ${reason}`,
-										});
-									}
-								}
-							});
-
-							ws.on("message", (data: any) => {
-								const msg = JSON.parse(data.toString());
-								// 4. Listen for execute_reply and stream messages
-								if (msg.parent_header && msg.header.msg_type === "stream") {
-									output += msg.content.text;
-									console.log(`Stream output: ${msg.content.text}`);
-									this.mainWindow?.webContents.send("jupyter-code-writing", {
-										code: output,
-										timestamp: new Date().toISOString(),
-										type: "stream",
-									});
-									resetExecutionTimeoutLocal();
-								} else if (
-									msg.parent_header &&
-									(msg.header.msg_type === "execute_result" ||
-										msg.header.msg_type === "display_data")
-								) {
-									try {
-										const dataObj = msg.content?.data || {};
-										const text =
-											(dataObj["text/plain"] as string | undefined) || "";
-										if (text) {
-											output += (output ? "\n" : "") + text + "\n";
-											this.mainWindow?.webContents.send(
-												"jupyter-code-writing",
-												{
-													code: output,
-													timestamp: new Date().toISOString(),
-													type: "stream",
-												}
-											);
-										}
-									} catch (_) {}
-								} else if (
-									msg.parent_header &&
-									msg.header.msg_type === "execute_reply"
-								) {
-									console.log(`Execute reply:`, msg.content);
-									if (msg.content.status === "ok") {
-										console.log(`Execution successful, output: ${output}`);
-										if (executionTimeoutId) clearTimeout(executionTimeoutId);
-										resolve({ success: true, output });
-									} else {
-										errorOutput += msg.content.evalue;
-										console.log(`Execution failed, error: ${errorOutput}`);
-										if (executionTimeoutId) clearTimeout(executionTimeoutId);
-										resolve({ success: false, error: errorOutput });
-									}
-									try {
-										ws.close();
-									} catch (_) {}
-								} else if (
-									msg.parent_header &&
-									msg.header.msg_type === "error"
-								) {
-									const tb = Array.isArray(msg.content?.traceback)
-										? (msg.content.traceback as string[]).join("\n")
-										: "";
-									errorOutput +=
-										(errorOutput ? "\n" : "") +
-										(msg.content.evalue || "Error") +
-										(tb ? "\n" + tb : "");
-									console.log(`Execution error: ${msg.content.evalue}`);
-									resetExecutionTimeoutLocal();
-								}
-							});
-						};
-
-						// Start first attempt
-						attemptConnect(1);
-					});
+					// Delegate to centralized service
+					return await this.executeCodeUsingCentralizedService(code, workspacePath);
 				} catch (error) {
 					console.error("Jupyter execution error:", error);
 					return {
@@ -2230,6 +1968,7 @@ export class AxonApp {
 			}
 		);
 
+		// Dialog operations
 		ipcMain.handle("show-save-dialog", async (_, options) => {
 			const result = await dialog.showSaveDialog(this.mainWindow!, options);
 			return result;
@@ -2249,761 +1988,73 @@ export class AxonApp {
 			event.returnValue = app.isPackaged;
 		});
 
-		// BioRAG API proxy
+		// BioRAG operations
+		ipcMain.handle("get-biorag-port", async () => {
+			// Return default BioRAG port
+			return 8001;
+		});
+
+		ipcMain.handle("get-biorag-url", async () => {
+			// Return default BioRAG URL
+			return "http://localhost:8001";
+		});
+
 		ipcMain.handle("biorag-query", async (_, query: any) => {
-			try {
-				// This will be handled by the renderer process via HTTP
-				return { success: true };
-			} catch (error) {
-				return {
-					success: false,
-					error: error instanceof Error ? error.message : String(error),
-				};
-			}
+			// Placeholder for BioRAG query functionality
+			return { success: false, error: "BioRAG service not implemented yet" };
 		});
-
-		// BioRAG server management
-		ipcMain.handle("get-biorag-port", () => {
-			return this.bioragPort;
-		});
-
-		ipcMain.handle("get-biorag-url", () => {
-			// Use remote server in production, local in development
-			if (app.isPackaged) {
-				return "http://axon.celvox.co:8002";
-			} else {
-				return `http://localhost:${this.bioragPort}`;
-			}
-		});
-
-		// SSH session management (top-level, not nested)
-		const sshClients = new Map<string, any>();
-		const sshStreams = new Map<string, any>();
-		const sshAuthFinish = new Map<string, (answers: string[]) => void>();
-		const sshPendingRetry = new Map<
-			string,
-			{ host: string; port: number; username: string; cwd?: string }
-		>();
-
-		ipcMain.handle(
-			"ssh-start",
-			async (_: any, sessionId: string, config: any) => {
-				try {
-					let { host, port, username, cwd, target } = config || {};
-					if (typeof target === "string" && target.trim().length > 0) {
-						const t = target.trim();
-						const atIdx = t.indexOf("@");
-						let hostPort = t;
-						if (atIdx > -1) {
-							username = t.slice(0, atIdx);
-							hostPort = t.slice(atIdx + 1);
-						}
-						const colonIdx = hostPort.lastIndexOf(":");
-						if (colonIdx > -1) {
-							host = hostPort.slice(0, colonIdx);
-							const p = parseInt(hostPort.slice(colonIdx + 1), 10);
-							if (Number.isFinite(p)) port = p;
-						} else {
-							host = hostPort;
-						}
-					}
-					port = port || 22;
-					if (!host) throw new Error("Missing host");
-					if (!username) throw new Error("Missing username (use user@host)");
-
-					const Client = require("ssh2").Client as any;
-					const client = new Client();
-					sshClients.set(sessionId, client);
-
-					await new Promise<void>((resolve, reject) => {
-						client
-							.on(
-								"keyboard-interactive",
-								(
-									_name: string,
-									instructions: string,
-									_lang: string,
-									prompts: any[],
-									finish: (answers: string[]) => void
-								) => {
-									try {
-										sshAuthFinish.set(sessionId, finish);
-										this.mainWindow?.webContents.send("ssh-auth-prompt", {
-											sessionId,
-											name: _name,
-											instructions,
-											prompts: (prompts || []).map((p: any) => ({
-												prompt: p?.prompt,
-												echo: !!p?.echo,
-											})),
-										});
-									} catch {}
-								}
-							)
-							.on("ready", () => {
-								try {
-									client.shell(
-										{ term: "xterm-256color" },
-										(err: any, stream: any) => {
-											if (err) {
-												reject(err);
-												return;
-											}
-											sshStreams.set(sessionId, stream);
-											stream.on("data", (data: Buffer) => {
-												this.mainWindow?.webContents.send("ssh-data", {
-													sessionId,
-													data: data.toString("utf8"),
-												});
-											});
-											stream.on("close", () => {
-												this.mainWindow?.webContents.send("ssh-closed", {
-													sessionId,
-												});
-												try {
-													client.end();
-												} catch {}
-											});
-											if (
-												cwd &&
-												typeof cwd === "string" &&
-												cwd.trim().length > 0
-											) {
-												stream.write(
-													`cd ${cwd
-														.replace(/\\/g, "\\\\")
-														.replace(/\n/g, "")}\n`
-												);
-											}
-											resolve();
-										}
-									);
-								} catch (e) {
-									reject(e);
-								}
-							})
-							.on("error", (err: any) => {
-								this.mainWindow?.webContents.send("ssh-error", {
-									sessionId,
-									error: err?.message || String(err),
-								});
-								reject(err);
-							})
-							.on("end", () => {
-								this.mainWindow?.webContents.send("ssh-closed", { sessionId });
-							})
-							.connect({
-								host,
-								port,
-								username,
-								tryKeyboard: true,
-								password:
-									config &&
-									typeof config.password === "string" &&
-									config.password.length > 0
-										? config.password
-										: undefined,
-							});
-					});
-
-					return { success: true };
-				} catch (error) {
-					const message =
-						error instanceof Error ? error.message : String(error);
-					// If server didn't trigger keyboard-interactive and password was not provided, prompt for password
-					if (
-						/All configured authentication methods failed|No authentication methods available|Authentication failed/i.test(
-							message
-						)
-					) {
-						try {
-							const tStr =
-								typeof config?.target === "string"
-									? String(config.target).trim()
-									: "";
-							let h: string | undefined =
-								(config && (config.host as string)) || undefined;
-							let p: number = (config && (config.port as number)) || 22;
-							let u: string | undefined =
-								(config && (config.username as string)) || undefined;
-							const d: string | undefined =
-								(config && (config.cwd as string)) || undefined;
-							if (tStr) {
-								const at = tStr.indexOf("@");
-								let hp = tStr;
-								if (at > -1) {
-									u = tStr.slice(0, at);
-									hp = tStr.slice(at + 1);
-								}
-								const ci = hp.lastIndexOf(":");
-								if (ci > -1) {
-									h = hp.slice(0, ci);
-									const pv = parseInt(hp.slice(ci + 1), 10);
-									if (Number.isFinite(pv)) p = pv;
-								} else {
-									h = hp;
-								}
-							}
-							if (h && u) {
-								sshPendingRetry.set(sessionId, {
-									host: h,
-									port: p,
-									username: u,
-									cwd: d,
-								});
-							}
-							this.mainWindow?.webContents.send("ssh-auth-prompt", {
-								sessionId,
-								name: "password",
-								instructions: "Password authentication required",
-								prompts: [{ prompt: "Password:", echo: false }],
-							});
-							return { success: true, awaitingPassword: true };
-						} catch {}
-					}
-					this.mainWindow?.webContents.send("ssh-error", {
-						sessionId,
-						error: message,
-					});
-					try {
-						const c = sshClients.get(sessionId);
-						c?.end?.();
-					} catch {}
-					sshClients.delete(sessionId);
-					sshStreams.delete(sessionId);
-					return { success: false, error: message };
-				}
-			}
-		);
-
-		ipcMain.handle(
-			"ssh-write",
-			async (_: any, sessionId: string, data: string) => {
-				try {
-					const stream = sshStreams.get(sessionId);
-					if (stream) {
-						stream.write(data);
-						return { success: true };
-					}
-					return { success: false, error: "No active SSH stream" };
-				} catch (error) {
-					return {
-						success: false,
-						error: error instanceof Error ? error.message : String(error),
-					};
-				}
-			}
-		);
-
-		ipcMain.handle(
-			"ssh-resize",
-			async (_: any, sessionId: string, cols: number, rows: number) => {
-				try {
-					const stream = sshStreams.get(sessionId);
-					if (stream && typeof stream.setWindow === "function") {
-						stream.setWindow(rows || 24, cols || 80, 600, 400);
-						return { success: true };
-					}
-					return { success: false };
-				} catch (error) {
-					return { success: false };
-				}
-			}
-		);
-
-		ipcMain.handle("ssh-stop", async (_: any, sessionId: string) => {
-			try {
-				const stream = sshStreams.get(sessionId);
-				try {
-					stream?.end?.();
-				} catch {}
-				const client = sshClients.get(sessionId);
-				try {
-					client?.end?.();
-				} catch {}
-				sshStreams.delete(sessionId);
-				sshClients.delete(sessionId);
-				sshAuthFinish.delete(sessionId);
-				return { success: true };
-			} catch (error) {
-				return { success: false };
-			}
-		});
-
-		ipcMain.handle(
-			"ssh-auth-answer",
-			async (_: any, sessionId: string, answers: string[]) => {
-				try {
-					const fn = sshAuthFinish.get(sessionId);
-					if (fn) {
-						sshAuthFinish.delete(sessionId);
-						try {
-							fn(answers || []);
-							return { success: true };
-						} catch (e: any) {
-							return { success: false, error: e?.message || String(e) };
-						}
-					}
-					// Fallback: retry connection with provided password if we stored target
-					const retryCfg = sshPendingRetry.get(sessionId);
-					if (!retryCfg)
-						return { success: false, error: "No auth prompt pending" };
-					sshPendingRetry.delete(sessionId);
-					const password =
-						Array.isArray(answers) && answers.length > 0
-							? String(answers[0])
-							: "";
-					if (!password) return { success: false, error: "Empty password" };
-					const Client = require("ssh2").Client as any;
-					const client = new Client();
-					sshClients.set(sessionId, client);
-					await new Promise<void>((resolve, reject) => {
-						client
-							.on("ready", () => {
-								try {
-									client.shell(
-										{ term: "xterm-256color" },
-										(err: any, stream: any) => {
-											if (err) {
-												reject(err);
-												return;
-											}
-											sshStreams.set(sessionId, stream);
-											stream.on("data", (data: Buffer) => {
-												this.mainWindow?.webContents.send("ssh-data", {
-													sessionId,
-													data: data.toString("utf8"),
-												});
-											});
-											stream.on("close", () => {
-												this.mainWindow?.webContents.send("ssh-closed", {
-													sessionId,
-												});
-												try {
-													client.end();
-												} catch {}
-											});
-											if (
-												retryCfg.cwd &&
-												typeof retryCfg.cwd === "string" &&
-												retryCfg.cwd.trim().length > 0
-											) {
-												stream.write(
-													`cd ${retryCfg.cwd
-														.replace(/\\/g, "\\\\")
-														.replace(/\n/g, "")}\n`
-												);
-											}
-											resolve();
-										}
-									);
-								} catch (e) {
-									reject(e);
-								}
-							})
-							.on("error", (err: any) => {
-								this.mainWindow?.webContents.send("ssh-error", {
-									sessionId,
-									error: err?.message || String(err),
-								});
-								reject(err);
-							})
-							.on("end", () => {
-								this.mainWindow?.webContents.send("ssh-closed", { sessionId });
-							})
-							.connect({
-								host: retryCfg.host,
-								port: retryCfg.port,
-								username: retryCfg.username,
-								password,
-								tryKeyboard: true,
-							});
-					});
-					return { success: true };
-				} catch (error) {
-					return {
-						success: false,
-						error: error instanceof Error ? error.message : String(error),
-					};
-				}
-			}
-		);
-
-		// Open remote folder via SFTP into a local temp dir and notify renderer
-		ipcMain.handle(
-			"ssh-open-remote-folder",
-			async (_: any, sessionId: string, remotePath: string) => {
-				try {
-					const client = sshClients.get(sessionId);
-					if (!client) return { success: false, error: "No SSH session" };
-					const sftp: any = await new Promise((resolve, reject) => {
-						client.sftp((err: any, s: any) => (err ? reject(err) : resolve(s)));
-					});
-					const os = require("os");
-					const path = require("path");
-					const fs = require("fs");
-					const localRoot = path.join(os.tmpdir(), `axon-remote-${sessionId}`);
-					fs.mkdirSync(localRoot, { recursive: true });
-
-					const downloadDir = async (
-						rPath: string,
-						lPath: string
-					): Promise<void> => {
-						await new Promise<void>((resolve, reject) => {
-							sftp.readdir(rPath, async (err2: any, list: any[]) => {
-								if (err2) return reject(err2);
-								if (!list || list.length === 0) return resolve();
-								// Ensure local dir
-								fs.mkdirSync(lPath, { recursive: true });
-								const processNext = async (idx: number) => {
-									if (idx >= list.length) return resolve();
-									const entry = list[idx];
-									const name =
-										entry.filename || entry.longname?.split(/\s+/).pop();
-									if (!name || name === "." || name === "..") {
-										return processNext(idx + 1);
-									}
-									const rChild = path.posix.join(rPath, name);
-									const lChild = path.join(lPath, name);
-									sftp.stat(rChild, (e3: any, st: any) => {
-										if (e3) return processNext(idx + 1);
-										if (st.isDirectory && st.isDirectory()) {
-											fs.mkdirSync(lChild, { recursive: true });
-											downloadDir(rChild, lChild).then(() =>
-												processNext(idx + 1)
-											);
-										} else {
-											const writeStream = fs.createWriteStream(lChild);
-											const readStream = sftp.createReadStream(rChild);
-											readStream
-												.pipe(writeStream)
-												.on("finish", () => processNext(idx + 1))
-												.on("error", () => processNext(idx + 1));
-										}
-									});
-								};
-								processNext(0);
-							});
-						});
-					};
-
-					fs.mkdirSync(localRoot, { recursive: true });
-					await downloadDir(remotePath, localRoot);
-
-					// Tell renderer to set workspace
-					this.mainWindow?.webContents.send("set-workspace", localRoot);
-					return { success: true, localPath: localRoot };
-				} catch (error) {
-					return {
-						success: false,
-						error: error instanceof Error ? error.message : String(error),
-					};
-				}
-			}
-		);
-
-		// File operations
-		// Removed duplicate file and directory IPC handlers to avoid confusion.
-		// Use the fs-* channels exposed via preload instead.
-
-		ipcMain.handle("delete-file", async (_, filePath: string) => {
-			try {
-				await fs.promises.unlink(filePath);
-				return { success: true };
-			} catch (error) {
-				return {
-					success: false,
-					error: error instanceof Error ? error.message : String(error),
-				};
-			}
-		});
-
-		ipcMain.handle("delete-directory", async (_, dirPath: string) => {
-			try {
-				await fs.promises.rmdir(dirPath, { recursive: true });
-				return { success: true };
-			} catch (error) {
-				return {
-					success: false,
-					error: error instanceof Error ? error.message : String(error),
-				};
-			}
-		});
-
-		ipcMain.handle("file-exists", async (_, filePath: string) => {
-			try {
-				await fs.promises.access(filePath);
-				return true;
-			} catch {
-				return false;
-			}
-		});
-
-		ipcMain.handle("directory-exists", async (_, dirPath: string) => {
-			try {
-				const stat = await fs.promises.stat(dirPath);
-				return stat.isDirectory();
-			} catch {
-				return false;
-			}
-		});
-
-		ipcMain.handle("get-file-info", async (_, filePath: string) => {
-			try {
-				const stat = await fs.promises.stat(filePath);
-				return {
-					size: stat.size,
-					created: stat.birthtime,
-					modified: stat.mtime,
-					isDirectory: stat.isDirectory(),
-				};
-			} catch (error) {
-				throw error;
-			}
-		});
-
-		ipcMain.handle("open-file", async (_, filePath: string) => {
-			try {
-				const { shell } = require("electron");
-				await shell.openPath(filePath);
-				return { success: true };
-			} catch (error) {
-				return {
-					success: false,
-					error: error instanceof Error ? error.message : String(error),
-				};
-			}
-		});
-
-		ipcMain.handle("on-jupyter-ready", (_, callback: (data: any) => void) => {
-			// This is handled by the renderer process
-			return true;
-		});
-
-		// Dynamic package installation based on analysis requirements
-		ipcMain.handle(
-			"install-packages",
-			async (_, workspacePath: string, packages: string[]) => {
-				try {
-					console.log(`Installing packages in workspace: ${workspacePath}`);
-					console.log(`Packages to install: ${packages.join(", ")}`);
-
-					// Notify renderer about package installation
-					this.mainWindow?.webContents.send("virtual-env-status", {
-						status: "installing_packages",
-						message: `Installing ${packages.length} required packages...`,
-						packages: packages,
-						timestamp: new Date().toISOString(),
-					});
-
-					const venvPath = this.getVenvPath(workspacePath);
-
-					// Check if virtual environment exists
-					if (!fs.existsSync(venvPath)) {
-						throw new Error(
-							`Virtual environment not found at: ${venvPath}. Please ensure Jupyter is started first.`
-						);
-					}
-
-					// Determine pip path based on platform
-					const pipPath = this.getVenvPipPath(venvPath);
-
-					// Verify pip executable exists
-					if (!fs.existsSync(pipPath)) {
-						throw new Error(
-							`Virtual environment pip not found at: ${pipPath}. Virtual environment may be corrupted.`
-						);
-					}
-
-					console.log(`Using pip at: ${pipPath}`);
-
-					// Notify about each package being installed
-					for (const pkg of packages) {
-						this.mainWindow?.webContents.send("virtual-env-status", {
-							status: "installing_package",
-							message: `Installing ${pkg}...`,
-							package: pkg,
-							timestamp: new Date().toISOString(),
-						});
-					}
-
-					const installProcess = spawn(pipPath, ["install", ...packages], {
-						cwd: workspacePath,
-						stdio: "pipe",
-					});
-
-					let stdout = "";
-					let stderr = "";
-
-					installProcess.stdout?.on("data", (data) => {
-						const output = data.toString();
-						stdout += output;
-						// Only log pip errors and warnings, not verbose output
-						if (output.includes("ERROR") || output.includes("WARNING")) {
-							console.log(`[pip stdout]: ${output}`);
-						}
-					});
-
-					installProcess.stderr?.on("data", (data) => {
-						const output = data.toString();
-						stderr += output;
-						// Only log pip stderr if it contains actual errors
-						if (output.includes("ERROR") || output.includes("FAILED")) {
-							console.log(`[pip stderr]: ${output}`);
-						}
-					});
-
-					await new Promise<void>((resolve, reject) => {
-						installProcess.on("close", (code) => {
-							console.log(`Pip process completed with code: ${code}`);
-							// Only log stdout/stderr if there were errors
-							if (code !== 0) {
-								console.log(`Full stdout: ${stdout}`);
-								console.log(`Full stderr: ${stderr}`);
-							}
-
-							if (code === 0) {
-								console.log("Packages installed successfully");
-								resolve();
-							} else {
-								reject(
-									new Error(
-										`Failed to install packages, exit code: ${code}. stderr: ${stderr}`
-									)
-								);
-							}
-						});
-						installProcess.on("error", (error) => {
-							console.error(`Pip process error: ${error}`);
-							reject(error);
-						});
-					});
-
-					// Verify packages were actually installed
-					console.log("Verifying package installation...");
-					const verifyProcess = spawn(pipPath, ["list"], {
-						cwd: workspacePath,
-						stdio: "pipe",
-					});
-
-					let verifyOutput = "";
-					verifyProcess.stdout?.on("data", (data) => {
-						verifyOutput += data.toString();
-					});
-
-					await new Promise<void>((resolve) => {
-						verifyProcess.on("close", () => {
-							// Don't log the full package list to reduce noise
-							console.log("Verifying package installation...");
-
-							// Check if each package is in the list
-							for (const pkg of packages) {
-								const isInstalled = verifyOutput
-									.toLowerCase()
-									.includes(pkg.toLowerCase());
-								// Only log missing packages
-								if (!isInstalled) {
-									console.log(`Package ${pkg}: NOT FOUND`);
-								}
-							}
-							resolve();
-						});
-						verifyProcess.on("error", (error) => {
-							console.error(`Verification error: ${error}`);
-							resolve();
-						});
-					});
-
-					// Notify renderer about completion
-					this.mainWindow?.webContents.send("virtual-env-status", {
-						status: "packages_installed",
-						message: "All required packages installed successfully!",
-						packages: packages,
-						timestamp: new Date().toISOString(),
-					});
-
-					return {
-						success: true,
-						packages: packages,
-					};
-				} catch (error) {
-					console.error("Error installing packages:", error);
-					return {
-						success: false,
-						error: error instanceof Error ? error.message : String(error),
-					};
-				}
-			}
-		);
 	}
 
-	private async cleanupOldKernels(): Promise<void> {
+	/**
+	 * Execute code using centralized JupyterService
+	 */
+	private async executeCodeUsingCentralizedService(
+		code: string,
+		workspacePath?: string
+	): Promise<{ success: boolean; output?: string; error?: string }> {
 		try {
-			const { exec } = require("child_process");
-			const { promisify } = require("util");
-			const execAsync = promisify(exec);
+			// Use simplified kernel approach with dynamic kernel discovery
+			console.log(`🔧 Using simplified kernel approach with dynamic discovery`);
 
-			console.log("Cleaning up old Axon kernels...");
-
-			// List all kernels and remove old Axon ones
-			const result = await execAsync("jupyter kernelspec list").catch(
-				() => null
+			// Use centralized JupyterService for execution
+			return await this.jupyterService.executeCode(
+				code,
+				workspacePath || process.cwd()
 			);
-			if (result && result.stdout) {
-				const lines = result.stdout.split("\n");
-				for (const line of lines) {
-					if (line.includes("axon-") && !line.includes("Available kernels:")) {
-						const kernelName = line.trim().split(/\s+/)[0];
-						if (kernelName.startsWith("axon-")) {
-							try {
-								await execAsync(`jupyter kernelspec remove -f ${kernelName}`);
-								console.log(`Removed old kernel: ${kernelName}`);
-							} catch (error) {
-								console.warn(`Failed to remove kernel ${kernelName}:`, error);
-							}
-						}
-					}
-				}
-			}
 		} catch (error) {
-			console.warn("Error during kernel cleanup:", error);
+			console.error("Centralized service execution error:", error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : String(error),
+			};
 		}
 	}
 
-	private cleanup() {
-		console.log("Cleaning up processes...");
+	// Cleanup method
+	private async cleanup() {
+		await this.stopBioRAGServer();
+		await this.stopJupyterIfNeeded();
+	}
 
-		// Clean up old kernels first
-		this.cleanupOldKernels().catch((error) => {
-			console.warn("Error during kernel cleanup:", error);
-		});
-
+	private async stopBioRAGServer(): Promise<void> {
 		if (this.bioragServer) {
 			try {
-				// Try graceful shutdown first
 				this.bioragServer.kill("SIGTERM");
-
-				// Force kill after 5 seconds if still running
-				setTimeout(() => {
-					if (this.bioragServer && !this.bioragServer.killed) {
-						console.log("Force killing BioRAG server...");
-						this.bioragServer.kill("SIGKILL");
-					}
-				}, 5000);
-
 				this.bioragServer = null;
 				console.log("BioRAG server terminated");
 			} catch (error) {
 				console.error("Error terminating BioRAG server:", error);
 			}
 		}
+	}
 
+	private async stopJupyterIfNeeded(): Promise<void> {
 		if (this.jupyterProcess) {
 			try {
-				// Try graceful shutdown first
+				console.log("Terminating Jupyter process...");
 				this.jupyterProcess.kill("SIGTERM");
 
-				// Force kill after 5 seconds if still running
+				// Give process 5 seconds to terminate gracefully
 				setTimeout(() => {
 					if (this.jupyterProcess && !this.jupyterProcess.killed) {
 						console.log("Force killing Jupyter process...");
@@ -3017,8 +2068,6 @@ export class AxonApp {
 				console.error("Error terminating Jupyter process:", error);
 			}
 		}
-
-		console.log("BioRAG system shutdown complete");
 	}
 }
 

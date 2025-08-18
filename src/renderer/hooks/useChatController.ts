@@ -50,7 +50,9 @@ export function useChatController(deps: Dependencies): ChatControllerAPI {
 					return;
 				}
 
-				if (await shouldSearchForDatasets(userMessage)) {
+				// Decide once whether we should trigger dataset search
+				const wantSearch = await shouldSearchForDatasets(userMessage);
+				if (wantSearch) {
 					setProgressMessage("🔍 Searching for datasets...");
 					setShowSearchDetails(true);
 
@@ -116,6 +118,14 @@ export function useChatController(deps: Dependencies): ChatControllerAPI {
 				}
 
 				if (isAnalysisRequest(userMessage)) {
+					// Respect intent gating: only auto-search for analysis if classifier indicated SEARCH_DATA
+					if (!wantSearch) {
+						addMessage(
+							"🧪 Detected an analysis request. To proceed, either select datasets first or ask me to add a new code cell.",
+							false
+						);
+						return;
+					}
 					// If datasets not selected yet, prompt and auto-search handled by caller if needed
 					addMessage(
 						`Analysis Request Detected!\n\nI can help you with: ${userMessage}\n\nHowever, I need to find relevant datasets first. Let me search for datasets related to your analysis:\n\nSearching for: ${userMessage}`,
