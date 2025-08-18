@@ -495,9 +495,34 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 	const renderContent = () => {
 		// If workspace is open, show file editor or empty state
 		if (workspaceState.currentWorkspace) {
-			// Show file editor if a file is selected and open
+			// Show file editors for all open files, but only display the active one.
+			// This keeps notebook executions (e.g., .ipynb) alive when switching tabs.
 			if (workspaceState.activeFile) {
-				return <FileEditor filePath={workspaceState.activeFile} />;
+				const files: string[] = Array.from(
+					new Set([
+						...workspaceState.openFiles,
+						workspaceState.activeFile,
+					])
+				);
+				return (
+					<div style={{ position: "relative", width: "100%", height: "100%" }}>
+						{files.map((fp) => {
+							const isActive = fp === workspaceState.activeFile;
+							return (
+								<div
+									key={`editor-${fp}`}
+									style={{
+										display: isActive ? "block" : "none",
+										width: "100%",
+										height: "100%",
+									}}
+								>
+									<FileEditor filePath={fp} />
+								</div>
+							);
+						})}
+					</div>
+				);
 			}
 
 			// Show empty state if no file is active
