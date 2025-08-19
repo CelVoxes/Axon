@@ -202,6 +202,12 @@ try {
 			window.dispatchEvent(e);
 		} catch {}
 	});
+	ipcRenderer.on("package-install-progress", (_evt, data) => {
+		try {
+			const e = new CustomEvent("package-install-progress", { detail: data });
+			window.dispatchEvent(e);
+		} catch {}
+	});
 } catch {}
 
 // Type definitions for the exposed API

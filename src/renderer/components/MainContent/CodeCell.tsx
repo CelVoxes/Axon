@@ -59,14 +59,17 @@ interface SelectionToolbarProps {
 }
 
 const MonacoSelectionToolbar: React.FC<SelectionToolbarProps> = ({
-	editor,
-	onAddToChat,
+    editor,
+    onAddToChat,
 }) => {
-	const [visible, setVisible] = useState(false);
-	const [position, setPosition] = useState<{ left: number; top: number }>({
-		left: 0,
-		top: 0,
-	});
+    const [visible, setVisible] = useState(false);
+    const [position, setPosition] = useState<{ left: number; top: number }>({
+        left: 0,
+        top: 0,
+    });
+    // Avoid losing click due to editor blur hiding the toolbar immediately
+    const ignoreBlurRef = useRef(false);
+    const hideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	useEffect(() => {
 		if (!editor) return;
@@ -105,39 +108,63 @@ const MonacoSelectionToolbar: React.FC<SelectionToolbarProps> = ({
 			}
 		};
 
-		const disposables: any[] = [];
-		disposables.push(editor.onDidChangeCursorSelection?.(updateFromSelection));
-		disposables.push(editor.onDidScrollChange?.(updateFromSelection));
-		// React to editor focus/blur to avoid showing across multiple notebooks
-		disposables.push(editor.onDidFocusEditorText?.(updateFromSelection));
-		disposables.push(editor.onDidBlurEditorText?.(() => setVisible(false)));
+        const disposables: any[] = [];
+        disposables.push(editor.onDidChangeCursorSelection?.(updateFromSelection));
+        disposables.push(editor.onDidScrollChange?.(updateFromSelection));
+        // React to editor focus/blur to avoid showing across multiple notebooks
+        disposables.push(editor.onDidFocusEditorText?.(updateFromSelection));
+        disposables.push(
+            editor.onDidBlurEditorText?.(() => {
+                // Delay hiding a tick to allow toolbar clicks to register
+                if (hideTimeoutRef.current) clearTimeout(hideTimeoutRef.current);
+                hideTimeoutRef.current = setTimeout(() => {
+                    if (!ignoreBlurRef.current) setVisible(false);
+                }, 120);
+            })
+        );
 		// Update once on mount
 		updateFromSelection();
 
-		return () => {
-			disposables.forEach((d) => d && d.dispose && d.dispose());
-		};
-	}, [editor]);
+        return () => {
+            if (hideTimeoutRef.current) clearTimeout(hideTimeoutRef.current);
+            disposables.forEach((d) => d && d.dispose && d.dispose());
+        };
+    }, [editor]);
 
 	if (!visible) return null;
 
-	return (
-		<div
-			style={{
-				position: "fixed",
-				left: Math.max(8, position.left),
-				top: Math.max(8, position.top),
-				pointerEvents: "auto",
-				zIndex: 9999,
-			}}
-		>
-			<FloatingToolbar>
-				<ActionButton onClick={onAddToChat} $variant="secondary">
-					Add to Chat ({SHORTCUTS.ADD_TO_CHAT.accelerator})
-				</ActionButton>
-			</FloatingToolbar>
-		</div>
-	);
+    return (
+        <div
+            style={{
+                position: "fixed",
+                left: Math.max(8, position.left),
+                top: Math.max(8, position.top),
+                pointerEvents: "auto",
+                zIndex: 9999,
+            }}
+            onMouseDown={(e) => {
+                // Interacting with toolbar should not immediately hide it
+                ignoreBlurRef.current = true;
+                // Reset shortly after to allow normal behavior next time
+                setTimeout(() => (ignoreBlurRef.current = false), 200);
+            }}
+        >
+            <FloatingToolbar>
+                <ActionButton
+                    onClick={() => {
+                        try {
+                            onAddToChat();
+                        } finally {
+                            setVisible(false);
+                        }
+                    }}
+                    $variant="secondary"
+                >
+                    Add to Chat ({SHORTCUTS.ADD_TO_CHAT.accelerator})
+                </ActionButton>
+            </FloatingToolbar>
+        </div>
+    );
 };
 
 const CellHeader = styled.div`
@@ -793,13 +820,13 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 			window.dispatchEvent(editEvt);
 
 			// 2) Also insert a lightweight mention for display/context
-			const mentionEvt = new CustomEvent("chat-insert-mention", {
-				detail: {
-					alias: mention,
-					filePath: filePath || undefined,
-				},
-			});
-			window.dispatchEvent(mentionEvt);
+            const mentionEvt = new CustomEvent("chat-insert-mention", {
+                detail: {
+                    alias: mention,
+                    filePath: filePath || undefined,
+                },
+            });
+            window.dispatchEvent(mentionEvt);
 		} catch (_) {
 			// ignore
 		}

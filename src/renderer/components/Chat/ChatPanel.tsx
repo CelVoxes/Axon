@@ -156,19 +156,37 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		Map<string, string>
 	>(new Map());
 
-	// rAF-batched streaming updates for smoother UI
+	// rAF-batched streaming updates for smoother UI with throttling
 	const rafStateRef = useRef<{
 		pending: Record<string, string>;
 		scheduled: boolean;
-	}>({ pending: {}, scheduled: false });
+		lastUpdate: number;
+	}>({ pending: {}, scheduled: false, lastUpdate: 0 });
 
 	const scheduleRafUpdate = useCallback(() => {
 		if (rafStateRef.current.scheduled) return;
+
+		const now = Date.now();
+		const timeSinceLastUpdate = now - rafStateRef.current.lastUpdate;
+		const minInterval = 100; // Slower updates to reduce flicker (10fps instead of 60fps)
+
+		if (timeSinceLastUpdate < minInterval) {
+			// Throttle updates to prevent excessive re-renders
+			setTimeout(() => {
+				if (!rafStateRef.current.scheduled) {
+					scheduleRafUpdate();
+				}
+			}, minInterval - timeSinceLastUpdate);
+			return;
+		}
+
 		rafStateRef.current.scheduled = true;
 		requestAnimationFrame(() => {
 			const pending = rafStateRef.current.pending;
 			rafStateRef.current.pending = {};
 			rafStateRef.current.scheduled = false;
+			rafStateRef.current.lastUpdate = Date.now();
+
 			for (const stepId of Object.keys(pending)) {
 				const stream = activeStreams.current.get(stepId);
 				if (!stream) continue;
@@ -176,24 +194,36 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					type: "UPDATE_MESSAGE",
 					payload: {
 						id: stream.messageId,
-						updates: { content: pending[stepId] },
+						updates: {
+							code: pending[stepId],
+							codeLanguage: "python",
+						},
 					},
 				});
 			}
-			// Keep view pinned to bottom during streaming if user is near bottom
-			const container = chatContainerRef.current;
-			if (container && chatAutoScrollRef.current) {
-				container.scrollTop = container.scrollHeight;
-			}
+			// Avoid forcing parent container scroll during streaming; inner code blocks handle it.
 		});
 	}, [analysisDispatch]);
 
 	const enqueueStreamingUpdate = useCallback(
 		(stepId: string, content: string) => {
+			// Only update if content has actually changed to prevent flickering
+			const currentPending = rafStateRef.current.pending[stepId];
+			if (currentPending === content) return;
+
+			// Also check if the content is already in the current message
+			const stream = activeStreams.current.get(stepId);
+			if (stream) {
+				const currentMessage = analysisState.messages.find(
+					(m) => m.id === stream.messageId
+				);
+				if (currentMessage && currentMessage.content === content) return;
+			}
+
 			rafStateRef.current.pending[stepId] = content;
 			scheduleRafUpdate();
 		},
-		[scheduleRafUpdate]
+		[scheduleRafUpdate, analysisState.messages]
 	);
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -213,17 +243,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	}, []);
 
 	// Selection-based code edit context (set when user triggers Ask Chat from a notebook cell)
-    interface CodeEditContext {
-        filePath?: string;
-        cellIndex?: number;
-        language?: string;
-        selectedText: string;
-        fullCode?: string;
-        selectionStart?: number;
-        selectionEnd?: number;
-        outputText?: string;
-        hasErrorOutput?: boolean;
-    }
+	interface CodeEditContext {
+		filePath?: string;
+		cellIndex?: number;
+		language?: string;
+		selectedText: string;
+		fullCode?: string;
+		selectionStart?: number;
+		selectionEnd?: number;
+		outputText?: string;
+		hasErrorOutput?: boolean;
+	}
 	const [codeEditContext, setCodeEditContext] =
 		useState<CodeEditContext | null>(null);
 	const codeEditContextRef = useRef<CodeEditContext | null>(null);
@@ -278,92 +308,104 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 	// Prefill composer when user adds output to chat or asks to fix an error
 	useEffect(() => {
-        const onAddOutput = (e: Event) => {
-            const ce = e as CustomEvent;
-            const d = ce.detail || {};
-            const lang: string = String(d.language || "python").toLowerCase();
-            const code: string = String(d.code || "");
-            const out: string = String(d.output || "");
-            const prefix = `Please review the ${lang} cell output and fix any issues.`;
-            // Build a cell mention like @relative/path#N (avoid pasting full code/output)
-            let alias = "";
-            try {
-                const wsRoot =
-                    findWorkspacePath({
-                        filePath: d.filePath || "",
-                        currentWorkspace: workspaceState.currentWorkspace || undefined,
-                    }) || workspaceState.currentWorkspace || "";
-                const rel = d.filePath && wsRoot && String(d.filePath).startsWith(wsRoot)
-                    ? String(d.filePath).slice(wsRoot.length + 1)
-                    : String(d.filePath || "");
-                const cellNum = typeof d.cellIndex === "number" ? d.cellIndex + 1 : undefined;
-                alias = rel ? `@${rel}${cellNum ? `#${cellNum}` : ""}` : "";
-            } catch (_) { /* ignore */ }
-            const body = `\n\nCell: ${alias || "(referenced cell)"}\n`;
-            const prefill = prefix + body;
-            setInputValue(prefill);
-            inputValueRef.current = prefill;
-            const ctx: CodeEditContext = {
-                filePath: d.filePath,
-                cellIndex: d.cellIndex,
-                language: d.language,
-                selectedText: code,
-                fullCode: code,
-                selectionStart: 0,
-                selectionEnd: code.length,
-                outputText: out,
-                hasErrorOutput: Boolean(d.hasError),
-            };
-            setCodeEditContext(ctx);
-            codeEditContextRef.current = ctx;
-            if (!uiState.showChatPanel || uiState.chatCollapsed) {
-                uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
-                uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
-            }
-        };
-        const onFixError = (e: Event) => {
-            const ce = e as CustomEvent;
-            const d = ce.detail || {};
-            const lang: string = String(d.language || "python").toLowerCase();
-            const code: string = String(d.code || "");
-            const out: string = String(d.output || "");
-            const prefix = `The following ${lang} cell failed. Fix the code to resolve the error. Return only the corrected code.`;
-            // Mention the cell, avoid embedding large blocks
-            let alias = "";
-            try {
-                const wsRoot =
-                    findWorkspacePath({
-                        filePath: d.filePath || "",
-                        currentWorkspace: workspaceState.currentWorkspace || undefined,
-                    }) || workspaceState.currentWorkspace || "";
-                const rel = d.filePath && wsRoot && String(d.filePath).startsWith(wsRoot)
-                    ? String(d.filePath).slice(wsRoot.length + 1)
-                    : String(d.filePath || "");
-                const cellNum = typeof d.cellIndex === "number" ? d.cellIndex + 1 : undefined;
-                alias = rel ? `@${rel}${cellNum ? `#${cellNum}` : ""}` : "";
-            } catch (_) { /* ignore */ }
-            const body = `\n\nCell: ${alias || "(referenced cell)"}\n`;
-            const prefill = prefix + body;
-            setInputValue(prefill);
-            inputValueRef.current = prefill;
-            const ctx: CodeEditContext = {
-                filePath: d.filePath,
-                cellIndex: d.cellIndex,
-                language: d.language,
-                selectedText: code,
-                fullCode: code,
-                selectionStart: 0,
-                selectionEnd: code.length,
-                outputText: out,
-                hasErrorOutput: true,
-            };
-            setCodeEditContext(ctx);
-            codeEditContextRef.current = ctx;
-            if (!uiState.showChatPanel || uiState.chatCollapsed) {
-                uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
-                uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
-            }
-        };
+		const onAddOutput = (e: Event) => {
+			const ce = e as CustomEvent;
+			const d = ce.detail || {};
+			const lang: string = String(d.language || "python").toLowerCase();
+			const code: string = String(d.code || "");
+			const out: string = String(d.output || "");
+			const prefix = `Please review the ${lang} cell output and fix any issues.`;
+			// Build a cell mention like @relative/path#N (avoid pasting full code/output)
+			let alias = "";
+			try {
+				const wsRoot =
+					findWorkspacePath({
+						filePath: d.filePath || "",
+						currentWorkspace: workspaceState.currentWorkspace || undefined,
+					}) ||
+					workspaceState.currentWorkspace ||
+					"";
+				const rel =
+					d.filePath && wsRoot && String(d.filePath).startsWith(wsRoot)
+						? String(d.filePath).slice(wsRoot.length + 1)
+						: String(d.filePath || "");
+				const cellNum =
+					typeof d.cellIndex === "number" ? d.cellIndex + 1 : undefined;
+				alias = rel ? `@${rel}${cellNum ? `#${cellNum}` : ""}` : "";
+			} catch (_) {
+				/* ignore */
+			}
+			const body = `\n\nCell: ${alias || "(referenced cell)"}\n`;
+			const prefill = prefix + body;
+			setInputValue(prefill);
+			inputValueRef.current = prefill;
+			const ctx: CodeEditContext = {
+				filePath: d.filePath,
+				cellIndex: d.cellIndex,
+				language: d.language,
+				selectedText: code,
+				fullCode: code,
+				selectionStart: 0,
+				selectionEnd: code.length,
+				outputText: out,
+				hasErrorOutput: Boolean(d.hasError),
+			};
+			setCodeEditContext(ctx);
+			codeEditContextRef.current = ctx;
+			if (!uiState.showChatPanel || uiState.chatCollapsed) {
+				uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
+				uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
+			}
+		};
+		const onFixError = (e: Event) => {
+			const ce = e as CustomEvent;
+			const d = ce.detail || {};
+			const lang: string = String(d.language || "python").toLowerCase();
+			const code: string = String(d.code || "");
+			const out: string = String(d.output || "");
+			const prefix = `The following ${lang} cell failed. Fix the code to resolve the error. Return only the corrected code.`;
+			// Mention the cell, avoid embedding large blocks
+			let alias = "";
+			try {
+				const wsRoot =
+					findWorkspacePath({
+						filePath: d.filePath || "",
+						currentWorkspace: workspaceState.currentWorkspace || undefined,
+					}) ||
+					workspaceState.currentWorkspace ||
+					"";
+				const rel =
+					d.filePath && wsRoot && String(d.filePath).startsWith(wsRoot)
+						? String(d.filePath).slice(wsRoot.length + 1)
+						: String(d.filePath || "");
+				const cellNum =
+					typeof d.cellIndex === "number" ? d.cellIndex + 1 : undefined;
+				alias = rel ? `@${rel}${cellNum ? `#${cellNum}` : ""}` : "";
+			} catch (_) {
+				/* ignore */
+			}
+			const body = `\n\nCell: ${alias || "(referenced cell)"}\n`;
+			const prefill = prefix + body;
+			setInputValue(prefill);
+			inputValueRef.current = prefill;
+			const ctx: CodeEditContext = {
+				filePath: d.filePath,
+				cellIndex: d.cellIndex,
+				language: d.language,
+				selectedText: code,
+				fullCode: code,
+				selectionStart: 0,
+				selectionEnd: code.length,
+				outputText: out,
+				hasErrorOutput: true,
+			};
+			setCodeEditContext(ctx);
+			codeEditContextRef.current = ctx;
+			if (!uiState.showChatPanel || uiState.chatCollapsed) {
+				uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
+				uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
+			}
+		};
 		window.addEventListener("chat-add-output", onAddOutput as EventListener);
 		window.addEventListener("chat-fix-error", onFixError as EventListener);
 		return () => {
@@ -389,7 +431,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		const el = chatContainerRef.current;
 		if (!el) return;
 		const onScroll = () => {
-			const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+			// More generous threshold to keep auto-scroll active when user is near bottom
+			const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
 			chatAutoScrollRef.current = nearBottom;
 		};
 		el.addEventListener("scroll", onScroll);
@@ -407,15 +450,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		const initBackendClient = async () => {
 			try {
 				const backendUrl = await window.electronAPI.getBioragUrl();
-				console.log("✅ Backend URL retrieved:", backendUrl);
 				const client = new BackendClient(backendUrl);
 				setBackendClient(client);
-				console.log("✅ BackendClient initialized with URL:", backendUrl);
 			} catch (error) {
 				console.error("Failed to get backend URL, using default:", error);
 				const client = new BackendClient();
 				setBackendClient(client);
-				console.log("⚠️ BackendClient initialized with default configuration");
 			}
 		};
 		initBackendClient();
@@ -526,6 +566,30 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 		};
 
+		// Listen for package installation progress updates
+		const handlePackageInstallProgress = (data: any) => {
+			if (!isMounted) return;
+
+			if (data.message && data.message.trim()) {
+				// Filter and format pip output messages
+				const msg = data.message.trim();
+				if (msg.includes("Collecting")) {
+					addMessage(`📥 ${msg}`, false);
+				} else if (msg.includes("Downloading")) {
+					// Only show major downloads, not every chunk
+					if (msg.includes(" MB") || msg.includes(" KB")) {
+						addMessage(`⬇️ ${msg}`, false);
+					}
+				} else if (msg.includes("Installing")) {
+					addMessage(`⚙️ ${msg}`, false);
+				} else if (msg.includes("Successfully installed")) {
+					addMessage(`✅ ${msg}`, false);
+				} else if (msg.includes("ERROR") || msg.includes("Failed")) {
+					addMessage(`❌ ${msg}`, false);
+				}
+			}
+		};
+
 		// Add event listeners
 		window.addEventListener(
 			"virtual-env-status",
@@ -538,6 +602,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		window.addEventListener(
 			"python-setup-status",
 			handlePythonSetupStatus as EventListener
+		);
+		window.addEventListener(
+			"package-install-progress",
+			handlePackageInstallProgress as EventListener
 		);
 
 		// Cleanup
@@ -554,6 +622,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			window.removeEventListener(
 				"python-setup-status",
 				handlePythonSetupStatus as EventListener
+			);
+			window.removeEventListener(
+				"package-install-progress",
+				handlePackageInstallProgress as EventListener
 			);
 		};
 	}, []);
@@ -587,7 +659,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				type: "ADD_MESSAGE",
 				payload: {
 					id: messageId,
-					content: `\`\`\`python\n`,
+					content: "", // Start with empty content for streaming
+					code: "", // Ensure a CodeBlock mounts immediately
+					codeLanguage: "python",
 					isUser: false,
 					isStreaming: true,
 				},
@@ -610,9 +684,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			// Update accumulated code
 			stream.accumulatedCode += chunk;
 
-			// Format content and enqueue for rAF-batched update
-			const content = `\`\`\`python\n${stream.accumulatedCode}\n\`\`\``;
-			enqueueStreamingUpdate(stepId, content);
+			// Send raw code content for streaming (no markdown wrapping)
+			enqueueStreamingUpdate(stepId, stream.accumulatedCode);
 		};
 
 		const handleCodeGenerationCompleted = (event: Event) => {
@@ -629,7 +702,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					payload: {
 						id: stream.messageId,
 						updates: {
-							content: `\`\`\`python\n${finalCode}\n\`\`\``,
+							code: finalCode,
+							codeLanguage: "python",
 							isStreaming: false,
 							status: success ? "completed" : ("failed" as any),
 						},
@@ -1021,23 +1095,23 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	};
 
 	// Shared notebook edit executor to avoid duplication between cellMention and selection-based edits
-    const performNotebookEdit = useCallback(
-        async (args: {
-            filePath: string;
-            cellIndex: number;
-            language: string;
-            fullCode: string;
-            userMessage: string;
-            selection?: {
-                selStart: number;
-                selEnd: number;
-                startLine: number;
-                endLine: number;
-                withinSelection: string;
-            };
-            outputText?: string;
-            hasErrorOutput?: boolean;
-        }) => {
+	const performNotebookEdit = useCallback(
+		async (args: {
+			filePath: string;
+			cellIndex: number;
+			language: string;
+			fullCode: string;
+			userMessage: string;
+			selection?: {
+				selStart: number;
+				selEnd: number;
+				startLine: number;
+				endLine: number;
+				withinSelection: string;
+			};
+			outputText?: string;
+			hasErrorOutput?: boolean;
+		}) => {
 			if (!backendClient) {
 				addMessage(
 					"Backend not ready to edit code. Please try again in a moment.",
@@ -1045,16 +1119,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				);
 				return;
 			}
-            const {
-                filePath,
-                cellIndex,
-                language,
-                fullCode,
-                userMessage,
-                selection,
-                outputText,
-                hasErrorOutput,
-            } = args;
+			const {
+				filePath,
+				cellIndex,
+				language,
+				fullCode,
+				userMessage,
+				selection,
+				outputText,
+				hasErrorOutput,
+			} = args;
 
 			const wsPath =
 				findWorkspacePath({
@@ -1072,14 +1146,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				`Editing plan:\n\n- **Target**: cell ${cellIndex} in \`${fileName}\`\n- **Scope**: replace lines ${startLine}-${endLine} of the selected code\n- **Process**: I will generate the revised snippet (streaming below), then apply it to the notebook and confirm the save.`,
 				false
 			);
-            const task =
-                `Edit the following ${lang} code according to the user's instruction. ` +
-                `CRITICAL RULES:\n` +
-                `1. Return ONLY the exact replacement for lines ${startLine}-${endLine}\n` +
-                `2. Do NOT include explanations or markdown formatting\n` +
-                `3. Do NOT add imports, package installs, magic commands, shebangs, or globals\n` +
-                `4. Preserve the number of lines unless removing content; match indentation and style\n` +
-                `5. Output ONLY the modified code as plain text`;
+			const task =
+				`Edit the following ${lang} code according to the user's instruction. ` +
+				`CRITICAL RULES:\n` +
+				`1. Return ONLY the exact replacement for lines ${startLine}-${endLine}\n` +
+				`2. Do NOT include explanations or markdown formatting\n` +
+				`3. Do NOT add imports, package installs, magic commands, shebangs, or globals\n` +
+				`4. Preserve the number of lines unless removing content; match indentation and style\n` +
+				`5. Output ONLY the modified code as plain text`;
 
 			let streamedResponse = "";
 			const streamingMessageId = `edit-${Date.now()}`;
@@ -1101,22 +1175,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				const start = selStart;
 				const end = selEnd;
 				let lastCellUpdate = 0;
-                await backendClient!.generateCodeStream(
-                    {
-                        task_description: `${task}\n\nUser instruction: ${userMessage}\n\n` +
-                        (outputText && outputText.trim().length > 0
-                            ? `${hasErrorOutput ? "Error" : "Execution"} output for context:\n\n\`\`\`text\n${outputText}\n\`\`\`\n\n`
-                            : "") +
-                        `Original code (lines ${startLine}-${endLine}):\n${withinSelection}\n\nIMPORTANT: The original has ${
-                            withinSelection.split("\n").length
-                        } lines. Return EXACTLY ${
-                            withinSelection.split("\n").length
-                        } modified lines (no imports, no extra lines). Example format:\nline1\nline2\n\nYour response:`,
-                        language: lang,
-                        context: "Notebook code edit-in-place",
-                        notebook_edit: true,
-                    },
-                    (chunk: string) => {
+				await backendClient!.generateCodeStream(
+					{
+						task_description:
+							`${task}\n\nUser instruction: ${userMessage}\n\n` +
+							(outputText && outputText.trim().length > 0
+								? `${
+										hasErrorOutput ? "Error" : "Execution"
+								  } output for context:\n\n\`\`\`text\n${outputText}\n\`\`\`\n\n`
+								: "") +
+							`Original code (lines ${startLine}-${endLine}):\n${withinSelection}\n\nIMPORTANT: The original has ${
+								withinSelection.split("\n").length
+							} lines. Return EXACTLY ${
+								withinSelection.split("\n").length
+							} modified lines (no imports, no extra lines). Example format:\nline1\nline2\n\nYour response:`,
+						language: lang,
+						context: "Notebook code edit-in-place",
+						notebook_edit: true,
+					},
+					(chunk: string) => {
 						streamedResponse += chunk;
 						const cleanedSnippet = stripCodeFences(streamedResponse);
 
@@ -1348,7 +1425,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		if (chatMode === "Ask") {
 			// Prefer notebook edit when Ask Chat is invoked from code/output context
 			const ctxAsk = codeEditContext || codeEditContextRef.current;
-            if (ctxAsk && ctxAsk.filePath && ctxAsk.cellIndex !== undefined) {
+			if (ctxAsk && ctxAsk.filePath && ctxAsk.cellIndex !== undefined) {
 				const lang = (ctxAsk.language || "python").toLowerCase();
 				const filePath = ctxAsk.filePath;
 				const cellIndex = ctxAsk.cellIndex;
@@ -1363,20 +1440,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				const startLine = (beforeSelection.match(/\n/g)?.length ?? 0) + 1;
 				const endLine = startLine + (withinSelection.match(/\n/g)?.length ?? 0);
 
-                await performNotebookEdit({
-                    filePath,
-                    cellIndex,
-                    language: lang,
-                    fullCode,
-                    userMessage,
-                    selection: { selStart, selEnd, startLine, endLine, withinSelection },
-                    outputText: ctxAsk.outputText,
-                    hasErrorOutput: ctxAsk.hasErrorOutput,
-                });
-                setCodeEditContext(null);
-                codeEditContextRef.current = null;
-                return;
-            }
+				await performNotebookEdit({
+					filePath,
+					cellIndex,
+					language: lang,
+					fullCode,
+					userMessage,
+					selection: { selStart, selEnd, startLine, endLine, withinSelection },
+					outputText: ctxAsk.outputText,
+					hasErrorOutput: ctxAsk.hasErrorOutput,
+				});
+				setCodeEditContext(null);
+				codeEditContextRef.current = null;
+				return;
+			}
 
 			addMessage(userMessage, true);
 			setInputValue("");
@@ -1816,7 +1893,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 			// If there is an active code edit context (state or ref), perform edit-in-place and return early
 			const ctxAgent = codeEditContext || codeEditContextRef.current;
-        if (ctxAgent && ctxAgent.filePath && ctxAgent.cellIndex !== undefined) {
+			if (ctxAgent && ctxAgent.filePath && ctxAgent.cellIndex !== undefined) {
 				if (!backendClient) {
 					addMessage(
 						"Backend not ready to edit code. Please try again in a moment.",
@@ -1840,20 +1917,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				const startLine = (beforeSelection.match(/\n/g)?.length ?? 0) + 1;
 				const endLine = startLine + (withinSelection.match(/\n/g)?.length ?? 0);
 
-            await performNotebookEdit({
-                filePath,
-                cellIndex,
-                language: lang,
-                fullCode,
-                userMessage,
-                selection: { selStart, selEnd, startLine, endLine, withinSelection },
-                outputText: ctxAgent.outputText,
-                hasErrorOutput: ctxAgent.hasErrorOutput,
-            });
-            setCodeEditContext(null);
-            codeEditContextRef.current = null;
-            return;
-        }
+				await performNotebookEdit({
+					filePath,
+					cellIndex,
+					language: lang,
+					fullCode,
+					userMessage,
+					selection: { selStart, selEnd, startLine, endLine, withinSelection },
+					outputText: ctxAgent.outputText,
+					hasErrorOutput: ctxAgent.hasErrorOutput,
+				});
+				setCodeEditContext(null);
+				codeEditContextRef.current = null;
+				return;
+			}
 			// If datasets are already selected, prioritize analysis/suggestions over intent classification
 			// to avoid accidentally routing to search or generic Q&A.
 			if (selectedDatasets.length > 0) {
@@ -1869,7 +1946,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 			// Get intent classification from backend
 			const intentResult = await backendClient!.classifyIntent(userMessage);
-			console.log("🎯 Backend intent classification:", intentResult);
 
 			// If confidence is too low (< 0.65), treat as general question instead of forcing into specific intent
 			const isLowConfidence = (intentResult.confidence || 0) < 0.65;
@@ -1943,19 +2019,55 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 			// Handle ADD_CELL intent or analysis requests for active notebooks (only if confident)
 			else if (intentResult.intent === "ADD_CELL") {
-				// If there is an active notebook open, treat as incremental analysis
+				// Robust notebook detection - check multiple sources due to potential race conditions
 				const activeFile = (workspaceState as any).activeFile as string | null;
-				// Be resilient: if activeFile isn't an ipynb yet (race), fall back to any open .ipynb
 				const openFiles = ((workspaceState as any).openFiles || []) as string[];
-				const fallbackIpynb =
-					openFiles.find(
-						(f) => typeof f === "string" && f.endsWith(".ipynb")
-					) || null;
-				const notebookFile =
-					activeFile && activeFile.endsWith(".ipynb")
-						? activeFile
-						: fallbackIpynb;
+
+				// Primary detection: workspace state
+				let notebookFile =
+					activeFile && activeFile.endsWith(".ipynb") ? activeFile : null;
+				if (!notebookFile) {
+					notebookFile =
+						openFiles.find(
+							(f) => typeof f === "string" && f.endsWith(".ipynb")
+						) || null;
+				}
+
+				// Fallback detection: check DOM for open notebook tabs if workspace state is empty
+				// This handles race conditions where workspace state isn't synced yet
+				if (!notebookFile && openFiles.length === 0) {
+					try {
+						// The Tab component sets the full file path on the parent element's title attribute
+						// and renders a child span with class "tab-title". Use that structure to find .ipynb tabs.
+						const titleSpans = document.querySelectorAll(".tab-title");
+						for (const span of Array.from(titleSpans)) {
+							const parent = (span as HTMLElement).parentElement;
+							const filePath = parent?.getAttribute("title");
+							if (filePath && filePath.endsWith(".ipynb")) {
+								notebookFile = filePath;
+								console.log(
+									"📂 Found notebook via tab DOM fallback:",
+									notebookFile
+								);
+								break;
+							}
+						}
+					} catch (domError) {
+						console.warn("Failed DOM fallback detection:", domError);
+					}
+				}
+
 				const isNotebookOpen = Boolean(notebookFile);
+				console.log(
+					"📂 Final notebook detection - activeFile:",
+					activeFile,
+					"openFiles:",
+					openFiles,
+					"notebookFile:",
+					notebookFile,
+					"isOpen:",
+					isNotebookOpen
+				);
 
 				if (isNotebookOpen && notebookFile) {
 					// Append new analysis step to the current notebook (skip dataset search)
@@ -2007,11 +2119,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					});
 					return;
 				} else {
-					// No active notebook but intent is ADD_CELL - guide user to open notebook
-					addMessage(
-						"To add a code cell, please open a Jupyter notebook first. You can create a new notebook or open an existing one.",
-						false
-					);
+					// No active notebook but intent is ADD_CELL - treat as general analysis request
+					// This handles cases like "add a cell for B-cell markers" when no notebook is open
+					await handleAnalysisRequest(userMessage);
+					return;
 				}
 			}
 			// Handle low confidence intents or unrecognized intents as general questions
@@ -2907,8 +3018,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}>;
 			const alias = ce.detail?.alias || "";
 			const fp = ce.detail?.filePath || "";
-			const selectedCode = ce.detail?.selectedCode || "";
-			const lineRange = ce.detail?.lineRange;
+			// Intentionally ignore selectedCode and lineRange to avoid pasting code in chat
 
 			if (!alias) return;
 			const key = `${fp}|${alias}`;
@@ -2919,11 +3029,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			lastKey = key;
 			lastTs = now;
 
-			// If we have selected code, include it in the message for better context
-			let messageText = alias;
-			if (selectedCode && selectedCode.trim()) {
-				messageText += `\n\nSelected code:\n\`\`\`python\n${selectedCode}\n\`\`\``;
-			}
+			// Only insert the alias reference; do not paste code snippets
+			const messageText = alias;
 
 			const current = inputValueRef.current || "";
 			const next =
@@ -2966,13 +3073,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							message={message}
 							onAnalysisClick={handleAnalysisClick}
 						/>
-						{message.code && (
+						{(message.isStreaming || typeof message.code === "string") && (
 							<div style={{ marginTop: "8px" }}>
 								<CodeBlock
-									code={message.code}
+									code={message.code || ""}
 									language={message.codeLanguage || "python"}
-									title={message.codeTitle || "Generated Code"}
-									isStreaming={message.status === "pending"}
+									title={message.codeTitle || ""}
+									isStreaming={
+										message.status === "pending" || !!message.isStreaming
+									}
 								/>
 							</div>
 						)}

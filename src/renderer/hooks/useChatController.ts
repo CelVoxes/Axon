@@ -78,31 +78,6 @@ export function useChatController(deps: Dependencies): ChatControllerAPI {
 					});
 
 					if (response.datasets && response.datasets.length > 0) {
-						let responseContent = `## 🔍 Found ${response.datasets.length} Datasets\n\n`;
-						responseContent += `I found ${response.datasets.length} datasets that match your search. Please select the ones you'd like to analyze:\n\n`;
-						response.datasets
-							.slice(0, 5)
-							.forEach((dataset: any, index: number) => {
-								responseContent += `### ${index + 1}. ${dataset.title}\n`;
-								responseContent += `**ID:** ${dataset.id}\n`;
-								if (dataset.description) {
-									responseContent += `**Description:** ${dataset.description.substring(
-										0,
-										200
-									)}...\n`;
-								}
-								if (dataset.organism) {
-									responseContent += `**Organism:** ${dataset.organism}\n`;
-								}
-								responseContent += `\n`;
-							});
-						if (response.datasets.length > 5) {
-							responseContent += `*... and ${
-								response.datasets.length - 5
-							} more datasets*\n\n`;
-						}
-						responseContent += `**💡 Tip:** Select the datasets you want to analyze, then specify what analysis you'd like to perform.`;
-						addMessage(responseContent, false);
 					} else {
 						addMessage(
 							"❌ No datasets found matching your search. Try different keywords or be more specific.",

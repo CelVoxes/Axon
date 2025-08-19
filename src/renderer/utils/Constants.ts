@@ -50,10 +50,24 @@ export const DEFAULT_CONFIGS = {
 } as const;
 
 // Centralized keyboard shortcuts
+// Platform-aware accelerator label (renderer-safe)
+const isMacPlatform = (() => {
+    try {
+        if (typeof navigator !== "undefined") {
+            return /mac/i.test(navigator.platform || "");
+        }
+    } catch {}
+    try {
+        // Fallback when navigator is unavailable
+        return typeof process !== "undefined" && process.platform === "darwin";
+    } catch {}
+    return false;
+})();
+
 export const SHORTCUTS = {
-	ADD_TO_CHAT: {
-		accelerator: process.platform === "darwin" ? "Cmd+L" : "Ctrl+L", // renderer/editor usage label
-	},
+    ADD_TO_CHAT: {
+        accelerator: isMacPlatform ? "Cmd+L" : "Ctrl+L", // renderer/editor usage label
+    },
 } as const;
 
 export type Language = (typeof LANGUAGES)[keyof typeof LANGUAGES];

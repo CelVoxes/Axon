@@ -17,7 +17,7 @@ export const TYPOGRAPHY = {
 // Unified color system - consolidates both files
 export const COLORS = {
 	// Base colors (unified from both systems)
-	PRIMARY: "#007acc", // Used in 28+ places
+	PRIMARY: "#2563eb", // Used in 28+ places
 	SECONDARY: "#6c757d",
 	SUCCESS: "#10b981", // Matches design-system.ts
 	WARNING: "#f59e0b", // Matches design-system.ts

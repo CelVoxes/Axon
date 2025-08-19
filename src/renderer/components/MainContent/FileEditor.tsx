@@ -11,6 +11,7 @@ import { EventManager } from "../../utils/EventManager";
 import { findWorkspacePath } from "../../utils/WorkspaceUtils";
 import { electronAPI } from "../../utils/electronAPI";
 import { ElectronClient } from "../../utils/ElectronClient";
+import { COLORS } from "../../utils/ThemeUtils";
 
 // Cache detected Python versions per workspace to avoid repeated kernel calls on save
 const workspacePythonVersionCache = new Map<string, string>();
@@ -1234,7 +1235,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 							<button
 								onClick={saveFile}
 								style={{
-									background: "#0e639c",
+									background: COLORS.PRIMARY,
 									border: "none",
 									color: "white",
 									padding: "2px 8px",

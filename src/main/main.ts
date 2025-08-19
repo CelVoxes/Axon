@@ -1779,7 +1779,17 @@ export class AxonApp {
 				
 				console.log(`Using pip at: ${pipPath}`);
 				
-				const installProcess = spawn(pipPath, ["install", "--no-cache-dir", ...packages], {
+				const installProcess = spawn(pipPath, [
+					"install", 
+					"--no-cache-dir",
+					"--progress-bar", "on",
+					"--parallel",
+					"--retries", "2",
+					"--timeout", "60",
+					"--prefer-binary",
+					"--no-build-isolation",
+					...packages
+				], {
 					cwd: workspacePath,
 					stdio: "pipe",
 				});
@@ -1798,11 +1808,41 @@ export class AxonApp {
 					}, 300000); // 5 minutes
 
 					installProcess.stdout?.on("data", (data) => {
-						stdout += data.toString();
+						const output = data.toString();
+						stdout += output;
+						
+						// Send real-time progress to chat
+						if (this.mainWindow && output.trim()) {
+							// Parse pip progress info
+							const lines = output.split('\n').filter((line: string) => line.trim());
+							for (const line of lines) {
+								if (line.includes('Collecting') || line.includes('Downloading') || 
+								    line.includes('Installing') || line.includes('Successfully installed')) {
+									this.mainWindow.webContents.send("package-install-progress", {
+										message: line.trim(),
+										timestamp: new Date().toISOString(),
+									});
+								}
+							}
+						}
 					});
 
 					installProcess.stderr?.on("data", (data) => {
-						stderr += data.toString();
+						const output = data.toString();
+						stderr += output;
+						
+						// Send error info to chat
+						if (this.mainWindow && output.trim()) {
+							const lines = output.split('\n').filter((line: string) => line.trim());
+							for (const line of lines) {
+								if (!line.includes('WARNING') && !line.includes('DEPRECATION')) {
+									this.mainWindow.webContents.send("package-install-progress", {
+										message: `⚠️ ${line.trim()}`,
+										timestamp: new Date().toISOString(),
+									});
+								}
+							}
+						}
 					});
 
 					installProcess.on("close", (code) => {
