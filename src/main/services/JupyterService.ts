@@ -37,7 +37,6 @@ export class JupyterService {
 	): Promise<JupyterExecutionResult> {
 		try {
 			console.log(`🎯 Executing code in workspace: ${workspacePath}`);
-			console.log(`Code preview: ${code.substring(0, 100)}...`);
 
 			// Notify renderer that code execution is starting
 			this.mainWindow?.webContents.send("jupyter-code-writing", {

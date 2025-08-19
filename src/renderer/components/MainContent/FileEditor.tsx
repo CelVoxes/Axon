@@ -198,10 +198,10 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	// Get workspace context at the top level to avoid React hooks warning
 	const { state: workspaceState, dispatch: workspaceDispatch } =
 		useWorkspaceContext();
-	
+
 	const workspacePath: string | undefined = findWorkspacePath({
 		filePath: filePath || undefined,
-		currentWorkspace: workspaceState.currentWorkspace || undefined
+		currentWorkspace: workspaceState.currentWorkspace || undefined,
 	});
 
 	// Queue for events that arrive before notebookData is loaded
@@ -217,9 +217,6 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		loadFile();
 		// Clear pending events when file path changes
 		if (pendingEvents.length > 0) {
-			console.log(
-				`FileEditor: Clearing ${pendingEvents.length} pending events due to file path change to ${filePath}`
-			);
 		}
 		setPendingEvents([]);
 	}, [filePath]);
@@ -252,14 +249,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	const processPendingEvents = () => {
 		const currentNotebookData = notebookDataRef.current;
 		if (currentNotebookData && pendingEvents.length > 0) {
-			console.log(
-				`FileEditor: Processing ${pendingEvents.length} pending events for ${filePath}`
-			);
-
 			pendingEvents.forEach((pendingEvent) => {
-				console.log(
-					`FileEditor: Processing pending event: ${pendingEvent.type}`
-				);
 				// Re-dispatch the event to be handled by the current handlers
 				const event = new CustomEvent(pendingEvent.type, {
 					detail: pendingEvent.detail,
@@ -272,12 +262,19 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	};
 
 	// Function to save notebook to file (used by manual Save and debounced queue)
-	const saveNotebookToFile = async (notebook: NotebookData, skipVersionDetection = false) => {
+	const saveNotebookToFile = async (
+		notebook: NotebookData,
+		skipVersionDetection = false
+	) => {
 		try {
 			let finalNotebook = notebook;
 
 			// Only try to detect Python version if explicitly requested and not skipped
-			if (!skipVersionDetection && notebook?.metadata?.language_info?.name === "python" && workspacePath) {
+			if (
+				!skipVersionDetection &&
+				notebook?.metadata?.language_info?.name === "python" &&
+				workspacePath
+			) {
 				try {
 					let detected = workspacePythonVersionCache.get(workspacePath);
 					if (!detected) {
@@ -325,7 +322,10 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	};
 
 	// Debounced queue for notebook saves to reduce disk churn
-	const queueNotebookSave = (notebook: NotebookData, skipVersionDetection = true) => {
+	const queueNotebookSave = (
+		notebook: NotebookData,
+		skipVersionDetection = true
+	) => {
 		pendingSaveRef.current = notebook;
 		if (saveTimerRef.current) {
 			clearTimeout(saveTimerRef.current);
@@ -351,15 +351,6 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 			// Only handle events for the current notebook file
 			if (eventFilePath === filePath && filePath.endsWith(".ipynb")) {
-				console.log(
-					"FileEditor: Received add-notebook-cell event for current file:",
-					{
-						filePath: eventFilePath,
-						cellType,
-						contentLength: cellContent?.length || 0,
-					}
-				);
-
 				// Use the ref to get the current notebook data
 				const currentNotebookData = notebookDataRef.current;
 				const isReady = isReadyRef.current;
@@ -406,9 +397,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					}
 				} else {
 					// Queue the event for later processing
-					console.log(
-						`FileEditor: Queuing add-notebook-cell event (notebookData not ready: ${!currentNotebookData}, isReady: ${isReady}) for ${filePath}`
-					);
+
 					setPendingEvents((prev) => [
 						...prev,
 						{
@@ -426,15 +415,6 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 			// Only handle events for the current notebook file
 			if (eventFilePath === filePath && filePath.endsWith(".ipynb")) {
-				console.log(
-					"FileEditor: Received update-notebook-cell event for current file:",
-					{
-						filePath: eventFilePath,
-						cellIndex,
-						outputLength: output?.length || 0,
-					}
-				);
-
 				// Use the ref to get the current notebook data
 				const currentNotebookData = notebookDataRef.current;
 				const isReady = isReadyRef.current;
@@ -496,9 +476,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					}
 				} else if (!currentNotebookData || !isReady) {
 					// Queue the event for later processing
-					console.log(
-						`FileEditor: Queuing update-notebook-cell event (notebookData not ready: ${!currentNotebookData}, isReady: ${isReady}) for ${filePath}`
-					);
+
 					setPendingEvents((prev) => [
 						...prev,
 						{
@@ -516,15 +494,6 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 			// Only handle events for the current notebook file
 			if (eventFilePath === filePath && filePath.endsWith(".ipynb")) {
-				console.log(
-					"FileEditor: Received update-notebook-cell-code event for current file:",
-					{
-						filePath: eventFilePath,
-						cellIndex,
-						codeLength: code?.length || 0,
-					}
-				);
-
 				// Use the ref to get the current notebook data
 				const currentNotebookData = notebookDataRef.current;
 				const isReady = isReadyRef.current;
@@ -602,9 +571,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					}
 				} else if (!currentNotebookData || !isReady) {
 					// Queue the event for later processing
-					console.log(
-						`FileEditor: Queuing update-notebook-cell-code event (notebookData not ready: ${!currentNotebookData}, isReady: ${isReady}) for ${filePath}`
-					);
+
 					setPendingEvents((prev) => [
 						...prev,
 						{
@@ -652,9 +619,6 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	useEffect(() => {
 		const currentNotebookData = notebookDataRef.current;
 		if (currentNotebookData) {
-			console.log(
-				`FileEditor: notebookData ready for ${filePath}, processing pending events`
-			);
 			processPendingEvents();
 		}
 	}, [notebookData, filePath]); // Add filePath dependency to ensure proper processing
@@ -666,11 +630,6 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			setPendingEvents((prev) => {
 				const filtered = prev.filter((event) => now - event.timestamp < 15000); // Reduced from 30s to 15s
 				if (filtered.length !== prev.length) {
-					console.log(
-						`FileEditor: Cleaned up ${
-							prev.length - filtered.length
-						} old pending events for ${filePath}`
-					);
 				}
 				return filtered;
 			});
@@ -682,7 +641,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	// Add keyboard shortcut for saving (Cmd+S / Ctrl+S)
 	useEffect(() => {
 		const handleKeyDown = (event: KeyboardEvent) => {
-			if ((event.metaKey || event.ctrlKey) && event.key === 's') {
+			if ((event.metaKey || event.ctrlKey) && event.key === "s") {
 				event.preventDefault();
 				if (hasChanges) {
 					saveFile();
@@ -690,8 +649,8 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			}
 		};
 
-		window.addEventListener('keydown', handleKeyDown);
-		return () => window.removeEventListener('keydown', handleKeyDown);
+		window.addEventListener("keydown", handleKeyDown);
+		return () => window.removeEventListener("keydown", handleKeyDown);
 	}, [hasChanges]); // Re-run when hasChanges state updates
 
 	const isImageFile = (p: string) => {

@@ -86,7 +86,6 @@ const MonacoSelectionToolbar: React.FC<SelectionToolbarProps> = ({
 					setVisible(false);
 					return;
 				}
-				console.log('🎯 Selection detected, showing toolbar', { hasSelection, hasFocus });
 				const end = selection.getEndPosition();
 				const layout = editor.getLayoutInfo?.();
 				const editorDom = editor.getDomNode?.();
@@ -98,7 +97,7 @@ const MonacoSelectionToolbar: React.FC<SelectionToolbarProps> = ({
 				}
 				const left = rect.left + (coords.left ?? 0) + layout.contentLeft;
 				const top = rect.top + (coords.top ?? 0) + (coords.height ?? 0) + 6;
-				console.log('🎯 Setting toolbar position', { left, top, visible: true });
+
 				setPosition({ left, top });
 				setVisible(true);
 			} catch {
@@ -607,26 +606,18 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 	const [isExecuting, setIsExecuting] = useState(false);
 	const [hasError, setHasError] = useState(false);
 	const [copied, setCopied] = useState(false);
-	const [currentExecutionId, setCurrentExecutionId] = useState<string | null>(null);
+	const [currentExecutionId, setCurrentExecutionId] = useState<string | null>(
+		null
+	);
 	// Auto-growing editor height for better UX
 	const [editorHeight, setEditorHeight] = useState<number>(260);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const monacoEditorRef = useRef<any>(null);
 
-	// Sync local editor state when parent updates initialCode (e.g., after external edits)
-	useEffect(() => {
-		if (initialCode !== code) {
-			setCode(initialCode);
-		}
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [initialCode]);
-
 	// Initialize CellExecutionService
 	const cellExecutionService = useMemo(() => {
 		return workspacePath ? new CellExecutionService(workspacePath) : null;
 	}, [workspacePath]);
-
-	// Using full highlight.js build; no manual registration needed
 
 	// Accent color based on content
 	const accentColor = useMemo(() => {
@@ -663,8 +654,6 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		setHasError(false);
 
 		try {
-			console.log("Executing code in CodeCell:", code);
-
 			// Use CellExecutionService instead of direct API call
 			const result = await cellExecutionService.executeCell(
 				executionId,
@@ -730,7 +719,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		}
 	};
 
-    const askChatToEditSelection = () => {
+	const askChatToEditSelection = () => {
 		let selectedText = "";
 		// Default selection bounds assume entire code
 		let selectionStart = 0;
@@ -787,21 +776,34 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 			: "";
 		const cellSuffix = typeof cellIndex === "number" ? `#${cellIndex + 1}` : "";
 		const mention = `@${relPath}${cellSuffix} lines ${startLine}-${endLine}`;
+		try {
+			// 1) Fire a rich edit-selection event so Chat pre-fills and
+			//    sets codeEditContext for inline edit in Agent mode
+			const editEvt = new CustomEvent("chat-edit-selection", {
+				detail: {
+					filePath: filePath || undefined,
+					cellIndex: typeof cellIndex === "number" ? cellIndex : undefined,
+					language,
+					selectedText,
+					fullCode: code,
+					selectionStart,
+					selectionEnd,
+				},
+			});
+			window.dispatchEvent(editEvt);
 
-        try {
-            // Insert only a mention so Chat uses the #cell and line range context
-            // without duplicating code in the composer
-            const mentionEvt = new CustomEvent("chat-insert-mention", {
-                detail: {
-                    alias: mention,
-                    filePath: filePath || undefined,
-                },
-            });
-            window.dispatchEvent(mentionEvt);
-        } catch (_) {
-            // ignore
-        }
-    };
+			// 2) Also insert a lightweight mention for display/context
+			const mentionEvt = new CustomEvent("chat-insert-mention", {
+				detail: {
+					alias: mention,
+					filePath: filePath || undefined,
+				},
+			});
+			window.dispatchEvent(mentionEvt);
+		} catch (_) {
+			// ignore
+		}
+	};
 
 	const insertCellMentionIntoChat = () => {
 		try {
@@ -818,7 +820,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		}
 	};
 
-    const addOutputToChat = () => {
+	const addOutputToChat = () => {
 		try {
 			const event = new CustomEvent("chat-add-output", {
 				detail: {
@@ -834,25 +836,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		} catch {
 			// ignore
 		}
-    };
-
-    // Global keyboard shortcut for Add-to-Chat (Cmd+L on macOS, Ctrl+L on others)
-    useEffect(() => {
-        const handler = (e: KeyboardEvent) => {
-            const isMac = navigator.platform.toLowerCase().includes("mac");
-            const trigger = (isMac ? e.metaKey : e.ctrlKey) && e.key.toLowerCase() === "l";
-            if (!trigger) return;
-            // Only handle when this cell editor or markdown textarea has focus
-            const editorHasFocus = !!(monacoEditorRef.current?.hasTextFocus?.());
-            const mdHasFocus = textareaRef.current === (document.activeElement as any);
-            if (!editorHasFocus && !mdHasFocus) return;
-            e.preventDefault();
-            e.stopPropagation();
-            askChatToEditSelection();
-        };
-        window.addEventListener("keydown", handler, true);
-        return () => window.removeEventListener("keydown", handler, true);
-    }, [code, language]);
+	};
 
 	const fixErrorWithChat = () => {
 		try {
@@ -884,6 +868,33 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 		}
 	}, [code]);
 
+	// Global keyboard shortcut for Add-to-Chat (Cmd+L on macOS, Ctrl+L on others)
+	useEffect(() => {
+		const handler = (e: KeyboardEvent) => {
+			const isMac = navigator.platform.toLowerCase().includes("mac");
+			const trigger =
+				(isMac ? e.metaKey : e.ctrlKey) && e.key.toLowerCase() === "l";
+			if (!trigger) return;
+			// Only handle when this cell editor or markdown textarea has focus
+			const editorHasFocus = !!monacoEditorRef.current?.hasTextFocus?.();
+			const mdHasFocus =
+				textareaRef.current === (document.activeElement as any);
+			if (!editorHasFocus && !mdHasFocus) return;
+			e.preventDefault();
+			e.stopPropagation();
+			askChatToEditSelection();
+		};
+		window.addEventListener("keydown", handler, true);
+		return () => window.removeEventListener("keydown", handler, true);
+	}, [code, language]);
+
+	// Sync local editor state when parent updates initialCode (e.g., after external edits)
+	useEffect(() => {
+		if (initialCode !== code) {
+			setCode(initialCode);
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [initialCode]);
 	return (
 		<CellContainer $accentColor={accentColor}>
 			<CellHeader>
@@ -944,10 +955,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 								)}
 							</ActionButton>
 							{isExecuting && (
-								<ActionButton
-									$variant="secondary"
-									onClick={stopExecution}
-								>
+								<ActionButton $variant="secondary" onClick={stopExecution}>
 									<FiSquare size={12} /> Stop
 								</ActionButton>
 							)}
@@ -1092,14 +1100,15 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 						/>
 					</CellBody>
 					{output && (
-						<OutputRenderer
-							output={output}
-							hasError={hasError}
-							onAddOutputToChat={addOutputToChat}
-							onFixErrorWithChat={hasError ? fixErrorWithChat : undefined}
-							language={language}
-							onClearOutput={clearOutput}
-						/>
+                    <OutputRenderer
+                        output={output}
+                        hasError={hasError}
+                        // Ask Chat from output should send both output and code of this cell
+                        onAddOutputToChat={addOutputToChat}
+                        onFixErrorWithChat={hasError ? fixErrorWithChat : undefined}
+                        language={language}
+                        onClearOutput={clearOutput}
+                    />
 					)}
 				</>
 			)}

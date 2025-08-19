@@ -428,11 +428,6 @@ General requirements:
 		request: CodeGenerationRequest,
 		stepId: string
 	): Promise<CodeGenerationResult> {
-		console.log(
-			"CodeGenerationService: Using fallback method for step:",
-			request.stepDescription
-		);
-
 		try {
 			const result = await this.backendClient.generateCodeFix({
 				prompt: request.stepDescription,
