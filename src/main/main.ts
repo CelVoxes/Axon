@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { app, BrowserWindow, ipcMain, shell, dialog, Menu } from "electron";
+import { autoUpdater } from "electron-updater";
 import { spawn, ChildProcess } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
@@ -97,6 +98,7 @@ export class AxonApp {
 		this.workspaceEnvironmentService = new WorkspaceEnvironmentService();
 		
 		this.initializeApp();
+		this.setupAutoUpdater();
 	}
 
 	private initializeApp() {
@@ -116,6 +118,11 @@ export class AxonApp {
 					
 					this.setupIpcHandlers();
 					this.createMenu();
+					
+					// Check for updates after app is ready
+					setTimeout(() => {
+						this.checkForUpdates();
+					}, 5000); // Check for updates 5 seconds after startup
 				} catch (error) {
 					console.error("Error during app initialization:", error);
 				}
@@ -2030,6 +2037,15 @@ export class AxonApp {
 			// Placeholder for BioRAG query functionality
 			return { success: false, error: "BioRAG service not implemented yet" };
 		});
+
+		// Auto-updater operations
+		ipcMain.handle("check-for-updates", () => {
+			this.checkForUpdates();
+		});
+
+		ipcMain.handle("install-update", () => {
+			this.installUpdate();
+		});
 	}
 
 	/**
@@ -2095,6 +2111,74 @@ export class AxonApp {
 				console.error("Error terminating Jupyter process:", error);
 			}
 		}
+	}
+
+	private setupAutoUpdater() {
+		// Configure auto-updater
+		autoUpdater.checkForUpdatesAndNotify();
+		
+		// Auto-updater event handlers
+		autoUpdater.on('checking-for-update', () => {
+			console.log('Checking for updates...');
+			this.mainWindow?.webContents.send('update-status', {
+				status: 'checking',
+				message: 'Checking for updates...'
+			});
+		});
+
+		autoUpdater.on('update-available', (info) => {
+			console.log('Update available:', info.version);
+			this.mainWindow?.webContents.send('update-status', {
+				status: 'available',
+				message: `Update ${info.version} is available`,
+				version: info.version
+			});
+		});
+
+		autoUpdater.on('update-not-available', () => {
+			console.log('No updates available');
+			this.mainWindow?.webContents.send('update-status', {
+				status: 'not-available',
+				message: 'You are running the latest version'
+			});
+		});
+
+		autoUpdater.on('error', (err) => {
+			console.error('Auto-updater error:', err);
+			this.mainWindow?.webContents.send('update-status', {
+				status: 'error',
+				message: 'Update check failed',
+				error: err.message
+			});
+		});
+
+		autoUpdater.on('download-progress', (progressObj) => {
+			const message = `Downloaded ${Math.round(progressObj.percent)}%`;
+			console.log(message);
+			this.mainWindow?.webContents.send('update-status', {
+				status: 'downloading',
+				message,
+				percent: progressObj.percent
+			});
+		});
+
+		autoUpdater.on('update-downloaded', () => {
+			console.log('Update downloaded');
+			this.mainWindow?.webContents.send('update-status', {
+				status: 'downloaded',
+				message: 'Update downloaded - restart to apply'
+			});
+		});
+	}
+
+	private checkForUpdates() {
+		if (app.isPackaged) {
+			autoUpdater.checkForUpdatesAndNotify();
+		}
+	}
+
+	private installUpdate() {
+		autoUpdater.quitAndInstall();
 	}
 }
 

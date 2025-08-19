@@ -24,14 +24,17 @@ export class AuthService {
 		if (auth) {
 			onAuthStateChanged(auth, async (user) => {
 				if (user) {
-					const idToken = await user.getIdToken(true);
 					try {
+						const idToken = await user.getIdToken(true);
 						localStorage.setItem(this.tokenKey, idToken);
 						if (user.email) localStorage.setItem(this.emailKey, user.email);
 						if (user.displayName)
 							localStorage.setItem(this.nameKey, user.displayName);
-					} catch {}
-					this.backend.setAuthToken(idToken);
+						this.backend.setAuthToken(idToken);
+					} catch (error) {
+						console.error("Failed to get ID token:", error);
+						this.logout();
+					}
 				} else {
 					this.logout();
 				}
@@ -49,6 +52,24 @@ export class AuthService {
 
 	isAuthenticated(): boolean {
 		return !!this.getStoredToken();
+	}
+
+	async getFreshToken(): Promise<string | null> {
+		const auth = FirebaseService.getAuth();
+		if (!auth || !auth.currentUser) {
+			return this.getStoredToken();
+		}
+
+		try {
+			const idToken = await auth.currentUser.getIdToken(true);
+			localStorage.setItem(this.tokenKey, idToken);
+			this.backend.setAuthToken(idToken);
+			return idToken;
+		} catch (error) {
+			console.error("Failed to refresh token:", error);
+			this.logout();
+			return null;
+		}
 	}
 
 	async loginWithFirebaseGooglePopup(): Promise<{

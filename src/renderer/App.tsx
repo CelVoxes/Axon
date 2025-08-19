@@ -4,6 +4,7 @@ import { Sidebar } from "./components/Sidebar/Sidebar";
 import { ChatPanel } from "./components/Chat/ChatPanel";
 import { MainContent } from "./components/MainContent/MainContent";
 import { StatusBar } from "./components/StatusBar/StatusBar";
+import { UpdateNotification } from "./components/UpdateNotification/UpdateNotification";
 import {
 	AppProvider,
 	useWorkspaceContext,
@@ -148,6 +149,7 @@ const AppContent: React.FC = () => {
 			</Layout.Body>
 
 			<StatusBar />
+			<UpdateNotification />
 		</Layout>
 	);
 };

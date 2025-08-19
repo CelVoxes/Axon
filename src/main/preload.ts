@@ -159,6 +159,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	stopFsWatch: (dirPath: string) =>
 		ipcRenderer.invoke("fs-watch-stop", dirPath),
 
+	// Auto-updater operations
+	checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
+	installUpdate: () => ipcRenderer.invoke("install-update"),
+	onUpdateStatus: (callback: (data: any) => void) => {
+		ipcRenderer.on("update-status", (_, data) => callback(data));
+	},
+
 	// Remove listeners
 	removeAllListeners: (channel: string) => {
 		ipcRenderer.removeAllListeners(channel);
@@ -278,6 +285,11 @@ export interface ElectronAPI {
 
 	onSetWorkspace: (callback: (workspacePath: string) => void) => void;
 	onTriggerOpenWorkspace: (callback: () => void) => void;
+
+	// Auto-updater operations
+	checkForUpdates: () => Promise<{ success: boolean; error?: string }>;
+	installUpdate: () => Promise<{ success: boolean; error?: string }>;
+	onUpdateStatus: (callback: (data: any) => void) => void;
 
 	removeAllListeners: (channel: string) => void;
 }

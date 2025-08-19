@@ -277,4 +277,24 @@ export const electronAPI = {
 	): Promise<{ success: boolean; error?: string }> {
 		return safeElectronAPICall<any>("sshStop", sessionId);
 	},
+
+	// Auto-updater operations
+	async checkForUpdates(): Promise<{ success: boolean; error?: string }> {
+		return safeElectronAPICall<any>("checkForUpdates");
+	},
+
+	async installUpdate(): Promise<{ success: boolean; error?: string }> {
+		return safeElectronAPICall<any>("installUpdate");
+	},
+
+	// Update status listener
+	onUpdateStatus(callback: (status: any) => void) {
+		try {
+			(window as any).electronAPI.onUpdateStatus((status: any) => {
+				if (typeof callback === "function") callback(status);
+			});
+		} catch (e) {
+			// ignore
+		}
+	},
 };

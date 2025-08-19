@@ -6,9 +6,7 @@ import {
 	useWorkspaceContext,
 } from "../../context/AppContext";
 import { BackendClient } from "../../services/BackendClient";
-import { SearchService } from "../../services/SearchService";
-import { SearchConfig } from "../../config/SearchConfig";
-import { useChatIntent } from "../../hooks/useChatIntent";
+import { useDatasetSearch } from "../../hooks/useDatasetSearch";
 import { findWorkspacePath } from "../../utils/WorkspaceUtils";
 import { DatasetSelectionModal } from "./DatasetSelectionModal";
 import { ChatMessage } from "./ChatMessage";
@@ -113,49 +111,12 @@ interface ChatPanelProps {
 	className?: string;
 }
 
-// Helper function for simple text edits that don't require AI
-function trySimpleEdit(userMessage: string, content: string): { handled: false } | { handled: true; newContent: string; description: string } {
-	const msg = userMessage.toLowerCase().trim();
-	console.log('trySimpleEdit - message:', msg);
-	console.log('trySimpleEdit - content:', JSON.stringify(content));
-	
-	// Remove item from list/array
-	if (msg.includes('remove') && msg.includes('scipy')) {
-		// Handle Python list format: ["item1","item2","scipy","item3"]
-		// More flexible regex to handle different quote styles and spacing
-		let newContent = content
-			.replace(/,?\s*["']scipy["']\s*,?/gi, '') // Remove "scipy" or 'scipy' with optional commas
-			.replace(/,\s*]/g, ']') // Clean up trailing comma before ]
-			.replace(/\[\s*,/g, '[') // Clean up leading comma after [
-			.replace(/,\s*,/g, ','); // Clean up double commas
-		
-		console.log('trySimpleEdit - newContent:', JSON.stringify(newContent));
-		
-		if (newContent !== content) {
-			return {
-				handled: true,
-				newContent,
-				description: 'Removed "scipy" from list'
-			};
-		} else {
-			console.log('trySimpleEdit - no change detected');
-		}
-	}
-	
-	// Add more simple edit patterns here as needed
-	// e.g., replace X with Y, add item to list, etc.
-	
-	return { handled: false } as const;
-}
-
 // Cache for notebook paths to avoid repeated file system searches
 const notebookPathCache = new Map<string, string>();
 // Cache for parsed notebook content to avoid repeated file reads
 const notebookContentCache = new Map<string, any>();
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
-	const { isSuggestionsRequest, shouldSearchForDatasets, isAnalysisRequest } =
-		useChatIntent();
 	const { state: analysisState, dispatch: analysisDispatch } =
 		useAnalysisContext();
 	const { state: uiState, dispatch: uiDispatch } = useUIContext();
@@ -165,13 +126,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [progressMessage, setProgressMessage] = useState("");
 	const [isProcessing, setIsProcessing] = useState(false);
 	const [progressData, setProgressData] = useState<any>(null);
-	const [searchProgress, setSearchProgress] = useState<any>(null);
-	const [showSearchDetails, setShowSearchDetails] = useState(false);
 	const [validationErrors, setValidationErrors] = useState<string[]>([]);
-	const [validationWarnings, setValidationWarnings] = useState<string[]>([]);
 	const [validationSuccessMessage, setValidationSuccessMessage] =
 		useState<string>("");
-	const [availableDatasets, setAvailableDatasets] = useState<any[]>([]);
 	// Suggestions disabled per request
 	const [suggestionButtons, setSuggestionButtons] = useState<string[]>([]);
 	const [virtualEnvStatus, setVirtualEnvStatus] = useState("");
@@ -182,10 +139,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	);
 	const inputValueRef = React.useRef<string>("");
 	const [agentInstance, setAgentInstance] = useState<any>(null);
-	const [showDatasetModal, setShowDatasetModal] = useState(false);
 	const [showVirtualEnvLog, setShowVirtualEnvLog] = useState(false);
 	const [isAutoExecuting, setIsAutoExecuting] = useState(false);
-	const [selectedDatasets, setSelectedDatasets] = useState<any[]>([]);
 	const [currentSuggestions, setCurrentSuggestions] =
 		useState<DataTypeSuggestions | null>(null);
 	const localRegistryRef = useRef<LocalDatasetRegistry | null>(null);
@@ -299,7 +254,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 				const prefix = `Please edit the selected ${lang} code.\n`;
 				const fenced = "\n```" + lang + "\n" + snippet + "\n```\n";
-				setInputValue(prefix + fenced);
+				const prefill = prefix + fenced;
+				setInputValue(prefill);
+				inputValueRef.current = prefill;
 				// Save edit context for in-place update on send
 				setCodeEditContext({
 					filePath: detail.filePath,
@@ -328,9 +285,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			const lang: string = String(d.language || "python").toLowerCase();
 			const code: string = String(d.code || "");
 			const out: string = String(d.output || "");
-			const prefix = `Please review the following ${lang} cell output and fix problems.`;
+			const prefix = `Please review the following ${lang} cell output and solve the problems.`;
 			const body = `\n\nOutput:\n\n\`\`\`text\n${out}\n\`\`\`\n\nCode:\n\n\`\`\`${lang}\n${code}\n\`\`\`\n`;
-			setInputValue(prefix + body);
+			const prefill = prefix + body;
+			setInputValue(prefill);
+			inputValueRef.current = prefill;
 			setCodeEditContext({
 				filePath: d.filePath,
 				cellIndex: d.cellIndex,
@@ -353,7 +312,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			const out: string = String(d.output || "");
 			const prefix = `The following ${lang} cell failed. Fix the code to resolve the error. Return only the corrected code.`;
 			const body = `\n\nError Output:\n\n\`\`\`text\n${out}\n\`\`\`\n\nOriginal Code:\n\n\`\`\`${lang}\n${code}\n\`\`\`\n`;
-			setInputValue(prefix + body);
+			const prefill = prefix + body;
+			setInputValue(prefill);
+			inputValueRef.current = prefill;
 			setCodeEditContext({
 				filePath: d.filePath,
 				cellIndex: d.cellIndex,
@@ -406,10 +367,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [backendClient, setBackendClient] = useState<BackendClient | null>(
 		null
 	);
-	const searchService = React.useMemo(() => {
-		return backendClient ? new SearchService(backendClient) : null;
-	}, [backendClient]);
-
 	useEffect(() => {
 		// Get the correct backend URL from main process
 		const initBackendClient = async () => {
@@ -429,24 +386,42 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		initBackendClient();
 	}, []);
 
+	// Dataset search functionality
+	const [datasetSearchState, datasetSearchActions] = useDatasetSearch(
+		backendClient,
+		(progress) => {
+			setProgressData(progress);
+			// Hook handles search progress internally
+		}
+	);
+
+	// Destructure dataset search state and actions for easier access
+	const {
+		availableDatasets,
+		selectedDatasets,
+		isSearching: isDatasetSearching,
+		searchProgress: datasetSearchProgress,
+		showSearchDetails: showDatasetSearchDetails,
+		showDatasetModal,
+	} = datasetSearchState;
+
+	const {
+		searchForDatasets,
+		selectDatasets,
+		mergeSelectedDatasets,
+		clearSearch: clearDatasetSearch,
+		clearSelectedDatasets,
+		clearAvailableDatasets,
+		setSearchProgress: setDatasetSearchProgress,
+		setShowSearchDetails: setShowDatasetSearchDetails,
+		setShowDatasetModal,
+	} = datasetSearchActions;
+
 	// Analysis suggestions service
 	const suggestionsService = React.useMemo(() => {
 		if (!backendClient) return null;
 		return new AnalysisOrchestrationService(backendClient);
 	}, [backendClient]);
-
-	// Add welcome message on first load
-	// useEffect(() => {
-	// 	if (analysisState.messages.length === 0) {
-	// 		analysisDispatch({
-	// 			type: "ADD_MESSAGE",
-	// 			payload: {
-	// 				content: ``,
-	// 				isUser: false,
-	// 			},
-	// 		});
-	// 	}
-	// }, [analysisState.messages.length, analysisDispatch]);
 
 	// Listen for virtual environment status updates
 	useEffect(() => {
@@ -567,7 +542,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 			// Clear any lingering validation banners when a new generation starts
 			setValidationErrors([]);
-			setValidationWarnings([]);
 			setValidationSuccessMessage("");
 
 			// Create new streaming message
@@ -584,7 +558,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				},
 			});
 
-			// Mark global streaming as active
+			// Update progress + mark global streaming as active
+			setIsProcessing(true);
+			setProgressMessage(`Generating: ${stepDescription || "step"}`);
 			updateGlobalStreamingFlag();
 		};
 
@@ -628,6 +604,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				// Clean up
 				activeStreams.current.delete(stepId);
 				updateGlobalStreamingFlag();
+				if (activeStreams.current.size === 0) {
+					setIsProcessing(false);
+					setProgressMessage("");
+				}
 			}
 		};
 
@@ -651,6 +631,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				});
 				activeStreams.current.delete(stepId);
 				updateGlobalStreamingFlag();
+				if (activeStreams.current.size === 0) {
+					setIsProcessing(false);
+					setProgressMessage("");
+				}
 			}
 		};
 
@@ -662,7 +646,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			// Set validation errors for display (UI will show them)
 			setValidationSuccessMessage("");
 			setValidationErrors(errors);
-			setValidationWarnings(warnings);
 
 			// Also post a chat message summarizing the errors with optional diff
 			try {
@@ -730,7 +713,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			const { message } = customEvent.detail || {};
 			// Clear any previous errors/warnings when lints pass
 			setValidationErrors([]);
-			setValidationWarnings([]);
 			setValidationSuccessMessage(message || "No linter errors found");
 			addMessage(message || "No linter errors found", false);
 		};
@@ -794,13 +776,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	useEffect(() => {
 		scrollToBottomImmediate();
 	}, [analysisState.messages]);
-
-	// Component lifecycle logging (disabled for performance)
-	// useEffect(() => {
-	// 	return () => {
-	// 		console.log(`ChatPanel: Component unmounted with ID: ${componentId}`);
-	// 	};
-	// }, [componentId]);
 
 	const scrollToBottomImmediate = useCallback(() => {
 		const el = chatContainerRef.current;
@@ -868,85 +843,28 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		[analysisDispatch, scrollToBottomImmediate]
 	);
 
-	const updateMessage = useCallback(
-		(
-			messageId: string,
-			updates: {
-				content?: string;
-				status?: "pending" | "completed" | "failed";
-				isStreaming?: boolean;
-				code?: string;
-				codeLanguage?: string;
-				codeTitle?: string;
-			}
-		) => {
-			analysisDispatch({
-				type: "UPDATE_MESSAGE",
-				payload: {
-					id: messageId,
-					updates,
-				},
-			});
-			scrollToBottomImmediate();
-		},
-		[analysisDispatch, scrollToBottomImmediate]
-	);
-
-	const updateProgressMessage = (message: string) => {
-		setProgressMessage(message);
-	};
-
-	const updateProgressData = (data: {
-		message: string;
-		progress: number;
-		step: string;
-		datasetsFound?: number;
-		currentTerm?: string;
-	}) => {
-		setProgressData(data);
-		setSearchProgress(data);
-		// Ensure search details are shown when we get progress updates
-		if (!showSearchDetails) {
-			setShowSearchDetails(true);
-		}
-	};
-
-	// Merge datasets by id
-	const mergeSelectedDatasets = useCallback((existing: any[], added: any[]) => {
-		const byId = new Map<string, any>();
-		existing.forEach((d) => d?.id && byId.set(d.id, d));
-		added.forEach((d) => d?.id && byId.set(d.id, d));
-		return Array.from(byId.values());
+	// Helper functions to eliminate duplications
+	const resetLoadingState = useCallback(() => {
+		setIsLoading(false);
+		setIsProcessing(false);
+		setProgressMessage("");
 	}, []);
 
-	// File/folder picker to attach local data
-	const handleAttachLocalData = useCallback(async () => {
-		try {
-			const result = await electronAPI.showOpenDialog({
-				title: "Select data files or folders",
-				properties: ["openFile", "openDirectory", "multiSelections"],
-			});
-			if (!result.success || result.data?.canceled) return;
-			const filePaths: string[] = result.data.filePaths || [];
-			if (!filePaths.length) return;
-			const registry = localRegistryRef.current;
-			if (!registry) return;
-			const added: LocalDatasetEntry[] = [];
-			for (const p of filePaths) {
-				// eslint-disable-next-line no-await-in-loop
-				const entry = await registry.addFromPath(p);
-				if (entry) added.push(entry);
+	const validateBackendClient = useCallback(
+		(customErrorMessage?: string): boolean => {
+			if (!backendClient) {
+				addMessage(
+					customErrorMessage ||
+						"❌ Backend client not initialized. Please wait a moment and try again.",
+					false
+				);
+				resetLoadingState();
+				return false;
 			}
-			if (added.length > 0) {
-				setSelectedDatasets((prev) => mergeSelectedDatasets(prev, added));
-				const names = added.map((d) => d.title).join(", ");
-				addMessage(`Attached local data: ${names}`, false);
-			}
-		} catch (e) {
-			console.error("Attach local data failed", e);
-			addMessage("Failed to attach local data", false);
-		}
-	}, [addMessage, mergeSelectedDatasets]);
+			return true;
+		},
+		[backendClient, addMessage, resetLoadingState]
+	);
 
 	// Resolve @mentions like @data.csv to indexed local datasets
 	const resolveAtMentions = useCallback((text: string): LocalDatasetEntry[] => {
@@ -977,6 +895,341 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			.replace(/\s*```\s*$/g, "")
 			.trim();
 	};
+
+	// Helper: compute selection range from a user message requesting specific line(s)
+	const computeSelectionFromMessage = (
+		fullCode: string,
+		userMessage: string
+	): {
+		selStart: number;
+		selEnd: number;
+		startLine: number;
+		endLine: number;
+		withinSelection: string;
+	} => {
+		let selStart = 0;
+		let selEnd = fullCode.length;
+		let startLine = 1;
+		let endLine = (fullCode.match(/\n/g)?.length ?? 0) + 1;
+		try {
+			const lm =
+				userMessage.match(/lines?\s+(\d+)(?:\s*-\s*(\d+))?/i) ||
+				userMessage.match(/line\s+(\d+)/i);
+			if (lm) {
+				const s = Math.max(1, parseInt(lm[1] || "1", 10));
+				const e = Math.max(s, parseInt(lm[2] || String(s), 10));
+				const lineStartPositions: number[] = [0];
+				for (let i = 0; i < fullCode.length; i++) {
+					if (fullCode[i] === "\n") lineStartPositions.push(i + 1);
+				}
+				startLine = Math.min(s, lineStartPositions.length);
+				endLine = Math.min(e, lineStartPositions.length);
+				selStart = lineStartPositions[startLine - 1] ?? 0;
+				selEnd =
+					lineStartPositions[endLine] !== undefined
+						? lineStartPositions[endLine]
+						: fullCode.length;
+			}
+		} catch (_) {}
+		const withinSelection = fullCode.slice(selStart, selEnd);
+		return { selStart, selEnd, startLine, endLine, withinSelection };
+	};
+
+	// Helper: unified diff for selection updates
+	const buildUnifiedDiff = (
+		oldText: string,
+		newText: string,
+		file: string,
+		oldStart: number
+	) => {
+		const oldLines = oldText.split("\n");
+		const newLines = newText.split("\n");
+		const m = oldLines.length;
+		const n = newLines.length;
+		const lcs: number[][] = Array.from({ length: m + 1 }, () =>
+			Array(n + 1).fill(0)
+		);
+		for (let i = 1; i <= m; i++) {
+			for (let j = 1; j <= n; j++) {
+				if (oldLines[i - 1] === newLines[j - 1]) {
+					lcs[i][j] = lcs[i - 1][j - 1] + 1;
+				} else {
+					lcs[i][j] = Math.max(lcs[i - 1][j], lcs[i][j - 1]);
+				}
+			}
+		}
+		const ops: Array<{ t: " " | "+" | "-"; s: string }> = [];
+		let i = m,
+			j = n;
+		while (i > 0 || j > 0) {
+			if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+				ops.push({ t: " ", s: oldLines[i - 1] });
+				i--;
+				j--;
+			} else if (j > 0 && (i === 0 || lcs[i][j - 1] >= lcs[i - 1][j])) {
+				ops.push({ t: "+", s: newLines[j - 1] });
+				j--;
+			} else if (i > 0) {
+				ops.push({ t: "-", s: oldLines[i - 1] });
+				i--;
+			}
+		}
+		ops.reverse();
+		const oldCount = m;
+		const newCount = n;
+		const newStart = oldStart; // selection replaced in place
+		const headerA = `--- a/${file}:${oldStart}-${oldStart + oldCount - 1}`;
+		const headerB = `+++ b/${file}:${newStart}-${newStart + newCount - 1}`;
+		const hunk = `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`;
+		const body = ops.map((o) => `${o.t}${o.s}`).join("\n");
+		return `${headerA}\n${headerB}\n${hunk}\n${body}`;
+	};
+
+	// Shared notebook edit executor to avoid duplication between cellMention and selection-based edits
+	const performNotebookEdit = useCallback(
+		async (args: {
+			filePath: string;
+			cellIndex: number;
+			language: string;
+			fullCode: string;
+			userMessage: string;
+			selection?: {
+				selStart: number;
+				selEnd: number;
+				startLine: number;
+				endLine: number;
+				withinSelection: string;
+			};
+		}) => {
+			if (!backendClient) {
+				addMessage(
+					"Backend not ready to edit code. Please try again in a moment.",
+					false
+				);
+				return;
+			}
+			const {
+				filePath,
+				cellIndex,
+				language,
+				fullCode,
+				userMessage,
+				selection,
+			} = args;
+
+			const wsPath =
+				findWorkspacePath({
+					filePath,
+					currentWorkspace: workspaceState.currentWorkspace || undefined,
+				}) || "";
+			const notebookService = new NotebookService({ workspacePath: wsPath });
+
+			const lang = (language || "python").toLowerCase();
+			const { selStart, selEnd, startLine, endLine, withinSelection } =
+				selection || computeSelectionFromMessage(fullCode, userMessage);
+			const fileName = filePath.split("/").pop() || filePath;
+
+			addMessage(
+				`Editing plan:\n\n- **Target**: cell ${cellIndex} in \`${fileName}\`\n- **Scope**: replace lines ${startLine}-${endLine} of the selected code\n- **Process**: I will generate the revised snippet (streaming below), then apply it to the notebook and confirm the save.`,
+				false
+			);
+			const task =
+				`Edit the following ${lang} code according to the user's instruction. ` +
+				`CRITICAL RULES:\n` +
+				`1. Return ONLY the exact replacement for lines ${startLine}-${endLine}\n` +
+				`2. Do NOT include explanations or markdown formatting\n` +
+				`3. Do NOT add imports, package installs, magic commands, shebangs, or globals\n` +
+				`4. Preserve the number of lines unless removing content; match indentation and style\n` +
+				`5. Output ONLY the modified code as plain text`;
+
+			let streamedResponse = "";
+			const streamingMessageId = `edit-${Date.now()}`;
+			analysisDispatch({
+				type: "ADD_MESSAGE",
+				payload: {
+					id: streamingMessageId,
+					content: "Streaming edited code…",
+					isUser: false,
+					isStreaming: true,
+					code: "",
+					codeLanguage: lang,
+					codeTitle: "Edited snippet",
+				},
+			});
+
+			try {
+				const base = fullCode;
+				const start = selStart;
+				const end = selEnd;
+				let lastCellUpdate = 0;
+				await backendClient!.generateCodeStream(
+					{
+						task_description: `${task}\n\nUser instruction: ${userMessage}\n\nOriginal code (lines ${startLine}-${endLine}):\n${withinSelection}\n\nIMPORTANT: The original has ${
+							withinSelection.split("\n").length
+						} lines. Return EXACTLY ${
+							withinSelection.split("\n").length
+						} modified lines (no imports, no extra lines). Example format:\nline1\nline2\n\nYour response:`,
+						language: lang,
+						context: "Notebook code edit-in-place",
+						notebook_edit: true,
+					},
+					(chunk: string) => {
+						streamedResponse += chunk;
+						const cleanedSnippet = stripCodeFences(streamedResponse);
+
+						// Update chat message with the edited snippet so far
+						analysisDispatch({
+							type: "UPDATE_MESSAGE",
+							payload: {
+								id: streamingMessageId,
+								updates: {
+									content: `Streaming edited code…`,
+									code: cleanedSnippet,
+									codeLanguage: lang,
+									codeTitle: "Edited snippet",
+									isStreaming: true,
+								},
+							},
+						});
+
+						// Throttled live update of the notebook cell so changes are visible during streaming
+						const now = Date.now();
+						if (now - lastCellUpdate > 500) {
+							const partialNewCode =
+								base.substring(0, start) + cleanedSnippet + base.substring(end);
+							notebookService
+								.updateCellCode(filePath, cellIndex, partialNewCode)
+								.catch(() => {});
+							lastCellUpdate = now;
+						}
+					}
+				);
+			} catch (e) {
+				addMessage(
+					`Code edit failed: ${e instanceof Error ? e.message : String(e)}`,
+					false
+				);
+				return;
+			} finally {
+				analysisDispatch({
+					type: "UPDATE_MESSAGE",
+					payload: { id: streamingMessageId, updates: { isStreaming: false } },
+				});
+			}
+
+			// Use the streamed edited snippet; fallback to JSON edits if the model returned them
+			const base = fullCode;
+			const start = selStart;
+			const end = selEnd;
+			const cleanedFinal = stripCodeFences(streamedResponse);
+			const jsonFallback = parseJsonEdits(streamedResponse);
+			let newSelection = jsonFallback
+				? applyLineEdits(withinSelection, jsonFallback)
+				: cleanedFinal;
+
+			// Guardrail: strip newly introduced imports not present in original selection
+			try {
+				const importRe = /^(?:\s*from\s+\S+\s+import\s+|\s*import\s+\S+)/;
+				const originalLines = withinSelection.split(/\r?\n/);
+				const originalImportSet = new Set(
+					originalLines
+						.filter((l) => importRe.test(l))
+						.map((l) => l.trim())
+				);
+				const newLines = newSelection.split(/\r?\n/);
+				const filtered = newLines.filter((l) => {
+					if (!importRe.test(l)) return true;
+					return originalImportSet.has(l.trim());
+				});
+				if (filtered.length !== newLines.length) {
+					newSelection = filtered.join("\n");
+				}
+			} catch (_) {}
+			const newCode =
+				base.substring(0, start) + newSelection + base.substring(end);
+
+			// Validate generated code when available
+			let validatedCode = newCode;
+			let hasValidationIssues = false;
+			try {
+				if (backendClient?.validateCode) {
+					const validationResult = await backendClient.validateCode({
+						code: newCode,
+					});
+					if (!validationResult.is_valid && validationResult.linted_code) {
+						validatedCode = validationResult.linted_code;
+						hasValidationIssues = true;
+						const issues = validationResult.errors || [];
+						if (issues.length > 0) {
+							addMessage(
+								`⚠️ Auto-fixed ${issues.length} validation issue(s):\n\n${issues
+									.slice(0, 3)
+									.map((e: string) => `• ${e}`)
+									.join("\n")}${issues.length > 3 ? "\n• ..." : ""}`,
+								false
+							);
+						}
+					}
+				}
+			} catch (_) {}
+
+			await notebookService.updateCellCode(filePath, cellIndex, validatedCode);
+
+			// Short confirmation window; fallback to optimistic success
+			let updateDetail: any = null;
+			try {
+				const timeoutMs = 2000;
+				const detail = await Promise.race([
+					EventManager.waitForEvent<any>(
+						"notebook-cell-updated",
+						timeoutMs
+					).then((d) =>
+						d?.filePath === filePath && d?.cellIndex === cellIndex ? d : null
+					),
+					new Promise((resolve) =>
+						setTimeout(() => resolve({ success: true, immediate: true }), 100)
+					),
+				]);
+				updateDetail = detail || { success: true, immediate: true };
+			} catch (_) {
+				updateDetail = { success: true, immediate: true };
+			}
+
+			const originalLineCount = withinSelection.split("\n").length;
+			const newLineCount = newSelection.split("\n").length;
+			const statusText =
+				updateDetail?.success === false
+					? "save failed"
+					: updateDetail?.immediate
+					? "applied"
+					: "saved";
+			const validationText = hasValidationIssues ? " (auto-fixed)" : "";
+			const summary = `Applied notebook edit:\n\n- **Cell**: ${cellIndex}\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Status**: ${statusText}${validationText}`;
+
+			// Use validated selection text for diff if validation occurred
+			const finalSelection = hasValidationIssues
+				? validatedCode.substring(
+						start,
+						start +
+							(validatedCode.length - newCode.length) +
+							newSelection.length
+				  )
+				: newSelection;
+			const unifiedDiff = buildUnifiedDiff(
+				withinSelection,
+				finalSelection,
+				fileName,
+				startLine
+			);
+			addMessage(`${summary}\n\n\`\`\`diff\n${unifiedDiff}\n\`\`\``, false);
+		},
+		[
+			backendClient,
+			addMessage,
+			analysisDispatch,
+			workspaceState.currentWorkspace,
+		]
+	);
 
 	const parseJsonEdits = (text: string): LineEdit[] | null => {
 		try {
@@ -1021,7 +1274,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					];
 				}
 			}
-		} catch (_) {
+		} catch {
 			// ignore
 		}
 		return null;
@@ -1048,20 +1301,41 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	};
 
 	const handleSendMessage = useCallback(async () => {
-		console.time('🚀 handleSendMessage total');
 		if (!inputValueRef.current.trim() || isLoading) return;
 
 		// Clear lingering validation status for a fresh conversation cycle
 		setValidationErrors([]);
-		setValidationWarnings([]);
 		setValidationSuccessMessage("");
 
-		console.time('🚀 Initial setup');
 		const userMessage = inputValueRef.current.trim();
-		console.timeEnd('🚀 Initial setup');
 
-		// Ask mode: simple Q&A, no environment creation/editing/search
+		// Ask mode: If a code selection/context is present, do an edit-in-place; otherwise do Q&A
 		if (chatMode === "Ask") {
+			// Prefer notebook edit when Ask Chat is invoked from code/output context
+			if (codeEditContext && codeEditContext.filePath && codeEditContext.cellIndex !== undefined) {
+				const lang = (codeEditContext.language || "python").toLowerCase();
+				const filePath = codeEditContext.filePath;
+				const cellIndex = codeEditContext.cellIndex;
+				const fullCode = codeEditContext.fullCode ?? "";
+				const selStart = Math.max(0, codeEditContext.selectionStart ?? 0);
+				const selEnd = Math.min(fullCode.length, codeEditContext.selectionEnd ?? selStart);
+				const beforeSelection = fullCode.slice(0, selStart);
+				const withinSelection = fullCode.slice(selStart, selEnd);
+				const startLine = (beforeSelection.match(/\n/g)?.length ?? 0) + 1;
+				const endLine = startLine + (withinSelection.match(/\n/g)?.length ?? 0);
+
+				await performNotebookEdit({
+					filePath,
+					cellIndex,
+					language: lang,
+					fullCode,
+					userMessage,
+					selection: { selStart, selEnd, startLine, endLine, withinSelection },
+				});
+				setCodeEditContext(null);
+				return;
+			}
+
 			addMessage(userMessage, true);
 			setInputValue("");
 			setIsLoading(true);
@@ -1069,11 +1343,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 			let isMounted = true;
 			try {
-				if (!backendClient) {
-					addMessage(
-						"Backend client not initialized. Please wait a moment and try again.",
-						false
-					);
+				if (!validateBackendClient()) {
 					return;
 				}
 				// Build lightweight context from recent messages, including any code snippets
@@ -1089,7 +1359,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					})
 					.filter(Boolean)
 					.join("\n\n");
-				const answer = await backendClient.askQuestion({
+				const answer = await backendClient!.askQuestion({
 					question: userMessage,
 					context,
 				});
@@ -1106,9 +1376,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				}
 			} finally {
 				if (isMounted) {
-					setIsLoading(false);
-					setIsProcessing(false);
-					setProgressMessage("");
+					resetLoadingState();
 				}
 			}
 			return;
@@ -1116,7 +1384,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		// Resolve @mentions to local datasets and auto-attach (Agent mode only)
 		const mentionDatasets = resolveAtMentions(userMessage);
 
-		console.time('🚀 Parse tokens');
 		// Additionally resolve direct workspace/absolute path mentions like @data/file.csv or @path/to/folder
 		const tokens = Array.from(userMessage.matchAll(/@([^\s@]+)/g)).map(
 			(m) => m[1]
@@ -1125,7 +1392,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		const hashTokens = Array.from(userMessage.matchAll(/#(all|\d+)/gi)).map(
 			(m) => m[1]
 		);
-		console.timeEnd('🚀 Parse tokens');
 		const workspaceResolved: LocalDatasetEntry[] = [];
 		let cellMentionContext: null | {
 			filePath: string;
@@ -1133,6 +1399,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			language: string;
 			code: string;
 		} = null;
+
 		// If user referenced cells with #N/#all, resolve them against the active notebook now
 		if (hashTokens.length > 0) {
 			try {
@@ -1175,17 +1442,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						}
 					}
 				}
-			} catch (_) {
-				// ignore failures
+			} catch {
+				// ignore
 			}
 		}
 
-		if (tokens.length > 0 || hashTokens.length > 0) {
-			console.time('📝 Processing mentions');
+		// Resolve only @-style tokens and explicit notebook path references here.
+		// Avoid re-processing #N/#all hash tokens which were already handled above.
+		if (tokens.length > 0) {
 			const wsRoot = workspaceState.currentWorkspace || "";
 			const registry = localRegistryRef.current;
 			for (const token of tokens) {
-				console.time(`📝 Processing token: ${token}`);
 				// Heuristic: consider anything with a slash or starting with / as a path
 				const looksLikePath = token.startsWith("/") || token.includes("/");
 				// Handle notebook cell reference like path.ipynb#3
@@ -1201,36 +1468,38 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						} else if (wsRoot) {
 							// Smart notebook resolution (cached)
 							candidatePath = notebookPathCache.get(pathPart) || "";
-							console.log(`💾 Cache lookup for ${pathPart}: ${candidatePath || 'NOT FOUND'}`);
-							
-							// TEMP: Clear bad cache entries
-							if (candidatePath && candidatePath.includes('/Demo-2/analysis_1755536986367.ipynb')) {
-								console.log(`🗑️ Clearing bad cached path: ${candidatePath}`);
-								notebookPathCache.delete(pathPart);
-								candidatePath = "";
-							}
-							
+							console.log(
+								`💾 Cache lookup for ${pathPart}: ${
+									candidatePath || "NOT FOUND"
+								}`
+							);
+
 							if (!candidatePath) {
-								console.time(`⚡ Fast file lookup: ${pathPart}`);
-								
 								// FAST: Check if it's the currently active file
-								const activeFile = (workspaceState as any).activeFile as string | null;
+								const activeFile = (workspaceState as any).activeFile as
+									| string
+									| null;
 								console.log(`⚡ Active file: ${activeFile}`);
 								console.log(`⚡ Looking for: ${pathPart}`);
-								
+
 								if (activeFile && activeFile.endsWith(pathPart)) {
 									candidatePath = activeFile;
 									console.log(`⚡ Using active file: ${candidatePath}`);
 								} else if (activeFile) {
 									// FAST: Try current directory (where active file is)
-									const activeDir = activeFile.split('/').slice(0, -1).join('/');
+									const activeDir = activeFile
+										.split("/")
+										.slice(0, -1)
+										.join("/");
 									const testPath = `${activeDir}/${pathPart}`;
 									console.log(`⚡ Testing same directory: ${testPath}`);
 									try {
 										const info = await window.electronAPI.getFileInfo(testPath);
-										if (info && 'size' in info) {
+										if (info && "size" in info) {
 											candidatePath = testPath;
-											console.log(`⚡ Found in active directory: ${candidatePath}`);
+											console.log(
+												`⚡ Found in active directory: ${candidatePath}`
+											);
 										} else {
 											console.log(`⚡ Not in active directory, info:`, info);
 										}
@@ -1241,15 +1510,21 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 									// FALLBACK: Try to find it by searching only the immediate subdirectories
 									console.log(`⚡ No active file, trying subdirectories...`);
 									try {
-										const directories = await window.electronAPI.listDirectory(wsRoot);
+										const directories = await window.electronAPI.listDirectory(
+											wsRoot
+										);
 										for (const dir of directories) {
 											if (dir.isDirectory) {
 												const testPath = `${dir.path}/${pathPart}`;
 												try {
-													const info = await window.electronAPI.getFileInfo(testPath);
-													if (info && 'size' in info) {
+													const info = await window.electronAPI.getFileInfo(
+														testPath
+													);
+													if (info && "size" in info) {
 														candidatePath = testPath;
-														console.log(`⚡ Found in subdirectory: ${candidatePath}`);
+														console.log(
+															`⚡ Found in subdirectory: ${candidatePath}`
+														);
 														break;
 													}
 												} catch (e) {
@@ -1261,14 +1536,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 										console.log(`⚡ Error listing directories:`, e);
 									}
 								}
-								
+
 								// FALLBACK: Only if we couldn't find it anywhere else
 								if (!candidatePath) {
 									candidatePath = `${wsRoot}/${pathPart}`;
 									console.log(`⚡ Using fallback path: ${candidatePath}`);
 								}
-								
-								console.timeEnd(`⚡ Fast file lookup: ${pathPart}`);
+
 								notebookPathCache.set(pathPart, candidatePath);
 							} else {
 								console.log(`📋 Using cached path: ${candidatePath}`);
@@ -1280,19 +1554,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								// Check cache first
 								let nb = notebookContentCache.get(candidatePath);
 								if (!nb) {
-									console.time(`📖 File read: ${candidatePath.split('/').pop()}`);
-									console.log(`📖 Reading file: ${candidatePath}`);
 									const fileContent = await window.electronAPI.readFile(
 										candidatePath
 									);
-									console.timeEnd(`📖 File read: ${candidatePath.split('/').pop()}`);
-									console.time(`⚙️ JSON parse: ${candidatePath.split('/').pop()}`);
 									nb = JSON.parse(fileContent);
-									console.timeEnd(`⚙️ JSON parse: ${candidatePath.split('/').pop()}`);
 									notebookContentCache.set(candidatePath, nb);
-									console.log(`💾 Cached notebook: ${candidatePath.split('/').pop()}`);
-								} else {
-									console.log(`📋 Using cached notebook: ${candidatePath.split('/').pop()}`);
 								}
 								const idx0 = index1Based - 1;
 								const cell = Array.isArray(nb?.cells) ? nb.cells[idx0] : null;
@@ -1312,67 +1578,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 											code,
 										};
 									}
-									// Handle #N and #all against the active notebook
-									try {
-										const activeFile = (workspaceState as any).activeFile as
-											| string
-											| null;
-										if (
-											activeFile &&
-											activeFile.endsWith(".ipynb") &&
-											hashTokens.length > 0
-										) {
-											const content = await window.electronAPI.readFile(
-												activeFile
-											);
-											const nb = JSON.parse(content);
-											const cells = Array.isArray(nb?.cells) ? nb.cells : [];
-											const wantAll = hashTokens.some(
-												(t) => String(t).toLowerCase() === "all"
-											);
-											const targetIndices = wantAll
-												? cells.map((_: unknown, i: number) => i)
-												: hashTokens
-														.map((t) => parseInt(String(t), 10))
-														.filter(
-															(n) =>
-																Number.isInteger(n) &&
-																n >= 1 &&
-																n <= cells.length
-														)
-														.map((n) => n - 1);
-											if (targetIndices.length > 0) {
-												// Build combined context; prefer first for edit-in-place
-												for (const idx0 of targetIndices) {
-													const c = cells[idx0];
-													if (!c) continue;
-													const srcArr: string[] = Array.isArray(c.source)
-														? c.source
-														: [];
-													const code = srcArr.join("");
-													const lang =
-														c.cell_type === "markdown" ? "markdown" : "python";
-													if (!cellMentionContext) {
-														cellMentionContext = {
-															filePath: activeFile,
-															cellIndex0: idx0,
-															language: lang,
-															code,
-														};
-													}
-												}
-											}
-										}
-									} catch (_) {
-										// ignore
-									}
+									// Do not process hashTokens here; they are handled in the dedicated block above
 								}
 							} catch (_) {
 								// ignore
 							}
 						}
 					}
-					console.timeEnd(`📝 Processing token: ${token}`);
 					// skip normal path handling for cell references
 					continue;
 				}
@@ -1396,21 +1608,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				} catch (_) {
 					// ignore failures; not a valid path
 				}
-				console.timeEnd(`📝 Processing token: ${token}`);
 			}
-			console.timeEnd('📝 Processing mentions');
 		}
 
 		const allMentionDatasets = mergeSelectedDatasets(
 			mentionDatasets as any[],
 			workspaceResolved as any[]
 		);
-		console.timeEnd('🚀 handleSendMessage total');
 
 		if (allMentionDatasets.length > 0) {
-			setSelectedDatasets((prev) =>
-				mergeSelectedDatasets(prev, allMentionDatasets)
-			);
+			selectDatasets(allMentionDatasets);
 			addMessage(
 				`Using local data from mentions: ${allMentionDatasets
 					.map((d) => d.alias || d.title)
@@ -1426,69 +1633,88 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		let isMounted = true;
 
 		try {
-			// If user referenced a notebook cell and specified line ranges, show the referenced lines (code or output)
+			// If user referenced a notebook cell and specified line ranges, optionally show a snippet.
+			// Only show the snippet and return if the prompt clearly asks to "show/view" rather than edit.
 			if (cellMentionContext) {
 				const wantOutput = /\boutput\b/i.test(userMessage);
 				const lineMatch =
 					userMessage.match(/lines?\s+(\d+)(?:\s*-\s*(\d+))?/i) ||
 					userMessage.match(/line\s+(\d+)/i);
 				if (lineMatch) {
-					try {
-						const startLineIdx = Math.max(1, parseInt(lineMatch[1] || "1", 10));
-						const endLineIdx = Math.max(
-							startLineIdx,
-							parseInt(lineMatch[2] || String(startLineIdx), 10)
+					const editIntent =
+						/(edit|change|fix|modify|refactor|replace|update|improve|correct|transform|rewrite)/i.test(
+							userMessage
 						);
-						let snippet = "";
-						let langForBlock = wantOutput
-							? "text"
-							: cellMentionContext.language || "python";
-						if (wantOutput) {
-							const fileContent = await window.electronAPI.readFile(
-								cellMentionContext.filePath
+					const showIntent =
+						/(show|display|view|print|see|what\s*'?s?\s+in)/i.test(userMessage);
+					// If it's a show-only request (or output requested) and not an edit intent, display snippet then return.
+					if ((showIntent || wantOutput) && !editIntent) {
+						try {
+							const startLineIdx = Math.max(
+								1,
+								parseInt(lineMatch[1] || "1", 10)
 							);
-							const nb = JSON.parse(fileContent);
-							const cell = Array.isArray(nb?.cells)
-								? nb.cells[cellMentionContext.cellIndex0]
-								: null;
-							let outputText = "";
-							if (cell && Array.isArray(cell.outputs)) {
-								const parts: string[] = [];
-								for (const o of cell.outputs) {
-									if (o?.output_type === "stream" && Array.isArray(o.text)) {
-										parts.push(o.text.join(""));
-									} else if (
-										o?.output_type === "execute_result" &&
-										o?.data?.["text/plain"]
-									) {
-										const t = o.data["text/plain"];
-										parts.push(Array.isArray(t) ? t.join("") : String(t));
+							const endLineIdx = Math.max(
+								startLineIdx,
+								parseInt(lineMatch[2] || String(startLineIdx), 10)
+							);
+							let snippet = "";
+							let langForBlock = wantOutput
+								? "text"
+								: cellMentionContext.language || "python";
+							if (wantOutput) {
+								const fileContent = await window.electronAPI.readFile(
+									cellMentionContext.filePath
+								);
+								const nb = JSON.parse(fileContent);
+								const cell = Array.isArray(nb?.cells)
+									? nb.cells[cellMentionContext.cellIndex0]
+									: null;
+								let outputText = "";
+								if (cell && Array.isArray(cell.outputs)) {
+									const parts: string[] = [];
+									for (const o of cell.outputs) {
+										if (o?.output_type === "stream" && Array.isArray(o.text)) {
+											parts.push(o.text.join(""));
+										} else if (
+											o?.output_type === "execute_result" &&
+											o?.data?.["text/plain"]
+										) {
+											const t = o.data["text/plain"];
+											parts.push(Array.isArray(t) ? t.join("") : String(t));
+										}
 									}
+									outputText = parts.join("\n");
 								}
-								outputText = parts.join("\n");
+								const outLines = (outputText || "").split(/\r?\n/);
+								snippet = outLines
+									.slice(startLineIdx - 1, endLineIdx)
+									.join("\n");
+							} else {
+								const codeLines = (cellMentionContext.code || "").split(
+									/\r?\n/
+								);
+								snippet = codeLines
+									.slice(startLineIdx - 1, endLineIdx)
+									.join("\n");
 							}
-							const outLines = (outputText || "").split(/\r?\n/);
-							snippet = outLines.slice(startLineIdx - 1, endLineIdx).join("\n");
-						} else {
-							const codeLines = (cellMentionContext.code || "").split(/\r?\n/);
-							snippet = codeLines
-								.slice(startLineIdx - 1, endLineIdx)
-								.join("\n");
+							const cellNum = cellMentionContext.cellIndex0 + 1;
+							addMessage(
+								`Cell ${cellNum} ${
+									wantOutput ? "output" : "code"
+								} lines ${startLineIdx}-${endLineIdx}:\n\n\`\`\`${langForBlock}\n${snippet}\n\`\`\``,
+								false
+							);
+							return; // show-only path ends here to avoid triggering edit below
+						} catch (_) {
+							// ignore snippet failures and fall through to edit path
 						}
-						const cellNum = cellMentionContext.cellIndex0 + 1;
-						addMessage(
-							`Cell ${cellNum} ${
-								wantOutput ? "output" : "code"
-							} lines ${startLineIdx}-${endLineIdx}:\n\n\`\`\`${langForBlock}\n${snippet}\n\`\`\``,
-							false
-						);
-					} catch (_) {
-						// ignore snippet failures
 					}
 				}
 			}
 			// If message referenced a notebook cell via #N/#all, perform inline edit on the first referenced cell
-			if (cellMentionContext) {
+			// Prefer explicit selection-based edits (codeEditContext) over cell mentions to avoid duplicate handling
+			if (cellMentionContext && !codeEditContext) {
 				if (!backendClient) {
 					addMessage(
 						"Backend not ready to edit code. Please try again in a moment.",
@@ -1496,12 +1722,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					);
 					return;
 				}
-				const wsPath =
-					findWorkspacePath({
-						filePath: cellMentionContext.filePath || undefined,
-						currentWorkspace: workspaceState.currentWorkspace || undefined,
-					}) || "";
-				const notebookService = new NotebookService({ workspacePath: wsPath });
 
 				const lang = (cellMentionContext.language || "python").toLowerCase();
 				const originalSnippet = cellMentionContext.code || "";
@@ -1537,241 +1757,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								: fullCode.length;
 					}
 				} catch (_) {}
-				const beforeSelection = fullCode.slice(0, selStart);
 				const withinSelection = fullCode.slice(selStart, selEnd);
 				const fileName = filePath.split("/").pop() || filePath;
 
-				// Try simple text manipulations first before using AI
-				const simpleEditResult = trySimpleEdit(userMessage, withinSelection);
-				if (simpleEditResult.handled) {
-					// Direct edit without AI
-					const newCode = beforeSelection + simpleEditResult.newContent + fullCode.slice(selEnd);
-					
-					try {
-						await notebookService.updateCellCode(filePath, cellIndex, newCode);
-						EventManager.dispatchEvent("update-notebook-cell-code", {
-							filePath,
-							cellIndex,
-							code: newCode,
-							editedByChatAt: new Date().toISOString(),
-						});
-						
-						const originalLineCount = withinSelection.split("\n").length;
-						const newLineCount = simpleEditResult.newContent.split("\n").length;
-						addMessage(
-							`✅ Applied simple edit:\n\n- **Cell**: ${cellIndex} in \`${fileName}\`\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Change**: ${simpleEditResult.description}`,
-							false
-						);
-						return;
-					} catch (e) {
-						addMessage(`⚠️ Failed to apply edit: ${e instanceof Error ? e.message : String(e)}`, false);
-						return;
-					}
-				}
-
-				addMessage(
-					`Editing plan:\n\n- **Target**: cell ${cellIndex} in \`${fileName}\`\n- **Scope**: replace lines ${startLine}-${endLine} of the selected code\n- **Process**: I will generate the revised snippet (streaming below), then apply it to the notebook and confirm the save.`,
-					false
-				);
-				const task =
-					`Edit the following ${lang} code according to the user's instruction. ` +
-					`CRITICAL RULES:
-1. Return ONLY the exact replacement for lines ${startLine}-${endLine}
-2. Do NOT add imports, comments, or any other lines
-3. Do NOT include code before or after the specified lines
-4. Do NOT include explanations or markdown formatting
-5. If the original has 2 lines, return exactly 2 lines (unless removing content)
-6. Output ONLY the modified code as plain text`;
-
-				let streamedResponse = "";
-				const streamingMessageId = `edit-${Date.now()}`;
-				analysisDispatch({
-					type: "ADD_MESSAGE",
-					payload: {
-						id: streamingMessageId,
-						content: "Streaming edited code…",
-						isUser: false,
-						isStreaming: true,
-						code: "",
-						codeLanguage: lang,
-						codeTitle: "Edited snippet",
-					},
+				// Use shared edit executor to avoid duplication
+				await performNotebookEdit({
+					filePath,
+					cellIndex,
+					language: lang,
+					fullCode,
+					userMessage,
+					selection: { selStart, selEnd, startLine, endLine, withinSelection },
 				});
-
-				try {
-					// Prepare bases for incremental in-place updates
-					const base = fullCode;
-					const start = selStart;
-					const end = selEnd;
-					let lastCellUpdate = 0;
-					await backendClient.generateCodeStream(
-						{
-							task_description: `${task}\n\nUser instruction: ${userMessage}\n\nOriginal code (lines ${startLine}-${endLine}):\n${withinSelection}\n\nIMPORTANT: The original has ${withinSelection.split('\n').length} lines. Return EXACTLY ${withinSelection.split('\n').length} modified lines (no imports, no extra lines). Example format:\nline1\nline2\n\nYour response:`,
-							language: lang,
-							context: "Notebook code edit-in-place",
-							notebook_edit: true,
-						},
-						(chunk: string) => {
-							streamedResponse += chunk;
-							const cleanedSnippet = stripCodeFences(streamedResponse);
-
-							// Update chat message with the edited snippet so far
-							analysisDispatch({
-								type: "UPDATE_MESSAGE",
-								payload: {
-									id: streamingMessageId,
-									updates: {
-										content: `Streaming edited code…`,
-										code: cleanedSnippet,
-										codeLanguage: lang,
-										codeTitle: "Edited snippet",
-										isStreaming: true,
-									},
-								},
-							});
-
-							// Throttled live update of the notebook cell so changes are visible during streaming
-							const now = Date.now();
-							if (now - lastCellUpdate > 500) {
-								const partialNewCode =
-									base.substring(0, start) +
-									cleanedSnippet +
-									base.substring(end);
-								notebookService
-									.updateCellCode(filePath, cellIndex, partialNewCode)
-									.catch(() => {});
-								lastCellUpdate = now;
-							}
-						}
-					);
-				} catch (e) {
-					addMessage(
-						`Code edit failed: ${e instanceof Error ? e.message : String(e)}`,
-						false
-					);
-					return;
-				} finally {
-					analysisDispatch({
-						type: "UPDATE_MESSAGE",
-						payload: {
-							id: streamingMessageId,
-							updates: { isStreaming: false },
-						},
-					});
-				}
-
-				// Use the streamed edited snippet; fallback to JSON edits if the model returned them
-				let newSelection: string;
-				const base = fullCode;
-				const start = selStart;
-				const end = selEnd;
-				const cleanedFinal = stripCodeFences(streamedResponse);
-				const jsonFallback = parseJsonEdits(streamedResponse);
-				if (jsonFallback) {
-					newSelection = applyLineEdits(withinSelection, jsonFallback);
-				} else {
-					newSelection = cleanedFinal;
-				}
-				const newCode =
-					base.substring(0, start) + newSelection + base.substring(end);
-
-				await notebookService.updateCellCode(filePath, cellIndex, newCode);
-
-				// Let the notebook UI know this cell was updated by Chat for visibility
-				try {
-					EventManager.dispatchEvent("update-notebook-cell-code", {
-						filePath,
-						cellIndex,
-						code: newCode,
-						editedByChatAt: new Date().toISOString(),
-					});
-				} catch (_) {}
-
-				let updateDetail: any = null;
-				try {
-					const timeoutMs = 15000;
-					const startWait = Date.now();
-					while (Date.now() - startWait < timeoutMs) {
-						const detail = await EventManager.waitForEvent<any>(
-							"notebook-cell-updated",
-							Math.max(1, timeoutMs - (Date.now() - startWait))
-						);
-						if (
-							detail?.filePath === filePath &&
-							detail?.cellIndex === cellIndex
-						) {
-							updateDetail = detail;
-							break;
-						}
-					}
-				} catch (_) {}
-
-				const originalLineCount = withinSelection.split("\n").length;
-				const newLineCount = newSelection.split("\n").length;
-				const summary = `Applied notebook edit:\n\n- **Cell**: ${cellIndex}\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Status**: ${
-					updateDetail?.success === false ? "save failed" : "saved"
-				}`;
-
-				const buildUnifiedDiff = (
-					oldText: string,
-					newText: string,
-					file: string,
-					oldStart: number
-				) => {
-					const oldLines = oldText.split("\n");
-					const newLines = newText.split("\n");
-					const m = oldLines.length;
-					const n = newLines.length;
-					const lcs: number[][] = Array.from({ length: m + 1 }, () =>
-						Array(n + 1).fill(0)
-					);
-					for (let i = 1; i <= m; i++) {
-						for (let j = 1; j <= n; j++) {
-							if (oldLines[i - 1] === newLines[j - 1]) {
-								lcs[i][j] = lcs[i - 1][j - 1] + 1;
-							} else {
-								lcs[i][j] = Math.max(lcs[i - 1][j], lcs[i][j - 1]);
-							}
-						}
-					}
-					const ops: Array<{ t: " " | "+" | "-"; s: string }> = [];
-					let i = m,
-						j = n;
-					while (i > 0 || j > 0) {
-						if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
-							ops.push({ t: " ", s: oldLines[i - 1] });
-							i--;
-							j--;
-						} else if (j > 0 && (i === 0 || lcs[i][j - 1] >= lcs[i - 1][j])) {
-							ops.push({ t: "+", s: newLines[j - 1] });
-							j--;
-						} else if (i > 0) {
-							ops.push({ t: "-", s: oldLines[i - 1] });
-							i--;
-						}
-					}
-					ops.reverse();
-					const oldCount = m;
-					const newCount = n;
-					const newStart = oldStart;
-					const headerA = `--- a/${file}:${oldStart}-${
-						oldStart + oldCount - 1
-					}`;
-					const headerB = `+++ b/${file}:${newStart}-${
-						newStart + newCount - 1
-					}`;
-					const hunk = `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`;
-					const body = ops.map((o) => `${o.t}${o.s}`).join("\n");
-					return `${headerA}\n${headerB}\n${hunk}\n${body}`;
-				};
-
-				const unifiedDiff = buildUnifiedDiff(
-					withinSelection,
-					newSelection,
-					fileName,
-					startLine
-				);
-				addMessage(`${summary}\n\n\`\`\`diff\n${unifiedDiff}\n\`\`\``, false);
 				return;
 			}
 
@@ -1788,16 +1785,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					);
 					return;
 				}
-				const wsPath =
-					findWorkspacePath({
-						filePath: codeEditContext.filePath || undefined,
-						currentWorkspace: workspaceState.currentWorkspace || undefined,
-					}) || "";
-				const notebookService = new NotebookService({ workspacePath: wsPath });
 
 				// Build LLM prompt to transform only the selected snippet
 				const lang = (codeEditContext.language || "python").toLowerCase();
-				const originalSnippet = codeEditContext.selectedText || "";
 				const filePath = codeEditContext.filePath;
 				const cellIndex = codeEditContext.cellIndex;
 				const fullCode = codeEditContext.fullCode ?? "";
@@ -1810,342 +1800,63 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				const withinSelection = fullCode.slice(selStart, selEnd);
 				const startLine = (beforeSelection.match(/\n/g)?.length ?? 0) + 1;
 				const endLine = startLine + (withinSelection.match(/\n/g)?.length ?? 0);
-				const fileName = filePath.split("/").pop() || filePath;
 
-				// Pre-change explanation in chat
-				addMessage(
-					`Editing plan:\n\n- **Target**: cell ${cellIndex} in \`${fileName}\`\n- **Scope**: replace lines ${startLine}-${endLine} of the selected code\n- **Process**: I will generate the revised snippet (streaming below), then apply it to the notebook and confirm the save.`,
-					false
-				);
-				const task =
-					`Edit the following ${lang} code according to the user's instruction. ` +
-					`CRITICAL RULES:
-1. Return ONLY the exact replacement for lines ${startLine}-${endLine}
-2. Do NOT add imports, comments, or any other lines
-3. Do NOT include code before or after the specified lines
-4. Do NOT include explanations or markdown formatting
-5. If the original has 2 lines, return exactly 2 lines (unless removing content)
-6. Output ONLY the modified code as plain text`;
-
-				// Streaming accumulation (edited code)
-				let streamedResponse = "";
-				const streamingMessageId = `edit-${Date.now()}`;
-				analysisDispatch({
-					type: "ADD_MESSAGE",
-					payload: {
-						id: streamingMessageId,
-						content: "Streaming edited code…",
-						isUser: false,
-						isStreaming: true,
-						code: "",
-						codeLanguage: lang,
-						codeTitle: "Edited snippet",
-					},
-				});
-
-				try {
-					// Prepare bases for incremental in-place updates
-					const base = fullCode;
-					const start = selStart;
-					const end = selEnd;
-					let lastCellUpdate = 0;
-					await backendClient.generateCodeStream(
-						{
-							task_description: `${task}\n\nUser instruction: ${userMessage}\n\nOriginal code (lines ${startLine}-${endLine}):\n${withinSelection}\n\nIMPORTANT: The original has ${withinSelection.split('\n').length} lines. Return EXACTLY ${withinSelection.split('\n').length} modified lines (no imports, no extra lines). Example format:\nline1\nline2\n\nYour response:`,
-							language: lang,
-							context: "Notebook code edit-in-place",
-							notebook_edit: true,
-						},
-						(chunk: string) => {
-							streamedResponse += chunk;
-							const cleanedSnippet = stripCodeFences(streamedResponse);
-
-							// Update chat message with the edited snippet so far
-							analysisDispatch({
-								type: "UPDATE_MESSAGE",
-								payload: {
-									id: streamingMessageId,
-									updates: {
-										content: `Streaming edited code…`,
-										code: cleanedSnippet,
-										codeLanguage: lang,
-										codeTitle: "Edited snippet",
-										isStreaming: true,
-									},
-								},
-							});
-
-							// Throttled live update of the notebook cell so changes are visible during streaming
-							const now = Date.now();
-							if (now - lastCellUpdate > 500) {
-								const partialNewCode =
-									base.substring(0, start) +
-									cleanedSnippet +
-									base.substring(end);
-								notebookService
-									.updateCellCode(filePath, cellIndex, partialNewCode)
-									.catch(() => {});
-								lastCellUpdate = now;
-							}
-						}
-					);
-				} catch (e) {
-					addMessage(
-						`Code edit failed: ${e instanceof Error ? e.message : String(e)}`,
-						false
-					);
-					return;
-				} finally {
-					// Close streaming state
-					analysisDispatch({
-						type: "UPDATE_MESSAGE",
-						payload: {
-							id: streamingMessageId,
-							updates: { isStreaming: false },
-						},
-					});
-				}
-
-				// Use the streamed edited snippet directly (no JSON edits)
-				const base = fullCode;
-				const start = selStart;
-				const end = selEnd;
-				const newSelection: string = stripCodeFences(streamedResponse);
-				const newCode =
-					base.substring(0, start) + newSelection + base.substring(end);
-
-				// Step 1: Validate the generated code first (new linting pipeline)
-				let validatedCode = newCode;
-				let hasValidationIssues = false;
-				try {
-					if (backendClient?.validateCode) {
-						const validationResult = await backendClient.validateCode({
-							code: newCode,
-						});
-
-						if (!validationResult.is_valid && validationResult.linted_code) {
-							// Use auto-fixed code if available
-							validatedCode = validationResult.linted_code;
-							hasValidationIssues = true;
-
-							// Show validation feedback in chat
-							const issues = validationResult.errors || [];
-							if (issues.length > 0) {
-								addMessage(
-									`⚠️ Auto-fixed ${
-										issues.length
-									} validation issue(s):\n\n${issues
-										.slice(0, 3)
-										.map((e: string) => `• ${e}`)
-										.join("\n")}${issues.length > 3 ? "\n• ..." : ""}`,
-									false
-								);
-							}
-						}
-					}
-				} catch (validationError) {
-					console.warn(
-						"Code validation failed, proceeding with original code:",
-						validationError
-					);
-					// Continue with original code if validation fails
-				}
-
-				// Step 2: Persist the validated code into the notebook cell
-				await notebookService.updateCellCode(
+				await performNotebookEdit({
 					filePath,
 					cellIndex,
-					validatedCode
-				);
-
-				// Step 3: Optimized confirmation wait (reduced from 15s to 2s with fast fallback)
-				let updateDetail: any = null;
-				try {
-					// Fast timeout with immediate fallback for UI responsiveness
-					const timeoutMs = 2000; // Reduced from 15s
-
-					// Use Promise.race for non-blocking behavior with immediate fallback
-					const detail = await Promise.race([
-						// Wait for actual confirmation
-						EventManager.waitForEvent<any>(
-							"notebook-cell-updated",
-							timeoutMs
-						).then((d) =>
-							d?.filePath === filePath && d?.cellIndex === cellIndex ? d : null
-						),
-						// Immediate fallback after 100ms for UI responsiveness
-						new Promise((resolve) =>
-							setTimeout(() => resolve({ success: true, immediate: true }), 100)
-						),
-					]);
-
-					updateDetail = detail || { success: true, immediate: true };
-				} catch (_) {
-					// Fallback to optimistic success
-					updateDetail = { success: true, immediate: true };
-				}
-
-				const originalLineCount = withinSelection.split("\n").length;
-				const newLineCount = newSelection.split("\n").length;
-				const statusText =
-					updateDetail?.success === false
-						? "save failed"
-						: updateDetail?.immediate
-						? "applied"
-						: "saved";
-				const validationText = hasValidationIssues ? " (auto-fixed)" : "";
-
-				const summary = `Applied notebook edit:\n\n- **Cell**: ${cellIndex}\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Status**: ${statusText}${validationText}`;
-
-				// Build unified diff for the selection in GitHub style
-				const buildUnifiedDiff = (
-					oldText: string,
-					newText: string,
-					file: string,
-					oldStart: number
-				) => {
-					const oldLines = oldText.split("\n");
-					const newLines = newText.split("\n");
-					const m = oldLines.length;
-					const n = newLines.length;
-					const lcs: number[][] = Array.from({ length: m + 1 }, () =>
-						Array(n + 1).fill(0)
-					);
-					for (let i = 1; i <= m; i++) {
-						for (let j = 1; j <= n; j++) {
-							if (oldLines[i - 1] === newLines[j - 1]) {
-								lcs[i][j] = lcs[i - 1][j - 1] + 1;
-							} else {
-								lcs[i][j] = Math.max(lcs[i - 1][j], lcs[i][j - 1]);
-							}
-						}
-					}
-					const ops: Array<{ t: " " | "+" | "-"; s: string }> = [];
-					let i = m,
-						j = n;
-					while (i > 0 || j > 0) {
-						if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
-							ops.push({ t: " ", s: oldLines[i - 1] });
-							i--;
-							j--;
-						} else if (j > 0 && (i === 0 || lcs[i][j - 1] >= lcs[i - 1][j])) {
-							ops.push({ t: "+", s: newLines[j - 1] });
-							j--;
-						} else if (i > 0) {
-							ops.push({ t: "-", s: oldLines[i - 1] });
-							i--;
-						}
-					}
-					ops.reverse();
-
-					const oldCount = m;
-					const newCount = n;
-					const newStart = oldStart; // selection replaced in place
-					const headerA = `--- a/${file}:${oldStart}-${
-						oldStart + oldCount - 1
-					}`;
-					const headerB = `+++ b/${file}:${newStart}-${
-						newStart + newCount - 1
-					}`;
-					const hunk = `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`;
-					const body = ops.map((o) => `${o.t}${o.s}`).join("\n");
-					return `${headerA}\n${headerB}\n${hunk}\n${body}`;
-				};
-
-				// Use the validated code for the diff if validation occurred
-				const finalSelection = hasValidationIssues
-					? validatedCode.substring(
-							start,
-							start +
-								(validatedCode.length - newCode.length) +
-								newSelection.length
-					  )
-					: newSelection;
-
-				const unifiedDiff = buildUnifiedDiff(
-					withinSelection,
-					finalSelection,
-					fileName,
-					startLine
-				);
-
-				// Post-change summary with unified diff (CodeMessage renderer will show +adds/-dels as title)
-				addMessage(`${summary}\n\n\`\`\`diff\n${unifiedDiff}\n\`\`\``, false);
-
-				// Clear context after applying edit
+					language: lang,
+					fullCode,
+					userMessage,
+					selection: { selStart, selEnd, startLine, endLine, withinSelection },
+				});
 				setCodeEditContext(null);
 				return;
 			}
-			// Check if this is a request for suggestions or help
-			if (isSuggestionsRequest(userMessage)) {
-				await handleSuggestionsRequest(userMessage);
+			// If datasets are already selected, prioritize analysis/suggestions over intent classification
+			// to avoid accidentally routing to search or generic Q&A.
+			if (selectedDatasets.length > 0) {
+				// Default with selected datasets: treat as analysis request
+				await handleAnalysisRequest(userMessage);
+				return; // handled
 			}
-			// Use intelligent detection to understand if user wants to search for datasets
-			else {
-				const wantSearch = await shouldSearchForDatasets(userMessage);
-				if (wantSearch) {
-					console.log("🔍 Detected search request for:", userMessage);
-					// Search for datasets
-					if (isMounted) {
-						setProgressMessage("🔍 Searching for datasets...");
-						setShowSearchDetails(true);
-					}
 
-					// Check if backendClient is available
-					if (!backendClient) {
-						if (isMounted) {
-							addMessage(
-								"❌ Backend client not initialized. Please wait a moment and try again.",
-								false
-							);
-						}
-						return;
-					}
+		// Use backend LLM to classify intent instead of local pattern matching
+		if (!validateBackendClient()) {
+			return;
+		}
 
-					// Set up progress callback for real-time updates (use SearchService to ensure UI wiring)
-					if (searchService) {
-						searchService.setProgressCallback((progress: any) => {
-							if (isMounted) {
-								updateProgressData(progress);
-							}
-						});
-					} else {
-						backendClient.setProgressCallback((progress) => {
-							if (isMounted) {
-								updateProgressData(progress);
-							}
-						});
-					}
+			// Get intent classification from backend
+			const intentResult = await backendClient!.classifyIntent(userMessage);
+			console.log("🎯 Backend intent classification:", intentResult);
 
-					// Initialize search progress
-					if (isMounted) {
-						setSearchProgress({
-							message: "Initializing search...",
-							progress: 0,
-							step: "init",
-							datasetsFound: 0,
-						});
-					}
+			// If confidence is too low (< 0.65), treat as general question instead of forcing into specific intent
+			const isLowConfidence = (intentResult.confidence || 0) < 0.65;
 
-					console.log("🔍 Starting search with query:", userMessage);
-					console.log("🔍 BackendClient baseUrl:", backendClient.getBaseUrl());
+			// Handle dataset search based on backend intent
+			if (intentResult.intent === "SEARCH_DATA" && !isLowConfidence) {
+				console.log("🔍 Detected search request for:", userMessage);
+				// Search for datasets
+				if (isMounted) {
+					setProgressMessage("🔍 Searching for datasets...");
+					setShowDatasetSearchDetails(true);
+				}
 
-					const response = searchService
-						? await searchService.discoverDatasets(userMessage, {
-								limit: SearchConfig.getSearchLimit(),
-						  })
-						: ({ datasets: [] } as any);
+				// Check if backendClient is available
+				if (!validateBackendClient()) {
+					return;
+				}
 
-					console.log("🔍 Search response:", response);
+				console.log("🔍 Starting search with query:", userMessage);
 
-					if (isMounted && response.datasets && response.datasets.length > 0) {
-						setAvailableDatasets(response.datasets);
-						setShowDatasetModal(true);
+				try {
+					const searchResult = await searchForDatasets(userMessage);
+					console.log("🔍 Search response:", searchResult);
 
-						let responseContent = `## 🔍 Found ${response.datasets.length} Datasets\n\n`;
-						responseContent += `I found ${response.datasets.length} datasets that match your search. Please select the ones you'd like to analyze:\n\n`;
+					if (isMounted && searchResult.datasets.length > 0) {
+						let responseContent = `## 🔍 Found ${searchResult.datasets.length} Datasets\n\n`;
+						responseContent += `I found ${searchResult.datasets.length} datasets that match your search. Please select the ones you'd like to analyze:\n\n`;
 
-						response.datasets
+						searchResult.datasets
 							.slice(0, 5)
 							.forEach((dataset: any, index: number) => {
 								responseContent += `### ${index + 1}. ${dataset.title}\n`;
@@ -2162,266 +1873,135 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								responseContent += `\n`;
 							});
 
-						if (response.datasets.length > 5) {
+						if (searchResult.datasets.length > 5) {
 							responseContent += `*... and ${
-								response.datasets.length - 5
+								searchResult.datasets.length - 5
 							} more datasets*\n\n`;
 						}
 
 						responseContent += `**💡 Tip:** Select the datasets you want to analyze, then specify what analysis you'd like to perform.`;
 
 						addMessage(responseContent, false);
-					} else {
-						console.log("❌ No datasets found. Response:", response);
-						console.log("❌ Response.datasets:", response.datasets);
-						console.log(
-							"❌ Response.datasets.length:",
-							response.datasets?.length
-						);
+					} else if (isMounted) {
+						console.log("❌ No datasets found. SearchResult:", searchResult);
 						addMessage(
 							"❌ No datasets found matching your search. Try different keywords or be more specific.",
 							false
 						);
 					}
+				} catch (error) {
+					console.error("Dataset search failed:", error);
+					if (isMounted) {
+						addMessage(
+							"❌ Failed to search for datasets. Please check your connection and try again.",
+							false
+						);
+					}
+				}
+			}
+			// Handle ADD_CELL intent or analysis requests for active notebooks (only if confident)
+            else if (intentResult.intent === "ADD_CELL") {
+				// If there is an active notebook open, treat as incremental analysis
+				const activeFile = (workspaceState as any).activeFile as string | null;
+				const isNotebookOpen = Boolean(
+					activeFile && activeFile.endsWith(".ipynb")
+				);
 
-					// Keep progress visible for a moment, then clear
-					setTimeout(() => {
-						setSearchProgress(null);
-						setShowSearchDetails(false);
-					}, 2000);
-				} else if (selectedDatasets.length > 0) {
-					// User has selected datasets and is now specifying analysis
-					await handleAnalysisRequest(userMessage);
-				} else {
-					// If there is an active notebook open, treat as incremental analysis instead of searching
-					const activeFile = (workspaceState as any).activeFile as
-						| string
-						| null;
-					const isNotebookOpen = Boolean(
-						activeFile && activeFile.endsWith(".ipynb")
+				if (isNotebookOpen) {
+					// Append new analysis step to the current notebook (skip dataset search)
+					addMessage(
+						`Detected analysis request for the current notebook. Starting background code generation for: ${userMessage}`,
+						false
 					);
-					const isAnalysis = isAnalysisRequest(userMessage);
+					// Run Agent in background (non-blocking)
+					(async () => {
+						try {
+                        const wsDir =
+                            findWorkspacePath({
+                                filePath: activeFile,
+                                currentWorkspace: workspaceState.currentWorkspace,
+                            }) ||
+                                workspaceState.currentWorkspace ||
+                                "";
+							if (!backendClient || !wsDir)
+								throw new Error("Backend not ready");
+							const agent = new AutonomousAgent(backendClient, wsDir);
+							const steps = [
+								{
+									id: "step_1",
+									description: userMessage,
+									code: "",
+									status: "pending" as const,
+								},
+							];
+							await agent.startNotebookCodeGeneration(
+								activeFile!,
+								userMessage,
+								[],
+								steps as any,
+								wsDir,
+								{ skipEnvCells: true }
+							);
+							addMessage("✅ Added analysis step to the open notebook.", false);
+						} catch (e) {
+							addMessage(
+								`Failed to append analysis step: ${
+									e instanceof Error ? e.message : String(e)
+								}`,
+								false
+							);
+						}
+					})().finally(() => {
+						// Release chat UI after background operation completes
+						resetLoadingState();
+					});
+					return;
+				} else {
+					// No active notebook but intent is ADD_CELL - guide user to open notebook
+					addMessage(
+						"To add a code cell, please open a Jupyter notebook first. You can create a new notebook or open an existing one.",
+						false
+					);
+				}
+			}
+			// Handle low confidence intents or unrecognized intents as general questions
+			else {
+				console.log(
+					`🤔 Low confidence (${intentResult.confidence}) or unhandled intent: ${intentResult.intent}. Treating as general question.`
+				);
+				// General question handling - send to backend LLM
+				try {
+					// Build lightweight context from recent messages
+					const recent = (analysisState.messages || []).slice(-10);
+					const context = recent
+						.map((m: any) => {
+							const text = typeof m.content === "string" ? m.content : "";
+							const codeStr =
+								typeof m.code === "string" && m.code.trim().length > 0
+									? `\n\n\`\`\`${m.codeLanguage || "python"}\n${
+											m.code
+									  }\n\`\`\`\n`
+									: "";
+							return text + codeStr;
+						})
+						.filter(Boolean)
+						.join("\n\n");
 
-					if (isNotebookOpen && isAnalysis && !wantSearch) {
-						// Append new analysis step to the current notebook (skip dataset search)
+					const answer = await backendClient!.askQuestion({
+						question: userMessage,
+						context,
+					});
+
+					if (isMounted) {
+						addMessage(answer || "(No answer received)", false);
+					}
+				} catch (error) {
+					console.error("Error asking question to backend:", error);
+					if (isMounted) {
 						addMessage(
-							`Detected analysis request for the current notebook. Starting background code generation for: ${userMessage}`,
+							"Sorry, I couldn't process your question right now. Please check your connection and try again.",
 							false
 						);
-						// Run Agent in background (non-blocking)
-						(async () => {
-							try {
-								const wsDir =
-									findWorkspacePath({
-										filePath: activeFile,
-										currentWorkspace: workspaceState.currentWorkspace,
-									}) ||
-									workspaceState.currentWorkspace ||
-									"";
-								if (!backendClient || !wsDir)
-									throw new Error("Backend not ready");
-								const agent = new AutonomousAgent(backendClient, wsDir);
-								const steps = [
-									{
-										id: "step_1",
-										description: userMessage,
-										code: "",
-										status: "pending" as const,
-									},
-								];
-								await agent.startNotebookCodeGeneration(
-									activeFile!,
-									userMessage,
-									[],
-									steps as any,
-									wsDir,
-									{ skipEnvCells: true }
-								);
-								addMessage("✅ Added analysis step to the open notebook.", false);
-							} catch (e) {
-								addMessage(
-									`Failed to append analysis step: ${
-										e instanceof Error ? e.message : String(e)
-									}`,
-									false
-								);
-							}
-						})().finally(() => {
-							// Release chat UI after background operation completes
-							setIsLoading(false);
-							setIsProcessing(false);
-							setProgressMessage("");
-						});
-						return;
-					} else if (isAnalysis && wantSearch) {
-						// If the user referenced @tokens but none resolved to local data, do not start a remote search.
-						// Ask the user to attach or register the local data instead of triggering dataset discovery.
-						if (
-							Array.isArray(tokens) &&
-							tokens.length > 0 &&
-							allMentionDatasets.length === 0
-						) {
-							addMessage(
-								`I detected data mention(s) ${tokens
-									.map((t) => `@${t}`)
-									.join(", ")} but couldn't find matching local data.\n\n` +
-									`- Attach files or folders using the paperclip button, then reference them with @alias (e.g., @data.csv).\n` +
-									`- Or type the absolute/relative path after @ (e.g., @data/file.csv).`,
-								false
-							);
-							setIsLoading(false);
-							setIsProcessing(false);
-							setProgressMessage("");
-							return;
-						}
-						// Existing behavior: guide the user to dataset search if nothing is open/selected
-						addMessage(
-							`Analysis Request Detected!\n\n` +
-								`I can help you with: ${userMessage}\n\n` +
-								`However, I need to find relevant datasets first. Let me search for datasets related to your analysis:\n\n` +
-								`Searching for: ${userMessage}`,
-							false
-						);
-						setProgressMessage("Searching for relevant datasets...");
-						setShowSearchDetails(true);
-						if (!backendClient) {
-							addMessage(
-								"Backend client not initialized. Please wait a moment and try again.",
-								false
-							);
-							return;
-						}
-						if (searchService) {
-							searchService.setProgressCallback((progress: any) => {
-								updateProgressData(progress);
-							});
-						} else {
-							backendClient.setProgressCallback((progress) => {
-								updateProgressData(progress);
-							});
-						}
-						setSearchProgress({
-							message: "Initializing search...",
-							progress: 0,
-							step: "init",
-							datasetsFound: 0,
-						});
-						const response = searchService
-							? await searchService.discoverDatasets(userMessage, { limit: 50 })
-							: ({ datasets: [] } as any);
-						if (response.datasets && response.datasets.length > 0) {
-							setAvailableDatasets(response.datasets);
-							setShowDatasetModal(true);
-							let responseContent = `## Found ${response.datasets.length} Relevant Datasets\n\n`;
-							responseContent += `I found ${response.datasets.length} datasets that could be used for your analysis. Please select the ones you'd like to work with:\n\n`;
-							response.datasets
-								.slice(0, 5)
-								.forEach((dataset: any, index: number) => {
-									responseContent += `### ${index + 1}. ${dataset.title}\n`;
-									responseContent += `**ID:** ${dataset.id}\n`;
-									if (dataset.description) {
-										responseContent += `**Description:** ${dataset.description.substring(
-											0,
-											200
-										)}...\n`;
-									}
-									if (dataset.organism) {
-										responseContent += `**Organism:** ${dataset.organism}\n`;
-									}
-									responseContent += `\n`;
-								});
-							if (response.datasets.length > 5) {
-								responseContent += `*... and ${
-									response.datasets.length - 5
-								} more datasets*\n\n`;
-							}
-							responseContent += `**💡 Tip:** Select the datasets you want to analyze, then I'll proceed with your analysis request.`;
-							addMessage(responseContent, false);
-						} else {
-							addMessage(
-								"No datasets found for your analysis request. Try being more specific about the disease, tissue, or organism you're interested in.",
-								false
-							);
-						}
-						setTimeout(() => {
-							setSearchProgress(null);
-							setShowSearchDetails(false);
-						}, 2000);
-					} else {
-						// Intent: ADD_CELL — insert a new cell immediately, then fill in code when ready
-						const activeFile = (workspaceState as any).activeFile as
-							| string
-							| null;
-						if (activeFile && activeFile.endsWith(".ipynb")) {
-							try {
-								if (!backendClient) throw new Error("Backend not ready");
-								addMessage("🧩 Creating a new code cell…", false);
-								// Insert placeholder cell immediately so the user sees it while code generates
-								EventManager.dispatchEvent("add-notebook-cell", {
-									filePath: activeFile,
-									cellType: "code",
-									content: "# Generating analysis code…\n",
-								});
-
-								// Generate the code in the background and update the placeholder when ready
-								(async () => {
-                                try {
-                                    const code = await backendClient.generateCode({
-                                        task_description: userMessage,
-                                        language: "python",
-                                        context:
-                                            "Generated from chat request to add a new analysis cell.",
-                                    });
-                                    try {
-                                        EventManager.dispatchEvent("update-notebook-cell-code", {
-                                            filePath: activeFile,
-                                            cellIndex: -1, // most recently added cell
-                                            code: (() => {
-                                                const c = String(code || "# New analysis cell\n");
-                                                return /argparse|parse_args\s*\(/.test(c) && !/sys\.argv\s*=/.test(c)
-                                                    ? (c.includes("import sys") ? "" : "import sys\n") +
-                                                          "sys.argv = ['']\n" +
-                                                          c
-                                                    : c;
-                                            })(),
-                                            editedByChatAt: new Date().toISOString(),
-                                        });
-                                    } catch (_) {}
-										addMessage("✅ Added a new code cell to the notebook.", false);
-									} catch (e) {
-										addMessage(
-											`⚠️ Failed to add a code cell: ${
-												e instanceof Error ? e.message : String(e)
-											}`,
-											false
-										);
-									}
-								})().finally(() => {
-									// Release chat UI after background code generation completes
-									setIsLoading(false);
-									setIsProcessing(false);
-									setProgressMessage("");
-								});
-								return;
-							} catch (e) {
-								addMessage(
-									`⚠️ Failed to add a code cell: ${
-										e instanceof Error ? e.message : String(e)
-									}`,
-									false
-								);
-							}
-                        } else {
-                            // No active notebook — if the user referenced a specific notebook/cell, don't spam guidance.
-                            // Let the mention resolver/edit-in-place handle it, or the user can open the notebook manually.
-                            const hasNotebookCellRef = /@[^\s@]*\.ipynb#\d+/i.test(userMessage);
-                            if (!hasNotebookCellRef) {
-                                addMessage(
-                                    "I am a bioinformatics assistant, ask me anything! Use @ to add files/folders, use # to tag cells inside notebooks.",
-                                    false
-                                );
-                            }
-                        }
 					}
 				}
 			}
@@ -2439,9 +2019,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 		} finally {
 			if (isMounted) {
-				setIsLoading(false);
-				setIsProcessing(false);
-				setProgressMessage("");
+				resetLoadingState();
 			}
 		}
 	}, [
@@ -2455,22 +2033,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	]);
 
 	// Removed redundant LLM event system - streaming handled by callbacks now
-
 	const handleDatasetSelection = useCallback(
-		async (selectedDatasets: any[]) => {
-			setShowDatasetModal(false);
+		async (selectedDatasetsArray: any[]) => {
+			// Use the hook's selectDatasets function
+			selectDatasets(selectedDatasetsArray);
 
-			if (selectedDatasets.length > 0) {
-				// Store selected datasets for analysis
-				setSelectedDatasets(selectedDatasets);
-
+			if (selectedDatasetsArray.length > 0) {
 				// Give users a readable pause before auto-suggestions or downstream actions
 				await new Promise((resolve) => setTimeout(resolve, 600));
 
 				// Show initial selection message
-				let responseContent = `## Selected ${selectedDatasets.length} Datasets\n\n`;
+				let responseContent = `## Selected ${selectedDatasetsArray.length} Datasets\n\n`;
 
-				selectedDatasets.forEach((dataset, index) => {
+				selectedDatasetsArray.forEach((dataset, index) => {
 					responseContent += `### ${index + 1}. ${dataset.title}\n`;
 					responseContent += `**ID:** ${dataset.id}\n`;
 					if (dataset.description) {
@@ -2539,81 +2114,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		]
 	);
 
-	// Simple method to generate short suggestions (no backend call needed)
-	const generateShortSuggestions = async (
-		datasets: Dataset[]
-	): Promise<string> => {
-		if (datasets.length === 0) {
-			return "No datasets selected. Please select one or more datasets to get analysis suggestions.";
-		}
-
-		try {
-			console.log(
-				"ChatPanel: Generating suggestions for datasets:",
-				datasets.map((d) => d.title)
-			);
-
-			// Extract data types from datasets
-			const dataTypes = datasets
-				.map((d) => d.dataType || "unknown")
-				.filter(Boolean);
-
-			// Try to get suggestions from backend first
-			try {
-				const backendSuggestions =
-					await suggestionsService!.generateSuggestions(
-						dataTypes,
-						`Analyze ${datasets.length} dataset(s)`,
-						datasets,
-						"Dataset selection context"
-					);
-
-				if (backendSuggestions.suggestions.length > 0) {
-					// Store suggestions for button rendering
-					const suggestions = backendSuggestions.suggestions.slice(0, 3);
-
-					// Return a special marker that will be replaced with buttons
-					return `SUGGESTIONS:${JSON.stringify(
-						suggestions.map((s) => s.title)
-					)}`;
-				}
-			} catch (backendError) {
-				console.log(
-					"ChatPanel: Backend suggestions failed, using fallback:",
-					backendError
-				);
-			}
-
-			// Fallback to local suggestion generation based on data type
-			const dataType = dataTypes.join(", ");
-			let fallbackSuggestions = [];
-			if (dataType.includes("single-cell")) {
-				fallbackSuggestions = [
-					"Perform quality control",
-					"Create cell clustering",
-					"Identify marker genes",
-				];
-			} else if (dataType.includes("RNA-seq")) {
-				fallbackSuggestions = [
-					"Perform differential expression",
-					"Create gene plots",
-					"Analyze pathways",
-				];
-			} else {
-				fallbackSuggestions = [
-					"Perform exploratory analysis",
-					"Create visualizations",
-					"Run statistical tests",
-				];
-			}
-
-			return `SUGGESTIONS:${JSON.stringify(fallbackSuggestions)}`;
-		} catch (error) {
-			console.error("ChatPanel: Error generating suggestions:", error);
-			return `SUGGESTIONS:${JSON.stringify(["Perform exploratory analysis"])}`;
-		}
-	};
-
 	// Handle clicks on suggestion buttons
 	useEffect(() => {
 		const handleButtonClick = (e: Event) => {
@@ -2625,6 +2125,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 					// Set the clicked text as the next message
 					setInputValue(suggestion);
+					inputValueRef.current = suggestion;
 
 					// Trigger send directly
 					handleSendMessage();
@@ -2645,158 +2146,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 			// Just set the clicked text as the next message
 			setInputValue(analysisType);
+			inputValueRef.current = analysisType;
 
 			// Trigger send directly
 			handleSendMessage();
 		},
 		[setInputValue]
-	);
-
-	// Function to handle suggestions requests
-	const handleSuggestionsRequest = useCallback(
-		async (message: string) => {
-			try {
-				if (selectedDatasets.length > 0) {
-					// Generate suggestions based on selected datasets
-					let dataTypes = selectedDatasets
-						.map((d) => d.dataType || d.data_type)
-						.filter((dt) => dt && dt !== "unknown")
-						.filter((dt, index, arr) => arr.indexOf(dt) === index);
-
-					// If no data types found, infer from dataset information
-					if (dataTypes.length === 0) {
-						dataTypes = selectedDatasets
-							.map((dataset) => {
-								// Infer data type from dataset information
-								const title = dataset.title?.toLowerCase() || "";
-								const description = dataset.description?.toLowerCase() || "";
-								const platform = dataset.platform?.toLowerCase() || "";
-
-								if (
-									title.includes("single-cell") ||
-									description.includes("single-cell") ||
-									platform.includes("single-cell")
-								) {
-									return "single_cell_expression";
-								} else if (
-									title.includes("expression") ||
-									description.includes("expression") ||
-									platform.includes("expression")
-								) {
-									return "expression_matrix";
-								} else if (
-									title.includes("clinical") ||
-									description.includes("clinical")
-								) {
-									return "clinical_data";
-								} else if (
-									title.includes("sequence") ||
-									description.includes("sequence") ||
-									platform.includes("sequencing")
-								) {
-									return "sequence_data";
-								} else if (
-									title.includes("variant") ||
-									description.includes("variant")
-								) {
-									return "variant_data";
-								} else if (
-									title.includes("array") ||
-									platform.includes("array")
-								) {
-									return "expression_matrix"; // Microarray data
-								} else {
-									return "expression_matrix"; // Default to expression matrix
-								}
-							})
-							.filter((dt, index, arr) => arr.indexOf(dt) === index);
-					}
-
-					if (dataTypes.length > 0 && suggestionsService) {
-						try {
-							const suggestions = await suggestionsService.generateSuggestions(
-								dataTypes,
-								message,
-								selectedDatasets
-							);
-
-							if (
-								suggestions &&
-								(suggestions.suggestions.length > 0 ||
-									suggestions.recommended_approaches.length > 0)
-							) {
-								addMessage(
-									"",
-									false,
-									undefined,
-									undefined,
-									undefined,
-									suggestions
-								);
-							} else {
-								addMessage(
-									`Based on your selected datasets with ${dataTypes.join(
-										", "
-									)} data, I recommend starting with exploratory data analysis, quality control checks, then statistical analysis or visualization depending on your research goals.`,
-									false
-								);
-							}
-						} catch (error) {
-							console.error("ChatPanel: Error generating suggestions:", error);
-							addMessage(
-								`Based on your ${selectedDatasets.length} selected datasets, I recommend starting with data loading and exploration, followed by quality assessment and then statistical analysis appropriate for your data type.`,
-								false
-							);
-						}
-					} else {
-						addMessage(
-							"General Analysis Suggestions:\n\n" +
-								"Since I don't have specific data type information, here are some general analyses you can perform:\n\n" +
-								"• **Exploratory Data Analysis**: Load and examine your data structure\n" +
-								"• **Quality Control**: Check data quality and identify potential issues\n" +
-								"• **Statistical Analysis**: Perform basic statistical tests\n" +
-								"• **Visualization**: Create plots and charts to understand patterns\n" +
-								"• **Differential Analysis**: Compare conditions or groups\n\n" +
-								"Tip: Be specific about what you want to analyze, and I'll provide more targeted suggestions!",
-							false
-						);
-					}
-				} else {
-					// No datasets selected, provide general suggestions
-					addMessage(
-						"Getting Started Suggestions:\n\n" +
-							"Here are some ways you can get started with bioinformatics analysis:\n\n" +
-							"### **1. Search for Datasets**\n" +
-							'• "Search for single-cell RNA-seq data from cancer samples"\n' +
-							'• "Find gene expression datasets related to Alzheimer\'s disease"\n' +
-							'• "Look for clinical data with molecular profiles"\n\n' +
-							"### **2. Common Analysis Types**\n" +
-							"• **Single-cell analysis**: Clustering, trajectory analysis, cell type identification\n" +
-							"• **Bulk RNA-seq**: Differential expression, pathway analysis, visualization\n" +
-							"• **Clinical data**: Statistical analysis, survival analysis, correlation studies\n" +
-							"• **Multi-omics**: Integration of different data types\n\n" +
-							"### **3. Example Queries**\n" +
-							'• "Find datasets about breast cancer and perform differential expression analysis"\n' +
-							'• "Search for single-cell data from brain tissue and identify cell types"\n' +
-							'• "Analyze clinical data with gene expression profiles"\n\n' +
-							"Tip: Start by searching for datasets related to your research question, then I'll provide specific analysis suggestions!",
-						false
-					);
-				}
-			} catch (error) {
-				console.error("Error generating suggestions:", error);
-				addMessage(
-					"Sorry, I encountered an error generating suggestions. Please try again.",
-					false
-				);
-			}
-		},
-		[
-			selectedDatasets,
-			suggestionsService,
-			analysisDispatch,
-			scrollToBottomImmediate,
-		]
 	);
 
 	// Function to handle analysis requests
@@ -2848,17 +2203,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				const workspaceDir = workspaceState.currentWorkspace;
 
 				// Check if backendClient is available
-				if (!backendClient) {
-					addMessage(
-						"Backend client not initialized. Please wait a moment and try again.",
-						false
-					);
+				if (!validateBackendClient()) {
 					return;
 				}
 
 				// Create AutonomousAgent instance (kernel name will be set after workspace is created)
 				const agent = new AutonomousAgent(
-					backendClient,
+					backendClient!,
 					workspaceDir,
 					undefined,
 					undefined
@@ -2946,43 +2297,27 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						}
 					} catch (e) {
 						addMessage(
-							`Code generation failed: ${e instanceof Error ? e.message : String(e)}`,
+							`Code generation failed: ${
+								e instanceof Error ? e.message : String(e)
+							}`,
 							false
 						);
 					} finally {
 						// Release chat UI after background operation completes
-						setIsLoading(false);
-						setIsProcessing(false);
-						setProgressMessage("");
+						resetLoadingState();
 					}
 				})();
 
-				// Step 4: Notify user that cells are ready for manual execution
+				// Step 4: Inform the user that generation is ongoing; final readiness will be posted on completion
 				addMessage(
-					`Notebook Ready!\n\n` +
-						`The notebook has been created and opened with all cells added.\n\n` +
-						`**What's ready:**\n` +
-						`• All analysis cells have been added to the notebook\n` +
-						`• Cells are ready for manual execution\n` +
-						`• No automatic execution - you have full control\n\n` +
-						`**You can:**\n` +
-						`• Run cells one by one using "Run Next Cell"\n` +
-						`• Run all cells using "Run All Steps"\n` +
-						`• Execute individual cells using their own "Run" buttons\n` +
-						`• Review code before execution`,
+					`Notebook created and opened.\n\n` +
+						`I'm now generating the analysis cells in the background.\n` +
+						`I'll notify you when all cells have been added and are ready to run.`,
 					false
 				);
 
 				// Analysis workspace created
-				addMessage("Analysis workspace ready!", false);
-				addMessage(
-					"Notebook created and populated with:\n" +
-						"• Package installation cell\n" +
-						"• Data download and loading cell\n" +
-						"• Complete analysis pipeline cells\n" +
-						"• All cells ready for manual execution",
-					false
-				);
+				addMessage("Analysis workspace created.", false);
 
 				// List files in the workspace for debugging
 				try {
@@ -2997,10 +2332,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 				addMessage("Analysis workspace created successfully!", false);
 				addMessage(
-					"Ready to analyze:\n" +
-						"• Notebook is open with all cells added\n" +
-						"• All cells are ready for manual execution\n" +
-						"• Use notebook controls to run cells when ready",
+					"Next steps:\n" +
+						"• Wait for cells to finish generating (you'll get a confirmation)\n" +
+						"• Then use notebook controls to run cells when ready",
 					false
 				);
 			} catch (error) {
@@ -3015,10 +2349,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				errorMessage += `- Try restarting the application\n`;
 
 				addMessage(errorMessage, false);
-			} finally {
-				setIsLoading(false);
-				setIsProcessing(false);
-				setProgressMessage("");
+				// Reset processing state on failure
+				resetLoadingState();
 			}
 		},
 		[
@@ -3028,34 +2360,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			analysisState.messages,
 		]
 	);
-
-	const handleKeyPress = (e: React.KeyboardEvent) => {
-		if (e.key === "Enter" && !e.shiftKey) {
-			e.preventDefault();
-			handleSendMessage();
-		}
-	};
-
-	const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-		const next = e.target.value;
-		setInputValue(next);
-		// Basic mention detection: open menu after '@' and while token is current
-		const caret = e.target.selectionStart || next.length;
-		const uptoCaret = next.slice(0, caret);
-		const match = uptoCaret.match(/@([^\s@]*)$/);
-		if (match) {
-			setMentionOpen(true);
-			setMentionQuery(match[1] || "");
-		} else if (mentionOpen) {
-			setMentionOpen(false);
-			setMentionQuery("");
-		}
-
-		// Auto-resize textarea
-		const textarea = e.target;
-		textarea.style.height = "auto";
-		textarea.style.height = Math.min(textarea.scrollHeight, 120) + "px";
-	};
 
 	// Ensure first item is highlighted when menu opens or updates
 	useEffect(() => {
@@ -3123,12 +2427,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					// ignore add failure; we'll still insert alias text
 				}
 			}
-			setSelectedDatasets((prev) => mergeSelectedDatasets(prev, [entry]));
+			selectDatasets([entry]);
 			const alias =
 				entry.alias || (entry.title || entry.id).replace(/\s+/g, "_");
 			const nextInput =
 				inputValueRef.current.replace(/@([^\s@]*)$/, `@${alias}`) + " ";
 			setInputValue(nextInput);
+			inputValueRef.current = nextInput;
 			setMentionOpen(false);
 			setMentionQuery("");
 			setWorkspaceMentionItems([]);
@@ -3147,12 +2452,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			if (index < 0 || index >= cellMentionItems.length) return;
 			const item = cellMentionItems[index];
 			const alias = String(item.alias || "");
-			setInputValue((prev) => {
-				if (/#[^\s#]*$/.test(prev)) {
-					return prev.replace(/#([^\s#]*)$/, alias) + " ";
-				}
-				return (prev.endsWith(" ") ? prev : prev + " ") + alias + " ";
-			});
+			const current = inputValueRef.current || "";
+			const next = /#[^\s#]*$/.test(current)
+				? current.replace(/#([^\s#]*)$/, alias) + " "
+				: (current.endsWith(" ") ? current : current + " ") + alias + " ";
+			setInputValue(next);
+			inputValueRef.current = next;
 			setMentionOpen(false);
 			setMentionQuery("");
 			setWorkspaceMentionItems([]);
@@ -3228,13 +2533,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		]
 	);
 
-	const toggleChat = () => {
-		uiDispatch({
-			type: "SET_CHAT_COLLAPSED",
-			payload: !uiState.chatCollapsed,
-		});
-	};
-
 	const closeChat = () => {
 		// Fully hide the chat panel and reset collapsed state
 		uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: false });
@@ -3289,9 +2587,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 		} catch {}
 
-		setIsLoading(false);
-		setIsProcessing(false);
-		setProgressMessage("");
+		resetLoadingState();
 		addMessage("Processing stopped by user.", false);
 	};
 
@@ -3300,11 +2596,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const debouncedMentionProcessing = React.useRef<NodeJS.Timeout | null>(null);
 	const cellItemsCache = React.useRef<{
 		activeFile: string;
-		items: any[];
-	} | null>(null);
-	const mentionItemsCache = React.useRef<{
-		workspace: string;
-		token: string;
 		items: any[];
 	} | null>(null);
 
@@ -3584,12 +2875,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				messageText += `\n\nSelected code:\n\`\`\`python\n${selectedCode}\n\`\`\``;
 			}
 
-			setInputValue(
-				(prev) =>
-					(prev.endsWith(" ") || prev.length === 0 ? prev : prev + " ") +
-					messageText +
-					" "
-			);
+			const current = inputValueRef.current || "";
+			const next =
+				(current.endsWith(" ") || current.length === 0 ? current : current + " ") +
+				messageText +
+				" ";
+			setInputValue(next);
+			inputValueRef.current = next;
 			setMentionOpen(false);
 			setMentionQuery("");
 			setWorkspaceMentionItems([]);
@@ -3645,7 +2937,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 				<ValidationErrors errors={validationErrors} />
 
-				<SearchProgressView progress={searchProgress} />
+				<SearchProgressView progress={datasetSearchProgress} />
 
 				{/* Show example queries as soon as results are available (before selection) */}
 				{showExamples &&
@@ -3700,7 +2992,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		isProcessing,
 		progressMessage,
 		validationErrors,
-		searchProgress,
+		datasetSearchProgress,
 		virtualEnvStatus,
 		showVirtualEnvLog,
 		isAutoExecuting,
@@ -3834,8 +3126,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							onClick={() => {
 								// Start a brand new chat session
 								analysisDispatch({ type: "NEW_CHAT_SESSION" });
-								setSelectedDatasets([]);
-								setAvailableDatasets([]);
+								clearSelectedDatasets();
+								clearAvailableDatasets();
 								setCurrentSuggestions(null);
 								setSuggestionButtons([]);
 								setProcessedEvents(new Set());
@@ -4054,8 +3346,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 																payload: s.id,
 															});
 															// Messages for the selected session will be loaded by context effect
-															setSelectedDatasets([]);
-															setAvailableDatasets([]);
+															clearSelectedDatasets();
+															clearAvailableDatasets();
 															setCurrentSuggestions(null);
 															setSuggestionButtons([]);
 															setProcessedEvents(new Set());
@@ -4188,14 +3480,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				mode={chatMode}
 				onModeChange={(m) => setChatMode(m)}
 				suggestedMentions={[]}
-				onInsertAlias={(alias: string) => {
-					setInputValue((prev) => {
+					onInsertAlias={(alias: string) => {
+						const prev = inputValueRef.current || "";
 						const needsSpace = prev.length > 0 && !prev.endsWith(" ");
-						return `${prev}${needsSpace ? " " : ""}${alias} `;
-					});
-					setMentionOpen(false);
-					setMentionQuery("");
-				}}
+						const next = `${prev}${needsSpace ? " " : ""}${alias} `;
+						setInputValue(next);
+						inputValueRef.current = next;
+						setMentionOpen(false);
+						setMentionQuery("");
+					}}
 			/>
 
 			{/* @ mention suggestions menu */}
@@ -4239,12 +3532,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				onSelect={(item) => {
 					const alias =
 						item.alias || (item.title || item.id).replace(/\s+/g, "_");
-					setSelectedDatasets((prev) =>
-						mergeSelectedDatasets(prev, [item] as any)
-					);
-					setInputValue(
-						(prev) => prev.replace(/@([^\s@]*)$/, `@${alias}`) + " "
-					);
+					selectDatasets([item] as any);
+					{
+						const prev = inputValueRef.current || "";
+						const next = prev.replace(/@([^\s@]*)$/, `@${alias}`) + " ";
+						setInputValue(next);
+						inputValueRef.current = next;
+					}
 					setMentionOpen(false);
 					setMentionQuery("");
 				}}
@@ -4255,12 +3549,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						const added = await registry.addFromPath(item.localPath);
 						if (added) entry = added as any;
 					}
-					setSelectedDatasets((prev) => mergeSelectedDatasets(prev, [entry]));
+					selectDatasets([entry]);
 					const alias =
 						entry.alias || (entry.title || entry.id).replace(/\s+/g, "_");
-					setInputValue(
-						(prev) => prev.replace(/@([^\s@]*)$/, `@${alias}`) + " "
-					);
+					{
+						const prev = inputValueRef.current || "";
+						const next = prev.replace(/@([^\s@]*)$/, `@${alias}`) + " ";
+						setInputValue(next);
+						inputValueRef.current = next;
+					}
 					setMentionOpen(false);
 					setMentionQuery("");
 				}}

@@ -47,6 +47,7 @@
     "axios": "^1.5.0",
     "dotenv": "^17.2.1",
     "electron-store": "^8.1.0",
+    "electron-updater": "^6.6.2",
     "firebase": "^10.12.0",
     "highlight.js": "11.11.1",
     "monaco-editor": "0.52.2",
@@ -57,9 +58,6 @@
     "rehype-highlight": "7.0.2",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^3.0.1",
-    "socket.io-client": "^4.7.0",
-    "ssh2": "^1.16.0",
-    "style-to-object": "^1.0.9",
     "styled-components": "^6.0.0",
     "tar": "^6.2.0",
     "uuid": "^9.0.1",
@@ -78,6 +76,10 @@
       "node_modules/**/*"
     ],
     "extraResources": [],
+    "publish": {
+      "provider": "generic",
+      "url": "https://axon.celvox.co/updates/"
+    },
     "mac": {
       "icon": "src/png/axon.icns",
       "target": [
