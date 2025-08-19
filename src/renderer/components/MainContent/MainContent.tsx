@@ -89,6 +89,15 @@ const TabBar = styled.div`
 	&.can-scroll-right::after {
 		opacity: 1;
 	}
+	
+	/* Force visibility for debugging */
+	&.force-visible-tabbar {
+		display: flex !important;
+		visibility: visible !important;
+		opacity: 1 !important;
+		z-index: 1000 !important;
+		position: relative !important;
+	}
 `;
 
 const Tab = styled.div<{ $isActive: boolean }>`
@@ -462,6 +471,7 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 			])
 		);
 
+
 		if (files.length === 0) return null;
 
 		const tabs: React.ReactNode[] = [];
@@ -470,6 +480,7 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 		files.forEach((filePath: string) => {
 			const fileName = filePath.split("/").pop() || filePath;
 			const isActive = workspaceState.activeFile === filePath;
+
 
 			tabs.push(
 				<Tab
@@ -627,10 +638,22 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 		<MainContainer>
 			{(() => {
 				const tabs = renderTabBar();
-				return tabs && tabs.length > 0 ? (
+				// Force show TabBar if we have any open files, regardless of active file type
+				const shouldShowTabBar = tabs && tabs.length > 0;
+				return shouldShowTabBar ? (
 					<TabBar 
 						ref={tabBarRef} 
-						className={`${canScrollLeft ? 'can-scroll-left' : ''} ${canScrollRight ? 'can-scroll-right' : ''}`}
+						className={`${canScrollLeft ? 'can-scroll-left' : ''} ${canScrollRight ? 'can-scroll-right' : ''} force-visible-tabbar`}
+						style={{ 
+							display: 'flex',
+							visibility: 'visible',
+							opacity: 1,
+							zIndex: 1000,
+							position: 'relative',
+							backgroundColor: '#2d2d30',
+							height: '35px',
+							minHeight: '35px'
+						}}
 					>
 						{tabs}
 					</TabBar>

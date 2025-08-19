@@ -1227,29 +1227,32 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 	return (
 		<EditorContainer>
-			<EditorHeader>
-				{fileName} {hasChanges && "(modified)"}
-				{hasChanges && (
-					<div style={{ marginLeft: "auto" }}>
-						<Tooltip content="Save changes to disk" placement="bottom">
-							<button
-								onClick={saveFile}
-								style={{
-									background: COLORS.PRIMARY,
-									border: "none",
-									color: "white",
-									padding: "2px 8px",
-									borderRadius: "2px",
-									fontSize: "11px",
-									cursor: "pointer",
-								}}
-							>
-								Save
-							</button>
-						</Tooltip>
-					</div>
-				)}
-			</EditorHeader>
+			{/* Only show EditorHeader for non-notebook files since notebooks use TabBar from MainContent */}
+			{!filePath.endsWith(".ipynb") && (
+				<EditorHeader>
+					{fileName} {hasChanges && "(modified)"}
+					{hasChanges && (
+						<div style={{ marginLeft: "auto" }}>
+							<Tooltip content="Save changes to disk" placement="bottom">
+								<button
+									onClick={saveFile}
+									style={{
+										background: COLORS.PRIMARY,
+										border: "none",
+										color: "white",
+										padding: "2px 8px",
+										borderRadius: "2px",
+										fontSize: "11px",
+										cursor: "pointer",
+									}}
+								>
+									Save
+								</button>
+							</Tooltip>
+						</div>
+					)}
+				</EditorHeader>
+			)}
 
 			{filePath.endsWith(".ipynb") && notebookData ? (
 				renderNotebook()

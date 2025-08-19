@@ -190,7 +190,14 @@ function appReducer(state: AppState, action: AppAction): AppState {
 			};
 
 		case "SET_ACTIVE_FILE":
-			return { ...state, activeFile: action.payload };
+			// Ensure active file is also in openFiles array (especially important for .ipynb files)
+			const newActiveFile = action.payload;
+			const shouldAddToOpenFiles = newActiveFile && !state.openFiles.includes(newActiveFile);
+			return { 
+				...state, 
+				activeFile: newActiveFile,
+				openFiles: shouldAddToOpenFiles ? [...state.openFiles, newActiveFile] : state.openFiles
+			};
 
 		// Analysis actions
 		case "SET_BIORAG_CONNECTED":
