@@ -157,7 +157,7 @@ export class NotebookService {
 		datasets: Dataset[],
 		workspaceDir: string
 	): Promise<string> {
-		const notebookPath = `${workspaceDir}/analysis_${Date.now()}.ipynb`;
+		const notebookPath = `${workspaceDir}/analysis.ipynb`;
 
 		// Create basic notebook structure with header only
 		const cells: NotebookCell[] = [
