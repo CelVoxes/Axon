@@ -22,7 +22,7 @@ export class BackendClient implements IBackendClient {
 
 	constructor(baseUrl?: string) {
 		const cfg = ConfigManager.getInstance().getSection("backend");
-		this.baseUrl = baseUrl || cfg.baseUrl || "http://localhost:8000";
+		this.baseUrl = baseUrl || cfg.baseUrl || "http://localhost:8001";
 
 		// Initialize axios instance with base URL and timeout
 		this.axiosInstance = axios.create({

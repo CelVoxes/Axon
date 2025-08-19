@@ -2029,8 +2029,11 @@ export class AxonApp {
 		});
 
 		ipcMain.handle("get-biorag-url", async () => {
-			// Return default BioRAG URL
-			return "http://localhost:8001";
+			// Use configured backend URL from environment or default
+			const isPackaged = app.isPackaged;
+			const backendUrl = isPackaged ? "http://axon.celvox.co:8002" : "http://localhost:8001";
+			console.log("✅ Backend URL retrieved:", backendUrl);
+			return backendUrl;
 		});
 
 		ipcMain.handle("biorag-query", async (_, query: any) => {
