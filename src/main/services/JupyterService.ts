@@ -166,7 +166,7 @@ export class JupyterService {
 		const { v4: uuidv4 } = require("uuid");
 
 		// Small delay to avoid race conditions
-		await new Promise((r) => setTimeout(r, 1000));
+		await new Promise((r) => setTimeout(r, 200));
 
 		// Use a stable session id for this connection (and reuse in message header)
 		const sessionId = uuidv4();

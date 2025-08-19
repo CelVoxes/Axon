@@ -9,7 +9,6 @@ import * as path from "path";
 import * as fs from "fs";
 import Store from "electron-store";
 import { JupyterService } from "./services/JupyterService";
-import { WorkspaceEnvironmentService } from "./services/WorkspaceEnvironmentService";
 
 // Store for app settings
 const store = new Store();
@@ -30,7 +29,6 @@ export class AxonApp {
 
 	// Centralized services
 	private jupyterService: JupyterService;
-	private workspaceEnvironmentService: WorkspaceEnvironmentService;
 
 	// Ensure the configured Jupyter port is available; if occupied, try to free it or switch to an available port
 	private async ensureJupyterPortAvailable(): Promise<void> {
@@ -95,7 +93,6 @@ export class AxonApp {
 		this.jupyterService = new JupyterService(
 			JupyterService.getDefaultConfig(this.jupyterPort)
 		);
-		this.workspaceEnvironmentService = new WorkspaceEnvironmentService();
 		
 		this.initializeApp();
 		this.setupAutoUpdater();
@@ -228,12 +225,8 @@ export class AxonApp {
 				this.mainWindow!
 			);
 
-			// Configure workspace environment service with code execution capability
-			this.workspaceEnvironmentService.setCodeExecutionFunction(
-				async (code: string, workspacePath: string) => {
-					return this.executeCodeUsingCentralizedService(code, workspacePath);
-				}
-			);
+			// Note: Code execution functionality removed from workspace environment service
+			// as it's no longer needed for optimized package verification
 		});
 
 		// Handle external links
@@ -1113,23 +1106,34 @@ export class AxonApp {
 
 			// Install Jupyter only if missing to avoid repeated slow installs
 			const requiredPackages = ["jupyter", "notebook", "ipykernel"];
-			const isPkgInstalled = async (pkg: string): Promise<boolean> => {
-				return await new Promise<boolean>((resolve) => {
-					const p = spawn(pipPath, ["show", pkg], { stdio: "pipe" });
-					p.on("close", (code) => resolve(code === 0));
-					p.on("error", () => resolve(false));
+			// Use batch package check instead of individual pip show commands for better performance
+			const checkInstalledPackages = async (): Promise<Set<string>> => {
+				return new Promise<Set<string>>((resolve) => {
+					const p = spawn(pipPath, ["list", "--format=json"], { stdio: "pipe" });
+					let stdout = "";
+					p.stdout?.on("data", (data) => stdout += data.toString());
+					p.on("close", (code) => {
+						if (code === 0) {
+							try {
+								const packages = JSON.parse(stdout) as Array<{name: string}>;
+								const installed = new Set<string>(packages.map((p) => p.name.toLowerCase()));
+								resolve(installed);
+							} catch {
+								resolve(new Set<string>());
+							}
+						} else {
+							resolve(new Set<string>());
+						}
+					});
+					p.on("error", () => resolve(new Set<string>()));
 				});
 			};
-			const missingPkgs: string[] = [];
-			for (const pkg of requiredPackages) {
-				// eslint-disable-next-line no-await-in-loop
-				const installed = await isPkgInstalled(pkg);
-				if (!installed) missingPkgs.push(pkg);
-			}
+			const installedPackages = await checkInstalledPackages();
+			const missingPkgs = requiredPackages.filter(pkg => !installedPackages.has(pkg.toLowerCase()));
 			if (missingPkgs.length > 0) {
 				console.log(`Installing Jupyter packages: ${missingPkgs.join(", ")}`);
 				await new Promise<void>((resolve, reject) => {
-					const installProcess = spawn(pipPath, ["install", ...missingPkgs]);
+					const installProcess = spawn(pipPath, ["install", "--no-cache-dir", ...missingPkgs]);
 
 					installProcess.on("error", (error: Error) => {
 						console.error("Error installing Jupyter packages:", error);
@@ -1321,7 +1325,7 @@ export class AxonApp {
 						}
 					} catch (_) {}
 					// Not ready yet; schedule another check
-					setTimeout(checkReady, 1000);
+					setTimeout(checkReady, 200);
 				};
 				checkReady();
 			});
@@ -1775,7 +1779,7 @@ export class AxonApp {
 				
 				console.log(`Using pip at: ${pipPath}`);
 				
-				const installProcess = spawn(pipPath, ["install", ...packages], {
+				const installProcess = spawn(pipPath, ["install", "--no-cache-dir", ...packages], {
 					cwd: workspacePath,
 					stdio: "pipe",
 				});

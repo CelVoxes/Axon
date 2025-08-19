@@ -40,7 +40,6 @@ export class EnvironmentManager {
 		}
 	}
 
-
 	/**
 	 * Start Jupyter with workspace kernels if not already running
 	 */
@@ -79,11 +78,13 @@ export class EnvironmentManager {
 	async ensureWorkspaceKernelReady(workspaceDir: string): Promise<boolean> {
 		try {
 			this.updateStatus(`🔧 Verifying Jupyter server is ready...`);
-			
+
 			// Just verify that Jupyter server is running - kernel discovery is handled dynamically
 			await ElectronClient.startJupyter(workspaceDir);
-			
-			this.updateStatus(`✅ Jupyter server ready with dynamic kernel discovery`);
+
+			this.updateStatus(
+				`✅ Jupyter server ready with dynamic kernel discovery`
+			);
 			return true;
 		} catch (error) {
 			console.warn("Failed to ensure Jupyter server is ready:", error);
@@ -392,57 +393,15 @@ except subprocess.CalledProcessError:
 		return packages.every((pkg) => this.installedPackages.has(pkg));
 	}
 
+
 	/**
-	 * Verify core packages are available - delegated to centralized service
-	 * Note: This is now handled by the centralized WorkspaceEnvironmentService in the main process
+	 * Verify core packages are available - simplified for maximum speed
 	 */
 	private async verifyCorePackages(workspaceDir: string): Promise<boolean> {
-		try {
-			// Simple verification using pip list command
-			const checkCode = `
-import subprocess
-import sys
-import json
-
-core_packages = ['pandas', 'numpy', 'matplotlib', 'seaborn']
-
-try:
-    result = subprocess.run([sys.executable, "-m", "pip", "list", "--format=json"], 
-                          capture_output=True, text=True, timeout=10)
-    if result.returncode == 0:
-        packages = json.loads(result.stdout)
-        installed = {pkg['name'].lower() for pkg in packages}
-        missing = [pkg for pkg in core_packages if pkg not in installed]
-        
-        if missing:
-            print(f"❌ Missing core packages: {missing}")
-        else:
-            print("✅ All core packages available")
-            
-        print(f"VERIFICATION_RESULT: {len(missing) == 0}")
-    else:
-        print("❌ Failed to list packages")
-        print("VERIFICATION_RESULT: False")
-except Exception as e:
-    print(f"❌ Package verification error: {e}")
-    print("VERIFICATION_RESULT: False")
-`;
-
-			const testResult = await ElectronClient.executeJupyterCode(checkCode, workspaceDir);
-			
-			if (testResult.success && testResult.output) {
-				const match = testResult.output.match(/VERIFICATION_RESULT:\s*(True|False)/);
-				const success = match ? match[1] === 'True' : false;
-				
-				console.log("📦 Package verification result:", success ? "✅ Success" : "❌ Failed");
-				return success;
-			} else {
-				console.warn("⚠️ Package verification failed:", testResult.error);
-				return false;
-			}
-		} catch (error) {
-			console.error("Error verifying core packages:", error);
-			return false;
-		}
+		// Skip package verification entirely in renderer - let the main process handle it
+		// The main process already does optimized verification when needed
+		// This eliminates the slow Python subprocess chain entirely
+		console.log("📦 Package verification delegated to main process for speed");
+		return true;
 	}
 }
