@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import { typography } from "../../styles/design-system";
 import { Message } from "../../context/AppContext";
 import { CodeBlock } from "./shared/CodeBlock";
+// design-system typography already imported above
 
 interface ChatMessageProps {
 	message: Message;
@@ -121,6 +122,20 @@ const MessageText = styled.div<{ $messageType: string }>`
 						font-size: ${typography.sm};
 						border: 1px solid #444;
 					}
+
+					/* Lint summary/details presentation (normal grayish text) */
+					.lint-container { margin: 8px 0; }
+					.lint-header {
+						color: #a3a3a3;
+						font-size: ${typography.base};
+						cursor: pointer;
+						user-select: none;
+						padding: 4px 0;
+					}
+					.lint-header:hover { color: #d1d5db; }
+					.lint-details { color: #9ca3af; font-size: ${typography.sm}; padding-left: 14px; }
+					.lint-details ul { margin: 6px 0 0 0; padding-left: 18px; }
+					.lint-section { margin-top: 6px; }
 				`;
 			case "system":
 				return `
@@ -260,7 +275,79 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 										</code>
 									);
 								}
-								const codeContent = String(children || "").trim();
+								let codeContent = String(children || "").trim();
+								let headerTitle = "";
+								// Support special "lint" blocks with a first-line summary
+								if ((match ? match[1] : "") === "lint") {
+									const lines = codeContent.split(/\r?\n/);
+									if (lines.length > 0 && /^LINT_SUMMARY:/i.test(lines[0])) {
+										headerTitle = lines[0].replace(/^LINT_SUMMARY:\s*/i, "").trim();
+										codeContent = lines.slice(1).join("\n");
+									}
+
+									// Render as normal grayish text, expandable via click
+									const [expanded, setExpanded] = React.useState(false);
+
+									// Parse sections by scanning lines to avoid regex split pitfalls
+									let errorsList: React.ReactNode[] = [];
+									let warningsList: React.ReactNode[] = [];
+									try {
+										const lines = codeContent.split(/\r?\n/);
+										let section: "none" | "errors" | "warnings" = "none";
+										let eIndex = 0;
+										let wIndex = 0;
+										for (const raw of lines) {
+											const line = raw.trim();
+											if (/^errors:\s*$/i.test(line)) {
+												section = "errors";
+												continue;
+											}
+											if (/^warnings:\s*$/i.test(line)) {
+												section = "warnings";
+												continue;
+											}
+											if (section === "errors" && /^-\s+/.test(line)) {
+												errorsList.push(<li key={`e-${eIndex++}`}>{line.replace(/^\-\s+/, "")}</li>);
+												continue;
+											}
+											if (section === "warnings" && /^-\s+/.test(line)) {
+												warningsList.push(<li key={`w-${wIndex++}`}>{line.replace(/^\-\s+/, "")}</li>);
+												continue;
+											}
+										}
+									} catch (_) {}
+
+									return (
+										<div className="lint-container">
+											<div
+												className="lint-header"
+												onClick={() => setExpanded((v) => !v)}
+											>
+												<span style={{ marginRight: 8, color: "#9ca3af" }}>&gt;</span>
+												{headerTitle || "Lint results"}
+											</div>
+											{expanded && (
+												<div className="lint-details">
+													{errorsList.length > 0 && (
+														<div className="lint-section">
+															<strong style={{ color: "#d1d5db" }}>Errors</strong>
+															<ul>{errorsList}</ul>
+														</div>
+													)}
+													{warningsList.length > 0 && (
+														<div className="lint-section">
+															<strong style={{ color: "#d1d5db" }}>Warnings</strong>
+															<ul>{warningsList}</ul>
+														</div>
+													)}
+													{errorsList.length === 0 && warningsList.length === 0 && (
+														<div className="lint-section">No issues listed.</div>
+													)}
+												</div>
+											)}
+										</div>
+									);
+								}
 								if (
 									codeContent.length === 0 ||
 									codeContent.replace(/\s/g, "").length === 0 ||
@@ -270,7 +357,6 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 								}
 
 								// Compute header title for diff blocks as "+<adds> -<dels>"
-								let headerTitle = "";
 								if (language === "diff") {
 									try {
 										const lines = codeContent.split(/\r?\n/);

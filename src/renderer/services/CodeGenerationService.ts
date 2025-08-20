@@ -13,12 +13,12 @@ import {
 } from "./types";
 import { ConfigManager } from "./ConfigManager";
 import {
-	extractImports as sharedExtractImports,
 	getExistingImports as sharedGetExistingImports,
 	removeDuplicateImports as sharedRemoveDuplicateImports,
 } from "../utils/ImportUtils";
 import { Logger } from "../utils/Logger";
 import { ScanpyDocsService } from "./ScanpyDocsService";
+import { extractPythonCode as extractPythonCodeUtil } from "../utils/CodeTextUtils";
 
 export class CodeGenerationService implements ICodeGenerator {
 	private backendClient: BackendClient;
@@ -98,75 +98,29 @@ export class CodeGenerationService implements ICodeGenerator {
 
 	/**
 	 * Generate fallback code based on the specified mode
+	 * CodeQualityService will handle import deduplication and enhancements
 	 */
 	private generateFallbackCode(request: CodeGenerationRequest): string {
-		const existingImports = this.getExistingImports(request.globalCodeContext);
-
 		switch (request.fallbackMode) {
 			case "basic":
 				return this.generateBasicStepCode(
 					request.stepDescription,
-					request.stepIndex,
-					existingImports
+					request.stepIndex
 				);
 			case "timeout-safe":
 				return this.generateTimeoutSafeCode(
 					request.stepDescription,
 					request.datasets,
-					request.stepIndex,
-					existingImports
+					request.stepIndex
 				);
 			case "data-aware":
 			default:
 				return this.generateDataAwareBasicStepCode(
 					request.stepDescription,
 					request.datasets,
-					request.stepIndex,
-					existingImports
+					request.stepIndex
 				);
 		}
-	}
-
-	/**
-	 * @deprecated Use generateCode() instead
-	 * Main method for generating code with event-driven streaming
-	 * This replaces all the complex callback management
-	 */
-	async generateCodeWithEvents(
-		request: CodeGenerationRequest,
-		stepId: string
-	): Promise<CodeGenerationResult> {
-		this.log.debug(
-			"generateCodeWithEvents: %s (%s)",
-			request.stepDescription,
-			stepId
-		);
-
-		return await this.generateDataDrivenStepCodeWithEvents(request, stepId);
-	}
-
-	/**
-	 * Extract imports from code string
-	 */
-	private extractImports(code: string): Set<string> {
-		return sharedExtractImports(code);
-	}
-
-	/**
-	 * Get all imports from global code context
-	 */
-	private getExistingImports(globalCodeContext?: string): Set<string> {
-		return sharedGetExistingImports(globalCodeContext);
-	}
-
-	/**
-	 * Remove duplicate imports from code
-	 */
-	private removeDuplicateImports(
-		code: string,
-		existingImports: Set<string>
-	): string {
-		return sharedRemoveDuplicateImports(code, existingImports);
 	}
 
 	private buildEnhancedContext(request: CodeGenerationRequest): string {
@@ -204,7 +158,7 @@ export class CodeGenerationService implements ICodeGenerator {
 			.join("\n\n");
 
 		// Get existing imports from global context
-		const existingImports = this.getExistingImports(request.globalCodeContext);
+		const existingImports = sharedGetExistingImports(request.globalCodeContext);
 		const existingImportsList = Array.from(existingImports).join("\n");
 
 		let context = `Original question: ${request.originalQuestion}
@@ -321,10 +275,10 @@ General requirements:
 			const chunkCallback = (chunk: string) => {
 				chunkCount++;
 
-				// Update accumulated code
+				// Update accumulated code without aggressive deduplication during streaming
 				generation.accumulatedCode += chunk;
 
-				// Emit chunk event
+				// Emit chunk event (include cleaned accumulatedCode)
 				EventManager.dispatchEvent("code-generation-chunk", {
 					stepId,
 					stepDescription: request.stepDescription,
@@ -359,18 +313,12 @@ General requirements:
 				throw new Error("No code generated from streaming");
 			}
 
-			// Clean up any duplicate imports before returning
-			const existingImports = this.getExistingImports(
-				request.globalCodeContext
+			// Use generated code as-is, let CodeQualityService handle all enhancements
+			let finalCode = finalGeneratedCode || this.generateDataAwareBasicStepCode(
+				request.stepDescription,
+				request.datasets,
+				request.stepIndex
 			);
-			const finalCode = finalGeneratedCode
-				? this.removeDuplicateImports(finalGeneratedCode, existingImports)
-				: this.generateDataAwareBasicStepCode(
-						request.stepDescription,
-						request.datasets,
-						request.stepIndex,
-						existingImports
-				  );
 
 			this.log.debug("final code length after cleaning=%d", finalCode.length);
 
@@ -478,8 +426,7 @@ General requirements:
 
 	private generateBasicStepCode(
 		stepDescription: string,
-		stepIndex: number,
-		existingImports?: Set<string>
+		stepIndex: number
 	): string {
 		// Fallback code generation when LLM is not available
 		let code = `# Step ${stepIndex + 1}: ${stepDescription}
@@ -496,10 +443,7 @@ print(f"Executing step ${stepIndex + 1}: ${stepDescription}")
 print("Step completed successfully!")
 `;
 
-		// Remove duplicate imports if existing imports are provided
-		if (existingImports && existingImports.size > 0) {
-			code = this.removeDuplicateImports(code, new Set(existingImports));
-		}
+		// Let CodeQualityService handle import deduplication
 
 		return code;
 	}
@@ -507,15 +451,13 @@ print("Step completed successfully!")
 	private generateDataAwareBasicStepCode(
 		stepDescription: string,
 		datasets: any[],
-		stepIndex: number,
-		existingImports?: Set<string>
+		stepIndex: number
 	): string {
 		const datasetIds = datasets.map((d) => d.id).join(", ");
 
-		// Simplified: minimal download by dataset id (use provided URL only; never derive)
+		// Respect constraint: do NOT download in this step; prefer localPath if provided
 		let datasetLoadingCode = [
 			"from pathlib import Path",
-			"import requests",
 			"data_dir = Path('data')",
 			"data_dir.mkdir(exist_ok=True)",
 			...datasets
@@ -529,10 +471,7 @@ print("Step completed successfully!")
 					if (!url) {
 						return `print("No URL or localPath for dataset: ${title}")`;
 					}
-					const filename = url.toLowerCase().endsWith(".h5ad")
-						? `${dataset.id}.h5ad`
-						: `${dataset.id}.data`;
-					return `from pathlib import Path\n_title = "${title}"\n_dest = data_dir / "${filename}"\nif Path(_dest).exists():\n    print("Using existing:", str(_dest))\nelse:\n    print("Downloading:", _title)\n    resp = requests.get("${url}", headers={"User-Agent": "Mozilla/5.0"}, timeout=60)\n    resp.raise_for_status()\n    open(_dest, 'wb').write(resp.content)\n    print("Saved:", str(_dest))`;
+					return `# URL provided for ${title} but downloads are disabled in this step\nprint("Skipping download for ${title}; use localPath if available.")`;
 				})
 				.filter(Boolean),
 		].join("\n");
@@ -554,23 +493,9 @@ ${datasetLoadingCode}
 print("Step completed successfully!")
 `;
 
-		// Remove duplicate imports if existing imports are provided
-		if (existingImports && existingImports.size > 0) {
-			code = this.removeDuplicateImports(code, new Set(existingImports));
-		}
+		// Let CodeQualityService handle import deduplication
 
 		return code;
-	}
-
-	/**
-	 * @deprecated Use generateCode() instead
-	 * Generate single step code with events (main public method)
-	 */
-	async generateSingleStepCode(
-		request: CodeGenerationRequest,
-		stepId?: string
-	): Promise<CodeGenerationResult> {
-		return this.generateCode({ ...request, stepId });
 	}
 
 	/**
@@ -596,43 +521,18 @@ print("Step completed successfully!")
 	/**
 	 * Method to emit validation success as an event
 	 */
-	emitValidationSuccess(stepId: string, message?: string): void {
+	emitValidationSuccess(stepId: string, message?: string, code?: string): void {
 		EventManager.dispatchEvent("code-validation-success", {
 			stepId,
 			message: message || "No linter errors found",
+			code,
 			timestamp: Date.now(),
 		});
 	}
 
 	extractPythonCode(response: string): string | null {
-		// Extract Python code from LLM response
-		const codeBlockRegex = /```(?:python)?\s*([\s\S]*?)```/;
-		const match = response.match(codeBlockRegex);
-
-		if (match) {
-			return match[1].trim();
-		}
-
-		// If no code block, check if the entire response looks like code
-		const lines = response.split("\n");
-		const codeIndicators = [
-			"import ",
-			"def ",
-			"class ",
-			"print(",
-			"pd.",
-			"np.",
-			"plt.",
-		];
-		const hasCodeIndicators = codeIndicators.some((indicator) =>
-			lines.some((line) => line.trim().startsWith(indicator))
-		);
-
-		if (hasCodeIndicators) {
-			return response.trim();
-		}
-
-		return null;
+		// Delegate to shared util to avoid duplication
+		return extractPythonCodeUtil(response);
 	}
 
 	/**
@@ -641,8 +541,7 @@ print("Step completed successfully!")
 	private generateTimeoutSafeCode(
 		stepDescription: string,
 		datasets: any[],
-		stepIndex: number,
-		existingImports?: Set<string>
+		stepIndex: number
 	): string {
 		const datasetIds = datasets.map((d) => d.id).join(", ");
 		let code = `# Step ${stepIndex + 1}: ${stepDescription} (Safe Mode)
@@ -667,58 +566,8 @@ except Exception as e:
 print("Safe step completed!")
 `;
 
-		// Remove duplicate imports if existing imports are provided
-		if (existingImports && existingImports.size > 0) {
-			code = this.removeDuplicateImports(code, new Set(existingImports));
-		}
+		// Let CodeQualityService handle import deduplication
 
 		return code;
-	}
-
-	// @deprecated - Use generateCode() instead
-	// Public wrapper methods for fallback code generation
-	public generateBasicStepCodePublic(
-		stepDescription: string,
-		stepIndex: number,
-		globalCodeContext?: string
-	): string {
-		const existingImports = this.getExistingImports(globalCodeContext);
-		return this.generateBasicStepCode(
-			stepDescription,
-			stepIndex,
-			existingImports
-		);
-	}
-
-	// @deprecated - Use generateCode() instead
-	public generateDataAwareBasicStepCodePublic(
-		stepDescription: string,
-		datasets: any[],
-		stepIndex: number,
-		globalCodeContext?: string
-	): string {
-		const existingImports = this.getExistingImports(globalCodeContext);
-		return this.generateDataAwareBasicStepCode(
-			stepDescription,
-			datasets,
-			stepIndex,
-			existingImports
-		);
-	}
-
-	// @deprecated - Use generateCode() instead
-	public generateTimeoutSafeCodePublic(
-		stepDescription: string,
-		datasets: any[],
-		stepIndex: number,
-		globalCodeContext?: string
-	): string {
-		const existingImports = this.getExistingImports(globalCodeContext);
-		return this.generateTimeoutSafeCode(
-			stepDescription,
-			datasets,
-			stepIndex,
-			existingImports
-		);
 	}
 }

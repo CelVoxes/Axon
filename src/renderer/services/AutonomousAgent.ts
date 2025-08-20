@@ -5,7 +5,7 @@ import {
 	CodeGenerationRequest,
 	ICodeGenerator,
 	ICodeExecutor,
-	ICodeQualityValidator,
+	// ICodeQualityValidator interface removed
 } from "./types";
 import { DatasetManager } from "./DatasetManager";
 import { CodeGenerationService } from "./CodeGenerationService";
@@ -13,7 +13,7 @@ import { CellExecutionService } from "./CellExecutionService";
 import { NotebookService } from "./NotebookService";
 import { EnvironmentManager } from "./EnvironmentManager";
 import { WorkspaceManager } from "./WorkspaceManager";
-import { CodeQualityOrchestrator } from "./CodeQualityOrchestrator";
+// CodeQualityOrchestrator removed - using CodeQualityService directly
 import { CodeQualityService } from "./CodeQualityService";
 import { NotebookGenerationOptions } from "./NotebookService";
 import { AsyncUtils } from "../utils/AsyncUtils";
@@ -61,7 +61,7 @@ export class AutonomousAgent {
 	private datasetManager: DatasetManager;
 	private codeGenerator: ICodeGenerator;
 	private codeExecutor: ICodeExecutor;
-	private codeQualityValidator: ICodeQualityValidator;
+	// Removed redundant CodeQualityOrchestrator
 	private codeQualityService: CodeQualityService;
 	private statusCallback?: (status: string) => void;
 	private notebookService: NotebookService;
@@ -111,9 +111,7 @@ export class AutonomousAgent {
 		);
 		this.codeExecutor = new CellExecutionService(workspacePath);
 
-		// Create dependency-free code quality validator
-		this.codeQualityValidator = new CodeQualityOrchestrator(backendClient);
-		// Full code quality service (validation + optional execution tests)
+		// Single code quality service handles all validation and enhancement
 		this.codeQualityService = new CodeQualityService(
 			backendClient,
 			this.codeExecutor as any,
@@ -147,7 +145,8 @@ export class AutonomousAgent {
 		this.datasetManager.setStatusCallback(callback);
 		this.environmentManager.setStatusCallback(callback);
 		this.workspaceManager.setStatusCallback(callback);
-		this.codeQualityValidator.setStatusCallback(callback);
+		// Pass to code quality service for unified status updates
+		this.codeQualityService.setStatusCallback(callback);
 	}
 
 	private updateStatus(message: string) {
@@ -618,98 +617,146 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		analysis?: any;
 	}> {
 		if (this.shouldStopAnalysis) {
-			step.status = "cancelled";
-			return {
-				status: "cancelled",
-				output: "Analysis was cancelled",
-				shouldRetry: false,
-			};
+			return this.createCancelledResult(step);
 		}
 
 		step.status = "running";
 
 		try {
-			// Execute with auto-fix-and-rerun loop
-			const maxAttempts = 2;
-			let attempt = 0;
-			let lastResult: any = {
-				status: "failed",
-				output: "",
-				shouldRetry: false,
-			};
+			return await this.executeStepWithRetry(step);
+		} catch (error) {
+			return this.createErrorResult(step, error);
+		}
+	}
 
-			while (attempt <= maxAttempts) {
-				// Use CellExecutionService to execute the step
-				const result = await this.codeExecutor.executeCell(
-					step.id,
-					step.code,
-					(updates: any) => {
-						// Update step with progress (streaming)
-						Object.assign(step, updates);
-					}
-				);
+	/**
+	 * Create a cancelled result for a step
+	 */
+	private createCancelledResult(step: AnalysisStep): any {
+		step.status = "cancelled";
+		return {
+			status: "cancelled",
+			output: "Analysis was cancelled",
+			shouldRetry: false,
+		};
+	}
 
-				step.status = result.status;
-				step.output = result.output;
+	/**
+	 * Create an error result for a step
+	 */
+	private createErrorResult(step: AnalysisStep, error: unknown): any {
+		step.status = "failed";
+		const errorMessage = error instanceof Error ? error.message : "Unknown error";
+		step.output = errorMessage;
+		return {
+			status: "failed",
+			output: errorMessage,
+			shouldRetry: false,
+		};
+	}
 
-				if (result.status === "completed") {
-					return result;
-				}
+	/**
+	 * Execute step with retry logic and auto-fix capability
+	 */
+	private async executeStepWithRetry(step: AnalysisStep): Promise<any> {
+		const maxAttempts = 2;
+		let lastResult: any = {
+			status: "failed",
+			output: "",
+			shouldRetry: false,
+		};
 
-				// If failed, decide whether to attempt auto-fix based on output
-				lastResult = result;
-				const errorOutput = result.output || "";
-				const canRetry = Boolean(result.shouldRetry) && errorOutput.length > 0;
-				if (!canRetry || attempt === maxAttempts) {
-					break;
-				}
-
-				// Attempt auto-fix using CodeQualityService and retry once
-				this.updateStatus(
-					`⚠️ Step failed, attempting auto-fix (attempt ${attempt + 1})...`
-				);
-				const refactored = await this.codeQualityService.generateRefactoredCode(
-					step.code,
-					errorOutput,
-					step.description,
-					this.workspacePath
-				);
-
-				// Clean and prepare the refactored code (imports, dirs, error handling)
-				const prepared = this.codeQualityService.cleanAndPrepareCode(
-					refactored,
-					{
-						addImports: true,
-						addErrorHandling: true,
-						addDirectoryCreation: true,
-						stepDescription: step.description,
-						globalCodeContext: this.getGlobalCodeContext(),
-					}
-				);
-
-				// Update step code and global context, then retry
-				step.code = prepared;
-				this.addCodeToContext(
-					`auto-fix-${step.id}-attempt-${attempt + 1}`,
-					prepared
-				);
-				attempt += 1;
+		for (let attempt = 0; attempt <= maxAttempts; attempt++) {
+			const result = await this.executeSingleAttempt(step);
+			
+			if (result.status === "completed") {
+				return result;
 			}
 
-			// Return last failure if we couldn't recover
-			return lastResult;
-		} catch (error) {
-			step.status = "failed";
-			const errorMessage =
-				error instanceof Error ? error.message : "Unknown error";
-			step.output = errorMessage;
+			lastResult = result;
+			const canRetry = this.shouldRetryExecution(result, attempt, maxAttempts);
+			
+			if (!canRetry) {
+				break;
+			}
 
-			return {
-				status: "failed",
-				output: errorMessage,
-				shouldRetry: false,
-			};
+			// Apply auto-fix for retry
+			await this.applyAutoFix(step, result.output || "", attempt);
 		}
+
+		return lastResult;
+	}
+
+	/**
+	 * Execute a single attempt of the step
+	 */
+	private async executeSingleAttempt(step: AnalysisStep): Promise<any> {
+		const result = await this.codeExecutor.executeCell(
+			step.id,
+			step.code,
+			(updates: any) => {
+				// Update step with progress (streaming)
+				Object.assign(step, updates);
+			}
+		);
+
+		step.status = result.status;
+		step.output = result.output;
+		return result;
+	}
+
+	/**
+	 * Determine if execution should be retried
+	 */
+	private shouldRetryExecution(result: any, attempt: number, maxAttempts: number): boolean {
+		const errorOutput = result.output || "";
+		const canRetry = Boolean(result.shouldRetry) && errorOutput.length > 0;
+		return canRetry && attempt < maxAttempts;
+	}
+
+	/**
+	 * Apply auto-fix to step code based on error output
+	 */
+	private async applyAutoFix(step: AnalysisStep, errorOutput: string, attempt: number): Promise<void> {
+		this.updateStatus(
+			`⚠️ Step failed, attempting auto-fix (attempt ${attempt + 1})...`
+		);
+		
+		const prepared = await this.generateFixedCode(
+			step.code, 
+			errorOutput, 
+			step.description
+		);
+
+		step.code = prepared;
+		this.addCodeToContext(
+			`auto-fix-${step.id}-attempt-${attempt + 1}`,
+			prepared
+		);
+	}
+
+	/**
+	 * Common method to generate fixed code based on error output
+	 */
+	private async generateFixedCode(
+		originalCode: string, 
+		errorOutput: string, 
+		stepDescription: string
+	): Promise<string> {
+		const refactored = await this.codeQualityService.generateRefactoredCode(
+			originalCode,
+			errorOutput,
+			stepDescription,
+			this.workspacePath
+		);
+
+		return this.codeQualityService.enhanceCode(refactored, {
+			addImports: true,
+			addErrorHandling: true,
+			addDirectoryCreation: true,
+			stepDescription,
+			globalCodeContext: this.getGlobalCodeContext(),
+		});
 	}
 
 	/**
@@ -948,152 +995,187 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		options?: { skipEnvCells?: boolean }
 	): Promise<boolean> {
 		try {
-			if (this.shouldStopAnalysis) {
-				this.updateStatus("Analysis cancelled");
+			// Setup environment and workspace
+			if (!await this.setupNotebookEnvironment(workspaceDir, options?.skipEnvCells)) {
 				return false;
 			}
-			// Step 1: Ensure environment is ready and executor workspace is correct
+
+			// Generate environment setup cells
 			if (!options?.skipEnvCells) {
-				await this.ensureEnvironmentReady(workspaceDir);
-			}
-			// Always set workspace path so downstream services know the context
-			this.workspacePath = workspaceDir;
-			this.codeExecutor.updateWorkspacePath(this.workspacePath);
-
-			if (this.shouldStopAnalysis) {
-				this.updateStatus("Analysis cancelled");
-				return false;
-			}
-
-			// Step 2: (optional) Generate, lint and add package installation code
-			if (!options?.skipEnvCells) {
-				const packageCode =
-					await this.environmentManager.generatePackageInstallationCode(
-						datasets,
-						analysisSteps,
-						workspaceDir
-					);
-				// Validate (lint/clean) without executing; execution will happen after adding to notebook
-				const packageTestResult = await this.codeQualityService.validateAndTest(
-					packageCode,
-					"package-install",
-					{ stepTitle: "Package installation", skipExecution: true }
-				);
-				{
-                    const finalPackageCode = this.sanitizeNotebookPythonCode(
-                        this.codeQualityService.getBestCode(packageTestResult)
-                    );
-					await this.notebookService.addCodeCell(
-						notebookPath,
-						finalPackageCode
-					);
-					this.updateStatus("Package installation cell added");
-				}
-			}
-
-			if (this.shouldStopAnalysis) {
-				this.updateStatus("Analysis cancelled");
-				return false;
-			}
-
-			// Step 3: Data preparation
-			const remoteDatasets = datasets.filter(
-				(d: any) => Boolean((d as any).url) && !Boolean((d as any).localPath)
-			);
-			const localDatasets = datasets.filter((d: any) =>
-				Boolean((d as any).localPath)
-			);
-
-			// 3a) If there are any remote datasets with URLs, add deterministic download cell
-			if (this.shouldStopAnalysis) {
-				this.updateStatus("Analysis cancelled");
-				return false;
-			}
-
-			if (!options?.skipEnvCells) {
-				if (remoteDatasets.length > 0) {
-					const rawDataDownloadCode =
-						this.buildDeterministicDataDownloadCode(remoteDatasets);
-					const dataDownloadValidation =
-						await this.codeQualityService.validateAndTest(
-							rawDataDownloadCode,
-							"data-download",
-							{ stepTitle: "Data download", skipExecution: true }
-						);
-                    const finalDataDownloadCode = this.sanitizeNotebookPythonCode(
-                        this.codeQualityService.getBestCode(
-                            dataDownloadValidation
-                        )
-                    );
-					await this.notebookService.addCodeCell(
-						notebookPath,
-						finalDataDownloadCode
-					);
-
-					// Add to global context to prevent re-downloading
-					this.addCodeToContext("data-download", finalDataDownloadCode);
-					this.updateStatus("Data download cell added");
-				} else {
-					this.updateStatus(
-						"No remote datasets to download; skipping download step"
-					);
-				}
-			}
-
-			// 3b) If there are local datasets, add a preparation/verification cell
-			if (localDatasets.length > 0) {
-				const localPrepRaw = this.buildLocalDataPreparationCode(localDatasets);
-				const localPrepValidation =
-					await this.codeQualityService.validateAndTest(
-						localPrepRaw,
-						"local-data-prep",
-						{ stepTitle: "Local data preparation", skipExecution: true }
-					);
-                const localPrepCode = this.sanitizeNotebookPythonCode(
-                    this.codeQualityService.getBestCode(localPrepValidation)
-                );
-				await this.notebookService.addCodeCell(notebookPath, localPrepCode);
-				this.addCodeToContext("local-data-prep", localPrepCode);
-				this.updateStatus("Local data preparation cell added");
-			}
-
-			// Step 4: Generate and add analysis step codes
-			for (let i = 0; i < analysisSteps.length; i++) {
-				if (this.shouldStopAnalysis) {
-					this.updateStatus("Analysis cancelled");
+				if (!await this.generateEnvironmentCells(notebookPath, datasets, analysisSteps, workspaceDir)) {
 					return false;
 				}
-				const step = analysisSteps[i];
-				const stepCode = await this.generateAndTestStepCode(
-					step,
-					query,
-					datasets,
-					workspaceDir,
-					i + 2
-				);
-				// Add code cell to notebook
-                await this.notebookService.addCodeCell(
-                    notebookPath,
-                    this.sanitizeNotebookPythonCode(stepCode)
-                );
-
-				this.updateStatus(
-					`Added analysis step ${i + 1} of ${analysisSteps.length}`
-				);
-
-				// Small delay between steps
-				if (i < analysisSteps.length - 1) {
-					await AsyncUtils.sleep(200);
-				}
 			}
 
-			this.updateStatus("All notebook cells generated successfully!");
-			return true;
+			// Generate analysis step cells
+			return await this.generateAnalysisStepCells(notebookPath, query, datasets, analysisSteps, workspaceDir);
+
 		} catch (error) {
 			console.error("Error generating notebook cells:", error);
 			this.updateStatus("Error generating notebook cells");
 			return false;
 		}
+	}
+
+	/**
+	 * Setup notebook environment and workspace
+	 */
+	private async setupNotebookEnvironment(workspaceDir: string, skipEnvCells?: boolean): Promise<boolean> {
+		if (this.shouldStopAnalysis) {
+			this.updateStatus("Analysis cancelled");
+			return false;
+		}
+
+		if (!skipEnvCells) {
+			await this.ensureEnvironmentReady(workspaceDir);
+		}
+		
+		this.workspacePath = workspaceDir;
+		this.codeExecutor.updateWorkspacePath(this.workspacePath);
+		return true;
+	}
+
+	/**
+	 * Generate environment setup cells (package install, data download, local data prep)
+	 */
+	private async generateEnvironmentCells(
+		notebookPath: string, 
+		datasets: Dataset[], 
+		analysisSteps: AnalysisStep[], 
+		workspaceDir: string
+	): Promise<boolean> {
+		// Generate package installation cell
+		if (!await this.generateSetupCell(
+			"Package installation",
+			() => this.environmentManager.generatePackageInstallationCode(datasets, analysisSteps, workspaceDir),
+			notebookPath,
+			false // Don't add to global context
+		)) return false;
+
+		// Generate data download cells
+		const remoteDatasets = datasets.filter((d: any) => Boolean((d as any).url) && !Boolean((d as any).localPath));
+		if (remoteDatasets.length > 0) {
+			if (!await this.generateSetupCell(
+				"Data download",
+				() => Promise.resolve(this.buildDeterministicDataDownloadCode(remoteDatasets)),
+				notebookPath,
+				true, // Add to global context
+				"data-download"
+			)) return false;
+		}
+
+		// Generate local data preparation cell
+		const localDatasets = datasets.filter((d: any) => Boolean((d as any).localPath));
+		if (localDatasets.length > 0) {
+			if (!await this.generateSetupCell(
+				"Local data preparation", 
+				() => Promise.resolve(this.buildLocalDataPreparationCode(localDatasets)),
+				notebookPath,
+				true, // Add to global context
+				"local-data-prep"
+			)) return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Unified method for generating setup cells with events
+	 */
+	private async generateSetupCell(
+		stepDescription: string,
+		codeGenerator: () => Promise<string>,
+		notebookPath: string,
+		addToContext: boolean,
+		contextKey?: string
+	): Promise<boolean> {
+		if (this.shouldStopAnalysis) {
+			this.updateStatus("Analysis cancelled");
+			return false;
+		}
+
+		const stepId = `${stepDescription.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
+		
+		// Emit generation started event
+		EventManager.dispatchEvent("code-generation-started", {
+			stepId,
+			stepDescription,
+			timestamp: Date.now(),
+		});
+
+		// Generate code
+		const rawCode = await codeGenerator();
+		
+		// Emit generation completed event
+		EventManager.dispatchEvent("code-generation-completed", {
+			stepId,
+			stepDescription,
+			finalCode: rawCode,
+			success: true,
+			timestamp: Date.now(),
+		});
+
+		// Validate and enhance code
+		const validationResult = await this.codeQualityService.validateAndTest(
+			rawCode,
+			stepId,
+			{ 
+				stepTitle: stepDescription, 
+				skipExecution: true,
+				globalCodeContext: this.getGlobalCodeContext()
+			}
+		);
+
+		const finalCode = this.sanitizeNotebookPythonCode(
+			this.codeQualityService.getBestCode(validationResult)
+		);
+
+		// Add to notebook
+		await this.notebookService.addCodeCell(notebookPath, finalCode);
+
+		// Add to global context if requested
+		if (addToContext && contextKey) {
+			this.addCodeToContext(contextKey, finalCode);
+		}
+
+		this.updateStatus(`${stepDescription} cell added`);
+		return true;
+	}
+
+	/**
+	 * Generate analysis step cells
+	 */
+	private async generateAnalysisStepCells(
+		notebookPath: string,
+		query: string, 
+		datasets: Dataset[],
+		analysisSteps: AnalysisStep[],
+		workspaceDir: string
+	): Promise<boolean> {
+		for (let i = 0; i < analysisSteps.length; i++) {
+			if (this.shouldStopAnalysis) {
+				this.updateStatus("Analysis cancelled");
+				return false;
+			}
+
+			const step = analysisSteps[i];
+			const stepCode = await this.generateAndTestStepCode(step, query, datasets, workspaceDir, i + 2);
+			
+			await this.notebookService.addCodeCell(
+				notebookPath,
+				this.sanitizeNotebookPythonCode(stepCode)
+			);
+
+			this.updateStatus(`Added analysis step ${i + 1} of ${analysisSteps.length}`);
+
+			// Small delay between steps
+			if (i < analysisSteps.length - 1) {
+				await AsyncUtils.sleep(200);
+			}
+		}
+
+		this.updateStatus("All notebook cells generated successfully!");
+		return true;
 	}
 
 	/**
@@ -1141,6 +1223,20 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				`Code quality pipeline failed for step: ${step.description}:`,
 				e as any
 			);
+			
+			// Ensure validation error event is emitted even if validation crashes
+			try {
+				(this.codeGenerator as any).emitValidationErrors?.(
+					stepId,
+					[e instanceof Error ? e.message : String(e)],
+					[],
+					genResult.code,
+					genResult.code
+				);
+			} catch (emitError) {
+				console.warn("Failed to emit validation error event:", emitError);
+			}
+			
 			// Fall back to raw generated code
 			return genResult.code;
 		}
@@ -1186,20 +1282,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		}
 
 		this.updateStatus("Attempting auto-fix based on execution error...");
-		const refactored = await this.codeQualityService.generateRefactoredCode(
-			code,
-			errorOutput,
-			stepDescription,
-			this.workspacePath
-		);
-
-		const prepared = this.codeQualityService.cleanAndPrepareCode(refactored, {
-			addImports: true,
-			addErrorHandling: true,
-			addDirectoryCreation: true,
-			stepDescription,
-			globalCodeContext: this.getGlobalCodeContext(),
-		});
+		const prepared = await this.generateFixedCode(code, errorOutput, stepDescription);
 
 		// Update the same (last) notebook cell's code before re-executing
 		await this.notebookService.updateCellCode(notebookPath, -1, prepared);

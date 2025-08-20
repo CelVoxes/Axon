@@ -286,7 +286,7 @@ export class JupyterService {
 						if (msg.parent_header && msg.header?.msg_type === "stream") {
 							const text = msg.content?.text || "";
 							output += text;
-							console.log(`📤 Stream output: ${text}`);
+
 							this.mainWindow?.webContents.send("jupyter-code-writing", {
 								code: output,
 								timestamp: new Date().toISOString(),

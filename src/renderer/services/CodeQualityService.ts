@@ -1,8 +1,10 @@
 import { BackendClient } from "./BackendClient";
 import { CellExecutionService } from "./CellExecutionService";
 import { CodeGenerationService } from "./CodeGenerationService";
+import { ruffLinter, RuffResult } from "./RuffLinter";
+import { normalizePythonCode } from "../utils/CodeTextUtils";
+import { diagnosticsToErrors, diagnosticsToWarnings } from "../utils/RuffUtils";
 import {
-	extractImports as sharedExtractImports,
 	getExistingImports as sharedGetExistingImports,
 	removeDuplicateImports as sharedRemoveDuplicateImports,
 } from "../utils/ImportUtils";
@@ -77,49 +79,7 @@ export class CodeQualityService {
 		}
 	}
 
-	private normalizePythonCode(rawCode: string): string {
-		if (!rawCode) return "";
-		let code = String(rawCode);
-		// Normalize newlines and strip BOM/zero-width no-break spaces
-		code = code
-			.replace(/\r\n/g, "\n")
-			.replace(/^\ufeff/, "")
-			.replace(/[\u200B\u200C\u200D\uFEFF]/g, "");
-		// Remove surrounding markdown code fences if present
-		code = code
-			.replace(/```\s*python\s*/gi, "")
-			.replace(/```/g, "")
-			.trim();
-
-		const lines = code.split("\n");
-		// Convert leading tabs to 4 spaces to avoid mixed-indentation errors
-		for (let i = 0; i < lines.length; i++) {
-			lines[i] = lines[i].replace(/^\t+/, (m) => " ".repeat(4 * m.length));
-		}
-		const nonEmpty = lines.filter((l) => l.trim().length > 0);
-		if (nonEmpty.length === 0) return code;
-		const anyAtCol0 = nonEmpty.some((l) => !/^\s/.test(l));
-		if (!anyAtCol0) {
-			const leading = nonEmpty.map((l) => l.match(/^[\t ]*/)?.[0] ?? "");
-			let common = leading[0] || "";
-			for (let i = 1; i < leading.length && common.length > 0; i++) {
-				const s = leading[i];
-				let j = 0;
-				const max = Math.min(common.length, s.length);
-				while (j < max && common[j] === s[j]) j++;
-				common = common.slice(0, j);
-			}
-			if (common) {
-				for (let i = 0; i < lines.length; i++) {
-					const line = lines[i];
-					if (line.startsWith(common)) lines[i] = line.slice(common.length);
-				}
-				code = lines.join("\n");
-			}
-		}
-
-		return code.trimEnd();
-	}
+	// Duplicate helpers removed: using shared utils instead
 
 	/**
 	 * Comprehensive code quality check: validation + cleaning + execution
@@ -134,11 +94,17 @@ export class CodeQualityService {
 			skipExecution = false,
 			skipCleaning = false,
 			stepTitle = stepId,
-			addImports = true,
-			addErrorHandling = true,
-			addDirectoryCreation = true,
+			addImports = true, // Add imports when needed, but respect global context
+			addErrorHandling = false, // Keep conservative - only add when explicitly requested
+			addDirectoryCreation = true, // Add directory creation when needed, but respect global context
 			stepDescription,
 		} = options;
+
+		// Detect package-install or non-analytical utility cells and avoid mutating them
+		const isInstallCell =
+			/package\s*install|package-install|pip\s+install|%pip|%conda|conda\s+install/i.test(
+				`${stepTitle}\n${code}`
+			);
 
 		const result: CodeQualityResult = {
 			isValid: true,
@@ -150,10 +116,19 @@ export class CodeQualityService {
 			cleanedCode: code,
 		};
 
-		// Step 1: Code Cleaning (if not skipped)
+		if (isInstallCell) {
+			// For install cells, keep code as-is (only normalize whitespace minimally)
+			this.updateStatus(`Skipping lint/fix for install cell: ${stepTitle}`);
+			result.cleanedCode = normalizePythonCode(code);
+			result.lintedCode = result.cleanedCode;
+			result.isValid = true;
+			return result;
+		}
+
+		// Step 1: Single comprehensive code enhancement (if not skipped)
 		if (!skipCleaning) {
-			this.updateStatus(`Cleaning code for ${stepTitle}...`);
-			result.cleanedCode = this.cleanAndPrepareCode(code, {
+			this.updateStatus(`Enhancing code for ${stepTitle}...`);
+			result.cleanedCode = this.enhanceCode(code, {
 				addImports,
 				addErrorHandling,
 				addDirectoryCreation,
@@ -162,26 +137,23 @@ export class CodeQualityService {
 			});
 		}
 
-		// Step 2: Code Validation (if not skipped)
+		// Step 2: Code Validation (if not skipped) - Using Ruff frontend linter
 		if (!skipValidation) {
-			this.updateStatus(`Validating code for ${stepTitle}...`);
+			this.updateStatus(`Linting code with Ruff for ${stepTitle}...`);
 
 			try {
-				const validationResult = await this.backendClient.validateCode({
-					code: result.cleanedCode,
+				const ruffResult = await ruffLinter.lintCode(result.cleanedCode, {
+					enableFixes: true,
+					filename: `${stepTitle.replace(/\s+/g, "_").toLowerCase()}.py`,
 				});
 
-				result.isValid = !!validationResult.is_valid;
-				// Normalize backend response to arrays
-				const msg = validationResult.message || "";
-				const respErrors: string[] = Array.isArray(validationResult.errors)
-					? validationResult.errors
-					: msg
-					? [String(msg)]
-					: [];
-				result.validationErrors = respErrors;
-				result.validationWarnings = validationResult.warnings || [];
-				result.lintedCode = validationResult.linted_code || result.cleanedCode;
+				result.isValid = ruffResult.isValid;
+				result.validationErrors = diagnosticsToErrors(ruffResult);
+				result.validationWarnings = diagnosticsToWarnings(ruffResult);
+				result.lintedCode =
+					ruffResult.fixedCode ||
+					ruffResult.formattedCode ||
+					result.cleanedCode;
 
 				if (!result.isValid) {
 					console.warn(
@@ -208,20 +180,21 @@ export class CodeQualityService {
 							result.validationErrors
 						);
 
-						// Re-validate the fixed code
-						const revalidation = await this.backendClient.validateCode({
-							code: fixed,
+						// Re-validate the fixed code using Ruff
+						const reRuffResult = await ruffLinter.lintCode(fixed, {
+							enableFixes: true,
+							filename: `${stepTitle
+								.replace(/\s+/g, "_")
+								.toLowerCase()}_fixed.py`,
 						});
-						const reIsValid = !!revalidation.is_valid;
-						result.isValid = reIsValid;
-						result.validationErrors = Array.isArray(revalidation.errors)
-							? revalidation.errors
-							: revalidation.message
-							? [String(revalidation.message)]
-							: [];
-						result.lintedCode = fixed;
 
-						if (reIsValid) {
+						result.isValid = reRuffResult.isValid;
+						result.validationErrors = diagnosticsToErrors(reRuffResult);
+						result.validationWarnings = diagnosticsToWarnings(reRuffResult);
+						result.lintedCode =
+							reRuffResult.fixedCode || reRuffResult.formattedCode || fixed;
+
+						if (result.isValid) {
 							this.updateStatus(`✅ Linting issues fixed for ${stepTitle}`);
 						} else {
 							this.updateStatus(
@@ -233,11 +206,12 @@ export class CodeQualityService {
 					}
 				} else {
 					this.updateStatus(`✅ Code validation passed for ${stepTitle}`);
-					// Emit a success event so UI can display a green banner like in the screenshot
+					// Emit a success event so UI can display a summary in chat and show the validated code
 					try {
 						this.codeGenerationService.emitValidationSuccess(
 							stepId,
-							`No linter errors found in ${stepTitle}`
+							`No linter errors found in ${stepTitle}`,
+							result.lintedCode
 						);
 					} catch (_) {}
 				}
@@ -334,9 +308,9 @@ export class CodeQualityService {
 	}
 
 	/**
-	 * Cleaning-only convenience method
+	 * Simplified single-step code enhancement method
 	 */
-	cleanAndPrepareCode(
+	enhanceCode(
 		code: string,
 		options: {
 			addImports?: boolean;
@@ -347,83 +321,45 @@ export class CodeQualityService {
 		} = {}
 	): string {
 		if (!code || !code.trim()) {
-			console.warn(
-				"CodeQualityService: Empty code provided to cleanAndPrepareCode"
-			);
 			return "";
 		}
 
-		console.log(`CodeQualityService: Original code length: ${code.length}`);
-		console.log(
-			`CodeQualityService: Original code preview: ${code.substring(0, 100)}...`
-		);
+		// Step 1: Normalize and clean
+		let enhancedCode = normalizePythonCode(code);
 
-		// Normalize and strip code-fence artifacts first
-		let cleanedCode = this.normalizePythonCode(code);
-
-		console.log(
-			`CodeQualityService: Cleaned code length: ${cleanedCode.length}`
-		);
-		console.log(
-			`CodeQualityService: Cleaned code preview: ${cleanedCode.substring(
-				0,
-				100
-			)}...`
-		);
-
-		// If cleaning resulted in empty code, return a basic comment
-		if (!cleanedCode || !cleanedCode.trim()) {
-			console.warn(
-				"CodeQualityService: Code cleaning resulted in empty code, returning placeholder"
-			);
-			cleanedCode = `# Code cleaning resulted in empty content
-# Original code length: ${code.length}
-print("Code placeholder - original code was empty or only contained markdown")`;
-		}
-
-		// Add basic imports if requested and clearly missing
-		if (options.addImports && !this.hasBasicImports(cleanedCode)) {
-			cleanedCode = this.addBasicImports(
-				cleanedCode,
+		// Step 2: Only add imports if they're actually needed and missing from global context
+		if (options.addImports) {
+			enhancedCode = this.smartAddImports(
+				enhancedCode,
 				options.globalCodeContext
 			);
 		}
 
-		// Ensure critical imports based on code usage (Path, requests, urlparse, etc.)
-		cleanedCode = this.ensureCriticalImports(cleanedCode);
-
-		// We no longer derive dataset URLs automatically; rely strictly on provided URLs from selection
-
-		// Add error handling if requested and missing
-		if (options.addErrorHandling && !this.hasErrorHandling(cleanedCode)) {
-			cleanedCode = this.addErrorHandling(cleanedCode, options.stepDescription);
-		}
-
-		// Add directory creation if requested and missing
+		// Step 3: Only add directory creation if needed and missing from global context
 		if (
 			options.addDirectoryCreation &&
-			!this.hasDirectoryCreation(cleanedCode)
+			!this.hasDirectoryCreation(enhancedCode, options.globalCodeContext)
 		) {
-			cleanedCode = this.addDirectoryCreation(cleanedCode);
+			enhancedCode = this.addDirectoryCreation(enhancedCode);
 		}
 
-		// Check for potentially problematic code patterns
-		cleanedCode = this.addSafetyChecks(cleanedCode);
-
-		// Final pass: deduplicate imports against global code context so we don't
-		// re-add imports in every new cell. This keeps imports in a single setup cell.
-		try {
-			if (options.globalCodeContext) {
-				const existingImports = this.getExistingImports(
-					options.globalCodeContext
-				);
-				cleanedCode = this.removeDuplicateImports(cleanedCode, existingImports);
-			}
-		} catch (_) {
-			// best-effort dedup; ignore errors silently
+		// Step 4: Add error handling only if explicitly requested
+		if (options.addErrorHandling && !this.hasErrorHandling(enhancedCode)) {
+			enhancedCode = this.addErrorHandling(
+				enhancedCode,
+				options.stepDescription
+			);
 		}
 
-		return cleanedCode;
+		return enhancedCode;
+	}
+
+	/**
+	 * Smart import addition - only adds what's actually needed and missing
+	 */
+	private smartAddImports(code: string, globalCodeContext?: string): string {
+		// Only add critical imports that are actually used in the code
+		return this.ensureCriticalImports(code, globalCodeContext);
 	}
 
 	/**
@@ -450,25 +386,38 @@ print("Code placeholder - original code was empty or only contained markdown")`;
 	/**
 	 * Ensure critical imports exist when corresponding symbols are used
 	 */
-	private ensureCriticalImports(code: string): string {
-		const lines: string[] = [];
+	private ensureCriticalImports(
+		code: string,
+		globalCodeContext?: string
+	): string {
+		const newImports: string[] = [];
+		const codeImports = sharedGetExistingImports(code);
+		const globalImports = sharedGetExistingImports(globalCodeContext || "");
+		const existingImports = new Set([...codeImports, ...globalImports]);
 
 		const needs = (pattern: RegExp | string) =>
 			typeof pattern === "string" ? code.includes(pattern) : pattern.test(code);
 
-		const missing = (snippet: string) => !code.includes(snippet);
+		const missing = (importStatement: string) => {
+			// Check if import exists in global context OR current code
+			const combinedCode = `${globalCodeContext || ""}\n${code}`;
+			return (
+				!existingImports.has(importStatement) &&
+				!combinedCode.includes(importStatement)
+			);
+		};
 
 		// pathlib.Path
 		if (
 			(needs(/\bPath\s*\(/) || needs(/\.mkdir\s*\(/)) &&
 			missing("from pathlib import Path")
 		) {
-			lines.push("from pathlib import Path");
+			newImports.push("from pathlib import Path");
 		}
 
 		// requests
 		if (needs(/\brequests\./) && missing("import requests")) {
-			lines.push("import requests");
+			newImports.push("import requests");
 		}
 
 		// urlparse
@@ -476,32 +425,32 @@ print("Code placeholder - original code was empty or only contained markdown")`;
 			needs(/\burlparse\s*\(/) &&
 			missing("from urllib.parse import urlparse")
 		) {
-			lines.push("from urllib.parse import urlparse");
+			newImports.push("from urllib.parse import urlparse");
 		}
 
 		// os
 		if (needs(/\bos\./) && missing("import os")) {
-			lines.push("import os");
+			newImports.push("import os");
 		}
 
 		// pandas
 		if (needs(/\bpd\./) && missing("import pandas as pd")) {
-			lines.push("import pandas as pd");
+			newImports.push("import pandas as pd");
 		}
 
 		// numpy
 		if (needs(/\bnp\./) && missing("import numpy as np")) {
-			lines.push("import numpy as np");
+			newImports.push("import numpy as np");
 		}
 
 		// matplotlib
 		if (needs(/\bplt\./) && missing("import matplotlib.pyplot as plt")) {
-			lines.push("import matplotlib.pyplot as plt");
+			newImports.push("import matplotlib.pyplot as plt");
 		}
 
 		// seaborn
 		if (needs(/\bsns\./) && missing("import seaborn as sns")) {
-			lines.push("import seaborn as sns");
+			newImports.push("import seaborn as sns");
 		}
 
 		// scanpy (alias sc)
@@ -509,21 +458,23 @@ print("Code placeholder - original code was empty or only contained markdown")`;
 			(needs(/\bsc\./) || needs(/\bscanpy\./)) &&
 			missing("import scanpy as sc")
 		) {
-			lines.push("import scanpy as sc");
+			newImports.push("import scanpy as sc");
 		}
 
 		// anndata
 		if (needs(/\banndata\./) && missing("import anndata")) {
-			lines.push("import anndata");
+			newImports.push("import anndata");
 		}
 		// anndata alias (ad)
 		if (needs(/\bad\./) && missing("import anndata as ad")) {
-			lines.push("import anndata as ad");
+			newImports.push("import anndata as ad");
 		}
 
-		if (lines.length === 0) return code;
+		if (newImports.length === 0) return code;
 
-		return `${lines.join("\n")}\n\n${code}`;
+		// Use the shared utility to properly deduplicate
+		const codeWithImports = `${newImports.join("\n")}\n\n${code}`;
+		return sharedRemoveDuplicateImports(codeWithImports, new Set<string>());
 	}
 
 	/**
@@ -588,11 +539,7 @@ ${code.replace(/while\s+(True|1):/g, (match) => {
 				}
 			);
 
-			console.log(
-				"CodeQualityService: Code validation error fixing completed:",
-				fixedCode
-			);
-			return this.cleanAndPrepareCode(fixedCode.trim());
+			return this.enhanceCode(fixedCode.trim());
 		} catch (error) {
 			console.error(
 				"CodeQualityService: Error fixing validation errors:",
@@ -751,37 +698,14 @@ ${code.replace(/while\s+(True|1):/g, (match) => {
 	}
 
 	// Helper methods for code analysis
-	private hasBasicImports(code: string): boolean {
+	private hasBasicImports(code: string, globalCodeContext?: string): boolean {
+		const combinedCode = `${globalCodeContext || ""}\n${code}`;
 		return (
-			code.includes("import pandas") ||
-			code.includes("import numpy") ||
-			code.includes("import matplotlib") ||
-			code.includes("import seaborn")
+			combinedCode.includes("import pandas") ||
+			combinedCode.includes("import numpy") ||
+			combinedCode.includes("import matplotlib") ||
+			combinedCode.includes("import seaborn")
 		);
-	}
-
-	/**
-	 * Extract imports from code string
-	 */
-	private extractImports(code: string): Set<string> {
-		return sharedExtractImports(code);
-	}
-
-	/**
-	 * Get all imports from global code context
-	 */
-	private getExistingImports(globalCodeContext?: string): Set<string> {
-		return sharedGetExistingImports(globalCodeContext);
-	}
-
-	/**
-	 * Remove duplicate imports from code
-	 */
-	private removeDuplicateImports(
-		code: string,
-		existingImports: Set<string>
-	): string {
-		return sharedRemoveDuplicateImports(code, existingImports);
 	}
 
 	private addBasicImports(code: string, globalCodeContext?: string): string {
@@ -795,8 +719,8 @@ ${code}`;
 
 		// If we have global context, deduplicate imports
 		if (globalCodeContext) {
-			const existingImports = this.getExistingImports(globalCodeContext);
-			return this.removeDuplicateImports(basicImportsCode, existingImports);
+			const existingImports = sharedGetExistingImports(globalCodeContext);
+			return sharedRemoveDuplicateImports(basicImportsCode, existingImports);
 		}
 
 		return basicImportsCode;
@@ -818,8 +742,18 @@ except Exception as e:
     raise`;
 	}
 
-	private hasDirectoryCreation(code: string): boolean {
-		return code.includes("mkdir") || code.includes("Path(");
+	private hasDirectoryCreation(
+		code: string,
+		globalCodeContext?: string
+	): boolean {
+		const combinedCode = `${globalCodeContext || ""}\n${code}`;
+		return (
+			combinedCode.includes("mkdir") ||
+			combinedCode.includes("results_dir") ||
+			combinedCode.includes("figures_dir") ||
+			combinedCode.includes("Path('results')") ||
+			combinedCode.includes("Path('figures')")
+		);
 	}
 
 	private addDirectoryCreation(code: string): string {

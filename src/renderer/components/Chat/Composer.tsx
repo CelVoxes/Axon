@@ -42,7 +42,11 @@ interface ComposerProps {
 	onInsertAlias?: (alias: string) => void;
 }
 
-export const Composer: React.FC<ComposerProps> = ({
+export interface ComposerRef {
+	focus: () => void;
+}
+
+export const Composer = React.forwardRef<ComposerRef, ComposerProps>(({
 	value,
 	onChange,
 	onSend,
@@ -55,7 +59,7 @@ export const Composer: React.FC<ComposerProps> = ({
 	onModeChange,
 	suggestedMentions = [],
 	onInsertAlias,
-}) => {
+}, ref) => {
 	const [model, setModel] = React.useState<string>(
 		ConfigManager.getInstance().getDefaultModel()
 	);
@@ -67,6 +71,13 @@ export const Composer: React.FC<ComposerProps> = ({
 	const [showModelMenu, setShowModelMenu] = React.useState(false);
 	const [showModeMenu, setShowModeMenu] = React.useState(false);
 	const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+
+	// Expose focus method via ref
+	React.useImperativeHandle(ref, () => ({
+		focus: () => {
+			textareaRef.current?.focus();
+		}
+	}), []);
 	const rafIdRef = React.useRef<number | null>(null);
 	const [hoveredMention, setHoveredMention] = React.useState<string | null>(
 		null
@@ -497,4 +508,7 @@ export const Composer: React.FC<ComposerProps> = ({
 			</div>
 		</div>
 	);
-};
+});
+
+// Add display name for better debugging
+Composer.displayName = 'Composer';

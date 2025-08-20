@@ -19,7 +19,7 @@ import {
 	FiTrash2,
 } from "react-icons/fi";
 import { CodeBlock } from "./shared/CodeBlock";
-import { Composer } from "./Composer";
+import { Composer, ComposerRef } from "./Composer";
 import { MentionSuggestions } from "./MentionSuggestions";
 import { ProcessingIndicator } from "./Status/ProcessingIndicator";
 import { ValidationErrors } from "./Status/ValidationErrors";
@@ -49,6 +49,8 @@ import {
 } from "../../services/types";
 import { EventManager } from "../../utils/EventManager";
 import { NotebookService } from "../../services/NotebookService";
+import { ruffLinter } from "../../services/RuffLinter";
+import { autoFixWithRuffAndLLM } from "../../services/LintAutoFixService";
 
 // Removed duplicated local code rendering. Use shared CodeBlock instead.
 
@@ -125,6 +127,21 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [isLoading, setIsLoading] = useState(false);
 	const [progressMessage, setProgressMessage] = useState("");
 	const [isProcessing, setIsProcessing] = useState(false);
+	const pendingStopRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const scheduleProcessingStop = useCallback((delayMs = 2000) => {
+		if (pendingStopRef.current) clearTimeout(pendingStopRef.current);
+		pendingStopRef.current = setTimeout(() => {
+			setIsProcessing(false);
+			setProgressMessage("");
+			pendingStopRef.current = null;
+		}, delayMs);
+	}, []);
+	const cancelProcessingStop = useCallback(() => {
+		if (pendingStopRef.current) {
+			clearTimeout(pendingStopRef.current);
+			pendingStopRef.current = null;
+		}
+	}, []);
 	const [progressData, setProgressData] = useState<any>(null);
 	const [validationErrors, setValidationErrors] = useState<string[]>([]);
 	const [validationSuccessMessage, setValidationSuccessMessage] =
@@ -228,6 +245,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const chatContainerRef = useRef<HTMLDivElement>(null);
 	const chatAutoScrollRef = useRef<boolean>(true);
+	const composerRef = useRef<ComposerRef>(null);
 	const [mentionOpen, setMentionOpen] = useState(false);
 	const [mentionQuery, setMentionQuery] = useState("");
 	const [workspaceMentionItems, setWorkspaceMentionItems] = useState<any[]>([]);
@@ -300,6 +318,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				if (!uiState.showChatPanel || uiState.chatCollapsed) {
 					uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
 					uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
+					// Focus the composer after the chat panel opens
+					setTimeout(() => composerRef.current?.focus(), 100);
+				} else {
+					// If chat is already open, focus immediately
+					composerRef.current?.focus();
 				}
 			}
 		);
@@ -314,8 +337,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			const lang: string = String(d.language || "python").toLowerCase();
 			const code: string = String(d.code || "");
 			const out: string = String(d.output || "");
-			const prefix = `Please review the ${lang} cell output and fix any issues.`;
-			// Build a cell mention like @relative/path#N (avoid pasting full code/output)
+
+			// Build a cell mention like @relative/path#N
 			let alias = "";
 			try {
 				const wsRoot =
@@ -335,26 +358,50 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			} catch (_) {
 				/* ignore */
 			}
-			const body = `\n\nCell: ${alias || "(referenced cell)"}\n`;
-			const prefill = prefix + body;
-			setInputValue(prefill);
-			inputValueRef.current = prefill;
-			const ctx: CodeEditContext = {
-				filePath: d.filePath,
-				cellIndex: d.cellIndex,
-				language: d.language,
-				selectedText: code,
-				fullCode: code,
-				selectionStart: 0,
-				selectionEnd: code.length,
-				outputText: out,
-				hasErrorOutput: Boolean(d.hasError),
-			};
-			setCodeEditContext(ctx);
-			codeEditContextRef.current = ctx;
+
+			// Add the mention and the actual output/error content for user visibility
+			if (alias) {
+				// Clear any existing input and start fresh with the mention
+				const mentionText = alias;
+
+				// Add the prompt and the actual output/error content
+				const outputType = Boolean(d.hasError) ? "Error" : "Output";
+				const outputPrompt = `\n\nPlease explain this ${outputType.toLowerCase()} from the ${lang} cell and suggest how to fix any issues:`;
+
+				// Include the actual output/error content so user can see what they're asking about
+				const outputContent = out.trim()
+					? `\n\n\`\`\`\n${out.trim()}\n\`\`\``
+					: "";
+
+				const final = mentionText + " " + outputPrompt + outputContent;
+				setInputValue(final);
+				inputValueRef.current = final;
+			} else {
+				// Fallback to old behavior if no alias
+				const prefix = `Please review the ${lang} cell output and fix any issues.`;
+				const body = `\n\nCell: (referenced cell)\n`;
+				const prefill = prefix + body;
+				setInputValue(prefill);
+				inputValueRef.current = prefill;
+			}
+
+			// For "Ask Chat" on output, don't auto-trigger edit mode
+			// Instead, let the user have a conversation about the error/output
+			// They can explicitly ask for code changes if needed
+
+			// IMPORTANT: Clear any existing codeEditContext to prevent it from
+			// getting stuck on a previous cell when user asks about a different cell
+			setCodeEditContext(null);
+			codeEditContextRef.current = null;
+
 			if (!uiState.showChatPanel || uiState.chatCollapsed) {
 				uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
 				uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
+				// Focus the composer after the chat panel opens
+				setTimeout(() => composerRef.current?.focus(), 100);
+			} else {
+				// If chat is already open, focus immediately
+				composerRef.current?.focus();
 			}
 		};
 		const onFixError = (e: Event) => {
@@ -399,11 +446,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				outputText: out,
 				hasErrorOutput: true,
 			};
+			// Replace any existing context with this new error-fixing context
 			setCodeEditContext(ctx);
 			codeEditContextRef.current = ctx;
 			if (!uiState.showChatPanel || uiState.chatCollapsed) {
 				uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
 				uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
+				// Focus the composer after the chat panel opens
+				setTimeout(() => composerRef.current?.focus(), 100);
+			} else {
+				// If chat is already open, focus immediately
+				composerRef.current?.focus();
 			}
 		};
 		window.addEventListener("chat-add-output", onAddOutput as EventListener);
@@ -670,19 +723,27 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			// Update progress + mark global streaming as active
 			setIsProcessing(true);
 			setProgressMessage(`Generating: ${stepDescription || "step"}`);
+			cancelProcessingStop();
 			updateGlobalStreamingFlag();
 		};
 
 		const handleCodeGenerationChunk = (event: Event) => {
 			if (!isMounted) return;
 			const customEvent = event as CustomEvent<CodeGenerationChunkEvent>;
-			const { stepId, chunk } = customEvent.detail;
+			const { stepId } = customEvent.detail as any;
 
 			const stream = activeStreams.current.get(stepId);
 			if (!stream) return;
 
-			// Update accumulated code
-			stream.accumulatedCode += chunk;
+			// Prefer authoritative accumulatedCode from event (already cleaned of duplicate imports)
+			const updated = (customEvent.detail as any)?.accumulatedCode;
+			if (typeof updated === "string") {
+				stream.accumulatedCode = updated;
+			} else {
+				// Fallback: append chunk if accumulatedCode is not provided
+				const chunk = (customEvent.detail as any)?.chunk || "";
+				stream.accumulatedCode += chunk;
+			}
 
 			// Send raw code content for streaming (no markdown wrapping)
 			enqueueStreamingUpdate(stepId, stream.accumulatedCode);
@@ -704,19 +765,37 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						updates: {
 							code: finalCode,
 							codeLanguage: "python",
-							isStreaming: false,
-							status: success ? "completed" : ("failed" as any),
+							// Keep streaming indicator until validation success/error arrives
+							isStreaming: true,
+							status: "pending" as any,
 						},
 					},
 				});
 
-				// Clean up
-				activeStreams.current.delete(stepId);
-				updateGlobalStreamingFlag();
-				if (activeStreams.current.size === 0) {
-					setIsProcessing(false);
-					setProgressMessage("");
-				}
+				// Set a timeout fallback in case validation events never arrive
+				const timeoutId = setTimeout(() => {
+					if (activeStreams.current.has(stepId)) {
+						console.warn(
+							`Validation timeout for step ${stepId}, marking as completed without validation`
+						);
+						analysisDispatch({
+							type: "UPDATE_MESSAGE",
+							payload: {
+								id: stream.messageId,
+								updates: { isStreaming: false, status: "completed" as any },
+							},
+						});
+						activeStreams.current.delete(stepId);
+						updateGlobalStreamingFlag();
+						if (activeStreams.current.size === 0) {
+							setIsProcessing(false);
+							setProgressMessage("");
+						}
+					}
+				}, 30000); // 30 second timeout
+
+				// Store timeout ID to cancel it if validation events arrive
+				(stream as any).validationTimeoutId = timeoutId;
 			}
 		};
 
@@ -727,6 +806,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 			const stream = activeStreams.current.get(stepId);
 			if (stream) {
+				// Clear validation timeout if it exists since generation failed
+				if ((stream as any).validationTimeoutId) {
+					clearTimeout((stream as any).validationTimeoutId);
+				}
+
 				analysisDispatch({
 					type: "UPDATE_MESSAGE",
 					payload: {
@@ -741,8 +825,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				activeStreams.current.delete(stepId);
 				updateGlobalStreamingFlag();
 				if (activeStreams.current.size === 0) {
-					setIsProcessing(false);
-					setProgressMessage("");
+					scheduleProcessingStop(2500);
 				}
 			}
 		};
@@ -758,13 +841,26 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 			// Also post a chat message summarizing the errors with optional diff
 			try {
-				const warningSuffix =
-					warnings && warnings.length
-						? ` and ${warnings.length} warning(s)`
-						: "";
-				let summary = `**Code validation found ${errors.length} error(s)${warningSuffix}.**`;
-				const list = errors.map((e, i) => `${i + 1}. ${e}`).join("\n");
-				summary += `\n\n${list}`;
+				const errorCount = errors?.length || 0;
+				const warningCount = warnings?.length || 0;
+				// Build collapsible lint block for chat using a custom "lint" fenced block
+				let summary = "";
+				summary += "```lint\n";
+				summary += `LINT_SUMMARY: ⚠️ Found ${errorCount} error(s)${
+					warningCount ? ` and ${warningCount} warning(s)` : ""
+				}`;
+				summary += "\n";
+				if (errorCount) {
+					summary += "Errors:\n";
+					summary += errors.map((e) => `- ${e}`).join("\n");
+					summary += "\n";
+				}
+				if (warningCount) {
+					summary += "Warnings:\n";
+					summary += warnings.map((w) => `- ${w}`).join("\n");
+					summary += "\n";
+				}
+				summary += "```";
 				if (
 					originalCode &&
 					fixedCode &&
@@ -795,7 +891,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							ops.push({ t: " ", s: oldLines[i - 1] });
 							i--;
 							j--;
-						} else if (j > 0 && (i === 0 || lcs[i][j - 1] >= lcs[i - 1][j])) {
+						} else if (j > 0 && (i === 0 || lcs[i][j - 1] > lcs[i - 1][j])) {
 							ops.push({ t: "+", s: newLines[j - 1] });
 							j--;
 						} else if (i > 0) {
@@ -804,10 +900,45 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						}
 					}
 					ops.reverse();
-					const diffBody = ops.map((o) => `${o.t}${o.s}`).join("\n");
+					const diffBody = ops
+						.map((o) => {
+							const content = o.s.length === 0 ? "(empty line)" : o.s;
+							if (o.t === " ") {
+								return `  ${content}`; // Two spaces for unchanged lines
+							} else {
+								return `${o.t} ${content}`; // Space after + or -
+							}
+						})
+						.join("\n");
 					summary += `\n\n\`\`\`diff\n${diffBody}\n\`\`\``;
 				}
 				addMessage(summary, false);
+				// Mark streaming message as completed now
+				try {
+					const stream = activeStreams.current.get(
+						customEvent.detail.stepId as any
+					);
+					if (stream) {
+						// Clear validation timeout if it exists
+						if ((stream as any).validationTimeoutId) {
+							clearTimeout((stream as any).validationTimeoutId);
+						}
+
+						analysisDispatch({
+							type: "UPDATE_MESSAGE",
+							payload: {
+								id: stream.messageId,
+								updates: { isStreaming: false, status: "failed" as any },
+							},
+						});
+						activeStreams.current.delete(customEvent.detail.stepId as any);
+						updateGlobalStreamingFlag();
+						if (activeStreams.current.size === 0) {
+							setIsProcessing(false);
+							setProgressMessage("");
+						}
+					}
+				} catch (_) {}
 			} catch (_) {
 				// Ignore chat summary failures
 			}
@@ -819,11 +950,42 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				stepId: string;
 				message?: string;
 			}>;
-			const { message } = customEvent.detail || {};
+			const { message, stepId, code } = (customEvent.detail as any) || {};
 			// Clear any previous errors/warnings when lints pass
 			setValidationErrors([]);
 			setValidationSuccessMessage(message || "No linter errors found");
-			addMessage(message || "No linter errors found", false);
+			// Emit in lint style for consistent gray presentation
+			const successLint = [
+				"```lint",
+				`LINT_SUMMARY: ${message || "No linter errors found"}`,
+				"```",
+			].join("\n");
+			addMessage(successLint, false);
+			// Do not attach validated code to chat (to reduce clutter)
+
+			// Mark streaming message as completed now
+			try {
+				const stream = activeStreams.current.get(stepId);
+				if (stream) {
+					// Clear validation timeout if it exists
+					if ((stream as any).validationTimeoutId) {
+						clearTimeout((stream as any).validationTimeoutId);
+					}
+
+					analysisDispatch({
+						type: "UPDATE_MESSAGE",
+						payload: {
+							id: stream.messageId,
+							updates: { isStreaming: false, status: "completed" as any },
+						},
+					});
+					activeStreams.current.delete(stepId);
+					updateGlobalStreamingFlag();
+					if (activeStreams.current.size === 0) {
+						scheduleProcessingStop(2500);
+					}
+				}
+			} catch (_) {}
 		};
 
 		// Add event listeners
@@ -1075,7 +1237,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				ops.push({ t: " ", s: oldLines[i - 1] });
 				i--;
 				j--;
-			} else if (j > 0 && (i === 0 || lcs[i][j - 1] >= lcs[i - 1][j])) {
+			} else if (j > 0 && (i === 0 || lcs[i][j - 1] > lcs[i - 1][j])) {
 				ops.push({ t: "+", s: newLines[j - 1] });
 				j--;
 			} else if (i > 0) {
@@ -1090,7 +1252,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		const headerA = `--- a/${file}:${oldStart}-${oldStart + oldCount - 1}`;
 		const headerB = `+++ b/${file}:${newStart}-${newStart + newCount - 1}`;
 		const hunk = `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`;
-		const body = ops.map((o) => `${o.t}${o.s}`).join("\n");
+		const body = ops
+			.map((o) => {
+				const content = o.s.length === 0 ? "(empty line)" : o.s;
+				if (o.t === " ") {
+					return `  ${content}`; // Two spaces for unchanged lines
+				} else {
+					return `${o.t} ${content}`; // Space after + or -
+				}
+			})
+			.join("\n");
 		return `${headerA}\n${headerB}\n${hunk}\n${body}`;
 	};
 
@@ -1266,32 +1437,138 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			const newCode =
 				base.substring(0, start) + newSelection + base.substring(end);
 
-			// Validate generated code when available
+			// Validate generated code with Ruff; if issues remain, auto-fix via backend LLM
 			let validatedCode = newCode;
-			let hasValidationIssues = false;
+			let didAutoFix = false;
 			try {
-				if (backendClient?.validateCode) {
-					const validationResult = await backendClient.validateCode({
-						code: newCode,
+				// Skip linting for package installation cells (pip/conda magics or commands)
+				const isInstallCell =
+					/(^|\n)\s*(%pip|%conda|pip\s+install|conda\s+install)\b/i.test(
+						newCode
+					);
+				if (isInstallCell) {
+					// Keep code as-is; prefer not to mutate install commands
+					addMessage(
+						`ℹ️ Skipping lint/fix for package installation lines.`,
+						false
+					);
+					validatedCode = newCode;
+				} else {
+					const ruffResult = await ruffLinter.lintCode(newCode, {
+						enableFixes: true,
+						filename: `cell_${cellIndex + 1}.py`,
 					});
-					if (!validationResult.is_valid && validationResult.linted_code) {
-						validatedCode = validationResult.linted_code;
-						hasValidationIssues = true;
-						const issues = validationResult.errors || [];
-						if (issues.length > 0) {
+					if (!ruffResult.isValid) {
+						const errors = ruffResult.diagnostics
+							.filter((d) => d.kind === "error")
+							.map((d) => `${d.code}: ${d.message} (line ${d.startLine})`);
+						addMessage(
+							`⚠️ Code validation issues detected. Attempting auto-fix…`,
+							false
+						);
+						const fixed = backendClient
+							? await autoFixWithRuffAndLLM(backendClient, newCode, {
+									filename: `cell_${cellIndex + 1}.py`,
+									stepTitle: `Inline edit for cell ${cellIndex + 1}`,
+							  })
+							: {
+									fixedCode: ruffResult.fixedCode || newCode,
+									issues: errors,
+									wasFixed: false,
+							  };
+						validatedCode = fixed.fixedCode || ruffResult.fixedCode || newCode;
+						didAutoFix = !!fixed.wasFixed;
+						if (fixed.wasFixed) {
+							addMessage(`✅ Applied auto-fix for lint issues.`, false);
+						} else {
 							addMessage(
-								`⚠️ Auto-fixed ${issues.length} validation issue(s):\n\n${issues
-									.slice(0, 3)
-									.map((e: string) => `• ${e}`)
-									.join("\n")}${issues.length > 3 ? "\n• ..." : ""}`,
+								`⚠️ Auto-fix attempted but some issues may remain.`,
 								false
 							);
 						}
+					} else {
+						// Prefer Ruff's improvements when available
+						const improved = ruffResult.fixedCode || ruffResult.formattedCode;
+						if (improved && improved !== newCode) {
+							didAutoFix = true;
+							validatedCode = improved;
+						} else {
+							validatedCode = newCode;
+						}
 					}
 				}
-			} catch (_) {}
+			} catch (error) {
+				console.warn("Ruff validation or auto-fix failed:", error);
+				validatedCode = newCode;
+			}
 
 			await notebookService.updateCellCode(filePath, cellIndex, validatedCode);
+
+			// Final linting check on the updated code (skip for install cells)
+			try {
+				const isInstallCellFinal =
+					/(^|\n)\s*(%pip|%conda|pip\s+install|conda\s+install)\b/i.test(
+						validatedCode
+					);
+				if (isInstallCellFinal) {
+					// No final lint for install lines
+					throw null; // jump to catch without logging error
+				}
+				console.log(`Final linting check for cell ${cellIndex + 1}...`);
+				const finalLintResult = await ruffLinter.lintCode(validatedCode, {
+					enableFixes: false, // Don't fix again, just check
+					filename: `cell_${cellIndex + 1}_final.py`,
+				});
+
+				if (!finalLintResult.isValid) {
+					const issueLines = finalLintResult.diagnostics.map(
+						(d) => `${d.code}: ${d.message} (line ${d.startLine})`
+					);
+					console.warn(
+						`Linting issues found in cell ${cellIndex + 1}:`,
+						issueLines.join(", ")
+					);
+					const errorCount = finalLintResult.diagnostics.filter(
+						(d) => d.kind === "error"
+					).length;
+					const warningCount = finalLintResult.diagnostics.filter(
+						(d) => d.kind === "warning"
+					).length;
+					let lintBlock = "```lint\n";
+					lintBlock +=
+						`LINT_SUMMARY: ⚠️ Found ${errorCount} error(s)${
+							warningCount ? ` and ${warningCount} warning(s)` : ""
+						} in cell ${cellIndex + 1}` + "\n";
+					if (errorCount) {
+						lintBlock += "Errors:\n";
+						lintBlock +=
+							finalLintResult.diagnostics
+								.filter((d) => d.kind === "error")
+								.map((d) => `- ${d.code}: ${d.message} (line ${d.startLine})`)
+								.join("\n") + "\n";
+					}
+					if (warningCount) {
+						lintBlock += "Warnings:\n";
+						lintBlock +=
+							finalLintResult.diagnostics
+								.filter((d) => d.kind === "warning")
+								.map((d) => `- ${d.code}: ${d.message} (line ${d.startLine})`)
+								.join("\n") + "\n";
+					}
+					lintBlock += "```";
+					addMessage(lintBlock, false);
+				} else {
+					console.log(`Cell ${cellIndex + 1} passed final linting check`);
+				}
+			} catch (lintError) {
+				if (lintError) {
+					console.warn(
+						`Failed to run final lint check on cell ${cellIndex + 1}:`,
+						lintError
+					);
+				}
+				// Don't fail the whole operation if linting fails
+			}
 
 			// Short confirmation window; fallback to optimistic success
 			let updateDetail: any = null;
@@ -1321,7 +1598,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					: updateDetail?.immediate
 					? "applied"
 					: "saved";
-			const validationText = hasValidationIssues ? " (auto-fixed)" : "";
+			const validationText = didAutoFix ? " (auto-fixed)" : "";
 			const summary = `Applied notebook edit:\n\n- **Cell**: ${cellIndex}\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Status**: ${statusText}${validationText}`;
 
 			// Build diff against the actual replacement we generated.
@@ -1948,7 +2225,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			const intentResult = await backendClient!.classifyIntent(userMessage);
 
 			// If confidence is too low (< 0.65), treat as general question instead of forcing into specific intent
-			const isLowConfidence = (intentResult.confidence || 0) < 0.65;
+			const isLowConfidence = (intentResult.confidence || 0) < 0.8;
 
 			// Handle dataset search based on backend intent
 			if (intentResult.intent === "SEARCH_DATA" && !isLowConfidence) {
@@ -1971,35 +2248,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					console.log("🔍 Search response:", searchResult);
 
 					if (isMounted && searchResult.datasets.length > 0) {
-						let responseContent = `## 🔍 Found ${searchResult.datasets.length} Datasets\n\n`;
-						responseContent += `I found ${searchResult.datasets.length} datasets that match your search. Please select the ones you'd like to analyze:\n\n`;
-
-						searchResult.datasets
-							.slice(0, 5)
-							.forEach((dataset: any, index: number) => {
-								responseContent += `### ${index + 1}. ${dataset.title}\n`;
-								responseContent += `**ID:** ${dataset.id}\n`;
-								if (dataset.description) {
-									responseContent += `**Description:** ${dataset.description.substring(
-										0,
-										200
-									)}...\n`;
-								}
-								if (dataset.organism) {
-									responseContent += `**Organism:** ${dataset.organism}\n`;
-								}
-								responseContent += `\n`;
-							});
-
-						if (searchResult.datasets.length > 5) {
-							responseContent += `*... and ${
-								searchResult.datasets.length - 5
-							} more datasets*\n\n`;
-						}
-
-						responseContent += `**💡 Tip:** Select the datasets you want to analyze, then specify what analysis you'd like to perform.`;
-
-						addMessage(responseContent, false);
 					} else if (isMounted) {
 						console.log("❌ No datasets found. SearchResult:", searchResult);
 						addMessage(
@@ -3108,6 +3356,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							<ExamplesComponent
 								onExampleSelect={(example) => {
 									setInputValue(example);
+									inputValueRef.current = example;
 									setShowExamples(false);
 									handleSendMessage();
 								}}
@@ -3121,6 +3370,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						<ExamplesComponent
 							onExampleSelect={(example) => {
 								setInputValue(example);
+								inputValueRef.current = example;
 								setShowExamples(false);
 								handleSendMessage();
 							}}
@@ -3631,6 +3881,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			{MessagesView}
 
 			<Composer
+				ref={composerRef}
 				value={inputValue}
 				onChange={handleComposerChange}
 				onSend={handleSendMessage}

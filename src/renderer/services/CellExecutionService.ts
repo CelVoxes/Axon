@@ -1,56 +1,7 @@
 // Centralized notebook step execution logic
 import { ErrorUtils } from "../utils/ErrorUtils";
+import { normalizePythonCode } from "../utils/CodeTextUtils";
 import { Cell, ExecutionResult, ICodeExecutor } from "./types";
-
-function normalizePythonCode(rawCode: string): string {
-	if (!rawCode) return "";
-	let code = String(rawCode);
-	// Normalize newlines and strip BOM/zero-width no-break spaces
-	code = code
-		.replace(/\r\n/g, "\n")
-		.replace(/^\ufeff/, "")
-		.replace(/[\u200B\u200C\u200D\uFEFF]/g, "");
-	// Remove surrounding markdown code fences if present
-	code = code
-		.replace(/```\s*python\s*/gi, "")
-		.replace(/```/g, "")
-		.trim();
-
-	// If any non-empty line starts at column 0, avoid dedenting to preserve intended structure
-	const lines = code.split("\n");
-	// Convert leading tabs to 4 spaces to avoid mixed-indentation errors
-	for (let i = 0; i < lines.length; i++) {
-		lines[i] = lines[i].replace(/^\t+/, (m) => " ".repeat(4 * m.length));
-	}
-	const nonEmpty = lines.filter((l) => l.trim().length > 0);
-	const anyAtCol0 = nonEmpty.some((l) => !/^\s/.test(l));
-	if (nonEmpty.length === 0) return code;
-
-	if (!anyAtCol0) {
-		// Compute common leading whitespace prefix across all non-empty lines
-		const leading = nonEmpty.map((l) => l.match(/^[\t ]*/)?.[0] ?? "");
-		let common = leading[0] || "";
-		for (let i = 1; i < leading.length && common.length > 0; i++) {
-			const s = leading[i];
-			let j = 0;
-			const max = Math.min(common.length, s.length);
-			while (j < max && common[j] === s[j]) j++;
-			common = common.slice(0, j);
-		}
-		if (common) {
-			// Remove the common prefix from all lines that have it
-			for (let i = 0; i < lines.length; i++) {
-				const line = lines[i];
-				if (line.startsWith(common)) {
-					lines[i] = line.slice(common.length);
-				}
-			}
-			code = lines.join("\n");
-		}
-	}
-
-	return code.trimEnd();
-}
 async function runNotebookStep(
 	stepId: string,
 	code: string,
@@ -63,7 +14,6 @@ async function runNotebookStep(
 ) {
 	let unsubscribe: (() => void) | undefined;
 	try {
-
 		// Check if electronAPI is available
 		if (!window.electronAPI || !window.electronAPI.executeJupyterCode) {
 			const error = "electronAPI.executeJupyterCode is not available";
@@ -185,12 +135,6 @@ export class CellExecutionService implements ICodeExecutor {
 		console.log(
 			`CellExecutionService: Code length: ${cell.code.length} characters`
 		);
-		console.log(
-			`CellExecutionService: First 200 chars of code: ${cell.code.substring(
-				0,
-				200
-			)}...`
-		);
 
 		// Create abort controller for this execution
 		const abortController = new AbortController();
@@ -246,10 +190,10 @@ export class CellExecutionService implements ICodeExecutor {
 			await Promise.race([
 				executionPromise,
 				new Promise<void>((_, reject) => {
-					abortController.signal.addEventListener('abort', () => {
-						reject(new Error('Execution was cancelled'));
+					abortController.signal.addEventListener("abort", () => {
+						reject(new Error("Execution was cancelled"));
 					});
-				})
+				}),
 			]);
 
 			if (hasError) {
@@ -291,9 +235,12 @@ export class CellExecutionService implements ICodeExecutor {
 				`CellExecutionService: Error executing cell ${cell.title}:`,
 				error
 			);
-			
+
 			// Check if the error was due to cancellation
-			if (error instanceof Error && error.message === 'Execution was cancelled') {
+			if (
+				error instanceof Error &&
+				error.message === "Execution was cancelled"
+			) {
 				onProgress?.({ status: "cancelled" });
 				return {
 					status: "cancelled",
@@ -301,7 +248,7 @@ export class CellExecutionService implements ICodeExecutor {
 					shouldRetry: false,
 				};
 			}
-			
+
 			return {
 				status: "failed",
 				output: ErrorUtils.getErrorMessage(error),

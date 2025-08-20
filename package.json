@@ -41,6 +41,7 @@
     "webpack-require-from": "^1.8.6"
   },
   "dependencies": {
+    "@astral-sh/ruff-wasm-web": "^0.12.9",
     "@monaco-editor/react": "^4.5.0",
     "@types/ws": "^8.5.0",
     "adm-zip": "^0.5.10",

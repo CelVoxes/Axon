@@ -1,0 +1,113 @@
+# Ruff configuration for Axon - AI-generated Python notebook code
+# Optimized for data science and biological analysis workflows
+
+# Target Python 3.9+ (common for data science environments)
+target-version = "py39"
+
+# Line length optimized for notebook cells and readability
+line-length = 88
+indent-width = 4
+
+# Exclude common notebook and build directories
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "node_modules",
+    "build",
+    "dist",
+    ".ipynb_checkpoints",
+]
+
+[lint]
+# Enable comprehensive rule set for generated code quality
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # Pyflakes
+    "I",   # isort (import sorting)
+    "N",   # pep8-naming
+    "UP",  # pyupgrade (modernize Python code)
+    "B",   # flake8-bugbear (common bugs)
+    "C4",  # flake8-comprehensions (list/dict comprehensions)
+    "PD",  # pandas-vet (pandas best practices)
+    "NPY", # numpy-specific rules
+    "S",   # flake8-bandit (security issues)
+    "PTH", # flake8-use-pathlib (prefer pathlib)
+    "RUF", # Ruff-specific rules
+]
+
+ignore = [
+    # Allow print statements in notebooks (common for data exploration)
+    "T201",
+    # Allow TODO comments in generated code
+    "FIX002",
+    # Allow magic numbers in data science code
+    "PLR2004",
+    # Allow broad exception catching (common in notebook error handling)
+    "BLE001",
+    # Allow subprocess calls (needed for some analysis tools)
+    "S603", "S607",
+    # Allow assert statements in notebooks (used for data validation)
+    "S101",
+    # Allow hardcoded secrets in example/demo code
+    "S105", "S106",
+    # Ignore line too long in generated code (handled by formatter)
+    "E501",
+    # Allow unused imports in generated code (might be used in other cells)
+    "F401",
+    # Allow star imports (common in data science exploratory code)
+    "F403", "F405",
+    # Allow redefining builtin names (common in data science: id, input, etc.)
+    "A001", "A002", "A003",
+    # Allow missing docstrings in generated code
+    "D100", "D101", "D102", "D103", "D104", "D105",
+]
+
+# Enable auto-fixing for safe rules
+fixable = ["ALL"]
+unfixable = [
+    # Don't auto-fix security issues (require manual review)
+    "S",
+    # Don't auto-fix imports that might change functionality
+    "F401",  # unused-import
+]
+
+# Allow unused variables when underscore-prefixed (common in data science)
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+# Per-file ignores for different types of generated code
+[lint.per-file-ignores]
+# Allow unused imports in data loading cells (might be used in other cells)
+"*data_loading*" = ["F401"]
+# Allow star imports in exploratory analysis
+"*exploration*" = ["F403", "F405"]
+
+[lint.flake8-pandas-vet]
+# Enable pandas-specific checks for data science code
+checks = ["PD002", "PD003", "PD004", "PD008", "PD009", "PD010", "PD011", "PD012", "PD013"]
+
+[lint.flake8-bugbear]
+# Allow zip() without explicit strict parameter (not always needed in data science)
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]
+
+[format]
+# Use double quotes for strings (consistent with Black)
+quote-style = "double"
+
+# Use spaces for indentation
+indent-style = "space"
+
+# Respect magic trailing commas
+skip-magic-trailing-comma = false
+
+# Auto-detect line endings
+line-ending = "auto"
+
+# Format docstrings
+docstring-code-format = true
+docstring-code-line-length = 88

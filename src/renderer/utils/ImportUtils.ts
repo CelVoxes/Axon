@@ -44,19 +44,31 @@ export function removeDuplicateImports(
 ): string {
 	const lines = code.split("\n");
 	const filteredLines: string[] = [];
+	const seenImports = new Set<string>();
+
+	// First pass: collect all existing imports to avoid duplicates within the same code block
+	for (const existing of existingImports) {
+		seenImports.add(existing);
+	}
 
 	for (const line of lines) {
 		const trimmedLine = line.trim();
-		// Only deduplicate top-level imports (column 0). Do NOT touch indented imports
-		// to avoid breaking blocks like try/except or function scopes.
-		const isTopLevelImport =
-			line.startsWith("import ") || line.startsWith("from ");
-		if (isTopLevelImport) {
-			if (!existingImports.has(trimmedLine)) {
+		const isImportLine = trimmedLine.startsWith("import ") || trimmedLine.startsWith("from ");
+		
+		if (isImportLine) {
+			// Only remove if it's a top-level import (not indented) and we've seen it before
+			const isTopLevel = line.startsWith("import ") || line.startsWith("from ");
+			
+			if (isTopLevel && seenImports.has(trimmedLine)) {
+				// Skip this duplicate import
+				continue;
+			} else {
+				// Keep this import and add it to our seen set
 				filteredLines.push(line);
-				existingImports.add(trimmedLine);
+				seenImports.add(trimmedLine);
 			}
 		} else {
+			// Keep all non-import lines
 			filteredLines.push(line);
 		}
 	}

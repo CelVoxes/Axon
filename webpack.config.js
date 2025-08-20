@@ -22,6 +22,9 @@ module.exports = (env, argv) => {
 			web: true,
 		},
 		externals: [],
+		experiments: {
+			asyncWebAssembly: true,
+		},
 		entry: {
 			main: "./src/renderer/index.tsx",
 		},
@@ -58,6 +61,10 @@ module.exports = (env, argv) => {
 							maxSize: 8 * 1024, // 8kb
 						},
 					},
+				},
+				{
+					test: /\.wasm$/,
+					type: "asset/resource",
 				},
 			],
 		},

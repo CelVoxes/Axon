@@ -331,7 +331,8 @@ Language: {language}
 
 Requirements:
 - Write only the code, no explanations
-- Include necessary imports
+- Include only necessary imports actually used by the code
+- Do NOT re-import packages already imported in the Context above
 - Add comments for clarity
 - Handle errors gracefully
 - Follow Python best practices
@@ -400,15 +401,15 @@ LANGUAGE: {language}
 
 CRITICAL REQUIREMENTS:
 1. Write ONLY executable Python code - NO explanations, markdown, or non-code text
-2. ALWAYS include ALL necessary imports at the top
-3. Use these standard imports: pandas, numpy, matplotlib, seaborn, scipy, sklearn, requests, gzip, io, os, pathlib
+2. Include only the imports actually used in your code
+3. Do NOT re-import packages that are already imported in the CONTEXT
 4. Add clear comments explaining each step
 5. Handle errors gracefully with try-except blocks
 6. Follow Python best practices
 7. Make the code production-ready and biologically meaningful
 8. Include print statements to show progress
 9. Save outputs to appropriate directories (results/, figures/, etc.)
-10. Use simple string formatting: print("Value:", value) instead of complex f-strings
+10. Use simple print formatting: print("Value:", value) instead of complex f-strings
 11. Ensure all strings are properly closed and escaped
 
 DATASET HANDLING REQUIREMENTS:
@@ -429,7 +430,7 @@ ERROR HANDLING:
 - Continue execution even if some datasets fail
 
 CODE STRUCTURE:
-1. Start with imports
+1. Start with imports (only those you actually use and not already present in CONTEXT)
 2. Create output directories
 3. Define helper functions
 4. Main execution code with error handling
@@ -437,9 +438,6 @@ CODE STRUCTURE:
 
 EXAMPLE STRUCTURE:
 ```python
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
 import os
 from pathlib import Path
 
@@ -455,7 +453,7 @@ try:
     # Your code here
     print("Analysis completed successfully!")
 except Exception as e:
-    print(f"Error: {{e}}")
+    print("Error:", e)
     raise
 ```
 
@@ -464,7 +462,7 @@ Generate the code now:
         
         try:
             async for chunk in self.provider.generate_stream([
-                {"role": "system", "content": "You are an expert Python programmer specializing in bioinformatics and data analysis. Generate ONLY executable Python code with proper imports. Never include explanations, markdown, or non-code text. Avoid complex f-strings and ensure all syntax is correct. Always include error handling and proper directory structure."},
+                {"role": "system", "content": "You are an expert Python programmer specializing in bioinformatics and data analysis. Generate ONLY executable Python code, importing only modules actually used. Do not re-import packages already present in the provided CONTEXT. Never include explanations, markdown, or non-code text. Avoid complex f-strings and ensure all syntax is correct. Always include error handling and proper directory structure."},
                 {"role": "user", "content": prompt}
             ], max_tokens=3000, temperature=0.1):
                 yield chunk
