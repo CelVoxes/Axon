@@ -2336,22 +2336,42 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							if (!backendClient || !wsDir)
 								throw new Error("Backend not ready");
 							const agent = new AutonomousAgent(backendClient, wsDir);
-							const steps = [
-								{
-									id: "step_1",
-									description: userMessage,
-									code: "",
-									status: "pending" as const,
-								},
-							];
-							await agent.startNotebookCodeGeneration(
-								notebookFile!,
+							
+							// Load existing notebook context into the agent
+							try {
+								const fileContent = await window.electronAPI.readFile(notebookFile);
+								const nb = JSON.parse(fileContent);
+								if (Array.isArray(nb?.cells)) {
+									for (let idx = 0; idx < nb.cells.length; idx++) {
+										const c = nb.cells[idx];
+										if (c?.cell_type !== "code") continue;
+										const srcArr: string[] = Array.isArray(c.source) ? c.source : [];
+										const code = srcArr.join("");
+										if (code && code.trim().length > 0) {
+											const id = `existing-cell-${idx}`;
+											agent.addCodeToContext(id, code);
+										}
+									}
+								}
+							} catch (e) {
+								console.warn("Failed to load notebook context:", e);
+							}
+							
+							// Generate single step code for the new cell
+							let stepCode = await agent.generateSingleStepCode(
 								userMessage,
-								[],
-								steps as any,
+								userMessage,
+								[], // Empty datasets array - notebook already has its context
 								wsDir,
-								{ skipEnvCells: true }
+								0
 							);
+							
+							// Strip markdown code fences if present
+							stepCode = stepCode.replace(/^```(?:python)?\s*\n?/gm, '').replace(/\n?```\s*$/gm, '').trim();
+							
+							// Add the generated code as a new cell to the notebook
+							const notebookService = (agent as any).notebookService;
+							await notebookService.addCodeCell(notebookFile, stepCode);
 							addMessage("✅ Added analysis step to the open notebook.", false);
 						} catch (e) {
 							addMessage(
