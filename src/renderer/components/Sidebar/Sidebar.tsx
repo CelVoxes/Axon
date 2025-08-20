@@ -125,6 +125,9 @@ const SidebarContent = styled.div<{ $isDragOver?: boolean }>`
 	overflow-y: auto;
 	padding: 8px 0;
 	position: relative;
+	min-height: calc(100vh - 200px);
+	width: 100%;
+	height: 100%;
 	
 	${(props) => props.$isDragOver && `
 		&::after {
@@ -143,12 +146,16 @@ const SidebarContent = styled.div<{ $isDragOver?: boolean }>`
 			font-size: ${typography.lg};
 			font-weight: 500;
 			z-index: 1000;
+			margin: 0;
+			box-sizing: border-box;
 		}
 	`}
 `;
 
 const FileTree = styled.div`
 	font-size: ${typography.base};
+	width: 100%;
+	min-height: 100%;
 `;
 
 const FileItem = styled.div<{
@@ -156,6 +163,7 @@ const FileItem = styled.div<{
 	$level: number;
 	$isActive: boolean;
 	$isSelected: boolean;
+	$isDragOver?: boolean;
 	$fileName?: string;
 }>`
 	display: flex;
@@ -164,19 +172,25 @@ const FileItem = styled.div<{
 	cursor: pointer;
 	color: #cccccc;
 	height: 24px;
+	width: 100%;
+	box-sizing: border-box;
 	background-color: ${(props) => 
-		props.$isActive 
-			? "#007acc" 
-			: props.$isSelected 
-				? "#4a4a4a" 
-				: "transparent"
+		props.$isDragOver && props.$isDirectory
+			? "rgba(0, 122, 204, 0.3)"
+			: props.$isActive 
+				? "#007acc" 
+				: props.$isSelected 
+					? "#4a4a4a" 
+					: "transparent"
 	};
 	border-left: ${(props) => 
-		props.$isActive 
-			? "3px solid #007acc" 
-			: props.$isSelected 
-				? "3px solid #6a6a6a" 
-				: "3px solid transparent"
+		props.$isDragOver && props.$isDirectory
+			? "3px solid #007acc"
+			: props.$isActive 
+				? "3px solid #007acc" 
+				: props.$isSelected 
+					? "3px solid #6a6a6a" 
+					: "3px solid transparent"
 	};
 	position: relative;
 
@@ -211,9 +225,7 @@ const FileItem = styled.div<{
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		font-weight: ${(props) => 
-			props.$isActive || props.$isSelected ? "600" : "400"
-		};
+		font-weight: 400;
 		color: ${(props) => 
 			props.$isActive 
 				? "#ffffff" 
@@ -269,8 +281,9 @@ const ContextMenu = styled.div<{ $visible: boolean; $x: number; $y: number }>`
 	top: ${(props) => props.$y}px;
 	left: ${(props) => props.$x}px;
 	background-color: #2d2d30;
+	border: 1px solid #404040;
 	border-radius: 4px;
-	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.8);
 	z-index: 1000;
 	display: ${(props) => (props.$visible ? "block" : "none")};
 	min-width: 160px;
@@ -771,6 +784,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 			return (
 				<React.Fragment key={item.path}>
 					<FileItem
+						data-file-item
 						$isDirectory={item.isDirectory}
 						$level={level}
 						$isActive={state.activeFile === item.path}
@@ -779,9 +793,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 								? selectedDirectory === item.path
 								: state.activeFile === item.path && selectedDirectory === null
 						}
+						$isDragOver={item.isDirectory && dragOverFolder === item.path}
 						$fileName={item.name}
 						onClick={() => handleItemClick(item)}
 						onContextMenu={(e) => handleItemRightClick(e, item)}
+						{...(item.isDirectory && {
+							onDragOver: (e: React.DragEvent) => handleFolderDragOver(e, item.path),
+							onDragLeave: (e: React.DragEvent) => handleFolderDragLeave(e, item.path),
+							onDrop: (e: React.DragEvent) => handleFolderDrop(e, item.path),
+						})}
 					>
 						<IndentGuides $level={level} />
 						<div className="icon">
@@ -1127,6 +1147,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 	const [newFolderName, setNewFolderName] = useState("");
 	const [targetDir, setTargetDir] = useState("");
 	const [isDragOver, setIsDragOver] = useState(false);
+	const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
 
 	const createNewFile = async (parentDir: string) => {
 		setTargetDir(parentDir);
@@ -1184,11 +1205,114 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		}
 	};
 
+	// Helper function to process directory entries using FileSystemAPI
+	const processDirectoryEntry = async (entry: any, targetPath: string): Promise<void> => {
+		if (entry.isFile) {
+			// Handle file entry
+			return new Promise((resolve, reject) => {
+				entry.file(async (file: File) => {
+					try {
+						// Get the full relative path
+						const relativePath = entry.fullPath.startsWith('/') ? entry.fullPath.slice(1) : entry.fullPath;
+						const fullTargetPath = `${targetPath}/${relativePath}`;
+						
+						// Create parent directories if needed
+						const parentDir = fullTargetPath.substring(0, fullTargetPath.lastIndexOf('/'));
+						if (parentDir !== targetPath) {
+							const createDirResult = await electronAPI.createDirectory(parentDir);
+							if (!createDirResult.success) {
+								console.warn(`Could not create parent directory ${parentDir}: ${createDirResult.error}`);
+							}
+						}
+						
+						// Read and write file content
+						let content: string;
+						const isTextFile = file.type.startsWith('text/') || 
+							file.name.match(/\.(txt|md|js|ts|tsx|jsx|py|json|css|html|xml|yaml|yml|sql|sh|bat|csv)$/i);
+						
+						if (isTextFile || file.type === '') {
+							content = await file.text();
+						} else {
+							const arrayBuffer = await file.arrayBuffer();
+							const uint8Array = new Uint8Array(arrayBuffer);
+							content = btoa(String.fromCharCode.apply(null, Array.from(uint8Array)));
+						}
+						
+						const result = await electronAPI.writeFile(fullTargetPath, content);
+						if (!result.success) {
+							throw new Error(`Failed to write ${relativePath}: ${result.error}`);
+						}
+						
+						console.log(`Created file: ${fullTargetPath}`);
+						resolve();
+					} catch (error) {
+						reject(error);
+					}
+				}, reject);
+			});
+		} else if (entry.isDirectory) {
+			// Handle directory entry
+			const dirPath = `${targetPath}/${entry.name}`;
+			const createResult = await electronAPI.createDirectory(dirPath);
+			
+			if (!createResult.success) {
+				console.warn(`Could not create directory ${dirPath}: ${createResult.error}`);
+			}
+			
+			// Process directory contents
+			return new Promise((resolve, reject) => {
+				const reader = entry.createReader();
+				const processEntries = async () => {
+					reader.readEntries(async (entries: any[]) => {
+						if (entries.length === 0) {
+							resolve();
+							return;
+						}
+						
+						try {
+							for (const childEntry of entries) {
+								await processDirectoryEntry(childEntry, targetPath);
+							}
+							// Continue reading (directories might have more entries)
+							processEntries();
+						} catch (error) {
+							reject(error);
+						}
+					}, reject);
+				};
+				processEntries();
+			});
+		}
+	};
+
+	// Helper function to recursively handle directory drops
+	const handleDirectoryDrop = async (directory: File, targetPath: string) => {
+		try {
+			// Create the directory first
+			const dirPath = `${targetPath}/${directory.name}`;
+			const createResult = await electronAPI.createDirectory(dirPath);
+			
+			if (!createResult.success) {
+				throw new Error(`Failed to create directory ${directory.name}: ${createResult.error}`);
+			}
+
+			console.log(`Created directory: ${dirPath}`);
+			console.log(`Directory ${directory.name} created successfully. Note: Directory contents must be dropped separately due to browser limitations.`);
+			
+		} catch (error) {
+			console.error(`Error handling directory drop ${directory.name}:`, error);
+			throw error;
+		}
+	};
+
 	// Drag and drop handlers
 	const handleDragOver = (e: React.DragEvent) => {
 		e.preventDefault();
 		e.stopPropagation();
-		setIsDragOver(true);
+		// Only set general drag state if not over a specific folder
+		if (!dragOverFolder) {
+			setIsDragOver(true);
+		}
 	};
 
 	const handleDragLeave = (e: React.DragEvent) => {
@@ -1197,6 +1321,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		// Only set to false if we're leaving the sidebar content area
 		if (!e.currentTarget.contains(e.relatedTarget as Node)) {
 			setIsDragOver(false);
+			setDragOverFolder(null); // Clear folder drag state too
 		}
 	};
 
@@ -1207,29 +1332,147 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 
 		if (!state.currentWorkspace) return;
 
+		// Check for DataTransferItems first (better for folder handling)
+		const items = Array.from(e.dataTransfer.items);
 		const files = Array.from(e.dataTransfer.files);
-		if (files.length === 0) return;
+		
+		if (files.length === 0 && items.length === 0) return;
 
 		// Determine target directory (selected folder or workspace root)
 		const targetPath = selectedDirectory || state.currentWorkspace;
+		
+		// Try to use DataTransfer items API for better directory support
+		if (items.length > 0 && typeof items[0].webkitGetAsEntry === 'function') {
+			const entries = items.map(item => item.webkitGetAsEntry()).filter(Boolean);
+			
+			if (entries.length > 0) {
+				// Analyze what we're dropping using entries
+				const fileEntries = entries.filter(entry => entry && entry.isFile);
+				const directoryEntries = entries.filter(entry => entry && entry.isDirectory);
+				
+				// Create confirmation message
+				const targetName = selectedDirectory ? selectedDirectory.split('/').pop() : 'workspace root';
+				let confirmMessage = '';
+				
+				if (directoryEntries.length > 0 && fileEntries.length > 0) {
+					confirmMessage = `Add ${directoryEntries.length} folder${directoryEntries.length === 1 ? '' : 's'} and ${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'} to "${targetName}"?`;
+				} else if (directoryEntries.length > 0) {
+					const dirNames = directoryEntries.filter(entry => entry && entry.name).map(entry => entry!.name).join(', ');
+					confirmMessage = `Add ${directoryEntries.length} folder${directoryEntries.length === 1 ? '' : 's'} (${dirNames}) with contents to "${targetName}"?`;
+				} else {
+					const fileNames = fileEntries.filter(entry => entry && entry.name).map(entry => entry!.name).join(', ');
+					confirmMessage = `Add ${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'} (${fileNames}) to "${targetName}"?`;
+				}
+				
+				const confirmed = window.confirm(confirmMessage);
+				if (!confirmed) return;
+
+				try {
+					// Process each entry (file or directory)
+					for (const entry of entries) {
+						if (entry) {
+							await processDirectoryEntry(entry, targetPath);
+						}
+					}
+
+					// Refresh the file tree to show new files
+					await refreshTree();
+					
+					const totalItems = fileEntries.length + directoryEntries.length;
+					console.log(`Successfully processed ${totalItems} item${totalItems === 1 ? '' : 's'}`);
+					
+				} catch (error) {
+					console.error("Error handling dropped items:", error);
+					alert(`Failed to process dropped items: ${error instanceof Error ? error.message : "Unknown error"}`);
+				}
+				
+				return; // Exit early if we used the entries API
+			}
+		}
+		
+		// Fallback to original file-based approach
+		const fileEntries: File[] = [];
+		const directoryEntries: string[] = [];
+		
+		for (const file of files) {
+			if (file.type === "" && file.size === 0) {
+				directoryEntries.push(file.name);
+			} else {
+				fileEntries.push(file);
+			}
+		}
+		
+		// Create confirmation message
+		const targetName = selectedDirectory ? selectedDirectory.split('/').pop() : 'workspace root';
+		let confirmMessage = '';
+		
+		if (directoryEntries.length > 0 && fileEntries.length > 0) {
+			confirmMessage = `Add ${directoryEntries.length} folder${directoryEntries.length === 1 ? '' : 's'} and ${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'} to "${targetName}"?`;
+		} else if (directoryEntries.length > 0) {
+			confirmMessage = `Add ${directoryEntries.length} folder${directoryEntries.length === 1 ? '' : 's'} (${directoryEntries.join(', ')}) to "${targetName}"? Note: Only empty folders will be created.`;
+		} else {
+			confirmMessage = `Add ${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'} (${fileEntries.map(f => f.name).join(', ')}) to "${targetName}"?`;
+		}
+		
+		const confirmed = window.confirm(confirmMessage);
+		if (!confirmed) return;
 
 		try {
 			for (const file of files) {
-				// Check if it's a directory or file
+				// Handle directories differently - recursively copy their contents
 				if (file.type === "" && file.size === 0) {
-					// This might be a directory, but we can't easily copy directories
-					// from the file system due to security restrictions
-					console.warn("Directory dropping not supported:", file.name);
+					// This is likely a directory
+					console.log("Processing directory:", file.name);
+					try {
+						await handleDirectoryDrop(file, targetPath);
+					} catch (dirError) {
+						console.error(`Error processing directory ${file.name}:`, dirError);
+						// Continue with other items instead of stopping
+					}
 					continue;
 				}
 
-				// For files, read content and write to target location
-				const content = await file.text();
-				const targetFilePath = `${targetPath}/${file.name}`;
-				
-				const result = await electronAPI.writeFile(targetFilePath, content);
-				if (!result.success) {
-					throw new Error(`Failed to write ${file.name}: ${result.error}`);
+				// Check if file still exists and is readable
+				try {
+					let content: string;
+					
+					// Additional check: if file.type is empty but size is 0, it might still be a directory
+					// Try to read it first and catch the error
+					try {
+						// Try to determine if it's a text file
+						const isTextFile = file.type.startsWith('text/') || 
+							file.name.match(/\.(txt|md|js|ts|tsx|jsx|py|json|css|html|xml|yaml|yml|sql|sh|bat|csv)$/i);
+						
+						if (isTextFile || file.type === '') {
+							// Read as text
+							content = await file.text();
+						} else {
+							// For binary files, read as array buffer and convert to base64
+							const arrayBuffer = await file.arrayBuffer();
+							const uint8Array = new Uint8Array(arrayBuffer);
+							content = btoa(String.fromCharCode.apply(null, Array.from(uint8Array)));
+							console.warn(`Binary file ${file.name} converted to base64. May not be usable.`);
+						}
+					} catch (readError) {
+						// If reading fails, this might be a directory that wasn't caught by our initial check
+						if (readError instanceof DOMException && readError.message.includes('could not be found')) {
+							console.log(`Item ${file.name} appears to be a directory, creating folder instead`);
+							await handleDirectoryDrop(file, targetPath);
+							continue;
+						}
+						throw readError; // Re-throw if it's a different error
+					}
+
+					const targetFilePath = `${targetPath}/${file.name}`;
+					
+					const result = await electronAPI.writeFile(targetFilePath, content);
+					if (!result.success) {
+						throw new Error(`Failed to write ${file.name}: ${result.error}`);
+					}
+				} catch (fileError) {
+					console.error(`Error processing file ${file.name}:`, fileError);
+					// Continue with other files instead of stopping
+					continue;
 				}
 			}
 
@@ -1243,6 +1486,202 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		} catch (error) {
 			console.error("Error handling dropped files:", error);
 			alert(`Failed to drop files: ${error instanceof Error ? error.message : "Unknown error"}`);
+		}
+	};
+
+	// Folder-specific drag handlers
+	const handleFolderDragOver = (e: React.DragEvent, folderPath: string) => {
+		e.preventDefault();
+		e.stopPropagation();
+		setDragOverFolder(folderPath);
+		setIsDragOver(false); // Clear general drag state
+	};
+
+	const handleFolderDragLeave = (e: React.DragEvent, folderPath: string) => {
+		e.preventDefault();
+		e.stopPropagation();
+		// Only clear if we're actually leaving this folder
+		if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+			setDragOverFolder(null);
+		}
+	};
+
+	const handleFolderDrop = async (e: React.DragEvent, folderPath: string) => {
+		e.preventDefault();
+		e.stopPropagation();
+		setDragOverFolder(null);
+		setIsDragOver(false); // Clear general drag state
+
+		// Check for DataTransferItems first (better for folder handling)
+		const items = Array.from(e.dataTransfer.items);
+		const files = Array.from(e.dataTransfer.files);
+		
+		if (files.length === 0 && items.length === 0) return;
+
+		// Try to use DataTransfer items API for better directory support
+		if (items.length > 0 && typeof items[0].webkitGetAsEntry === 'function') {
+			const entries = items.map(item => item.webkitGetAsEntry()).filter(Boolean);
+			
+			if (entries.length > 0) {
+				// Analyze what we're dropping using entries
+				const fileEntries = entries.filter(entry => entry && entry.isFile);
+				const directoryEntries = entries.filter(entry => entry && entry.isDirectory);
+				
+				// Create confirmation message
+				const folderName = folderPath.split('/').pop() || folderPath;
+				let confirmMessage = '';
+				
+				if (directoryEntries.length > 0 && fileEntries.length > 0) {
+					confirmMessage = `Add ${directoryEntries.length} folder${directoryEntries.length === 1 ? '' : 's'} and ${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'} to "${folderName}"?`;
+				} else if (directoryEntries.length > 0) {
+					const dirNames = directoryEntries.filter(entry => entry && entry.name).map(entry => entry!.name).join(', ');
+					confirmMessage = `Add ${directoryEntries.length} folder${directoryEntries.length === 1 ? '' : 's'} (${dirNames}) with contents to "${folderName}"?`;
+				} else {
+					const fileNames = fileEntries.filter(entry => entry && entry.name).map(entry => entry!.name).join(', ');
+					confirmMessage = `Add ${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'} (${fileNames}) to "${folderName}"?`;
+				}
+				
+				const confirmed = window.confirm(confirmMessage);
+				if (!confirmed) return;
+
+				try {
+					// Process each entry (file or directory)
+					for (const entry of entries) {
+						if (entry) {
+							await processDirectoryEntry(entry, folderPath);
+						}
+					}
+
+					// Refresh the file tree to show new files
+					await refreshTree();
+					
+					const totalItems = fileEntries.length + directoryEntries.length;
+					console.log(`Successfully processed ${totalItems} item${totalItems === 1 ? '' : 's'} into ${folderPath}`);
+					
+				} catch (error) {
+					console.error("Error handling dropped items:", error);
+					alert(`Failed to process dropped items: ${error instanceof Error ? error.message : "Unknown error"}`);
+				}
+				
+				return; // Exit early if we used the entries API
+			}
+		}
+
+		// Fallback to original file-based approach
+		const fileEntries: File[] = [];
+		const directoryEntries: string[] = [];
+		
+		for (const file of files) {
+			if (file.type === "" && file.size === 0) {
+				directoryEntries.push(file.name);
+			} else {
+				fileEntries.push(file);
+			}
+		}
+		
+		// Create confirmation message
+		const folderName = folderPath.split('/').pop() || folderPath;
+		let confirmMessage = '';
+		
+		if (directoryEntries.length > 0 && fileEntries.length > 0) {
+			confirmMessage = `Add ${directoryEntries.length} folder${directoryEntries.length === 1 ? '' : 's'} and ${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'} to "${folderName}"?`;
+		} else if (directoryEntries.length > 0) {
+			confirmMessage = `Add ${directoryEntries.length} folder${directoryEntries.length === 1 ? '' : 's'} (${directoryEntries.join(', ')}) to "${folderName}"? Note: Only empty folders will be created.`;
+		} else {
+			confirmMessage = `Add ${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'} (${fileEntries.map(f => f.name).join(', ')}) to "${folderName}"?`;
+		}
+		
+		const confirmed = window.confirm(confirmMessage);
+		if (!confirmed) return;
+
+		try {
+			for (const file of files) {
+				// Handle directories differently - recursively copy their contents
+				if (file.type === "" && file.size === 0) {
+					// This is likely a directory
+					console.log("Processing directory:", file.name);
+					try {
+						await handleDirectoryDrop(file, folderPath);
+					} catch (dirError) {
+						console.error(`Error processing directory ${file.name}:`, dirError);
+						// Continue with other items instead of stopping
+					}
+					continue;
+				}
+
+				try {
+					let content: string;
+					
+					// Additional check: try to read and catch directory errors
+					try {
+						const isTextFile = file.type.startsWith('text/') || 
+							file.name.match(/\.(txt|md|js|ts|tsx|jsx|py|json|css|html|xml|yaml|yml|sql|sh|bat|csv)$/i);
+						
+						if (isTextFile || file.type === '') {
+							content = await file.text();
+						} else {
+							const arrayBuffer = await file.arrayBuffer();
+							const uint8Array = new Uint8Array(arrayBuffer);
+							content = btoa(String.fromCharCode.apply(null, Array.from(uint8Array)));
+							console.warn(`Binary file ${file.name} converted to base64. May not be usable.`);
+						}
+					} catch (readError) {
+						// If reading fails, this might be a directory that wasn't caught by our initial check
+						if (readError instanceof DOMException && readError.message.includes('could not be found')) {
+							console.log(`Item ${file.name} appears to be a directory, creating folder instead`);
+							await handleDirectoryDrop(file, folderPath);
+							continue;
+						}
+						throw readError; // Re-throw if it's a different error
+					}
+
+					const targetFilePath = `${folderPath}/${file.name}`;
+					
+					const result = await electronAPI.writeFile(targetFilePath, content);
+					if (!result.success) {
+						throw new Error(`Failed to write ${file.name}: ${result.error}`);
+					}
+				} catch (fileError) {
+					console.error(`Error processing file ${file.name}:`, fileError);
+					continue;
+				}
+			}
+
+			await refreshTree();
+			console.log(`Successfully dropped ${files.length} file${files.length === 1 ? '' : 's'} into ${folderPath}`);
+			
+		} catch (error) {
+			console.error("Error handling dropped files:", error);
+			alert(`Failed to drop files: ${error instanceof Error ? error.message : "Unknown error"}`);
+		}
+	};
+
+	const handleOpenWorkspaceSelector = async () => {
+		try {
+			// Use the electron API to open a directory selection dialog
+			const result = await electronAPI.showOpenDialog({
+				properties: ['openDirectory'],
+				title: 'Select Workspace Folder'
+			});
+
+			if (result.success && result.data && !result.data.canceled && result.data.filePaths.length > 0) {
+				const selectedPath = result.data.filePaths[0];
+				
+				// Update the workspace in the global state
+				dispatch({ type: 'SET_WORKSPACE', payload: selectedPath });
+				
+				// Clear current state and load the new workspace
+				setCurrentPath(selectedPath);
+				setDirChildren({});
+				setExpandedDirs(new Set([selectedPath]));
+				setSelectedDirectory(selectedPath);
+				await loadDirectory(selectedPath);
+				
+				console.log(`Workspace changed to: ${selectedPath}`);
+			}
+		} catch (error) {
+			console.error('Error opening workspace selector:', error);
+			alert(`Failed to open workspace selector: ${error instanceof Error ? error.message : 'Unknown error'}`);
 		}
 	};
 
@@ -1470,9 +1909,22 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 										<span
 											className="nav-item"
 											onClick={() => {
-												setCurrentPath(crumb.path);
-												loadDirectory(crumb.path);
+												// If clicking on the workspace root (first breadcrumb), open workspace selector
+												if (index === 0 && crumb.path === state.currentWorkspace) {
+													handleOpenWorkspaceSelector();
+												} else {
+													// Navigate to that directory
+													setCurrentPath(crumb.path);
+													loadDirectory(crumb.path);
+												}
 											}}
+											style={{
+												cursor: 'pointer',
+												...(index === 0 && {
+													color: '#ddd'
+												})
+											}}
+											title={index === 0 ? 'Click to open a different workspace' : `Navigate to ${crumb.name}`}
 										>
 											{crumb.name}
 										</span>
@@ -1522,6 +1974,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 						onDragOver={handleDragOver}
 						onDragLeave={handleDragLeave}
 						onDrop={handleDrop}
+						onClick={(e) => {
+							// Clear folder selection when clicking on empty space
+							// Check if the click target is the SidebarContent itself or FileTree
+							const target = e.target as HTMLElement;
+							const isEmptySpaceClick = target.closest('[data-file-item]') === null;
+							if (isEmptySpaceClick) {
+								setSelectedDirectory(null);
+							}
+						}}
 					>
 						{state.currentWorkspace ? (
 							<FileTree>

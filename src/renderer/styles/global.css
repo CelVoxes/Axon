@@ -162,6 +162,9 @@ textarea:focus {
 }
 
 .chat-button {
+	display: flex;
+	align-items: center;
+	justify-content: center;
 	background: transparent;
 	border: none;
 	color: #858585;

@@ -1,6 +1,7 @@
 import React from "react";
 import styled from "styled-components";
 import ReactMarkdown from "react-markdown";
+import { FiChevronRight } from "react-icons/fi";
 import { typography } from "../../styles/design-system";
 import { Message } from "../../context/AppContext";
 import { CodeBlock } from "./shared/CodeBlock";
@@ -126,8 +127,10 @@ const MessageText = styled.div<{ $messageType: string }>`
 					/* Lint summary/details presentation (normal grayish text) */
 					.lint-container { margin: 8px 0; }
 					.lint-header {
-						color: #a3a3a3;
-						font-size: ${typography.base};
+						font-size: ${typography.sm};
+						display: flex;
+						align-items: center;
+						color: #9ca3af;
 						cursor: pointer;
 						user-select: none;
 						padding: 4px 0;
@@ -229,7 +232,8 @@ const MessageTimestamp = styled.div`
 
 const formatTimestamp = (timestamp: Date): string => {
 	const now = new Date();
-	const timestampDate = timestamp instanceof Date ? timestamp : new Date(timestamp);
+	const timestampDate =
+		timestamp instanceof Date ? timestamp : new Date(timestamp);
 	const diff = now.getTime() - timestampDate.getTime();
 	const minutes = Math.floor(diff / 60000);
 
@@ -281,7 +285,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 								if ((match ? match[1] : "") === "lint") {
 									const lines = codeContent.split(/\r?\n/);
 									if (lines.length > 0 && /^LINT_SUMMARY:/i.test(lines[0])) {
-										headerTitle = lines[0].replace(/^LINT_SUMMARY:\s*/i, "").trim();
+										headerTitle = lines[0]
+											.replace(/^LINT_SUMMARY:\s*/i, "")
+											.trim();
 										codeContent = lines.slice(1).join("\n");
 									}
 
@@ -307,11 +313,19 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 												continue;
 											}
 											if (section === "errors" && /^-\s+/.test(line)) {
-												errorsList.push(<li key={`e-${eIndex++}`}>{line.replace(/^\-\s+/, "")}</li>);
+												errorsList.push(
+													<li key={`e-${eIndex++}`}>
+														{line.replace(/^\-\s+/, "")}
+													</li>
+												);
 												continue;
 											}
 											if (section === "warnings" && /^-\s+/.test(line)) {
-												warningsList.push(<li key={`w-${wIndex++}`}>{line.replace(/^\-\s+/, "")}</li>);
+												warningsList.push(
+													<li key={`w-${wIndex++}`}>
+														{line.replace(/^\-\s+/, "")}
+													</li>
+												);
 												continue;
 											}
 										}
@@ -323,26 +337,40 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 												className="lint-header"
 												onClick={() => setExpanded((v) => !v)}
 											>
-												<span style={{ marginRight: 8, color: "#9ca3af" }}>&gt;</span>
 												{headerTitle || "Lint results"}
+												<FiChevronRight
+													size={12}
+													style={{
+														marginLeft: 8,
+														color: "#9ca3af",
+														transform: expanded ? "rotate(90deg)" : undefined,
+													}}
+												/>
 											</div>
 											{expanded && (
 												<div className="lint-details">
 													{errorsList.length > 0 && (
 														<div className="lint-section">
-															<strong style={{ color: "#d1d5db" }}>Errors</strong>
+															<strong style={{ color: "#d1d5db" }}>
+																Errors
+															</strong>
 															<ul>{errorsList}</ul>
 														</div>
 													)}
 													{warningsList.length > 0 && (
 														<div className="lint-section">
-															<strong style={{ color: "#d1d5db" }}>Warnings</strong>
+															<strong style={{ color: "#d1d5db" }}>
+																Warnings
+															</strong>
 															<ul>{warningsList}</ul>
 														</div>
 													)}
-													{errorsList.length === 0 && warningsList.length === 0 && (
-														<div className="lint-section">No issues listed.</div>
-													)}
+													{errorsList.length === 0 &&
+														warningsList.length === 0 && (
+															<div className="lint-section">
+																No issues listed.
+															</div>
+														)}
 												</div>
 											)}
 										</div>

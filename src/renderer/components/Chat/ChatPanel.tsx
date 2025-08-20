@@ -163,7 +163,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const localRegistryRef = useRef<LocalDatasetRegistry | null>(null);
 	const [showHistoryMenu, setShowHistoryMenu] = useState<boolean>(false);
 	const [showDeleteMenu, setShowDeleteMenu] = useState<boolean>(false);
-	const [showExamples, setShowExamples] = useState<boolean>(true);
+	const [showExamples, setShowExamples] = useState<boolean>(false);
 
 	// Chat mode: "Agent" (default) or "Ask"
 	const [chatMode, setChatMode] = useState<"Agent" | "Ask">("Agent");
@@ -954,13 +954,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			// Clear any previous errors/warnings when lints pass
 			setValidationErrors([]);
 			setValidationSuccessMessage(message || "No linter errors found");
-			// Emit in lint style for consistent gray presentation
-			const successLint = [
-				"```lint",
-				`LINT_SUMMARY: ${message || "No linter errors found"}`,
-				"```",
-			].join("\n");
-			addMessage(successLint, false);
+			// Skip adding lint success message to reduce chat clutter
 			// Do not attach validated code to chat (to reduce clutter)
 
 			// Mark streaming message as completed now
@@ -2493,7 +2487,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					responseContent += `\n`;
 				});
 
-				responseContent += `Perfect! Here are some example queries you can try:\n\n`;
 
 				addMessage(responseContent, false, undefined, undefined, undefined, {
 					suggestions: [],
@@ -3375,35 +3368,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 				<SearchProgressView progress={datasetSearchProgress} />
 
-				{/* Show example queries as soon as results are available (before selection) */}
-				{showExamples &&
-					availableDatasets.length > 0 &&
-					selectedDatasets.length === 0 && (
-						<div style={{ marginTop: 12 }}>
-							<ExamplesComponent
-								onExampleSelect={(example) => {
-									setInputValue(example);
-									inputValueRef.current = example;
-									setShowExamples(false);
-									handleSendMessage();
-								}}
-							/>
-						</div>
-					)}
-
-				{/* Show example queries after datasets are selected */}
-				{showExamples && selectedDatasets.length > 0 && (
-					<div style={{ marginTop: 12 }}>
-						<ExamplesComponent
-							onExampleSelect={(example) => {
-								setInputValue(example);
-								inputValueRef.current = example;
-								setShowExamples(false);
-								handleSendMessage();
-							}}
-						/>
-					</div>
-				)}
 
 				<EnvironmentStatus
 					virtualEnvStatus={virtualEnvStatus}
@@ -3572,7 +3536,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								setAgentInstance(null);
 								setVirtualEnvStatus("");
 								setShowHistoryMenu(false);
-								setShowExamples(true);
+								setShowExamples(false);
 								suggestionsService?.startNewConversation?.();
 							}}
 							className="chat-button"
