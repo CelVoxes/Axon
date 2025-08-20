@@ -11,6 +11,8 @@ import {
 	FiExternalLink,
 	FiTrash2,
 	FiSearch,
+	FiFile,
+	FiPlus,
 } from "react-icons/fi";
 import { useWorkspaceContext } from "../../context/AppContext";
 import { ActionButton, EmptyState } from "@components/shared/StyledComponents";
@@ -118,10 +120,31 @@ const SearchInput = styled.input`
 	}
 `;
 
-const SidebarContent = styled.div`
+const SidebarContent = styled.div<{ $isDragOver?: boolean }>`
 	flex: 1;
 	overflow-y: auto;
 	padding: 8px 0;
+	position: relative;
+	
+	${(props) => props.$isDragOver && `
+		&::after {
+			content: "Drop files here";
+			position: absolute;
+			top: 0;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			background: rgba(0, 122, 204, 0.2);
+			border: 2px dashed #007acc;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			color: #007acc;
+			font-size: ${typography.lg};
+			font-weight: 500;
+			z-index: 1000;
+		}
+	`}
 `;
 
 const FileTree = styled.div`
@@ -132,6 +155,7 @@ const FileItem = styled.div<{
 	$isDirectory: boolean;
 	$level: number;
 	$isActive: boolean;
+	$isSelected: boolean;
 	$fileName?: string;
 }>`
 	display: flex;
@@ -140,10 +164,30 @@ const FileItem = styled.div<{
 	cursor: pointer;
 	color: #cccccc;
 	height: 24px;
-	background-color: ${(props) => (props.$isActive ? "#37373d" : "transparent")};
+	background-color: ${(props) => 
+		props.$isActive 
+			? "#007acc" 
+			: props.$isSelected 
+				? "#4a4a4a" 
+				: "transparent"
+	};
+	border-left: ${(props) => 
+		props.$isActive 
+			? "3px solid #007acc" 
+			: props.$isSelected 
+				? "3px solid #6a6a6a" 
+				: "3px solid transparent"
+	};
+	position: relative;
 
 	&:hover {
-		background-color: #37373d;
+		background-color: ${(props) => 
+			props.$isActive 
+				? "#007acc" 
+				: props.$isSelected 
+					? "#5a5a5a" 
+					: "#37373d"
+		};
 	}
 
 	.icon {
@@ -153,7 +197,13 @@ const FileItem = styled.div<{
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		color: #858585;
+		color: ${(props) => 
+			props.$isActive 
+				? "#ffffff" 
+				: props.$isSelected 
+					? "#cccccc" 
+					: "#858585"
+		};
 	}
 
 	.name {
@@ -161,7 +211,16 @@ const FileItem = styled.div<{
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		font-weight: ${(props) => (props.$isActive ? "600" : "400")};
+		font-weight: ${(props) => 
+			props.$isActive || props.$isSelected ? "600" : "400"
+		};
+		color: ${(props) => 
+			props.$isActive 
+				? "#ffffff" 
+				: props.$isSelected 
+					? "#ffffff" 
+					: "#cccccc"
+		};
 	}
 
 	.meta {
@@ -169,7 +228,13 @@ const FileItem = styled.div<{
 		align-items: center;
 		gap: 8px;
 		font-size: ${typography.xs};
-		color: #858585;
+		color: ${(props) => 
+			props.$isActive 
+				? "rgba(255,255,255,0.8)" 
+				: props.$isSelected 
+					? "rgba(255,255,255,0.7)" 
+					: "#858585"
+		};
 		margin-right: 4px;
 	}
 
@@ -233,8 +298,82 @@ const ContextMenuItem = styled.div`
 	}
 `;
 
-const BreadcrumbNav = styled.div`
+const DialogOverlay = styled.div`
+	position: fixed;
+	top: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	background: rgba(0, 0, 0, 0.5);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 10000;
+`;
+
+const Dialog = styled.div`
+	background: #2d2d30;
+	border-radius: 8px;
+	border: 1px solid #404040;
+	padding: 20px;
+	min-width: 300px;
+	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+`;
+
+const DialogTitle = styled.h3`
+	margin: 0 0 16px 0;
+	color: #ffffff;
+	font-size: ${typography.lg};
+	font-weight: 500;
+`;
+
+const DialogInput = styled.input`
+	width: 100%;
 	padding: 8px 12px;
+	background: #3c3c3c;
+	border: 1px solid #5a5a5a;
+	border-radius: 4px;
+	color: #cccccc;
+	font-size: ${typography.base};
+	margin-bottom: 16px;
+
+	&:focus {
+		outline: none;
+		border-color: #007acc;
+	}
+
+	&::placeholder {
+		color: #858585;
+	}
+`;
+
+const DialogActions = styled.div`
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+`;
+
+const DialogButton = styled.button<{ $primary?: boolean }>`
+	padding: 8px 16px;
+	border-radius: 4px;
+	border: none;
+	font-size: ${typography.sm};
+	cursor: pointer;
+	background: ${(props) => (props.$primary ? "#007acc" : "#5a5a5a")};
+	color: ${(props) => (props.$primary ? "#ffffff" : "#cccccc")};
+
+	&:hover {
+		background: ${(props) => (props.$primary ? "#0086d9" : "#6a6a6a")};
+	}
+
+	&:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+`;
+
+const BreadcrumbNav = styled.div`
+	padding: 6px 4px;
 	font-size: ${typography.sm};
 	border-bottom: 1px solid #3e3e42;
 	background-color: #2d2d30;
@@ -242,6 +381,8 @@ const BreadcrumbNav = styled.div`
 	align-items: center;
 	gap: 4px;
 	flex-wrap: wrap;
+	justify-content: space-between;
+	min-height: 32px;
 
 	.nav-item {
 		cursor: pointer;
@@ -253,6 +394,36 @@ const BreadcrumbNav = styled.div`
 
 	.separator {
 		color: #858585;
+	}
+
+	.nav-breadcrumbs {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		flex-wrap: wrap;
+		flex: 1;
+		padding-left: 8px;
+	}
+
+	.nav-actions {
+		opacity: 0;
+		visibility: hidden;
+		display: flex;
+		align-items: center;
+		gap: 1px;
+		transition: opacity 0.2s ease, visibility 0.2s ease;
+	}
+
+	&:hover .nav-actions {
+		opacity: 1;
+		visibility: visible;
+	}
+`;
+
+const ExplorerSection = styled.div`
+	&:hover .nav-actions {
+		opacity: 1;
+		visibility: visible;
 	}
 `;
 
@@ -347,6 +518,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		{}
 	);
 	const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
+	const [selectedDirectory, setSelectedDirectory] = useState<string | null>(null);
 
 	// Detailed search state
 	const [detailedQuery, setDetailedQuery] = useState<string>("");
@@ -393,6 +565,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 			setCurrentPath(state.currentWorkspace);
 			setDirChildren({});
 			setExpandedDirs(new Set([state.currentWorkspace]));
+			setSelectedDirectory(state.currentWorkspace);
 			loadDirectory(state.currentWorkspace);
 		}
 	}, [state.currentWorkspace]);
@@ -533,8 +706,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 
 	const handleItemClick = (item: FileItem) => {
 		if (item.isDirectory) {
+			setSelectedDirectory(item.path);
 			void toggleDirectory(item);
 		} else {
+			// Clear folder selection when clicking on a file
+			setSelectedDirectory(null);
 			dispatch({ type: "OPEN_FILE", payload: item.path });
 		}
 	};
@@ -598,6 +774,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 						$isDirectory={item.isDirectory}
 						$level={level}
 						$isActive={state.activeFile === item.path}
+						$isSelected={
+							item.isDirectory 
+								? selectedDirectory === item.path
+								: state.activeFile === item.path && selectedDirectory === null
+						}
 						$fileName={item.name}
 						onClick={() => handleItemClick(item)}
 						onContextMenu={(e) => handleItemRightClick(e, item)}
@@ -659,6 +840,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 								</ActionButton>
 							</Tooltip>
 						</div>
+
 					</FileItem>
 					{isExpanded && renderTree(item.path, level + 1)}
 				</React.Fragment>
@@ -939,6 +1121,131 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		extensionsFilter,
 		activeTab,
 	]);
+	const [showNewFileDialog, setShowNewFileDialog] = useState(false);
+	const [showNewFolderDialog, setShowNewFolderDialog] = useState(false);
+	const [newFileName, setNewFileName] = useState("");
+	const [newFolderName, setNewFolderName] = useState("");
+	const [targetDir, setTargetDir] = useState("");
+	const [isDragOver, setIsDragOver] = useState(false);
+
+	const createNewFile = async (parentDir: string) => {
+		setTargetDir(parentDir);
+		setNewFileName("");
+		setShowNewFileDialog(true);
+	};
+
+	const createNewFolder = async (parentDir: string) => {
+		setTargetDir(parentDir);
+		setNewFolderName("");
+		setShowNewFolderDialog(true);
+	};
+
+	const handleCreateFile = async () => {
+		if (!newFileName.trim()) return;
+
+		try {
+			const filePath = `${targetDir}/${newFileName}`;
+			const result = await electronAPI.writeFile(filePath, "");
+			
+			if (result.success) {
+				await refreshTree();
+				// Open the new file
+				dispatch({ type: "OPEN_FILE", payload: filePath });
+				setShowNewFileDialog(false);
+				setNewFileName("");
+			} else {
+				throw new Error(result.error || "Failed to create file");
+			}
+		} catch (error) {
+			console.error("Error creating file:", error);
+			alert(`Failed to create file: ${error instanceof Error ? error.message : "Unknown error"}`);
+		}
+	};
+
+	const handleCreateFolder = async () => {
+		if (!newFolderName.trim()) return;
+
+		try {
+			const folderPath = `${targetDir}/${newFolderName}`;
+			const result = await electronAPI.createDirectory(folderPath);
+			
+			if (result.success) {
+				await refreshTree();
+				// Expand the parent directory to show the new folder
+				setExpandedDirs(prev => new Set([...prev, targetDir]));
+				setShowNewFolderDialog(false);
+				setNewFolderName("");
+			} else {
+				throw new Error(result.error || "Failed to create folder");
+			}
+		} catch (error) {
+			console.error("Error creating folder:", error);
+			alert(`Failed to create folder: ${error instanceof Error ? error.message : "Unknown error"}`);
+		}
+	};
+
+	// Drag and drop handlers
+	const handleDragOver = (e: React.DragEvent) => {
+		e.preventDefault();
+		e.stopPropagation();
+		setIsDragOver(true);
+	};
+
+	const handleDragLeave = (e: React.DragEvent) => {
+		e.preventDefault();
+		e.stopPropagation();
+		// Only set to false if we're leaving the sidebar content area
+		if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+			setIsDragOver(false);
+		}
+	};
+
+	const handleDrop = async (e: React.DragEvent) => {
+		e.preventDefault();
+		e.stopPropagation();
+		setIsDragOver(false);
+
+		if (!state.currentWorkspace) return;
+
+		const files = Array.from(e.dataTransfer.files);
+		if (files.length === 0) return;
+
+		// Determine target directory (selected folder or workspace root)
+		const targetPath = selectedDirectory || state.currentWorkspace;
+
+		try {
+			for (const file of files) {
+				// Check if it's a directory or file
+				if (file.type === "" && file.size === 0) {
+					// This might be a directory, but we can't easily copy directories
+					// from the file system due to security restrictions
+					console.warn("Directory dropping not supported:", file.name);
+					continue;
+				}
+
+				// For files, read content and write to target location
+				const content = await file.text();
+				const targetFilePath = `${targetPath}/${file.name}`;
+				
+				const result = await electronAPI.writeFile(targetFilePath, content);
+				if (!result.success) {
+					throw new Error(`Failed to write ${file.name}: ${result.error}`);
+				}
+			}
+
+			// Refresh the file tree to show new files
+			await refreshTree();
+			
+			// Show success message
+			const fileCount = files.length;
+			console.log(`Successfully dropped ${fileCount} file${fileCount === 1 ? '' : 's'}`);
+			
+		} catch (error) {
+			console.error("Error handling dropped files:", error);
+			alert(`Failed to drop files: ${error instanceof Error ? error.message : "Unknown error"}`);
+		}
+	};
+
 	const handleContextMenuAction = async (action: string) => {
 		if (!contextMenu.item) return;
 
@@ -1041,13 +1348,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 							Sign in
 						</ActionButton>
 					)} */}
-					{activeTab === "explorer" && (
-						<Tooltip content="Refresh file list" placement="bottom">
-							<ActionButton onClick={() => refreshTree()}>
-								<FiRefreshCw size={12} />
-							</ActionButton>
-						</Tooltip>
-					)}
 				</HeaderActions>
 			</SidebarHeader>
 
@@ -1161,29 +1461,68 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 			)}
 
 			{activeTab === "explorer" ? (
-				<>
+				<ExplorerSection>
 					{state.currentWorkspace && (
 						<BreadcrumbNav>
-							{getBreadcrumbs().map((crumb, index, array) => (
-								<React.Fragment key={crumb.path}>
-									<span
-										className="nav-item"
+							<div className="nav-breadcrumbs">
+								{getBreadcrumbs().map((crumb, index, array) => (
+									<React.Fragment key={crumb.path}>
+										<span
+											className="nav-item"
+											onClick={() => {
+												setCurrentPath(crumb.path);
+												loadDirectory(crumb.path);
+											}}
+										>
+											{crumb.name}
+										</span>
+										{index < array.length - 1 && (
+											<span className="separator">/</span>
+										)}
+									</React.Fragment>
+								))}
+							</div>
+							<div className="nav-actions">
+								<Tooltip content={selectedDirectory ? "New file in selected folder" : "New file in workspace root"} placement="bottom">
+									<ActionButton
 										onClick={() => {
-											setCurrentPath(crumb.path);
-											loadDirectory(crumb.path);
+											const targetPath = selectedDirectory || state.currentWorkspace;
+											if (targetPath) createNewFile(targetPath);
 										}}
+										style={{ padding: "4px" }}
 									>
-										{crumb.name}
-									</span>
-									{index < array.length - 1 && (
-										<span className="separator">/</span>
-									)}
-								</React.Fragment>
-							))}
+										<FiFile size={12} />
+									</ActionButton>
+								</Tooltip>
+								<Tooltip content={selectedDirectory ? "New folder in selected folder" : "New folder in workspace root"} placement="bottom">
+									<ActionButton
+										onClick={() => {
+											const targetPath = selectedDirectory || state.currentWorkspace;
+											if (targetPath) createNewFolder(targetPath);
+										}}
+										style={{ padding: "4px" }}
+									>
+										<FiFolder size={12} />
+									</ActionButton>
+								</Tooltip>
+								<Tooltip content="Refresh file list" placement="bottom">
+									<ActionButton 
+										onClick={() => refreshTree()}
+										style={{ padding: "4px" }}
+									>
+										<FiRefreshCw size={12} />
+									</ActionButton>
+								</Tooltip>
+							</div>
 						</BreadcrumbNav>
 					)}
 
-					<SidebarContent>
+					<SidebarContent
+						$isDragOver={isDragOver}
+						onDragOver={handleDragOver}
+						onDragLeave={handleDragLeave}
+						onDrop={handleDrop}
+					>
 						{state.currentWorkspace ? (
 							<FileTree>
 								{state.currentWorkspace &&
@@ -1202,7 +1541,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 							</EmptyState>
 						)}
 					</SidebarContent>
-				</>
+				</ExplorerSection>
 			) : (
 				<SidebarContent>
 					{/* When query is empty, intentionally render nothing */}
@@ -1289,6 +1628,76 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 					Delete
 				</ContextMenuItem>
 			</ContextMenu>
+
+			{/* New File Dialog */}
+			{showNewFileDialog && (
+				<DialogOverlay onClick={() => setShowNewFileDialog(false)}>
+					<Dialog onClick={(e) => e.stopPropagation()}>
+						<DialogTitle>Create New File</DialogTitle>
+						<DialogInput
+							type="text"
+							placeholder="Enter file name (e.g., script.py, README.md)"
+							value={newFileName}
+							onChange={(e) => setNewFileName(e.target.value)}
+							onKeyDown={(e) => {
+								if (e.key === "Enter") {
+									handleCreateFile();
+								} else if (e.key === "Escape") {
+									setShowNewFileDialog(false);
+								}
+							}}
+							autoFocus
+						/>
+						<DialogActions>
+							<DialogButton onClick={() => setShowNewFileDialog(false)}>
+								Cancel
+							</DialogButton>
+							<DialogButton 
+								$primary 
+								onClick={handleCreateFile}
+								disabled={!newFileName.trim()}
+							>
+								Create
+							</DialogButton>
+						</DialogActions>
+					</Dialog>
+				</DialogOverlay>
+			)}
+
+			{/* New Folder Dialog */}
+			{showNewFolderDialog && (
+				<DialogOverlay onClick={() => setShowNewFolderDialog(false)}>
+					<Dialog onClick={(e) => e.stopPropagation()}>
+						<DialogTitle>Create New Folder</DialogTitle>
+						<DialogInput
+							type="text"
+							placeholder="Enter folder name"
+							value={newFolderName}
+							onChange={(e) => setNewFolderName(e.target.value)}
+							onKeyDown={(e) => {
+								if (e.key === "Enter") {
+									handleCreateFolder();
+								} else if (e.key === "Escape") {
+									setShowNewFolderDialog(false);
+								}
+							}}
+							autoFocus
+						/>
+						<DialogActions>
+							<DialogButton onClick={() => setShowNewFolderDialog(false)}>
+								Cancel
+							</DialogButton>
+							<DialogButton 
+								$primary 
+								onClick={handleCreateFolder}
+								disabled={!newFolderName.trim()}
+							>
+								Create
+							</DialogButton>
+						</DialogActions>
+					</Dialog>
+				</DialogOverlay>
+			)}
 		</SidebarContainer>
 	);
 };

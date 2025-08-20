@@ -126,6 +126,15 @@ export const electronAPI = {
 	},
 
 	/**
+	 * Safely create a directory
+	 */
+	async createDirectory(
+		dirPath: string
+	): Promise<{ success: boolean; error?: string }> {
+		return safeElectronAPICall<boolean>("createDirectory", dirPath);
+	},
+
+	/**
 	 * Safely open a file dialog
 	 */
 	async showOpenDialog(

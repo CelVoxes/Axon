@@ -81,20 +81,60 @@ export const Tooltip: React.FC<TooltipProps> = ({
 	content,
 	children,
 	placement = "top",
-	delayMs = 600,
+	delayMs = 200,
 	maxWidthPx = 260,
 }) => {
 	const id = useId();
 	const [visible, setVisible] = useState(false);
+	const [actualPlacement, setActualPlacement] = useState(placement);
 	const showTimer = useRef<number | null>(null);
 	const hideTimer = useRef<number | null>(null);
+	const tooltipRef = useRef<HTMLDivElement>(null);
+	const wrapperRef = useRef<HTMLSpanElement>(null);
+	const isMouseDownRef = useRef(false);
+
+	const checkBounds = () => {
+		if (!tooltipRef.current || !wrapperRef.current) return;
+
+		const tooltip = tooltipRef.current;
+		const wrapper = wrapperRef.current;
+		const rect = tooltip.getBoundingClientRect();
+		const wrapperRect = wrapper.getBoundingClientRect();
+		const viewport = {
+			width: window.innerWidth,
+			height: window.innerHeight,
+		};
+
+		let newPlacement = placement;
+
+		if (placement === "top" && rect.top < 0) {
+			newPlacement = "bottom";
+		} else if (placement === "bottom" && rect.bottom > viewport.height) {
+			newPlacement = "top";
+		} else if (placement === "left" && rect.left < 0) {
+			newPlacement = "right";
+		} else if (placement === "right" && rect.right > viewport.width) {
+			newPlacement = "left";
+		}
+
+		if (newPlacement !== actualPlacement) {
+			setActualPlacement(newPlacement);
+		}
+	};
 
 	const show = () => {
 		if (hideTimer.current) {
 			window.clearTimeout(hideTimer.current);
 			hideTimer.current = null;
 		}
-		showTimer.current = window.setTimeout(() => setVisible(true), delayMs);
+		showTimer.current = window.setTimeout(() => {
+			// Don't show tooltip if a dropdown menu is open
+			const hasOpenDropdown = wrapperRef.current?.querySelector('.dropdown-menu');
+			if (hasOpenDropdown) return;
+			
+			setVisible(true);
+			requestAnimationFrame(checkBounds);
+		}, delayMs);
 	};
 
 	const hide = () => {
@@ -102,7 +142,7 @@ export const Tooltip: React.FC<TooltipProps> = ({
 			window.clearTimeout(showTimer.current);
 			showTimer.current = null;
 		}
-		hideTimer.current = window.setTimeout(() => setVisible(false), 120);
+		setVisible(false);
 	};
 
 	useEffect(() => {
@@ -116,15 +156,31 @@ export const Tooltip: React.FC<TooltipProps> = ({
 	const childProps = {
 		onMouseEnter: (e: React.MouseEvent) => {
 			children.props.onMouseEnter?.(e);
+			// Don't show tooltip if hovering over dropdown menu
+			const target = e.target as HTMLElement;
+			if (target.closest('.dropdown-menu')) return;
 			show();
 		},
 		onMouseLeave: (e: React.MouseEvent) => {
 			children.props.onMouseLeave?.(e);
 			hide();
 		},
+		onMouseDown: (e: React.MouseEvent) => {
+			children.props.onMouseDown?.(e);
+			isMouseDownRef.current = true;
+			hide();
+		},
+		onMouseUp: (e: React.MouseEvent) => {
+			children.props.onMouseUp?.(e);
+			setTimeout(() => {
+				isMouseDownRef.current = false;
+			}, 50);
+		},
 		onFocus: (e: React.FocusEvent) => {
 			children.props.onFocus?.(e);
-			show();
+			if (!isMouseDownRef.current) {
+				show();
+			}
 		},
 		onBlur: (e: React.FocusEvent) => {
 			children.props.onBlur?.(e);
@@ -136,13 +192,14 @@ export const Tooltip: React.FC<TooltipProps> = ({
 	const trigger = React.cloneElement(children, childProps);
 
 	return (
-		<TooltipWrapper>
+		<TooltipWrapper ref={wrapperRef}>
 			{trigger}
 			<TooltipBubble
+				ref={tooltipRef}
 				role="tooltip"
 				id={id}
 				$visible={visible}
-				$placement={placement}
+				$placement={actualPlacement}
 				$maxWidthPx={maxWidthPx}
 			>
 				{content}

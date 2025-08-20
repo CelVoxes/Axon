@@ -267,7 +267,34 @@ export class AxonApp {
 			},
 			{
 				label: "View",
-				submenu: [{ role: "toggledevtools" }, { role: "reload" }],
+				submenu: [
+					{ role: "toggledevtools" },
+					{ role: "reload" },
+					{ type: "separator" },
+					{
+						label: "Zoom In",
+						accelerator: process.platform === "darwin" ? "Cmd+Plus" : "Ctrl+Plus",
+						click: () => {
+							const currentZoom = this.mainWindow?.webContents.getZoomLevel() || 0;
+							this.mainWindow?.webContents.setZoomLevel(currentZoom + 0.5);
+						},
+					},
+					{
+						label: "Zoom Out",
+						accelerator: process.platform === "darwin" ? "Cmd+-" : "Ctrl+-",
+						click: () => {
+							const currentZoom = this.mainWindow?.webContents.getZoomLevel() || 0;
+							this.mainWindow?.webContents.setZoomLevel(currentZoom - 0.5);
+						},
+					},
+					{
+						label: "Actual Size",
+						accelerator: process.platform === "darwin" ? "Cmd+0" : "Ctrl+0",
+						click: () => {
+							this.mainWindow?.webContents.setZoomLevel(0);
+						},
+					},
+				],
 			},
 		];
 		const menu = Menu.buildFromTemplate(template as any);

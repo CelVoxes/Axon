@@ -71,6 +71,8 @@ export const Composer = React.forwardRef<ComposerRef, ComposerProps>(({
 	const [showModelMenu, setShowModelMenu] = React.useState(false);
 	const [showModeMenu, setShowModeMenu] = React.useState(false);
 	const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+	const modelMenuRef = React.useRef<HTMLDivElement>(null);
+	const modeMenuRef = React.useRef<HTMLDivElement>(null);
 
 	// Expose focus method via ref
 	React.useImperativeHandle(ref, () => ({
@@ -78,6 +80,28 @@ export const Composer = React.forwardRef<ComposerRef, ComposerProps>(({
 			textareaRef.current?.focus();
 		}
 	}), []);
+
+	// Close menus when clicking outside
+	React.useEffect(() => {
+		const handleClickOutside = (event: MouseEvent) => {
+			const target = event.target as Node;
+			
+			// Close model menu if clicking outside
+			if (showModelMenu && modelMenuRef.current && !modelMenuRef.current.contains(target)) {
+				setShowModelMenu(false);
+			}
+			
+			// Close mode menu if clicking outside
+			if (showModeMenu && modeMenuRef.current && !modeMenuRef.current.contains(target)) {
+				setShowModeMenu(false);
+			}
+		};
+
+		document.addEventListener('mousedown', handleClickOutside);
+		return () => {
+			document.removeEventListener('mousedown', handleClickOutside);
+		};
+	}, [showModelMenu, showModeMenu]);
 	const rafIdRef = React.useRef<number | null>(null);
 	const [hoveredMention, setHoveredMention] = React.useState<string | null>(
 		null
@@ -371,6 +395,7 @@ export const Composer = React.forwardRef<ComposerRef, ComposerProps>(({
 					{/* Mode selector */}
 					<Tooltip content="Select interaction mode" placement="top">
 						<div
+							ref={modeMenuRef}
 							className="pill pill-select"
 							role="button"
 							aria-haspopup="listbox"
@@ -417,6 +442,7 @@ export const Composer = React.forwardRef<ComposerRef, ComposerProps>(({
 
 					<Tooltip content="Select AI model" placement="top">
 						<div
+							ref={modelMenuRef}
 							className="pill pill-select"
 							role="button"
 							aria-haspopup="listbox"

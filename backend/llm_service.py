@@ -888,9 +888,9 @@ JSON response:"""
                 user = (
                     "Text: " + text + "\n\n"
                     "Rules:\n"
-                    "- SEARCH_DATA only if user clearly asks to search/find/browse/fetch/download datasets or mentions data portals (GEO, GSE IDs, CellxCensus, Broad SCP).\n"
-                    "- ADD_CELL if the user asks to write/run code, add a notebook cell, import/plot/analyze, or the request is a code task.\n"
-                    "- If ambiguous or short (e.g., just a gene symbol), use ADD_CELL.\n\n"
+                    "- SEARCH_DATA only if user EXPLICITLY and CLEARLY asks to search/find/browse/fetch/download datasets with very specific language like 'search for datasets', 'find datasets', 'browse data', or mentions specific data portals (GEO, GSE IDs, CellxCensus, Broad SCP).\n"
+                    "- ADD_CELL for ALL other requests including: write/run code, add notebook cell, import/plot/analyze, code tasks, data analysis requests, gene queries, or any ambiguous requests.\n"
+                    "- Be VERY conservative with SEARCH_DATA - it should only trigger when the user is clearly looking for new datasets to download, not when they want to analyze existing data.\n\n"
                     "Respond as JSON: {\"intent\": \"ADD_CELL|SEARCH_DATA\", \"confidence\": 0.0-1.0, \"reason\": \"...\"}"
                 )
                 resp = await self.provider.generate(
@@ -923,12 +923,12 @@ JSON response:"""
         import re
         t = text.lower().strip()
 
-        # Indicators for dataset search
+        # Indicators for dataset search - more restrictive
         search_keywords = [
-            "search", "find dataset", "find data", "look up", "lookup", "browse datasets",
-            "geo", "gse", "dataset", "datasets", "download data", "fetch data",
+            "search for datasets", "find datasets", "browse datasets", "download datasets",
+            "fetch datasets", "get datasets", "browse data", "search data",
             "cellxcensus", "single cell portal", "broad scp", "broad single cell",
-            "study id", "accession", "metadataset",
+            "data portal", "dataset portal", "metadataset",
         ]
         # Indicators for code/cell operations
         add_cell_keywords = [
