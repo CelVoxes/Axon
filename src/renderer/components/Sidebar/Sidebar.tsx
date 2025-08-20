@@ -128,8 +128,10 @@ const SidebarContent = styled.div<{ $isDragOver?: boolean }>`
 	min-height: calc(100vh - 200px);
 	width: 100%;
 	height: 100%;
-	
-	${(props) => props.$isDragOver && `
+
+	${(props) =>
+		props.$isDragOver &&
+		`
 		&::after {
 			content: "Drop files here";
 			position: absolute;
@@ -168,40 +170,33 @@ const FileItem = styled.div<{
 }>`
 	display: flex;
 	align-items: center;
-	padding: 4px 8px;
+	padding: 4px 4px;
 	cursor: pointer;
 	color: #cccccc;
 	height: 24px;
 	width: 100%;
 	box-sizing: border-box;
-	background-color: ${(props) => 
+	background-color: ${(props) =>
 		props.$isDragOver && props.$isDirectory
 			? "rgba(0, 122, 204, 0.3)"
-			: props.$isActive 
-				? "#007acc" 
-				: props.$isSelected 
-					? "#4a4a4a" 
-					: "transparent"
-	};
-	border-left: ${(props) => 
+			: props.$isActive
+			? "#007acc"
+			: props.$isSelected
+			? "#4a4a4a"
+			: "transparent"};
+	border-left: ${(props) =>
 		props.$isDragOver && props.$isDirectory
 			? "3px solid #007acc"
-			: props.$isActive 
-				? "3px solid #007acc" 
-				: props.$isSelected 
-					? "3px solid #6a6a6a" 
-					: "3px solid transparent"
-	};
+			: props.$isActive
+			? "3px solid #007acc"
+			: props.$isSelected
+			? "3px solid #6a6a6a"
+			: "3px solid transparent"};
 	position: relative;
 
 	&:hover {
-		background-color: ${(props) => 
-			props.$isActive 
-				? "#007acc" 
-				: props.$isSelected 
-					? "#5a5a5a" 
-					: "#37373d"
-		};
+		background-color: ${(props) =>
+			props.$isActive ? "#007acc" : props.$isSelected ? "#5a5a5a" : "#37373d"};
 	}
 
 	.icon {
@@ -211,13 +206,8 @@ const FileItem = styled.div<{
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		color: ${(props) => 
-			props.$isActive 
-				? "#ffffff" 
-				: props.$isSelected 
-					? "#cccccc" 
-					: "#858585"
-		};
+		color: ${(props) =>
+			props.$isActive ? "#ffffff" : props.$isSelected ? "#cccccc" : "#858585"};
 	}
 
 	.name {
@@ -226,13 +216,8 @@ const FileItem = styled.div<{
 		overflow: hidden;
 		text-overflow: ellipsis;
 		font-weight: 400;
-		color: ${(props) => 
-			props.$isActive 
-				? "#ffffff" 
-				: props.$isSelected 
-					? "#ffffff" 
-					: "#cccccc"
-		};
+		color: ${(props) =>
+			props.$isActive ? "#ffffff" : props.$isSelected ? "#ffffff" : "#cccccc"};
 	}
 
 	.meta {
@@ -240,13 +225,12 @@ const FileItem = styled.div<{
 		align-items: center;
 		gap: 8px;
 		font-size: ${typography.xs};
-		color: ${(props) => 
-			props.$isActive 
-				? "rgba(255,255,255,0.8)" 
-				: props.$isSelected 
-					? "rgba(255,255,255,0.7)" 
-					: "#858585"
-		};
+		color: ${(props) =>
+			props.$isActive
+				? "rgba(255,255,255,0.8)"
+				: props.$isSelected
+				? "rgba(255,255,255,0.7)"
+				: "#858585"};
 		margin-right: 4px;
 	}
 
@@ -531,7 +515,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		{}
 	);
 	const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
-	const [selectedDirectory, setSelectedDirectory] = useState<string | null>(null);
+	const [selectedDirectory, setSelectedDirectory] = useState<string | null>(
+		null
+	);
 
 	// Detailed search state
 	const [detailedQuery, setDetailedQuery] = useState<string>("");
@@ -789,7 +775,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 						$level={level}
 						$isActive={state.activeFile === item.path}
 						$isSelected={
-							item.isDirectory 
+							item.isDirectory
 								? selectedDirectory === item.path
 								: state.activeFile === item.path && selectedDirectory === null
 						}
@@ -798,8 +784,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 						onClick={() => handleItemClick(item)}
 						onContextMenu={(e) => handleItemRightClick(e, item)}
 						{...(item.isDirectory && {
-							onDragOver: (e: React.DragEvent) => handleFolderDragOver(e, item.path),
-							onDragLeave: (e: React.DragEvent) => handleFolderDragLeave(e, item.path),
+							onDragOver: (e: React.DragEvent) =>
+								handleFolderDragOver(e, item.path),
+							onDragLeave: (e: React.DragEvent) =>
+								handleFolderDragLeave(e, item.path),
 							onDrop: (e: React.DragEvent) => handleFolderDrop(e, item.path),
 						})}
 					>
@@ -809,6 +797,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 								<FiChevronRight
 									size={16}
 									style={{
+										marginTop: "2px",
 										transform: isExpanded ? "rotate(90deg)" : undefined,
 									}}
 								/>
@@ -860,7 +849,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 								</ActionButton>
 							</Tooltip>
 						</div>
-
 					</FileItem>
 					{isExpanded && renderTree(item.path, level + 1)}
 				</React.Fragment>
@@ -1167,7 +1155,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		try {
 			const filePath = `${targetDir}/${newFileName}`;
 			const result = await electronAPI.writeFile(filePath, "");
-			
+
 			if (result.success) {
 				await refreshTree();
 				// Open the new file
@@ -1179,7 +1167,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 			}
 		} catch (error) {
 			console.error("Error creating file:", error);
-			alert(`Failed to create file: ${error instanceof Error ? error.message : "Unknown error"}`);
+			alert(
+				`Failed to create file: ${
+					error instanceof Error ? error.message : "Unknown error"
+				}`
+			);
 		}
 	};
 
@@ -1189,11 +1181,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		try {
 			const folderPath = `${targetDir}/${newFolderName}`;
 			const result = await electronAPI.createDirectory(folderPath);
-			
+
 			if (result.success) {
 				await refreshTree();
 				// Expand the parent directory to show the new folder
-				setExpandedDirs(prev => new Set([...prev, targetDir]));
+				setExpandedDirs((prev) => new Set([...prev, targetDir]));
 				setShowNewFolderDialog(false);
 				setNewFolderName("");
 			} else {
@@ -1201,48 +1193,71 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 			}
 		} catch (error) {
 			console.error("Error creating folder:", error);
-			alert(`Failed to create folder: ${error instanceof Error ? error.message : "Unknown error"}`);
+			alert(
+				`Failed to create folder: ${
+					error instanceof Error ? error.message : "Unknown error"
+				}`
+			);
 		}
 	};
 
 	// Helper function to process directory entries using FileSystemAPI
-	const processDirectoryEntry = async (entry: any, targetPath: string): Promise<void> => {
+	const processDirectoryEntry = async (
+		entry: any,
+		targetPath: string
+	): Promise<void> => {
 		if (entry.isFile) {
 			// Handle file entry
 			return new Promise((resolve, reject) => {
 				entry.file(async (file: File) => {
 					try {
 						// Get the full relative path
-						const relativePath = entry.fullPath.startsWith('/') ? entry.fullPath.slice(1) : entry.fullPath;
+						const relativePath = entry.fullPath.startsWith("/")
+							? entry.fullPath.slice(1)
+							: entry.fullPath;
 						const fullTargetPath = `${targetPath}/${relativePath}`;
-						
+
 						// Create parent directories if needed
-						const parentDir = fullTargetPath.substring(0, fullTargetPath.lastIndexOf('/'));
+						const parentDir = fullTargetPath.substring(
+							0,
+							fullTargetPath.lastIndexOf("/")
+						);
 						if (parentDir !== targetPath) {
-							const createDirResult = await electronAPI.createDirectory(parentDir);
+							const createDirResult = await electronAPI.createDirectory(
+								parentDir
+							);
 							if (!createDirResult.success) {
-								console.warn(`Could not create parent directory ${parentDir}: ${createDirResult.error}`);
+								console.warn(
+									`Could not create parent directory ${parentDir}: ${createDirResult.error}`
+								);
 							}
 						}
-						
+
 						// Read and write file content
 						let content: string;
-						const isTextFile = file.type.startsWith('text/') || 
-							file.name.match(/\.(txt|md|js|ts|tsx|jsx|py|json|css|html|xml|yaml|yml|sql|sh|bat|csv)$/i);
-						
-						if (isTextFile || file.type === '') {
+						const isTextFile =
+							file.type.startsWith("text/") ||
+							file.name.match(
+								/\.(txt|md|js|ts|tsx|jsx|py|json|css|html|xml|yaml|yml|sql|sh|bat|csv)$/i
+							);
+
+						if (isTextFile || file.type === "") {
 							content = await file.text();
 						} else {
 							const arrayBuffer = await file.arrayBuffer();
 							const uint8Array = new Uint8Array(arrayBuffer);
-							content = btoa(String.fromCharCode.apply(null, Array.from(uint8Array)));
+							content = btoa(
+								String.fromCharCode.apply(null, Array.from(uint8Array))
+							);
 						}
-						
+
 						const result = await electronAPI.writeFile(fullTargetPath, content);
 						if (!result.success) {
-							throw new Error(`Failed to write ${relativePath}: ${result.error}`);
+							throw new Error(
+								`Failed to write ${relativePath}: ${result.error}`
+							);
 						}
-						
+
 						console.log(`Created file: ${fullTargetPath}`);
 						resolve();
 					} catch (error) {
@@ -1254,11 +1269,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 			// Handle directory entry
 			const dirPath = `${targetPath}/${entry.name}`;
 			const createResult = await electronAPI.createDirectory(dirPath);
-			
+
 			if (!createResult.success) {
-				console.warn(`Could not create directory ${dirPath}: ${createResult.error}`);
+				console.warn(
+					`Could not create directory ${dirPath}: ${createResult.error}`
+				);
 			}
-			
+
 			// Process directory contents
 			return new Promise((resolve, reject) => {
 				const reader = entry.createReader();
@@ -1268,7 +1285,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 							resolve();
 							return;
 						}
-						
+
 						try {
 							for (const childEntry of entries) {
 								await processDirectoryEntry(childEntry, targetPath);
@@ -1291,14 +1308,17 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 			// Create the directory first
 			const dirPath = `${targetPath}/${directory.name}`;
 			const createResult = await electronAPI.createDirectory(dirPath);
-			
+
 			if (!createResult.success) {
-				throw new Error(`Failed to create directory ${directory.name}: ${createResult.error}`);
+				throw new Error(
+					`Failed to create directory ${directory.name}: ${createResult.error}`
+				);
 			}
 
 			console.log(`Created directory: ${dirPath}`);
-			console.log(`Directory ${directory.name} created successfully. Note: Directory contents must be dropped separately due to browser limitations.`);
-			
+			console.log(
+				`Directory ${directory.name} created successfully. Note: Directory contents must be dropped separately due to browser limitations.`
+			);
 		} catch (error) {
 			console.error(`Error handling directory drop ${directory.name}:`, error);
 			throw error;
@@ -1335,35 +1355,55 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		// Check for DataTransferItems first (better for folder handling)
 		const items = Array.from(e.dataTransfer.items);
 		const files = Array.from(e.dataTransfer.files);
-		
+
 		if (files.length === 0 && items.length === 0) return;
 
 		// Determine target directory (selected folder or workspace root)
 		const targetPath = selectedDirectory || state.currentWorkspace;
-		
+
 		// Try to use DataTransfer items API for better directory support
-		if (items.length > 0 && typeof items[0].webkitGetAsEntry === 'function') {
-			const entries = items.map(item => item.webkitGetAsEntry()).filter(Boolean);
-			
+		if (items.length > 0 && typeof items[0].webkitGetAsEntry === "function") {
+			const entries = items
+				.map((item) => item.webkitGetAsEntry())
+				.filter(Boolean);
+
 			if (entries.length > 0) {
 				// Analyze what we're dropping using entries
-				const fileEntries = entries.filter(entry => entry && entry.isFile);
-				const directoryEntries = entries.filter(entry => entry && entry.isDirectory);
-				
+				const fileEntries = entries.filter((entry) => entry && entry.isFile);
+				const directoryEntries = entries.filter(
+					(entry) => entry && entry.isDirectory
+				);
+
 				// Create confirmation message
-				const targetName = selectedDirectory ? selectedDirectory.split('/').pop() : 'workspace root';
-				let confirmMessage = '';
-				
+				const targetName = selectedDirectory
+					? selectedDirectory.split("/").pop()
+					: "workspace root";
+				let confirmMessage = "";
+
 				if (directoryEntries.length > 0 && fileEntries.length > 0) {
-					confirmMessage = `Add ${directoryEntries.length} folder${directoryEntries.length === 1 ? '' : 's'} and ${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'} to "${targetName}"?`;
+					confirmMessage = `Add ${directoryEntries.length} folder${
+						directoryEntries.length === 1 ? "" : "s"
+					} and ${fileEntries.length} file${
+						fileEntries.length === 1 ? "" : "s"
+					} to "${targetName}"?`;
 				} else if (directoryEntries.length > 0) {
-					const dirNames = directoryEntries.filter(entry => entry && entry.name).map(entry => entry!.name).join(', ');
-					confirmMessage = `Add ${directoryEntries.length} folder${directoryEntries.length === 1 ? '' : 's'} (${dirNames}) with contents to "${targetName}"?`;
+					const dirNames = directoryEntries
+						.filter((entry) => entry && entry.name)
+						.map((entry) => entry!.name)
+						.join(", ");
+					confirmMessage = `Add ${directoryEntries.length} folder${
+						directoryEntries.length === 1 ? "" : "s"
+					} (${dirNames}) with contents to "${targetName}"?`;
 				} else {
-					const fileNames = fileEntries.filter(entry => entry && entry.name).map(entry => entry!.name).join(', ');
-					confirmMessage = `Add ${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'} (${fileNames}) to "${targetName}"?`;
+					const fileNames = fileEntries
+						.filter((entry) => entry && entry.name)
+						.map((entry) => entry!.name)
+						.join(", ");
+					confirmMessage = `Add ${fileEntries.length} file${
+						fileEntries.length === 1 ? "" : "s"
+					} (${fileNames}) to "${targetName}"?`;
 				}
-				
+
 				const confirmed = window.confirm(confirmMessage);
 				if (!confirmed) return;
 
@@ -1377,23 +1417,30 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 
 					// Refresh the file tree to show new files
 					await refreshTree();
-					
+
 					const totalItems = fileEntries.length + directoryEntries.length;
-					console.log(`Successfully processed ${totalItems} item${totalItems === 1 ? '' : 's'}`);
-					
+					console.log(
+						`Successfully processed ${totalItems} item${
+							totalItems === 1 ? "" : "s"
+						}`
+					);
 				} catch (error) {
 					console.error("Error handling dropped items:", error);
-					alert(`Failed to process dropped items: ${error instanceof Error ? error.message : "Unknown error"}`);
+					alert(
+						`Failed to process dropped items: ${
+							error instanceof Error ? error.message : "Unknown error"
+						}`
+					);
 				}
-				
+
 				return; // Exit early if we used the entries API
 			}
 		}
-		
+
 		// Fallback to original file-based approach
 		const fileEntries: File[] = [];
 		const directoryEntries: string[] = [];
-		
+
 		for (const file of files) {
 			if (file.type === "" && file.size === 0) {
 				directoryEntries.push(file.name);
@@ -1401,19 +1448,31 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 				fileEntries.push(file);
 			}
 		}
-		
+
 		// Create confirmation message
-		const targetName = selectedDirectory ? selectedDirectory.split('/').pop() : 'workspace root';
-		let confirmMessage = '';
-		
+		const targetName = selectedDirectory
+			? selectedDirectory.split("/").pop()
+			: "workspace root";
+		let confirmMessage = "";
+
 		if (directoryEntries.length > 0 && fileEntries.length > 0) {
-			confirmMessage = `Add ${directoryEntries.length} folder${directoryEntries.length === 1 ? '' : 's'} and ${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'} to "${targetName}"?`;
+			confirmMessage = `Add ${directoryEntries.length} folder${
+				directoryEntries.length === 1 ? "" : "s"
+			} and ${fileEntries.length} file${
+				fileEntries.length === 1 ? "" : "s"
+			} to "${targetName}"?`;
 		} else if (directoryEntries.length > 0) {
-			confirmMessage = `Add ${directoryEntries.length} folder${directoryEntries.length === 1 ? '' : 's'} (${directoryEntries.join(', ')}) to "${targetName}"? Note: Only empty folders will be created.`;
+			confirmMessage = `Add ${directoryEntries.length} folder${
+				directoryEntries.length === 1 ? "" : "s"
+			} (${directoryEntries.join(
+				", "
+			)}) to "${targetName}"? Note: Only empty folders will be created.`;
 		} else {
-			confirmMessage = `Add ${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'} (${fileEntries.map(f => f.name).join(', ')}) to "${targetName}"?`;
+			confirmMessage = `Add ${fileEntries.length} file${
+				fileEntries.length === 1 ? "" : "s"
+			} (${fileEntries.map((f) => f.name).join(", ")}) to "${targetName}"?`;
 		}
-		
+
 		const confirmed = window.confirm(confirmMessage);
 		if (!confirmed) return;
 
@@ -1435,28 +1494,40 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 				// Check if file still exists and is readable
 				try {
 					let content: string;
-					
+
 					// Additional check: if file.type is empty but size is 0, it might still be a directory
 					// Try to read it first and catch the error
 					try {
 						// Try to determine if it's a text file
-						const isTextFile = file.type.startsWith('text/') || 
-							file.name.match(/\.(txt|md|js|ts|tsx|jsx|py|json|css|html|xml|yaml|yml|sql|sh|bat|csv)$/i);
-						
-						if (isTextFile || file.type === '') {
+						const isTextFile =
+							file.type.startsWith("text/") ||
+							file.name.match(
+								/\.(txt|md|js|ts|tsx|jsx|py|json|css|html|xml|yaml|yml|sql|sh|bat|csv)$/i
+							);
+
+						if (isTextFile || file.type === "") {
 							// Read as text
 							content = await file.text();
 						} else {
 							// For binary files, read as array buffer and convert to base64
 							const arrayBuffer = await file.arrayBuffer();
 							const uint8Array = new Uint8Array(arrayBuffer);
-							content = btoa(String.fromCharCode.apply(null, Array.from(uint8Array)));
-							console.warn(`Binary file ${file.name} converted to base64. May not be usable.`);
+							content = btoa(
+								String.fromCharCode.apply(null, Array.from(uint8Array))
+							);
+							console.warn(
+								`Binary file ${file.name} converted to base64. May not be usable.`
+							);
 						}
 					} catch (readError) {
 						// If reading fails, this might be a directory that wasn't caught by our initial check
-						if (readError instanceof DOMException && readError.message.includes('could not be found')) {
-							console.log(`Item ${file.name} appears to be a directory, creating folder instead`);
+						if (
+							readError instanceof DOMException &&
+							readError.message.includes("could not be found")
+						) {
+							console.log(
+								`Item ${file.name} appears to be a directory, creating folder instead`
+							);
 							await handleDirectoryDrop(file, targetPath);
 							continue;
 						}
@@ -1464,7 +1535,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 					}
 
 					const targetFilePath = `${targetPath}/${file.name}`;
-					
+
 					const result = await electronAPI.writeFile(targetFilePath, content);
 					if (!result.success) {
 						throw new Error(`Failed to write ${file.name}: ${result.error}`);
@@ -1478,14 +1549,19 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 
 			// Refresh the file tree to show new files
 			await refreshTree();
-			
+
 			// Show success message
 			const fileCount = files.length;
-			console.log(`Successfully dropped ${fileCount} file${fileCount === 1 ? '' : 's'}`);
-			
+			console.log(
+				`Successfully dropped ${fileCount} file${fileCount === 1 ? "" : "s"}`
+			);
 		} catch (error) {
 			console.error("Error handling dropped files:", error);
-			alert(`Failed to drop files: ${error instanceof Error ? error.message : "Unknown error"}`);
+			alert(
+				`Failed to drop files: ${
+					error instanceof Error ? error.message : "Unknown error"
+				}`
+			);
 		}
 	};
 
@@ -1515,32 +1591,50 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		// Check for DataTransferItems first (better for folder handling)
 		const items = Array.from(e.dataTransfer.items);
 		const files = Array.from(e.dataTransfer.files);
-		
+
 		if (files.length === 0 && items.length === 0) return;
 
 		// Try to use DataTransfer items API for better directory support
-		if (items.length > 0 && typeof items[0].webkitGetAsEntry === 'function') {
-			const entries = items.map(item => item.webkitGetAsEntry()).filter(Boolean);
-			
+		if (items.length > 0 && typeof items[0].webkitGetAsEntry === "function") {
+			const entries = items
+				.map((item) => item.webkitGetAsEntry())
+				.filter(Boolean);
+
 			if (entries.length > 0) {
 				// Analyze what we're dropping using entries
-				const fileEntries = entries.filter(entry => entry && entry.isFile);
-				const directoryEntries = entries.filter(entry => entry && entry.isDirectory);
-				
+				const fileEntries = entries.filter((entry) => entry && entry.isFile);
+				const directoryEntries = entries.filter(
+					(entry) => entry && entry.isDirectory
+				);
+
 				// Create confirmation message
-				const folderName = folderPath.split('/').pop() || folderPath;
-				let confirmMessage = '';
-				
+				const folderName = folderPath.split("/").pop() || folderPath;
+				let confirmMessage = "";
+
 				if (directoryEntries.length > 0 && fileEntries.length > 0) {
-					confirmMessage = `Add ${directoryEntries.length} folder${directoryEntries.length === 1 ? '' : 's'} and ${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'} to "${folderName}"?`;
+					confirmMessage = `Add ${directoryEntries.length} folder${
+						directoryEntries.length === 1 ? "" : "s"
+					} and ${fileEntries.length} file${
+						fileEntries.length === 1 ? "" : "s"
+					} to "${folderName}"?`;
 				} else if (directoryEntries.length > 0) {
-					const dirNames = directoryEntries.filter(entry => entry && entry.name).map(entry => entry!.name).join(', ');
-					confirmMessage = `Add ${directoryEntries.length} folder${directoryEntries.length === 1 ? '' : 's'} (${dirNames}) with contents to "${folderName}"?`;
+					const dirNames = directoryEntries
+						.filter((entry) => entry && entry.name)
+						.map((entry) => entry!.name)
+						.join(", ");
+					confirmMessage = `Add ${directoryEntries.length} folder${
+						directoryEntries.length === 1 ? "" : "s"
+					} (${dirNames}) with contents to "${folderName}"?`;
 				} else {
-					const fileNames = fileEntries.filter(entry => entry && entry.name).map(entry => entry!.name).join(', ');
-					confirmMessage = `Add ${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'} (${fileNames}) to "${folderName}"?`;
+					const fileNames = fileEntries
+						.filter((entry) => entry && entry.name)
+						.map((entry) => entry!.name)
+						.join(", ");
+					confirmMessage = `Add ${fileEntries.length} file${
+						fileEntries.length === 1 ? "" : "s"
+					} (${fileNames}) to "${folderName}"?`;
 				}
-				
+
 				const confirmed = window.confirm(confirmMessage);
 				if (!confirmed) return;
 
@@ -1554,15 +1648,22 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 
 					// Refresh the file tree to show new files
 					await refreshTree();
-					
+
 					const totalItems = fileEntries.length + directoryEntries.length;
-					console.log(`Successfully processed ${totalItems} item${totalItems === 1 ? '' : 's'} into ${folderPath}`);
-					
+					console.log(
+						`Successfully processed ${totalItems} item${
+							totalItems === 1 ? "" : "s"
+						} into ${folderPath}`
+					);
 				} catch (error) {
 					console.error("Error handling dropped items:", error);
-					alert(`Failed to process dropped items: ${error instanceof Error ? error.message : "Unknown error"}`);
+					alert(
+						`Failed to process dropped items: ${
+							error instanceof Error ? error.message : "Unknown error"
+						}`
+					);
 				}
-				
+
 				return; // Exit early if we used the entries API
 			}
 		}
@@ -1570,7 +1671,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		// Fallback to original file-based approach
 		const fileEntries: File[] = [];
 		const directoryEntries: string[] = [];
-		
+
 		for (const file of files) {
 			if (file.type === "" && file.size === 0) {
 				directoryEntries.push(file.name);
@@ -1578,19 +1679,29 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 				fileEntries.push(file);
 			}
 		}
-		
+
 		// Create confirmation message
-		const folderName = folderPath.split('/').pop() || folderPath;
-		let confirmMessage = '';
-		
+		const folderName = folderPath.split("/").pop() || folderPath;
+		let confirmMessage = "";
+
 		if (directoryEntries.length > 0 && fileEntries.length > 0) {
-			confirmMessage = `Add ${directoryEntries.length} folder${directoryEntries.length === 1 ? '' : 's'} and ${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'} to "${folderName}"?`;
+			confirmMessage = `Add ${directoryEntries.length} folder${
+				directoryEntries.length === 1 ? "" : "s"
+			} and ${fileEntries.length} file${
+				fileEntries.length === 1 ? "" : "s"
+			} to "${folderName}"?`;
 		} else if (directoryEntries.length > 0) {
-			confirmMessage = `Add ${directoryEntries.length} folder${directoryEntries.length === 1 ? '' : 's'} (${directoryEntries.join(', ')}) to "${folderName}"? Note: Only empty folders will be created.`;
+			confirmMessage = `Add ${directoryEntries.length} folder${
+				directoryEntries.length === 1 ? "" : "s"
+			} (${directoryEntries.join(
+				", "
+			)}) to "${folderName}"? Note: Only empty folders will be created.`;
 		} else {
-			confirmMessage = `Add ${fileEntries.length} file${fileEntries.length === 1 ? '' : 's'} (${fileEntries.map(f => f.name).join(', ')}) to "${folderName}"?`;
+			confirmMessage = `Add ${fileEntries.length} file${
+				fileEntries.length === 1 ? "" : "s"
+			} (${fileEntries.map((f) => f.name).join(", ")}) to "${folderName}"?`;
 		}
-		
+
 		const confirmed = window.confirm(confirmMessage);
 		if (!confirmed) return;
 
@@ -1611,24 +1722,36 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 
 				try {
 					let content: string;
-					
+
 					// Additional check: try to read and catch directory errors
 					try {
-						const isTextFile = file.type.startsWith('text/') || 
-							file.name.match(/\.(txt|md|js|ts|tsx|jsx|py|json|css|html|xml|yaml|yml|sql|sh|bat|csv)$/i);
-						
-						if (isTextFile || file.type === '') {
+						const isTextFile =
+							file.type.startsWith("text/") ||
+							file.name.match(
+								/\.(txt|md|js|ts|tsx|jsx|py|json|css|html|xml|yaml|yml|sql|sh|bat|csv)$/i
+							);
+
+						if (isTextFile || file.type === "") {
 							content = await file.text();
 						} else {
 							const arrayBuffer = await file.arrayBuffer();
 							const uint8Array = new Uint8Array(arrayBuffer);
-							content = btoa(String.fromCharCode.apply(null, Array.from(uint8Array)));
-							console.warn(`Binary file ${file.name} converted to base64. May not be usable.`);
+							content = btoa(
+								String.fromCharCode.apply(null, Array.from(uint8Array))
+							);
+							console.warn(
+								`Binary file ${file.name} converted to base64. May not be usable.`
+							);
 						}
 					} catch (readError) {
 						// If reading fails, this might be a directory that wasn't caught by our initial check
-						if (readError instanceof DOMException && readError.message.includes('could not be found')) {
-							console.log(`Item ${file.name} appears to be a directory, creating folder instead`);
+						if (
+							readError instanceof DOMException &&
+							readError.message.includes("could not be found")
+						) {
+							console.log(
+								`Item ${file.name} appears to be a directory, creating folder instead`
+							);
 							await handleDirectoryDrop(file, folderPath);
 							continue;
 						}
@@ -1636,7 +1759,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 					}
 
 					const targetFilePath = `${folderPath}/${file.name}`;
-					
+
 					const result = await electronAPI.writeFile(targetFilePath, content);
 					if (!result.success) {
 						throw new Error(`Failed to write ${file.name}: ${result.error}`);
@@ -1648,11 +1771,18 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 			}
 
 			await refreshTree();
-			console.log(`Successfully dropped ${files.length} file${files.length === 1 ? '' : 's'} into ${folderPath}`);
-			
+			console.log(
+				`Successfully dropped ${files.length} file${
+					files.length === 1 ? "" : "s"
+				} into ${folderPath}`
+			);
 		} catch (error) {
 			console.error("Error handling dropped files:", error);
-			alert(`Failed to drop files: ${error instanceof Error ? error.message : "Unknown error"}`);
+			alert(
+				`Failed to drop files: ${
+					error instanceof Error ? error.message : "Unknown error"
+				}`
+			);
 		}
 	};
 
@@ -1660,28 +1790,37 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		try {
 			// Use the electron API to open a directory selection dialog
 			const result = await electronAPI.showOpenDialog({
-				properties: ['openDirectory'],
-				title: 'Select Workspace Folder'
+				properties: ["openDirectory"],
+				title: "Select Workspace Folder",
 			});
 
-			if (result.success && result.data && !result.data.canceled && result.data.filePaths.length > 0) {
+			if (
+				result.success &&
+				result.data &&
+				!result.data.canceled &&
+				result.data.filePaths.length > 0
+			) {
 				const selectedPath = result.data.filePaths[0];
-				
+
 				// Update the workspace in the global state
-				dispatch({ type: 'SET_WORKSPACE', payload: selectedPath });
-				
+				dispatch({ type: "SET_WORKSPACE", payload: selectedPath });
+
 				// Clear current state and load the new workspace
 				setCurrentPath(selectedPath);
 				setDirChildren({});
 				setExpandedDirs(new Set([selectedPath]));
 				setSelectedDirectory(selectedPath);
 				await loadDirectory(selectedPath);
-				
+
 				console.log(`Workspace changed to: ${selectedPath}`);
 			}
 		} catch (error) {
-			console.error('Error opening workspace selector:', error);
-			alert(`Failed to open workspace selector: ${error instanceof Error ? error.message : 'Unknown error'}`);
+			console.error("Error opening workspace selector:", error);
+			alert(
+				`Failed to open workspace selector: ${
+					error instanceof Error ? error.message : "Unknown error"
+				}`
+			);
 		}
 	};
 
@@ -1910,7 +2049,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 											className="nav-item"
 											onClick={() => {
 												// If clicking on the workspace root (first breadcrumb), open workspace selector
-												if (index === 0 && crumb.path === state.currentWorkspace) {
+												if (
+													index === 0 &&
+													crumb.path === state.currentWorkspace
+												) {
 													handleOpenWorkspaceSelector();
 												} else {
 													// Navigate to that directory
@@ -1919,12 +2061,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 												}
 											}}
 											style={{
-												cursor: 'pointer',
+												cursor: "pointer",
 												...(index === 0 && {
-													color: '#ddd'
-												})
+													color: "#ddd",
+												}),
 											}}
-											title={index === 0 ? 'Click to open a different workspace' : `Navigate to ${crumb.name}`}
+											title={
+												index === 0
+													? "Click to open a different workspace"
+													: `Navigate to ${crumb.name}`
+											}
 										>
 											{crumb.name}
 										</span>
@@ -1935,10 +2081,18 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 								))}
 							</div>
 							<div className="nav-actions">
-								<Tooltip content={selectedDirectory ? "New file in selected folder" : "New file in workspace root"} placement="bottom">
+								<Tooltip
+									content={
+										selectedDirectory
+											? "New file in selected folder"
+											: "New file in workspace root"
+									}
+									placement="bottom"
+								>
 									<ActionButton
 										onClick={() => {
-											const targetPath = selectedDirectory || state.currentWorkspace;
+											const targetPath =
+												selectedDirectory || state.currentWorkspace;
 											if (targetPath) createNewFile(targetPath);
 										}}
 										style={{ padding: "4px" }}
@@ -1946,10 +2100,18 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 										<FiFile size={12} />
 									</ActionButton>
 								</Tooltip>
-								<Tooltip content={selectedDirectory ? "New folder in selected folder" : "New folder in workspace root"} placement="bottom">
+								<Tooltip
+									content={
+										selectedDirectory
+											? "New folder in selected folder"
+											: "New folder in workspace root"
+									}
+									placement="bottom"
+								>
 									<ActionButton
 										onClick={() => {
-											const targetPath = selectedDirectory || state.currentWorkspace;
+											const targetPath =
+												selectedDirectory || state.currentWorkspace;
 											if (targetPath) createNewFolder(targetPath);
 										}}
 										style={{ padding: "4px" }}
@@ -1958,7 +2120,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 									</ActionButton>
 								</Tooltip>
 								<Tooltip content="Refresh file list" placement="bottom">
-									<ActionButton 
+									<ActionButton
 										onClick={() => refreshTree()}
 										style={{ padding: "4px" }}
 									>
@@ -1978,7 +2140,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 							// Clear folder selection when clicking on empty space
 							// Check if the click target is the SidebarContent itself or FileTree
 							const target = e.target as HTMLElement;
-							const isEmptySpaceClick = target.closest('[data-file-item]') === null;
+							const isEmptySpaceClick =
+								target.closest("[data-file-item]") === null;
 							if (isEmptySpaceClick) {
 								setSelectedDirectory(null);
 							}
@@ -2113,8 +2276,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 							<DialogButton onClick={() => setShowNewFileDialog(false)}>
 								Cancel
 							</DialogButton>
-							<DialogButton 
-								$primary 
+							<DialogButton
+								$primary
 								onClick={handleCreateFile}
 								disabled={!newFileName.trim()}
 							>
@@ -2148,8 +2311,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 							<DialogButton onClick={() => setShowNewFolderDialog(false)}>
 								Cancel
 							</DialogButton>
-							<DialogButton 
-								$primary 
+							<DialogButton
+								$primary
 								onClick={handleCreateFolder}
 								disabled={!newFolderName.trim()}
 							>

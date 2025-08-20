@@ -912,7 +912,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						.join("\n");
 					summary += `\n\n\`\`\`diff\n${diffBody}\n\`\`\``;
 				}
-				addMessage(summary, false);
+				// Skip adding lint error summary to reduce chat clutter
 				// Mark streaming message as completed now
 				try {
 					const stream = activeStreams.current.get(
@@ -1550,7 +1550,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								.join("\n") + "\n";
 					}
 					lintBlock += "```";
-					addMessage(lintBlock, false);
+					// Skip adding lint error summary to reduce chat clutter
 				} else {
 					console.log(`Cell ${cellIndex + 1} passed final linting check`);
 				}

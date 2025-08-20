@@ -341,7 +341,8 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 												<FiChevronRight
 													size={12}
 													style={{
-														marginLeft: 8,
+														marginLeft: 4,
+														marginTop: "2px",
 														color: "#9ca3af",
 														transform: expanded ? "rotate(90deg)" : undefined,
 													}}
