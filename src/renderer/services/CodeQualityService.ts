@@ -122,6 +122,16 @@ export class CodeQualityService {
 			result.cleanedCode = normalizePythonCode(code);
 			result.lintedCode = result.cleanedCode;
 			result.isValid = true;
+
+			// Emit a validation success event so the UI doesn't wait for a timeout
+			try {
+				this.codeGenerationService.emitValidationSuccess(
+					stepId,
+					`Skipped linting for install cell: ${stepTitle}`,
+					result.lintedCode
+				);
+			} catch (_) {}
+
 			return result;
 		}
 

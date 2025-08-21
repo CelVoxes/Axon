@@ -20,6 +20,7 @@ import { CellExecutionService } from "../../services/CellExecutionService";
 import { ActionButton } from "@components/shared/StyledComponents";
 import { Tooltip } from "@components/shared/Tooltip";
 import ReactMarkdown from "react-markdown";
+import { sanitizeMarkdown } from "../../utils/MarkdownUtils";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
@@ -1036,7 +1037,7 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 									rehypeHighlight as unknown as never,
 								]}
 							>
-								{code || ""}
+								{sanitizeMarkdown(code || "")}
 							</ReactMarkdown>
 						</RichTextOutput>
 					</OutputContainer>
@@ -1237,7 +1238,7 @@ const renderMarkdown = (data: string) => {
 					rehypeHighlight as unknown as never,
 				]}
 			>
-				{data}
+				{sanitizeMarkdown(data)}
 			</ReactMarkdown>
 		</RichTextOutput>
 	);

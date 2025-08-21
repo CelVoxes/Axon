@@ -1,6 +1,7 @@
 import React from "react";
 import styled from "styled-components";
 import ReactMarkdown from "react-markdown";
+import { sanitizeMarkdown } from "../../utils/MarkdownUtils";
 import { FiChevronRight } from "react-icons/fi";
 import { typography } from "../../styles/design-system";
 import { Message } from "../../context/AppContext";
@@ -247,8 +248,8 @@ const formatTimestamp = (timestamp: Date): string => {
 };
 
 export const ChatMessage: React.FC<ChatMessageProps> = ({
-	message,
-	onAnalysisClick,
+    message,
+    onAnalysisClick,
 }) => {
 	// Use shared CodeBlock in markdown code renderer for all message types
 
@@ -261,7 +262,13 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 		return "assistant";
 	};
 
-	const messageType = getMessageType();
+    const messageType = getMessageType();
+
+    // Hide empty system placeholders (which otherwise render as a blue bar)
+    const trimmed = (message.content || "").trim();
+    if (!trimmed) {
+        return null;
+    }
 
 	return (
 		<MessageContainer $messageType={messageType}>
@@ -471,9 +478,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 								}
 							},
 						}}
-					>
-						{message.content}
-					</ReactMarkdown>
+                    >
+                        {sanitizeMarkdown(message.content)}
+                    </ReactMarkdown>
 				</MessageText>
 				<MessageTimestamp>
 					{formatTimestamp(message.timestamp)}

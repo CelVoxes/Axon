@@ -69,7 +69,7 @@ export class NotebookEditingService {
 		const fileName = filePath.split("/").pop() || filePath;
 
 		addMessage(
-			`Editing plan:\n\n- **Target**: cell ${cellIndex} in \`${fileName}\`\n- **Scope**: replace lines ${startLine}-${endLine} of the selected code\n- **Process**: I will generate the revised snippet (streaming below), then apply it to the notebook and confirm the save.`,
+			`Editing plan:\n\n- **Target**: cell ${cellIndex + 1} in \`${fileName}\`\n- **Scope**: replace lines ${startLine}-${endLine} of the selected code\n- **Process**: I will generate the revised snippet (streaming below), then apply it to the notebook and confirm the save.`,
 			false
 		);
 
@@ -330,7 +330,7 @@ export class NotebookEditingService {
 				? "applied"
 				: "saved";
 		const validationText = didAutoFix ? " (auto-fixed)" : "";
-		const summary = `Applied notebook edit:\n\n- **Cell**: ${cellIndex}\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Status**: ${statusText}${validationText}`;
+		const summary = `Applied notebook edit:\n\n- **Cell**: ${cellIndex + 1}\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Status**: ${statusText}${validationText}`;
 
 		// Build diff against the actual replacement we generated.
 		// Using validatedCode offsets can drift if a linter reformats outside the selection,

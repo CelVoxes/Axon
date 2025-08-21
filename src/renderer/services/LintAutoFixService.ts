@@ -33,13 +33,15 @@ export async function autoFixWithRuffAndLLM(
     initial = await ruffLinter.lintCode(input, { enableFixes: true, filename });
   } catch (e) {
     // If Ruff fails entirely, fall back to original code
+    // Compare against normalized input, not the original (possibly fenced) code
     return { fixedCode: input, issues: [String(e)], wasFixed: false };
   }
 
   // If clean, prefer Ruff's fixed/formatted output
   if (initial.isValid) {
     const best = initial.fixedCode || initial.formattedCode || input;
-    return { fixedCode: best, issues: [], wasFixed: best !== code };
+    // Detect changes relative to normalized input
+    return { fixedCode: best, issues: [], wasFixed: best !== input };
   }
 
   const issues = diagnosticsToIssueStrings(initial);
@@ -63,7 +65,7 @@ export async function autoFixWithRuffAndLLM(
   } catch (e) {
     // If backend correction fails, fall back to Ruff's fixed/format attempt
     const best = initial.fixedCode || initial.formattedCode || input;
-    return { fixedCode: best, issues, wasFixed: best !== code };
+    return { fixedCode: best, issues, wasFixed: best !== input };
   }
 
   const cleaned = stripCodeFences(llmFixed);
@@ -83,12 +85,12 @@ export async function autoFixWithRuffAndLLM(
     // Not fully valid; pick the better of Ruff's own fix vs LLM attempt
     const fallback = recheck.fixedCode || recheck.formattedCode || cleaned;
     const initialBest = initial.fixedCode || initial.formattedCode || input;
-    // Prefer the variant that changed from original (heuristic)
-    const chosen = fallback !== code ? fallback : initialBest;
-    return { fixedCode: chosen, issues: diagnosticsToIssueStrings(recheck), wasFixed: chosen !== code };
+    // Prefer the variant that changed from the normalized input (heuristic)
+    const chosen = fallback !== input ? fallback : initialBest;
+    return { fixedCode: chosen, issues: diagnosticsToIssueStrings(recheck), wasFixed: chosen !== input };
   } catch (_) {
     // On re-lint failure, at least return the LLM's cleaned output
     const best = cleaned || initial.fixedCode || initial.formattedCode || input;
-    return { fixedCode: best, issues, wasFixed: best !== code };
+    return { fixedCode: best, issues, wasFixed: best !== input };
   }
 }

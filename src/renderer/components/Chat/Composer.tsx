@@ -384,7 +384,7 @@ export const Composer = React.forwardRef<ComposerRef, ComposerProps>(({
 				value={value}
 				onChange={handleTextareaChange}
 				onKeyDown={handleKeyDownInternal}
-				placeholder="Plan, search, build anything"
+				placeholder={mode === "Ask" ? "Ask a question" : "Plan, search, build anything"}
 				disabled={!!disabled || isLoading}
 				rows={2}
 				ref={textareaRef}

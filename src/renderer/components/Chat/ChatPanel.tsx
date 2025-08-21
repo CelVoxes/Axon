@@ -23,6 +23,7 @@ import { Composer, ComposerRef } from "./Composer";
 import { MentionSuggestions } from "./MentionSuggestions";
 import { ProcessingIndicator } from "./Status/ProcessingIndicator";
 import { ValidationErrors } from "./Status/ValidationErrors";
+import { ValidationSuccess } from "./Status/ValidationSuccess";
 import { SearchProgress as SearchProgressView } from "./Status/SearchProgress";
 import { EnvironmentStatus } from "./Status/EnvironmentStatus";
 import { AutonomousAgent } from "../../services/AutonomousAgent";
@@ -356,7 +357,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	// Initialize services after backendClient is available
 	const notebookEditingService = React.useMemo(() => {
 		if (!backendClient) return null;
-		return new NotebookEditingService(backendClient, workspaceState.currentWorkspace || undefined);
+		return new NotebookEditingService(
+			backendClient,
+			workspaceState.currentWorkspace || undefined
+		);
 	}, [backendClient, workspaceState.currentWorkspace]);
 
 	const datasetResolutionService = React.useMemo(() => {
@@ -409,9 +413,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	);
 
 	// Resolve @mentions using the service
-	const resolveAtMentions = useCallback((text: string): LocalDatasetEntry[] => {
-		return datasetResolutionService.resolveAtMentions(text);
-	}, [datasetResolutionService]);
+	const resolveAtMentions = useCallback(
+		(text: string): LocalDatasetEntry[] => {
+			return datasetResolutionService.resolveAtMentions(text);
+		},
+		[datasetResolutionService]
+	);
 
 	// Shared notebook edit executor using the service
 	const performNotebookEdit = useCallback(
@@ -456,40 +463,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 		const userMessage = inputValueRef.current.trim();
 
-		// Ask mode: If a code selection/context is present, do an edit-in-place; otherwise do Q&A
+		// Ask mode: Strict Q&A (no edits/search)
 		if (chatMode === "Ask") {
-			// Prefer notebook edit when Ask Chat is invoked from code/output context
-			const ctxAsk = codeEditContext || codeEditContextRef.current;
-			if (ctxAsk && ctxAsk.filePath && ctxAsk.cellIndex !== undefined) {
-				const lang = (ctxAsk.language || "python").toLowerCase();
-				const filePath = ctxAsk.filePath;
-				const cellIndex = ctxAsk.cellIndex;
-				const fullCode = ctxAsk.fullCode ?? "";
-				const selStart = Math.max(0, ctxAsk.selectionStart ?? 0);
-				const selEnd = Math.min(
-					fullCode.length,
-					ctxAsk.selectionEnd ?? selStart
-				);
-				const beforeSelection = fullCode.slice(0, selStart);
-				const withinSelection = fullCode.slice(selStart, selEnd);
-				const startLine = (beforeSelection.match(/\n/g)?.length ?? 0) + 1;
-				const endLine = startLine + (withinSelection.match(/\n/g)?.length ?? 0);
-
-				await performNotebookEdit({
-					filePath,
-					cellIndex,
-					language: lang,
-					fullCode,
-					userMessage,
-					selection: { selStart, selEnd, startLine, endLine, withinSelection },
-					outputText: ctxAsk.outputText,
-					hasErrorOutput: ctxAsk.hasErrorOutput,
-				});
-				setCodeEditContext(null);
-				codeEditContextRef.current = null;
-				return;
-			}
-
 			addMessage(userMessage, true);
 			setInputValue("");
 			setIsLoading(true);
@@ -500,7 +475,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				if (!validateBackendClient()) {
 					return;
 				}
-				// Build lightweight context from recent messages, including any code snippets
+				// Build lightweight context from recent messages
 				const recent = (analysisState.messages || []).slice(-10);
 				const context = recent
 					.map((m: any) => {
@@ -763,7 +738,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			// Get intent classification from backend
 			const intentResult = await backendClient!.classifyIntent(userMessage);
 
-			// If confidence is too low (< 0.65), treat as general question instead of forcing into specific intent
+			// If confidence is too low (< 0.8), treat as general question instead of forcing into specific intent
 			const isLowConfidence = (intentResult.confidence || 0) < 0.8;
 
 			// Handle dataset search based on backend intent
@@ -805,7 +780,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				}
 			}
 			// Handle ADD_CELL intent or analysis requests for active notebooks (only if confident)
-			else if (intentResult.intent === "ADD_CELL") {
+			else if (intentResult.intent === "ADD_CELL" && !isLowConfidence) {
 				// Robust notebook detection - check multiple sources due to potential race conditions
 				const activeFile = (workspaceState as any).activeFile as string | null;
 				const openFiles = ((workspaceState as any).openFiles || []) as string[];
@@ -941,9 +916,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 			// Handle low confidence intents or unrecognized intents as general questions
 			else {
-				console.log(
-					`🤔 Low confidence (${intentResult.confidence}) or unhandled intent: ${intentResult.intent}. Treating as general question.`
-				);
 				// General question handling - send to backend LLM
 				try {
 					// Build lightweight context from recent messages
@@ -1911,6 +1883,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					/>
 				)}
 
+				{/* Show success when there are no errors and a message exists */}
+				{!validationErrors?.length && (
+					<ValidationSuccess message={validationSuccessMessage} />
+				)}
 				<ValidationErrors errors={validationErrors} />
 
 				<SearchProgressView progress={datasetSearchProgress} />
@@ -2512,9 +2488,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				}}
 				onSelectCell={(item) => {
 					const alias = item.alias; // already relPath#N
-					setInputValue(
-						inputValue.replace(/@([^\s@]*)$/, `@${alias}`) + " "
-					);
+					setInputValue(inputValue.replace(/@([^\s@]*)$/, `@${alias}`) + " ");
 					setMentionOpen(false);
 					setMentionQuery("");
 				}}

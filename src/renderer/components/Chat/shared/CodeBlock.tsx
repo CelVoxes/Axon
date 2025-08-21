@@ -115,14 +115,19 @@ const CopiedTooltip = styled.span`
 	box-shadow: ${shadows.sm};
 `;
 
-const Content = styled.div<{ $streaming?: boolean; $wrap?: boolean }>`
+const Content = styled.div<{
+    $streaming?: boolean;
+    $wrap?: boolean;
+    $streamingActive?: boolean;
+    $hasContent?: boolean;
+}>`
 	max-height: 420px;
 	overflow-y: auto;
 	overflow-x: auto;
-	min-height: 60px;
+	min-height: ${(p) => (p.$hasContent ? "60px" : "0")};
 	scroll-behavior: ${(p) => (p.$streaming ? "auto" : "smooth")};
 	border-left: ${(p) =>
-		p.$streaming ? `3px solid ${colors.primary[600]}` : "none"};
+		p.$streamingActive ? `3px solid ${colors.primary[600]}` : "none"};
 	/* Match global scrollbar styling */
 	scrollbar-width: thin;
 	scrollbar-color: #424242 #2d2d30;
@@ -564,6 +569,8 @@ export const CodeBlock: React.FC<CodeBlockProps> = React.memo(
 						<Content
 							ref={scrollContainerRef}
 							$streaming={isStreaming}
+							$streamingActive={isStreaming && Boolean(code && code.trim().length > 0)}
+							$hasContent={Boolean(code && code.length > 0)}
 							$wrap={wrap}
 						>
 							<Pre $wrap={wrap} $isDiff={isDiff}>

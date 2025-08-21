@@ -120,38 +120,8 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 	}, []);
 
 	const handleAskMode = useCallback(async (userMessage: string) => {
-		// Prefer notebook edit when Ask Chat is invoked from code/output context
-		const ctxAsk = codeEditContext || codeEditContextRef.current;
-		if (ctxAsk && ctxAsk.filePath && ctxAsk.cellIndex !== undefined) {
-			const lang = (ctxAsk.language || "python").toLowerCase();
-			const filePath = ctxAsk.filePath;
-			const cellIndex = ctxAsk.cellIndex;
-			const fullCode = ctxAsk.fullCode ?? "";
-			const selStart = Math.max(0, ctxAsk.selectionStart ?? 0);
-			const selEnd = Math.min(
-				fullCode.length,
-				ctxAsk.selectionEnd ?? selStart
-			);
-			const beforeSelection = fullCode.slice(0, selStart);
-			const withinSelection = fullCode.slice(selStart, selEnd);
-			const startLine = (beforeSelection.match(/\n/g)?.length ?? 0) + 1;
-			const endLine = startLine + (withinSelection.match(/\n/g)?.length ?? 0);
-
-			await performNotebookEdit({
-				filePath,
-				cellIndex,
-				language: lang,
-				fullCode,
-				userMessage,
-				selection: { selStart, selEnd, startLine, endLine, withinSelection },
-				outputText: ctxAsk.outputText,
-				hasErrorOutput: ctxAsk.hasErrorOutput,
-			});
-			setCodeEditContext(null);
-			codeEditContextRef.current = null;
-			return;
-		}
-
+		// Ask mode is strict Q&A: no edits, no searches, no dataset ops
+		// Ignore any codeEditContext and just perform a plain question/answer
 		addMessage(userMessage, true);
 		setInputValue("");
 		setIsLoading(true);
@@ -162,7 +132,6 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 			if (!validateBackendClient()) {
 				return;
 			}
-			// Build lightweight context from recent messages, including any code snippets
 			const context = buildContextFromMessages(analysisState.messages);
 			const answer = await backendClient!.askQuestion({
 				question: userMessage,
@@ -185,19 +154,15 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 			}
 		}
 	}, [
-		codeEditContext,
-		codeEditContextRef,
 		addMessage,
 		setInputValue,
 		setIsLoading,
 		setIsProcessing,
-		setCodeEditContext,
 		validateBackendClient,
 		buildContextFromMessages,
 		analysisState.messages,
 		backendClient,
 		resetLoadingState,
-		performNotebookEdit
 	]);
 
 	const handleSendMessage = useCallback(async () => {
