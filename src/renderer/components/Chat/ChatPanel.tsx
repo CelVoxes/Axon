@@ -51,63 +51,27 @@ import { EventManager } from "../../utils/EventManager";
 import { NotebookService } from "../../services/NotebookService";
 import { ruffLinter } from "../../services/RuffLinter";
 import { autoFixWithRuffAndLLM } from "../../services/LintAutoFixService";
+import {
+	groupSessionsByTime,
+	stripCodeFences,
+	computeSelectionFromMessage,
+	buildUnifiedDiff,
+	parseJsonEdits,
+	applyLineEdits,
+	type LineEdit,
+} from "./ChatPanelUtils";
+import { useCodeGenerationEvents } from "./hooks/useCodeGenerationEvents";
+import { useVirtualEnvEvents } from "./hooks/useVirtualEnvEvents";
+import { useChatEvents } from "./hooks/useChatEvents";
+import { useChatUIState } from "./hooks/useChatUIState";
+import { useChatInteractions } from "./hooks/useChatInteractions";
+import { NotebookEditingService } from "./services/NotebookEditingService";
+import { DatasetResolutionService } from "./services/DatasetResolutionService";
+import { ChatCommunicationService } from "./services/ChatCommunicationService";
 
 // Removed duplicated local code rendering. Use shared CodeBlock instead.
 
 // Using Message interface from AnalysisContext
-
-// Utility function to group chat sessions by time periods
-function groupSessionsByTime(sessions: any[]) {
-	const now = new Date();
-	const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-	const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
-	const twoDaysAgo = new Date(today.getTime() - 2 * 24 * 60 * 60 * 1000);
-	const threeDaysAgo = new Date(today.getTime() - 3 * 24 * 60 * 60 * 1000);
-	const oneWeekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
-
-	const groups = {
-		today: [] as any[],
-		yesterday: [] as any[],
-		"2d ago": [] as any[],
-		"3d ago": [] as any[],
-		"this week": [] as any[],
-		older: [] as any[],
-	};
-
-	sessions.forEach((session) => {
-		const sessionDate = new Date(session.updatedAt || session.createdAt);
-		const sessionDay = new Date(
-			sessionDate.getFullYear(),
-			sessionDate.getMonth(),
-			sessionDate.getDate()
-		);
-
-		if (sessionDay.getTime() >= today.getTime()) {
-			groups.today.push(session);
-		} else if (sessionDay.getTime() >= yesterday.getTime()) {
-			groups.yesterday.push(session);
-		} else if (sessionDay.getTime() >= twoDaysAgo.getTime()) {
-			groups["2d ago"].push(session);
-		} else if (sessionDay.getTime() >= threeDaysAgo.getTime()) {
-			groups["3d ago"].push(session);
-		} else if (sessionDay.getTime() >= oneWeekAgo.getTime()) {
-			groups["this week"].push(session);
-		} else {
-			groups.older.push(session);
-		}
-	});
-
-	// Sort sessions within each group by updatedAt (most recent first)
-	Object.keys(groups).forEach((key) => {
-		groups[key as keyof typeof groups].sort((a, b) => {
-			const aTime = new Date(a.updatedAt || a.createdAt).getTime();
-			const bTime = new Date(b.updatedAt || b.createdAt).getTime();
-			return bTime - aTime;
-		});
-	});
-
-	return groups;
-}
 
 interface ChatPanelProps {
 	className?: string;
@@ -123,45 +87,49 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		useAnalysisContext();
 	const { state: uiState, dispatch: uiDispatch } = useUIContext();
 	const { state: workspaceState } = useWorkspaceContext();
-	const [inputValue, setInputValue] = useState("");
-	const [isLoading, setIsLoading] = useState(false);
-	const [progressMessage, setProgressMessage] = useState("");
-	const [isProcessing, setIsProcessing] = useState(false);
-	const pendingStopRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-	const scheduleProcessingStop = useCallback((delayMs = 2000) => {
-		if (pendingStopRef.current) clearTimeout(pendingStopRef.current);
-		pendingStopRef.current = setTimeout(() => {
-			setIsProcessing(false);
-			setProgressMessage("");
-			pendingStopRef.current = null;
-		}, delayMs);
-	}, []);
-	const cancelProcessingStop = useCallback(() => {
-		if (pendingStopRef.current) {
-			clearTimeout(pendingStopRef.current);
-			pendingStopRef.current = null;
-		}
-	}, []);
-	const [progressData, setProgressData] = useState<any>(null);
-	const [validationErrors, setValidationErrors] = useState<string[]>([]);
-	const [validationSuccessMessage, setValidationSuccessMessage] =
-		useState<string>("");
-	// Suggestions disabled per request
-	const [suggestionButtons, setSuggestionButtons] = useState<string[]>([]);
-	const [virtualEnvStatus, setVirtualEnvStatus] = useState("");
-	const [recentMessages, setRecentMessages] = useState<string[]>([]);
-	const [showAllMessages, setShowAllMessages] = useState(false);
-	const [processedEvents, setProcessedEvents] = useState<Set<string>>(
-		new Set()
-	);
+	// UI State Management with custom hook
+	const {
+		inputValue,
+		isLoading,
+		progressMessage,
+		isProcessing,
+		progressData,
+		validationErrors,
+		validationSuccessMessage,
+		suggestionButtons,
+		virtualEnvStatus,
+		recentMessages,
+		showAllMessages,
+		processedEvents,
+		agentInstance,
+		showVirtualEnvLog,
+		isAutoExecuting,
+		currentSuggestions,
+		showHistoryMenu,
+		setInputValue,
+		setIsLoading,
+		setProgressMessage,
+		setIsProcessing,
+		setProgressData,
+		setValidationErrors,
+		setValidationSuccessMessage,
+		setSuggestionButtons,
+		setVirtualEnvStatus,
+		setRecentMessages,
+		setShowAllMessages,
+		setProcessedEvents,
+		setAgentInstance,
+		setShowVirtualEnvLog,
+		setIsAutoExecuting,
+		setCurrentSuggestions,
+		setShowHistoryMenu,
+		scheduleProcessingStop,
+		cancelProcessingStop,
+		resetLoadingState,
+	} = useChatUIState();
+
 	const inputValueRef = React.useRef<string>("");
-	const [agentInstance, setAgentInstance] = useState<any>(null);
-	const [showVirtualEnvLog, setShowVirtualEnvLog] = useState(false);
-	const [isAutoExecuting, setIsAutoExecuting] = useState(false);
-	const [currentSuggestions, setCurrentSuggestions] =
-		useState<DataTypeSuggestions | null>(null);
 	const localRegistryRef = useRef<LocalDatasetRegistry | null>(null);
-	const [showHistoryMenu, setShowHistoryMenu] = useState<boolean>(false);
 	const [showDeleteMenu, setShowDeleteMenu] = useState<boolean>(false);
 	const [showExamples, setShowExamples] = useState<boolean>(false);
 
@@ -205,7 +173,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			rafStateRef.current.lastUpdate = Date.now();
 
 			for (const stepId of Object.keys(pending)) {
-				const stream = activeStreams.current.get(stepId);
+				const stream = activeStreams.get(stepId);
 				if (!stream) continue;
 				analysisDispatch({
 					type: "UPDATE_MESSAGE",
@@ -229,7 +197,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			if (currentPending === content) return;
 
 			// Also check if the content is already in the current message
-			const stream = activeStreams.current.get(stepId);
+			const stream = activeStreams.get(stepId);
 			if (stream) {
 				const currentMessage = analysisState.messages.find(
 					(m) => m.id === stream.messageId
@@ -276,201 +244,40 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		useState<CodeEditContext | null>(null);
 	const codeEditContextRef = useRef<CodeEditContext | null>(null);
 
-	// Prefill composer when user triggers chat-edit-selection from an editor
-	useEffect(() => {
-		// Deduplicate rapid successive events (e.g., multiple notebooks emitting)
-		let lastPayloadKey = "";
-		let lastAt = 0;
-		const DEDUPE_MS = 250;
+	// Use custom hooks for event handling
+	const { activeStreams } = useCodeGenerationEvents({
+		analysisDispatch,
+		setIsProcessing,
+		setProgressMessage,
+		setValidationErrors,
+		setValidationSuccessMessage,
+		scheduleProcessingStop,
+		cancelProcessingStop,
+		enqueueStreamingUpdate,
+		addMessage: (content: string, isUser: boolean) =>
+			addMessage(content, isUser),
+	});
 
-		const cleanup = EventManager.createManagedListener(
-			"chat-edit-selection",
-			(event) => {
-				const detail = event.detail || {};
-				const snippet: string = String(detail.selectedText || "");
-				const lang: string = String(detail.language || "python");
-				const filePath: string = String(detail.filePath || "");
-				const cellIndex: string = String(
-					detail.cellIndex === 0 || detail.cellIndex
-						? String(detail.cellIndex)
-						: ""
-				);
-				const payloadKey = `${filePath}|${cellIndex}|${lang}|${snippet}`;
-				const now = Date.now();
-				if (payloadKey === lastPayloadKey && now - lastAt < DEDUPE_MS) {
-					return;
-				}
-				lastPayloadKey = payloadKey;
-				lastAt = now;
+	useVirtualEnvEvents({
+		setVirtualEnvStatus,
+		addMessage: (content: string, isUser: boolean) =>
+			addMessage(content, isUser),
+	});
 
-				const ctx: CodeEditContext = {
-					filePath: detail.filePath,
-					cellIndex: detail.cellIndex,
-					language: detail.language,
-					selectedText: detail.selectedText,
-					fullCode: detail.fullCode,
-					selectionStart: detail.selectionStart,
-					selectionEnd: detail.selectionEnd,
-				};
-				setCodeEditContext(ctx);
-				codeEditContextRef.current = ctx;
-				// Ensure chat opens and is focused
-				if (!uiState.showChatPanel || uiState.chatCollapsed) {
-					uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
-					uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
-					// Focus the composer after the chat panel opens
-					setTimeout(() => composerRef.current?.focus(), 100);
-				} else {
-					// If chat is already open, focus immediately
-					composerRef.current?.focus();
-				}
-			}
-		);
-		return cleanup;
-	}, [uiDispatch, uiState.showChatPanel, uiState.chatCollapsed]);
+	useChatEvents({
+		uiState,
+		uiDispatch,
+		workspaceState,
+		composerRef,
+		setInputValue,
+		inputValueRef,
+		setCodeEditContext,
+		codeEditContextRef,
+	});
 
-	// Prefill composer when user adds output to chat or asks to fix an error
-	useEffect(() => {
-		const onAddOutput = (e: Event) => {
-			const ce = e as CustomEvent;
-			const d = ce.detail || {};
-			const lang: string = String(d.language || "python").toLowerCase();
-			const code: string = String(d.code || "");
-			const out: string = String(d.output || "");
+	// Chat event handling moved to useChatEvents hook
 
-			// Build a cell mention like @relative/path#N
-			let alias = "";
-			try {
-				const wsRoot =
-					findWorkspacePath({
-						filePath: d.filePath || "",
-						currentWorkspace: workspaceState.currentWorkspace || undefined,
-					}) ||
-					workspaceState.currentWorkspace ||
-					"";
-				const rel =
-					d.filePath && wsRoot && String(d.filePath).startsWith(wsRoot)
-						? String(d.filePath).slice(wsRoot.length + 1)
-						: String(d.filePath || "");
-				const cellNum =
-					typeof d.cellIndex === "number" ? d.cellIndex + 1 : undefined;
-				alias = rel ? `@${rel}${cellNum ? `#${cellNum}` : ""}` : "";
-			} catch (_) {
-				/* ignore */
-			}
-
-			// Add the mention and the actual output/error content for user visibility
-			if (alias) {
-				// Clear any existing input and start fresh with the mention
-				const mentionText = alias;
-
-				// Add the prompt and the actual output/error content
-				const outputType = Boolean(d.hasError) ? "Error" : "Output";
-				const outputPrompt = `\n\nPlease explain this ${outputType.toLowerCase()} from the ${lang} cell and suggest how to fix any issues:`;
-
-				// Include the actual output/error content so user can see what they're asking about
-				const outputContent = out.trim()
-					? `\n\n\`\`\`\n${out.trim()}\n\`\`\``
-					: "";
-
-				const final = mentionText + " " + outputPrompt + outputContent;
-				setInputValue(final);
-				inputValueRef.current = final;
-			} else {
-				// Fallback to old behavior if no alias
-				const prefix = `Please review the ${lang} cell output and fix any issues.`;
-				const body = `\n\nCell: (referenced cell)\n`;
-				const prefill = prefix + body;
-				setInputValue(prefill);
-				inputValueRef.current = prefill;
-			}
-
-			// For "Ask Chat" on output, don't auto-trigger edit mode
-			// Instead, let the user have a conversation about the error/output
-			// They can explicitly ask for code changes if needed
-
-			// IMPORTANT: Clear any existing codeEditContext to prevent it from
-			// getting stuck on a previous cell when user asks about a different cell
-			setCodeEditContext(null);
-			codeEditContextRef.current = null;
-
-			if (!uiState.showChatPanel || uiState.chatCollapsed) {
-				uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
-				uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
-				// Focus the composer after the chat panel opens
-				setTimeout(() => composerRef.current?.focus(), 100);
-			} else {
-				// If chat is already open, focus immediately
-				composerRef.current?.focus();
-			}
-		};
-		const onFixError = (e: Event) => {
-			const ce = e as CustomEvent;
-			const d = ce.detail || {};
-			const lang: string = String(d.language || "python").toLowerCase();
-			const code: string = String(d.code || "");
-			const out: string = String(d.output || "");
-			const prefix = `The following ${lang} cell failed. Fix the code to resolve the error. Return only the corrected code.`;
-			// Mention the cell, avoid embedding large blocks
-			let alias = "";
-			try {
-				const wsRoot =
-					findWorkspacePath({
-						filePath: d.filePath || "",
-						currentWorkspace: workspaceState.currentWorkspace || undefined,
-					}) ||
-					workspaceState.currentWorkspace ||
-					"";
-				const rel =
-					d.filePath && wsRoot && String(d.filePath).startsWith(wsRoot)
-						? String(d.filePath).slice(wsRoot.length + 1)
-						: String(d.filePath || "");
-				const cellNum =
-					typeof d.cellIndex === "number" ? d.cellIndex + 1 : undefined;
-				alias = rel ? `@${rel}${cellNum ? `#${cellNum}` : ""}` : "";
-			} catch (_) {
-				/* ignore */
-			}
-			const body = `\n\nCell: ${alias || "(referenced cell)"}\n`;
-			const prefill = prefix + body;
-			setInputValue(prefill);
-			inputValueRef.current = prefill;
-			const ctx: CodeEditContext = {
-				filePath: d.filePath,
-				cellIndex: d.cellIndex,
-				language: d.language,
-				selectedText: code,
-				fullCode: code,
-				selectionStart: 0,
-				selectionEnd: code.length,
-				outputText: out,
-				hasErrorOutput: true,
-			};
-			// Replace any existing context with this new error-fixing context
-			setCodeEditContext(ctx);
-			codeEditContextRef.current = ctx;
-			if (!uiState.showChatPanel || uiState.chatCollapsed) {
-				uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
-				uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
-				// Focus the composer after the chat panel opens
-				setTimeout(() => composerRef.current?.focus(), 100);
-			} else {
-				// If chat is already open, focus immediately
-				composerRef.current?.focus();
-			}
-		};
-		window.addEventListener("chat-add-output", onAddOutput as EventListener);
-		window.addEventListener("chat-fix-error", onFixError as EventListener);
-		return () => {
-			window.removeEventListener(
-				"chat-add-output",
-				onAddOutput as EventListener
-			);
-			window.removeEventListener("chat-fix-error", onFixError as EventListener);
-		};
-	}, [uiDispatch, uiState.showChatPanel, uiState.chatCollapsed]);
-
-	// Initialize local dataset registry
+	// Initialize local dataset registry and services
 	useEffect(() => {
 		const registry = new LocalDatasetRegistry();
 		localRegistryRef.current = registry;
@@ -478,6 +285,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			.load()
 			.catch((e) => console.warn("Failed to load local dataset registry", e));
 	}, []);
+
+	// Services will be initialized after backendClient state is declared
 
 	// Track scroll position of chat container to avoid jiggling when user scrolls up
 	useEffect(() => {
@@ -492,9 +301,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		return () => el.removeEventListener("scroll", onScroll);
 	}, []);
 	// Simplified: using event system instead of complex message refs
-	const activeStreams = useRef<
-		Map<string, { messageId: string; accumulatedCode: string }>
-	>(new Map());
+	// activeStreams is now provided by useCodeGenerationEvents hook
 	const [backendClient, setBackendClient] = useState<BackendClient | null>(
 		null
 	);
@@ -546,574 +353,44 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	} = datasetSearchActions;
 
 	// Analysis suggestions service
+	// Initialize services after backendClient is available
+	const notebookEditingService = React.useMemo(() => {
+		if (!backendClient) return null;
+		return new NotebookEditingService(backendClient, workspaceState.currentWorkspace || undefined);
+	}, [backendClient, workspaceState.currentWorkspace]);
+
+	const datasetResolutionService = React.useMemo(() => {
+		return new DatasetResolutionService(localRegistryRef.current);
+	}, []);
+
+	const chatCommunicationService = React.useMemo(() => {
+		if (!backendClient) return null;
+		return new ChatCommunicationService(backendClient);
+	}, [backendClient]);
+
 	const suggestionsService = React.useMemo(() => {
 		if (!backendClient) return null;
 		return new AnalysisOrchestrationService(backendClient);
 	}, [backendClient]);
 
-	// Listen for virtual environment status updates
-	useEffect(() => {
-		let isMounted = true;
+	// Virtual environment event handling moved to useVirtualEnvEvents hook
 
-		const handleVirtualEnvStatus = (data: any) => {
-			if (!isMounted) return;
-			setVirtualEnvStatus(data.status || data.message || "");
-			if (data.status === "installing_package" && data.package) {
-				addMessage(`Installing: ${data.package}`, false);
-			} else if (data.status === "packages_installed") {
-				addMessage(`${data.message}`, false);
-			} else if (data.status === "existing") {
-				addMessage(`♻️ ${data.message}`, false);
-			} else if (data.status === "completed") {
-				addMessage(`${data.message}`, false);
-			} else if (data.status === "error") {
-				addMessage(`${data.message}`, false);
-			}
-		};
+	// Code generation event handling moved to useCodeGenerationEvents hook
 
-		// Listen for Jupyter ready events
-		const handleJupyterReady = (data: any) => {
-			if (!isMounted) return;
-			if (data.status === "ready") {
-				addMessage(`Jupyter environment ready!`, false);
-			} else if (data.status === "error") {
-				addMessage(`Jupyter setup failed: ${data.message}`, false);
-			} else if (data.status === "starting") {
-				addMessage(`Starting Jupyter server...`, false);
-			}
-		};
-
-		// Listen for Python setup status updates
-		const handlePythonSetupStatus = (data: any) => {
-			if (!isMounted) return;
-			setVirtualEnvStatus(data.message || "");
-
-			if (data.status === "required") {
-				addMessage(`🐍 ${data.message}`, false);
-				if (data.reason) {
-					addMessage(`💡 ${data.reason}`, false);
-				}
-				addMessage(
-					`📦 This is a one-time setup for optimal compatibility`,
-					false
-				);
-			} else if (data.status === "downloading") {
-				// Update status but don't spam chat with download progress
-				if (data.progress && data.progress % 25 === 0) {
-					addMessage(`📥 ${data.message}`, false);
-				}
-			} else if (data.status === "installing") {
-				addMessage(`⚙️ ${data.message}`, false);
-			} else if (data.status === "completed") {
-				addMessage(`✅ ${data.message}`, false);
-				addMessage(`🚀 Ready for data analysis with modern Python!`, false);
-			} else if (data.status === "error") {
-				addMessage(`❌ ${data.message}`, false);
-				if (data.error) {
-					addMessage(`Error details: ${data.error}`, false);
-				}
-				addMessage(
-					`💡 You can install Python 3.11+ manually as an alternative`,
-					false
-				);
-			}
-		};
-
-		// Listen for package installation progress updates
-		const handlePackageInstallProgress = (data: any) => {
-			if (!isMounted) return;
-
-			if (data.message && data.message.trim()) {
-				// Filter and format pip output messages
-				const msg = data.message.trim();
-				if (msg.includes("Collecting")) {
-					addMessage(`📥 ${msg}`, false);
-				} else if (msg.includes("Downloading")) {
-					// Only show major downloads, not every chunk
-					if (msg.includes(" MB") || msg.includes(" KB")) {
-						addMessage(`⬇️ ${msg}`, false);
-					}
-				} else if (msg.includes("Installing")) {
-					addMessage(`⚙️ ${msg}`, false);
-				} else if (msg.includes("Successfully installed")) {
-					addMessage(`✅ ${msg}`, false);
-				} else if (msg.includes("ERROR") || msg.includes("Failed")) {
-					addMessage(`❌ ${msg}`, false);
-				}
-			}
-		};
-
-		// Add event listeners
-		window.addEventListener(
-			"virtual-env-status",
-			handleVirtualEnvStatus as EventListener
-		);
-		window.addEventListener(
-			"jupyter-ready",
-			handleJupyterReady as EventListener
-		);
-		window.addEventListener(
-			"python-setup-status",
-			handlePythonSetupStatus as EventListener
-		);
-		window.addEventListener(
-			"package-install-progress",
-			handlePackageInstallProgress as EventListener
-		);
-
-		// Cleanup
-		return () => {
-			isMounted = false;
-			window.removeEventListener(
-				"virtual-env-status",
-				handleVirtualEnvStatus as EventListener
-			);
-			window.removeEventListener(
-				"jupyter-ready",
-				handleJupyterReady as EventListener
-			);
-			window.removeEventListener(
-				"python-setup-status",
-				handlePythonSetupStatus as EventListener
-			);
-			window.removeEventListener(
-				"package-install-progress",
-				handlePackageInstallProgress as EventListener
-			);
-		};
-	}, []);
-
-	// Set up code generation event listeners
-	useEffect(() => {
-		let isMounted = true;
-
-		const updateGlobalStreamingFlag = () => {
-			// Toggle global streaming based on active streams
-			analysisDispatch({
-				type: "SET_STREAMING",
-				payload: activeStreams.current.size > 0,
-			});
-		};
-
-		const handleCodeGenerationStarted = (event: Event) => {
-			if (!isMounted) return;
-			const customEvent = event as CustomEvent<CodeGenerationStartedEvent>;
-			const { stepId, stepDescription } = customEvent.detail;
-
-			// Clear any lingering validation banners when a new generation starts
-			setValidationErrors([]);
-			setValidationSuccessMessage("");
-
-			// Create new streaming message
-			const messageId = `streaming-${stepId}`;
-			activeStreams.current.set(stepId, { messageId, accumulatedCode: "" });
-
-			analysisDispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					id: messageId,
-					content: "", // Start with empty content for streaming
-					code: "", // Ensure a CodeBlock mounts immediately
-					codeLanguage: "python",
-					isUser: false,
-					isStreaming: true,
-				},
-			});
-
-			// Update progress + mark global streaming as active
-			setIsProcessing(true);
-			setProgressMessage(`Generating: ${stepDescription || "step"}`);
-			cancelProcessingStop();
-			updateGlobalStreamingFlag();
-		};
-
-		const handleCodeGenerationChunk = (event: Event) => {
-			if (!isMounted) return;
-			const customEvent = event as CustomEvent<CodeGenerationChunkEvent>;
-			const { stepId } = customEvent.detail as any;
-
-			const stream = activeStreams.current.get(stepId);
-			if (!stream) return;
-
-			// Prefer authoritative accumulatedCode from event (already cleaned of duplicate imports)
-			const updated = (customEvent.detail as any)?.accumulatedCode;
-			if (typeof updated === "string") {
-				stream.accumulatedCode = updated;
-			} else {
-				// Fallback: append chunk if accumulatedCode is not provided
-				const chunk = (customEvent.detail as any)?.chunk || "";
-				stream.accumulatedCode += chunk;
-			}
-
-			// Send raw code content for streaming (no markdown wrapping)
-			enqueueStreamingUpdate(stepId, stream.accumulatedCode);
-		};
-
-		const handleCodeGenerationCompleted = (event: Event) => {
-			if (!isMounted) return;
-			const customEvent = event as CustomEvent<CodeGenerationCompletedEvent>;
-			const { stepId, stepDescription, finalCode, success } =
-				customEvent.detail;
-
-			const stream = activeStreams.current.get(stepId);
-			if (stream) {
-				// Close the streaming message
-				analysisDispatch({
-					type: "UPDATE_MESSAGE",
-					payload: {
-						id: stream.messageId,
-						updates: {
-							code: finalCode,
-							codeLanguage: "python",
-							// Keep streaming indicator until validation success/error arrives
-							isStreaming: true,
-							status: "pending" as any,
-						},
-					},
-				});
-
-				// Set a timeout fallback in case validation events never arrive
-				const timeoutId = setTimeout(() => {
-					if (activeStreams.current.has(stepId)) {
-						console.warn(
-							`Validation timeout for step ${stepId}, marking as completed without validation`
-						);
-						analysisDispatch({
-							type: "UPDATE_MESSAGE",
-							payload: {
-								id: stream.messageId,
-								updates: { isStreaming: false, status: "completed" as any },
-							},
-						});
-						activeStreams.current.delete(stepId);
-						updateGlobalStreamingFlag();
-						if (activeStreams.current.size === 0) {
-							setIsProcessing(false);
-							setProgressMessage("");
-						}
-					}
-				}, 30000); // 30 second timeout
-
-				// Store timeout ID to cancel it if validation events arrive
-				(stream as any).validationTimeoutId = timeoutId;
-			}
-		};
-
-		const handleCodeGenerationFailed = (event: Event) => {
-			if (!isMounted) return;
-			const customEvent = event as CustomEvent<CodeGenerationFailedEvent>;
-			const { stepId, stepDescription, error } = customEvent.detail;
-
-			const stream = activeStreams.current.get(stepId);
-			if (stream) {
-				// Clear validation timeout if it exists since generation failed
-				if ((stream as any).validationTimeoutId) {
-					clearTimeout((stream as any).validationTimeoutId);
-				}
-
-				analysisDispatch({
-					type: "UPDATE_MESSAGE",
-					payload: {
-						id: stream.messageId,
-						updates: {
-							content: `Code generation failed for: ${stepDescription}\n\nError: ${error}`,
-							isStreaming: false,
-							status: "failed" as any,
-						},
-					},
-				});
-				activeStreams.current.delete(stepId);
-				updateGlobalStreamingFlag();
-				if (activeStreams.current.size === 0) {
-					scheduleProcessingStop(2500);
-				}
-			}
-		};
-
-		const handleValidationError = (event: Event) => {
-			if (!isMounted) return;
-			const customEvent = event as CustomEvent<CodeValidationErrorEvent>;
-			const { errors, warnings, originalCode, fixedCode } = customEvent.detail;
-
-			// Set validation errors for display (UI will show them)
-			setValidationSuccessMessage("");
-			setValidationErrors(errors);
-
-			// Also post a chat message summarizing the errors with optional diff
-			try {
-				const errorCount = errors?.length || 0;
-				const warningCount = warnings?.length || 0;
-				// Build collapsible lint block for chat using a custom "lint" fenced block
-				let summary = "";
-				summary += "```lint\n";
-				summary += `LINT_SUMMARY: ⚠️ Found ${errorCount} error(s)${
-					warningCount ? ` and ${warningCount} warning(s)` : ""
-				}`;
-				summary += "\n";
-				if (errorCount) {
-					summary += "Errors:\n";
-					summary += errors.map((e) => `- ${e}`).join("\n");
-					summary += "\n";
-				}
-				if (warningCount) {
-					summary += "Warnings:\n";
-					summary += warnings.map((w) => `- ${w}`).join("\n");
-					summary += "\n";
-				}
-				summary += "```";
-				if (
-					originalCode &&
-					fixedCode &&
-					typeof originalCode === "string" &&
-					typeof fixedCode === "string"
-				) {
-					// Lightweight line-by-line diff for the chat
-					const oldLines = originalCode.split("\n");
-					const newLines = fixedCode.split("\n");
-					const m = oldLines.length;
-					const n = newLines.length;
-					const lcs: number[][] = Array.from({ length: m + 1 }, () =>
-						Array(n + 1).fill(0)
-					);
-					for (let i = 1; i <= m; i++) {
-						for (let j = 1; j <= n; j++) {
-							lcs[i][j] =
-								oldLines[i - 1] === newLines[j - 1]
-									? lcs[i - 1][j - 1] + 1
-									: Math.max(lcs[i - 1][j], lcs[i][j - 1]);
-						}
-					}
-					const ops: Array<{ t: " " | "+" | "-"; s: string }> = [];
-					let i = m,
-						j = n;
-					while (i > 0 || j > 0) {
-						if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
-							ops.push({ t: " ", s: oldLines[i - 1] });
-							i--;
-							j--;
-						} else if (j > 0 && (i === 0 || lcs[i][j - 1] > lcs[i - 1][j])) {
-							ops.push({ t: "+", s: newLines[j - 1] });
-							j--;
-						} else if (i > 0) {
-							ops.push({ t: "-", s: oldLines[i - 1] });
-							i--;
-						}
-					}
-					ops.reverse();
-					const diffBody = ops
-						.map((o) => {
-							const content = o.s.length === 0 ? "(empty line)" : o.s;
-							if (o.t === " ") {
-								return `  ${content}`; // Two spaces for unchanged lines
-							} else {
-								return `${o.t} ${content}`; // Space after + or -
-							}
-						})
-						.join("\n");
-					summary += `\n\n\`\`\`diff\n${diffBody}\n\`\`\``;
-				}
-				// Skip adding lint error summary to reduce chat clutter
-				// Mark streaming message as completed now
-				try {
-					const stream = activeStreams.current.get(
-						customEvent.detail.stepId as any
-					);
-					if (stream) {
-						// Clear validation timeout if it exists
-						if ((stream as any).validationTimeoutId) {
-							clearTimeout((stream as any).validationTimeoutId);
-						}
-
-						analysisDispatch({
-							type: "UPDATE_MESSAGE",
-							payload: {
-								id: stream.messageId,
-								updates: { isStreaming: false, status: "failed" as any },
-							},
-						});
-						activeStreams.current.delete(customEvent.detail.stepId as any);
-						updateGlobalStreamingFlag();
-						if (activeStreams.current.size === 0) {
-							setIsProcessing(false);
-							setProgressMessage("");
-						}
-					}
-				} catch (_) {}
-			} catch (_) {
-				// Ignore chat summary failures
-			}
-		};
-
-		const handleValidationSuccess = (event: Event) => {
-			if (!isMounted) return;
-			const customEvent = event as CustomEvent<{
-				stepId: string;
-				message?: string;
-			}>;
-			const { message, stepId, code } = (customEvent.detail as any) || {};
-			// Clear any previous errors/warnings when lints pass
-			setValidationErrors([]);
-			setValidationSuccessMessage(message || "No linter errors found");
-			// Skip adding lint success message to reduce chat clutter
-			// Do not attach validated code to chat (to reduce clutter)
-
-			// Mark streaming message as completed now
-			try {
-				const stream = activeStreams.current.get(stepId);
-				if (stream) {
-					// Clear validation timeout if it exists
-					if ((stream as any).validationTimeoutId) {
-						clearTimeout((stream as any).validationTimeoutId);
-					}
-
-					analysisDispatch({
-						type: "UPDATE_MESSAGE",
-						payload: {
-							id: stream.messageId,
-							updates: { isStreaming: false, status: "completed" as any },
-						},
-					});
-					activeStreams.current.delete(stepId);
-					updateGlobalStreamingFlag();
-					if (activeStreams.current.size === 0) {
-						scheduleProcessingStop(2500);
-					}
-				}
-			} catch (_) {}
-		};
-
-		// Add event listeners
-		EventManager.addEventListener(
-			"code-generation-started",
-			handleCodeGenerationStarted
-		);
-		EventManager.addEventListener(
-			"code-generation-chunk",
-			handleCodeGenerationChunk
-		);
-		EventManager.addEventListener(
-			"code-generation-completed",
-			handleCodeGenerationCompleted
-		);
-		EventManager.addEventListener(
-			"code-generation-failed",
-			handleCodeGenerationFailed
-		);
-		EventManager.addEventListener(
-			"code-validation-error",
-			handleValidationError
-		);
-		EventManager.addEventListener(
-			"code-validation-success",
-			handleValidationSuccess
-		);
-
-		return () => {
-			isMounted = false;
-			EventManager.removeEventListener(
-				"code-generation-started",
-				handleCodeGenerationStarted
-			);
-			EventManager.removeEventListener(
-				"code-generation-chunk",
-				handleCodeGenerationChunk
-			);
-			EventManager.removeEventListener(
-				"code-generation-completed",
-				handleCodeGenerationCompleted
-			);
-			EventManager.removeEventListener(
-				"code-generation-failed",
-				handleCodeGenerationFailed
-			);
-			EventManager.removeEventListener(
-				"code-validation-error",
-				handleValidationError
-			);
-			EventManager.removeEventListener(
-				"code-validation-success",
-				handleValidationSuccess
-			);
-		};
-	}, [analysisDispatch]); // Remove addMessage from deps since it's defined after this useEffect
+	// Chat interactions hook for message handling and scrolling
+	const { addMessage, scrollToBottomImmediate } = useChatInteractions({
+		analysisDispatch,
+		chatContainerRef,
+		chatAutoScrollRef,
+		recentMessages,
+		setRecentMessages,
+		setCurrentSuggestions,
+	});
 
 	// Auto-scroll to bottom when new messages are added (only if near bottom)
 	useEffect(() => {
 		scrollToBottomImmediate();
-	}, [analysisState.messages]);
-
-	const scrollToBottomImmediate = useCallback(() => {
-		const el = chatContainerRef.current;
-		if (!el) return;
-		if (!chatAutoScrollRef.current) return;
-		el.scrollTop = el.scrollHeight;
-	}, []);
-
-	const addMessage = useCallback(
-		(
-			content: string,
-			isUser: boolean = false,
-			code?: string,
-			codeLanguage?: string,
-			codeTitle?: string,
-			suggestions?: DataTypeSuggestions,
-			status?: "pending" | "completed" | "failed",
-			isStreaming?: boolean
-		) => {
-			// Create a unique message signature using timestamp and content hash
-			const timestamp = Date.now();
-			const contentHash =
-				content.substring(0, 50) + (code?.substring(0, 50) || "");
-			const messageSignature = `${timestamp}-${contentHash}`;
-
-			// For non-user messages, check if this is a duplicate (same content within 1 second)
-			if (!isUser) {
-				const isDuplicate = recentMessages.some((sig) => {
-					const [prevTimestamp, prevHash] = sig.split("-", 2);
-					const timeDiff = timestamp - parseInt(prevTimestamp);
-					return timeDiff < 1000 && prevHash === contentHash;
-				});
-
-				if (isDuplicate) {
-					return;
-				}
-			}
-
-			// Add to recent messages (keep only last 20 for better duplicate detection)
-			setRecentMessages((prev) => {
-				const newMessages = [...prev, messageSignature];
-				return newMessages.slice(-20);
-			});
-
-			// Store suggestions if provided
-			if (suggestions) {
-				setCurrentSuggestions(suggestions);
-			}
-
-			analysisDispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					content,
-					isUser,
-					code,
-					codeLanguage,
-					codeTitle,
-					suggestions,
-					status: status || (isUser ? "completed" : "pending"),
-					isStreaming: isStreaming || false,
-				},
-			});
-			scrollToBottomImmediate();
-		},
-		[analysisDispatch, scrollToBottomImmediate]
-	);
-
-	// Helper functions to eliminate duplications
-	const resetLoadingState = useCallback(() => {
-		setIsLoading(false);
-		setIsProcessing(false);
-		setProgressMessage("");
-	}, []);
+	}, [analysisState.messages, scrollToBottomImmediate]);
 
 	const validateBackendClient = useCallback(
 		(customErrorMessage?: string): boolean => {
@@ -1131,135 +408,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		[backendClient, addMessage, resetLoadingState]
 	);
 
-	// Resolve @mentions like @data.csv to indexed local datasets
+	// Resolve @mentions using the service
 	const resolveAtMentions = useCallback((text: string): LocalDatasetEntry[] => {
-		const registry = localRegistryRef.current;
-		if (!registry) return [];
-		const tokens = Array.from(text.matchAll(/@([^\s@]+)/g)).map((m) => m[1]);
-		if (!tokens.length) return [];
-		const resolved: LocalDatasetEntry[] = [];
-		for (const t of tokens) {
-			const matches = registry.resolveMention(t);
-			for (const m of matches) resolved.push(m);
-		}
-		const byId = new Map<string, LocalDatasetEntry>();
-		resolved.forEach((d) => byId.set(d.id, d));
-		return Array.from(byId.values());
-	}, []);
+		return datasetResolutionService.resolveAtMentions(text);
+	}, [datasetResolutionService]);
 
-	// Helper types and functions for minimal edit application
-	type LineEdit = {
-		startLine: number; // 1-based, inclusive
-		endLine: number; // 1-based, inclusive
-		replacement: string; // exact text to replace the range with
-	};
-
-	const stripCodeFences = (text: string): string => {
-		return text
-			.replace(/^\s*```[a-zA-Z]*\s*/g, "")
-			.replace(/\s*```\s*$/g, "")
-			.trim();
-	};
-
-	// Helper: compute selection range from a user message requesting specific line(s)
-	const computeSelectionFromMessage = (
-		fullCode: string,
-		userMessage: string
-	): {
-		selStart: number;
-		selEnd: number;
-		startLine: number;
-		endLine: number;
-		withinSelection: string;
-	} => {
-		let selStart = 0;
-		let selEnd = fullCode.length;
-		let startLine = 1;
-		let endLine = (fullCode.match(/\n/g)?.length ?? 0) + 1;
-		try {
-			const lm =
-				userMessage.match(/lines?\s+(\d+)(?:\s*-\s*(\d+))?/i) ||
-				userMessage.match(/line\s+(\d+)/i);
-			if (lm) {
-				const s = Math.max(1, parseInt(lm[1] || "1", 10));
-				const e = Math.max(s, parseInt(lm[2] || String(s), 10));
-				const lineStartPositions: number[] = [0];
-				for (let i = 0; i < fullCode.length; i++) {
-					if (fullCode[i] === "\n") lineStartPositions.push(i + 1);
-				}
-				startLine = Math.min(s, lineStartPositions.length);
-				endLine = Math.min(e, lineStartPositions.length);
-				selStart = lineStartPositions[startLine - 1] ?? 0;
-				selEnd =
-					lineStartPositions[endLine] !== undefined
-						? lineStartPositions[endLine]
-						: fullCode.length;
-			}
-		} catch (_) {}
-		const withinSelection = fullCode.slice(selStart, selEnd);
-		return { selStart, selEnd, startLine, endLine, withinSelection };
-	};
-
-	// Helper: unified diff for selection updates
-	const buildUnifiedDiff = (
-		oldText: string,
-		newText: string,
-		file: string,
-		oldStart: number
-	) => {
-		const oldLines = oldText.split("\n");
-		const newLines = newText.split("\n");
-		const m = oldLines.length;
-		const n = newLines.length;
-		const lcs: number[][] = Array.from({ length: m + 1 }, () =>
-			Array(n + 1).fill(0)
-		);
-		for (let i = 1; i <= m; i++) {
-			for (let j = 1; j <= n; j++) {
-				if (oldLines[i - 1] === newLines[j - 1]) {
-					lcs[i][j] = lcs[i - 1][j - 1] + 1;
-				} else {
-					lcs[i][j] = Math.max(lcs[i - 1][j], lcs[i][j - 1]);
-				}
-			}
-		}
-		const ops: Array<{ t: " " | "+" | "-"; s: string }> = [];
-		let i = m,
-			j = n;
-		while (i > 0 || j > 0) {
-			if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
-				ops.push({ t: " ", s: oldLines[i - 1] });
-				i--;
-				j--;
-			} else if (j > 0 && (i === 0 || lcs[i][j - 1] > lcs[i - 1][j])) {
-				ops.push({ t: "+", s: newLines[j - 1] });
-				j--;
-			} else if (i > 0) {
-				ops.push({ t: "-", s: oldLines[i - 1] });
-				i--;
-			}
-		}
-		ops.reverse();
-		const oldCount = m;
-		const newCount = n;
-		const newStart = oldStart; // selection replaced in place
-		const headerA = `--- a/${file}:${oldStart}-${oldStart + oldCount - 1}`;
-		const headerB = `+++ b/${file}:${newStart}-${newStart + newCount - 1}`;
-		const hunk = `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`;
-		const body = ops
-			.map((o) => {
-				const content = o.s.length === 0 ? "(empty line)" : o.s;
-				if (o.t === " ") {
-					return `  ${content}`; // Two spaces for unchanged lines
-				} else {
-					return `${o.t} ${content}`; // Space after + or -
-				}
-			})
-			.join("\n");
-		return `${headerA}\n${headerB}\n${hunk}\n${body}`;
-	};
-
-	// Shared notebook edit executor to avoid duplication between cellMention and selection-based edits
+	// Shared notebook edit executor using the service
 	const performNotebookEdit = useCallback(
 		async (args: {
 			filePath: string;
@@ -1277,411 +431,21 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			outputText?: string;
 			hasErrorOutput?: boolean;
 		}) => {
-			if (!backendClient) {
+			if (!notebookEditingService) {
 				addMessage(
 					"Backend not ready to edit code. Please try again in a moment.",
 					false
 				);
 				return;
 			}
-			const {
-				filePath,
-				cellIndex,
-				language,
-				fullCode,
-				userMessage,
-				selection,
-				outputText,
-				hasErrorOutput,
-			} = args;
 
-			const wsPath =
-				findWorkspacePath({
-					filePath,
-					currentWorkspace: workspaceState.currentWorkspace || undefined,
-				}) || "";
-			const notebookService = new NotebookService({ workspacePath: wsPath });
-
-			const lang = (language || "python").toLowerCase();
-			const { selStart, selEnd, startLine, endLine, withinSelection } =
-				selection || computeSelectionFromMessage(fullCode, userMessage);
-			const fileName = filePath.split("/").pop() || filePath;
-
-			addMessage(
-				`Editing plan:\n\n- **Target**: cell ${cellIndex} in \`${fileName}\`\n- **Scope**: replace lines ${startLine}-${endLine} of the selected code\n- **Process**: I will generate the revised snippet (streaming below), then apply it to the notebook and confirm the save.`,
-				false
-			);
-			const task =
-				`Edit the following ${lang} code according to the user's instruction. ` +
-				`CRITICAL RULES:\n` +
-				`1. Return ONLY the exact replacement for lines ${startLine}-${endLine}\n` +
-				`2. Do NOT include explanations or markdown formatting\n` +
-				`3. Do NOT add imports, package installs, magic commands, shebangs, or globals\n` +
-				`4. Preserve the number of lines unless removing content; match indentation and style\n` +
-				`5. Output ONLY the modified code as plain text`;
-
-			let streamedResponse = "";
-			const streamingMessageId = `edit-${Date.now()}`;
-			analysisDispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					id: streamingMessageId,
-					content: "Streaming edited code…",
-					isUser: false,
-					isStreaming: true,
-					code: "",
-					codeLanguage: lang,
-					codeTitle: "Edited snippet",
-				},
+			await notebookEditingService.performNotebookEdit(args, {
+				addMessage,
+				analysisDispatch,
 			});
-
-			try {
-				const base = fullCode;
-				const start = selStart;
-				const end = selEnd;
-				let lastCellUpdate = 0;
-				await backendClient!.generateCodeStream(
-					{
-						task_description:
-							`${task}\n\nUser instruction: ${userMessage}\n\n` +
-							(outputText && outputText.trim().length > 0
-								? `${
-										hasErrorOutput ? "Error" : "Execution"
-								  } output for context:\n\n\`\`\`text\n${outputText}\n\`\`\`\n\n`
-								: "") +
-							`Original code (lines ${startLine}-${endLine}):\n${withinSelection}\n\nIMPORTANT: The original has ${
-								withinSelection.split("\n").length
-							} lines. Return EXACTLY ${
-								withinSelection.split("\n").length
-							} modified lines (no imports, no extra lines). Example format:\nline1\nline2\n\nYour response:`,
-						language: lang,
-						context: "Notebook code edit-in-place",
-						notebook_edit: true,
-					},
-					(chunk: string) => {
-						streamedResponse += chunk;
-						const cleanedSnippet = stripCodeFences(streamedResponse);
-
-						// Update chat message with the edited snippet so far
-						analysisDispatch({
-							type: "UPDATE_MESSAGE",
-							payload: {
-								id: streamingMessageId,
-								updates: {
-									content: `Streaming edited code…`,
-									code: cleanedSnippet,
-									codeLanguage: lang,
-									codeTitle: "Edited snippet",
-									isStreaming: true,
-								},
-							},
-						});
-
-						// Throttled live update of the notebook cell so changes are visible during streaming
-						const now = Date.now();
-						if (now - lastCellUpdate > 500) {
-							const partialNewCode =
-								base.substring(0, start) + cleanedSnippet + base.substring(end);
-							notebookService
-								.updateCellCode(filePath, cellIndex, partialNewCode)
-								.catch(() => {});
-							lastCellUpdate = now;
-						}
-					}
-				);
-			} catch (e) {
-				addMessage(
-					`Code edit failed: ${e instanceof Error ? e.message : String(e)}`,
-					false
-				);
-				return;
-			} finally {
-				analysisDispatch({
-					type: "UPDATE_MESSAGE",
-					payload: { id: streamingMessageId, updates: { isStreaming: false } },
-				});
-			}
-
-			// Use the streamed edited snippet; fallback to JSON edits if the model returned them
-			const base = fullCode;
-			const start = selStart;
-			const end = selEnd;
-			const cleanedFinal = stripCodeFences(streamedResponse);
-			const jsonFallback = parseJsonEdits(streamedResponse);
-			let newSelection = jsonFallback
-				? applyLineEdits(withinSelection, jsonFallback)
-				: cleanedFinal;
-
-			// Guardrail: strip newly introduced imports not present in original selection
-			try {
-				const importRe = /^(?:\s*from\s+\S+\s+import\s+|\s*import\s+\S+)/;
-				const originalLines = withinSelection.split(/\r?\n/);
-				const originalImportSet = new Set(
-					originalLines.filter((l) => importRe.test(l)).map((l) => l.trim())
-				);
-				const newLines = newSelection.split(/\r?\n/);
-				const filtered = newLines.filter((l) => {
-					if (!importRe.test(l)) return true;
-					return originalImportSet.has(l.trim());
-				});
-				if (filtered.length !== newLines.length) {
-					newSelection = filtered.join("\n");
-				}
-			} catch (_) {}
-			const newCode =
-				base.substring(0, start) + newSelection + base.substring(end);
-
-			// Validate generated code with Ruff; if issues remain, auto-fix via backend LLM
-			let validatedCode = newCode;
-			let didAutoFix = false;
-			try {
-				// Skip linting for package installation cells (pip/conda magics or commands)
-				const isInstallCell =
-					/(^|\n)\s*(%pip|%conda|pip\s+install|conda\s+install)\b/i.test(
-						newCode
-					);
-				if (isInstallCell) {
-					// Keep code as-is; prefer not to mutate install commands
-					addMessage(
-						`ℹ️ Skipping lint/fix for package installation lines.`,
-						false
-					);
-					validatedCode = newCode;
-				} else {
-					const ruffResult = await ruffLinter.lintCode(newCode, {
-						enableFixes: true,
-						filename: `cell_${cellIndex + 1}.py`,
-					});
-					if (!ruffResult.isValid) {
-						const errors = ruffResult.diagnostics
-							.filter((d) => d.kind === "error")
-							.map((d) => `${d.code}: ${d.message} (line ${d.startLine})`);
-						addMessage(
-							`⚠️ Code validation issues detected. Attempting auto-fix…`,
-							false
-						);
-						const fixed = backendClient
-							? await autoFixWithRuffAndLLM(backendClient, newCode, {
-									filename: `cell_${cellIndex + 1}.py`,
-									stepTitle: `Inline edit for cell ${cellIndex + 1}`,
-							  })
-							: {
-									fixedCode: ruffResult.fixedCode || newCode,
-									issues: errors,
-									wasFixed: false,
-							  };
-						validatedCode = fixed.fixedCode || ruffResult.fixedCode || newCode;
-						didAutoFix = !!fixed.wasFixed;
-						if (fixed.wasFixed) {
-							addMessage(`✅ Applied auto-fix for lint issues.`, false);
-						} else {
-							addMessage(
-								`⚠️ Auto-fix attempted but some issues may remain.`,
-								false
-							);
-						}
-					} else {
-						// Prefer Ruff's improvements when available
-						const improved = ruffResult.fixedCode || ruffResult.formattedCode;
-						if (improved && improved !== newCode) {
-							didAutoFix = true;
-							validatedCode = improved;
-						} else {
-							validatedCode = newCode;
-						}
-					}
-				}
-			} catch (error) {
-				console.warn("Ruff validation or auto-fix failed:", error);
-				validatedCode = newCode;
-			}
-
-			await notebookService.updateCellCode(filePath, cellIndex, validatedCode);
-
-			// Final linting check on the updated code (skip for install cells)
-			try {
-				const isInstallCellFinal =
-					/(^|\n)\s*(%pip|%conda|pip\s+install|conda\s+install)\b/i.test(
-						validatedCode
-					);
-				if (isInstallCellFinal) {
-					// No final lint for install lines
-					throw null; // jump to catch without logging error
-				}
-				console.log(`Final linting check for cell ${cellIndex + 1}...`);
-				const finalLintResult = await ruffLinter.lintCode(validatedCode, {
-					enableFixes: false, // Don't fix again, just check
-					filename: `cell_${cellIndex + 1}_final.py`,
-				});
-
-				if (!finalLintResult.isValid) {
-					const issueLines = finalLintResult.diagnostics.map(
-						(d) => `${d.code}: ${d.message} (line ${d.startLine})`
-					);
-					console.warn(
-						`Linting issues found in cell ${cellIndex + 1}:`,
-						issueLines.join(", ")
-					);
-					const errorCount = finalLintResult.diagnostics.filter(
-						(d) => d.kind === "error"
-					).length;
-					const warningCount = finalLintResult.diagnostics.filter(
-						(d) => d.kind === "warning"
-					).length;
-					let lintBlock = "```lint\n";
-					lintBlock +=
-						`LINT_SUMMARY: ⚠️ Found ${errorCount} error(s)${
-							warningCount ? ` and ${warningCount} warning(s)` : ""
-						} in cell ${cellIndex + 1}` + "\n";
-					if (errorCount) {
-						lintBlock += "Errors:\n";
-						lintBlock +=
-							finalLintResult.diagnostics
-								.filter((d) => d.kind === "error")
-								.map((d) => `- ${d.code}: ${d.message} (line ${d.startLine})`)
-								.join("\n") + "\n";
-					}
-					if (warningCount) {
-						lintBlock += "Warnings:\n";
-						lintBlock +=
-							finalLintResult.diagnostics
-								.filter((d) => d.kind === "warning")
-								.map((d) => `- ${d.code}: ${d.message} (line ${d.startLine})`)
-								.join("\n") + "\n";
-					}
-					lintBlock += "```";
-					// Skip adding lint error summary to reduce chat clutter
-				} else {
-					console.log(`Cell ${cellIndex + 1} passed final linting check`);
-				}
-			} catch (lintError) {
-				if (lintError) {
-					console.warn(
-						`Failed to run final lint check on cell ${cellIndex + 1}:`,
-						lintError
-					);
-				}
-				// Don't fail the whole operation if linting fails
-			}
-
-			// Short confirmation window; fallback to optimistic success
-			let updateDetail: any = null;
-			try {
-				const timeoutMs = 2000;
-				const detail = await Promise.race([
-					EventManager.waitForEvent<any>(
-						"notebook-cell-updated",
-						timeoutMs
-					).then((d) =>
-						d?.filePath === filePath && d?.cellIndex === cellIndex ? d : null
-					),
-					new Promise((resolve) =>
-						setTimeout(() => resolve({ success: true, immediate: true }), 100)
-					),
-				]);
-				updateDetail = detail || { success: true, immediate: true };
-			} catch (_) {
-				updateDetail = { success: true, immediate: true };
-			}
-
-			const originalLineCount = withinSelection.split("\n").length;
-			const newLineCount = newSelection.split("\n").length;
-			const statusText =
-				updateDetail?.success === false
-					? "save failed"
-					: updateDetail?.immediate
-					? "applied"
-					: "saved";
-			const validationText = didAutoFix ? " (auto-fixed)" : "";
-			const summary = `Applied notebook edit:\n\n- **Cell**: ${cellIndex}\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Status**: ${statusText}${validationText}`;
-
-			// Build diff against the actual replacement we generated.
-			// Using validatedCode offsets can drift if a linter reformats outside the selection,
-			// so prefer the explicit newSelection for a correct, minimal diff view.
-			const unifiedDiff = buildUnifiedDiff(
-				withinSelection,
-				newSelection,
-				fileName,
-				startLine
-			);
-			addMessage(`${summary}\n\n\`\`\`diff\n${unifiedDiff}\n\`\`\``, false);
 		},
-		[
-			backendClient,
-			addMessage,
-			analysisDispatch,
-			workspaceState.currentWorkspace,
-		]
+		[notebookEditingService, addMessage, analysisDispatch]
 	);
-
-	const parseJsonEdits = (text: string): LineEdit[] | null => {
-		try {
-			const cleaned = stripCodeFences(text);
-			// Extract JSON array if there is extra prose
-			const arrayMatch = cleaned.match(/\[([\s\S]*)\]$/);
-			const candidate = arrayMatch ? `[${arrayMatch[1]}]` : cleaned;
-			const parsed = JSON.parse(candidate);
-			if (Array.isArray(parsed)) {
-				const edits: LineEdit[] = parsed
-					.map((e) => ({
-						startLine: Number(e.startLine),
-						endLine: Number(e.endLine),
-						replacement: String(e.replacement ?? ""),
-					}))
-					.filter(
-						(e) =>
-							Number.isFinite(e.startLine) &&
-							Number.isFinite(e.endLine) &&
-							e.startLine >= 1 &&
-							e.endLine >= e.startLine
-					);
-				return edits.length > 0 ? edits : null;
-			}
-			// Support single-object edit
-			if (parsed && typeof parsed === "object") {
-				const e = parsed as any;
-				const startLine = Number(e.startLine);
-				const endLine = Number(e.endLine);
-				if (
-					Number.isFinite(startLine) &&
-					Number.isFinite(endLine) &&
-					startLine >= 1 &&
-					endLine >= startLine
-				) {
-					return [
-						{
-							startLine,
-							endLine,
-							replacement: String(e.replacement ?? ""),
-						},
-					];
-				}
-			}
-		} catch {
-			// ignore
-		}
-		return null;
-	};
-
-	const applyLineEdits = (original: string, edits: LineEdit[]): string => {
-		const normalizedOriginal = original.replace(/\r\n/g, "\n");
-		let lines = normalizedOriginal.split("\n");
-		// Apply from bottom-most edit to top to preserve indices
-		const sorted = [...edits].sort((a, b) => b.startLine - a.startLine);
-		for (const edit of sorted) {
-			const startIdx = Math.max(0, Math.min(lines.length, edit.startLine - 1));
-			const endIdx = Math.max(startIdx, Math.min(lines.length, edit.endLine));
-			const replacementLines = String(edit.replacement)
-				.replace(/\r\n/g, "\n")
-				.split("\n");
-			lines = [
-				...lines.slice(0, startIdx),
-				...replacementLines,
-				...lines.slice(endIdx),
-			];
-		}
-		return lines.join("\n");
-	};
 
 	const handleSendMessage = useCallback(async () => {
 		if (!inputValueRef.current.trim() || isLoading) return;
@@ -1774,232 +538,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		// Resolve @mentions to local datasets and auto-attach (Agent mode only)
 		const mentionDatasets = resolveAtMentions(userMessage);
 
-		// Additionally resolve direct workspace/absolute path mentions like @data/file.csv or @path/to/folder
-		const tokens = Array.from(userMessage.matchAll(/@([^\s@]+)/g)).map(
-			(m) => m[1]
-		);
-		// Also capture #N and #all tokens (only meaningful if notebook active)
-		const hashTokens = Array.from(userMessage.matchAll(/#(all|\d+)/gi)).map(
-			(m) => m[1]
-		);
-		const workspaceResolved: LocalDatasetEntry[] = [];
-		let cellMentionContext: null | {
-			filePath: string;
-			cellIndex0: number;
-			language: string;
-			code: string;
-		} = null;
-
-		// If user referenced cells with #N/#all, resolve them against the active notebook now
-		if (hashTokens.length > 0) {
-			try {
-				const activeFile = (workspaceState as any).activeFile as string | null;
-				if (activeFile && activeFile.endsWith(".ipynb")) {
-					// Use cached notebook content if available
-					let nb = notebookContentCache.get(activeFile);
-					if (!nb) {
-						const content = await window.electronAPI.readFile(activeFile);
-						nb = JSON.parse(content);
-						notebookContentCache.set(activeFile, nb);
-					}
-					const cells = Array.isArray(nb?.cells) ? nb.cells : [];
-					const wantAll = hashTokens.some(
-						(t) => String(t).toLowerCase() === "all"
-					);
-					const targetIndices = wantAll
-						? cells.map((_: unknown, i: number) => i)
-						: hashTokens
-								.map((t) => parseInt(String(t), 10))
-								.filter(
-									(n) => Number.isInteger(n) && n >= 1 && n <= cells.length
-								)
-								.map((n) => n - 1);
-					if (targetIndices.length > 0) {
-						for (const idx0 of targetIndices) {
-							const c = cells[idx0];
-							if (!c) continue;
-							const srcArr: string[] = Array.isArray(c.source) ? c.source : [];
-							const code = srcArr.join("");
-							const lang = c.cell_type === "markdown" ? "markdown" : "python";
-							if (!cellMentionContext) {
-								cellMentionContext = {
-									filePath: activeFile,
-									cellIndex0: idx0,
-									language: lang,
-									code,
-								};
-							}
-						}
-					}
-				}
-			} catch {
-				// ignore
-			}
-		}
-
-		// Resolve only @-style tokens and explicit notebook path references here.
-		// Avoid re-processing #N/#all hash tokens which were already handled above.
-		if (tokens.length > 0) {
-			const wsRoot = workspaceState.currentWorkspace || "";
-			const registry = localRegistryRef.current;
-			for (const token of tokens) {
-				// Heuristic: consider anything with a slash or starting with / as a path
-				const looksLikePath = token.startsWith("/") || token.includes("/");
-				// Handle notebook cell reference like path.ipynb#3
-				const cellRefMatch = token.match(/^(.*\.ipynb)#(\d+)$/i);
-				if (cellRefMatch) {
-					const pathPart = cellRefMatch[1];
-					const index1Based = parseInt(cellRefMatch[2], 10);
-					if (!Number.isNaN(index1Based) && index1Based >= 1) {
-						let candidatePath = "";
-						if (pathPart.startsWith("/")) {
-							// Absolute path
-							candidatePath = pathPart;
-						} else if (wsRoot) {
-							// Smart notebook resolution (cached)
-							candidatePath = notebookPathCache.get(pathPart) || "";
-							console.log(
-								`💾 Cache lookup for ${pathPart}: ${
-									candidatePath || "NOT FOUND"
-								}`
-							);
-
-							if (!candidatePath) {
-								// FAST: Check if it's the currently active file
-								const activeFile = (workspaceState as any).activeFile as
-									| string
-									| null;
-								console.log(`⚡ Active file: ${activeFile}`);
-								console.log(`⚡ Looking for: ${pathPart}`);
-
-								if (activeFile && activeFile.endsWith(pathPart)) {
-									candidatePath = activeFile;
-									console.log(`⚡ Using active file: ${candidatePath}`);
-								} else if (activeFile) {
-									// FAST: Try current directory (where active file is)
-									const activeDir = activeFile
-										.split("/")
-										.slice(0, -1)
-										.join("/");
-									const testPath = `${activeDir}/${pathPart}`;
-									console.log(`⚡ Testing same directory: ${testPath}`);
-									try {
-										const info = await window.electronAPI.getFileInfo(testPath);
-										if (info && "size" in info) {
-											candidatePath = testPath;
-											console.log(
-												`⚡ Found in active directory: ${candidatePath}`
-											);
-										} else {
-											console.log(`⚡ Not in active directory, info:`, info);
-										}
-									} catch (e) {
-										console.log(`⚡ Error checking active directory:`, e);
-									}
-								} else {
-									// FALLBACK: Try to find it by searching only the immediate subdirectories
-									console.log(`⚡ No active file, trying subdirectories...`);
-									try {
-										const directories = await window.electronAPI.listDirectory(
-											wsRoot
-										);
-										for (const dir of directories) {
-											if (dir.isDirectory) {
-												const testPath = `${dir.path}/${pathPart}`;
-												try {
-													const info = await window.electronAPI.getFileInfo(
-														testPath
-													);
-													if (info && "size" in info) {
-														candidatePath = testPath;
-														console.log(
-															`⚡ Found in subdirectory: ${candidatePath}`
-														);
-														break;
-													}
-												} catch (e) {
-													// Continue to next directory
-												}
-											}
-										}
-									} catch (e) {
-										console.log(`⚡ Error listing directories:`, e);
-									}
-								}
-
-								// FALLBACK: Only if we couldn't find it anywhere else
-								if (!candidatePath) {
-									candidatePath = `${wsRoot}/${pathPart}`;
-									console.log(`⚡ Using fallback path: ${candidatePath}`);
-								}
-
-								notebookPathCache.set(pathPart, candidatePath);
-							} else {
-								console.log(`📋 Using cached path: ${candidatePath}`);
-							}
-						}
-						if (candidatePath) {
-							try {
-								console.log(`🔍 About to read notebook from: ${candidatePath}`);
-								// Check cache first
-								let nb = notebookContentCache.get(candidatePath);
-								if (!nb) {
-									const fileContent = await window.electronAPI.readFile(
-										candidatePath
-									);
-									nb = JSON.parse(fileContent);
-									notebookContentCache.set(candidatePath, nb);
-								}
-								const idx0 = index1Based - 1;
-								const cell = Array.isArray(nb?.cells) ? nb.cells[idx0] : null;
-								if (cell) {
-									const srcArr: string[] = Array.isArray(cell.source)
-										? cell.source
-										: [];
-									const code = srcArr.join("");
-									const lang =
-										cell.cell_type === "markdown" ? "markdown" : "python";
-									// Prefer first valid cell mention only for edit context
-									if (!cellMentionContext) {
-										cellMentionContext = {
-											filePath: candidatePath,
-											cellIndex0: idx0,
-											language: lang,
-											code,
-										};
-									}
-									// Do not process hashTokens here; they are handled in the dedicated block above
-								}
-							} catch (_) {
-								// ignore
-							}
-						}
-					}
-					// skip normal path handling for cell references
-					continue;
-				}
-				if (!looksLikePath) continue;
-
-				const candidatePath = token.startsWith("/")
-					? token
-					: wsRoot
-					? `${wsRoot}/${token}`
-					: "";
-				if (!candidatePath) continue;
-
-				try {
-					const info = await electronAPI.getFileInfo(candidatePath);
-					if (info?.success && info.data) {
-						if (registry) {
-							const entry = await registry.addFromPath(candidatePath, token);
-							if (entry) workspaceResolved.push(entry);
-						}
-					}
-				} catch (_) {
-					// ignore failures; not a valid path
-				}
-			}
-		}
+		// Resolve workspace and cell mentions using the service
+		const { workspaceResolved, cellMentionContext } =
+			await datasetResolutionService.resolveWorkspaceAndCellMentions(
+				userMessage,
+				workspaceState.currentWorkspace || "",
+				(workspaceState as any).activeFile
+			);
 
 		const allMentionDatasets = mergeSelectedDatasets(
 			mentionDatasets as any[],
@@ -2487,7 +1032,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					responseContent += `\n`;
 				});
 
-
 				addMessage(responseContent, false, undefined, undefined, undefined, {
 					suggestions: [],
 					recommended_approaches: [],
@@ -2587,7 +1131,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const handleAnalysisRequest = useCallback(
 		async (analysisRequest: string) => {
 			if (selectedDatasets.length === 0) {
-				addMessage("No datasets selected for analysis.", false);
+				addMessage(
+					"I am a bioinformatics agent. I can help you with your data. Tag @files to analyze or just ask me a question.",
+					false
+				);
 				return;
 			}
 
@@ -3368,7 +1915,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 				<SearchProgressView progress={datasetSearchProgress} />
 
-
 				<EnvironmentStatus
 					virtualEnvStatus={virtualEnvStatus}
 					showLog={showVirtualEnvLog}
@@ -3546,7 +2092,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					</Tooltip>
 					<Tooltip content="Chat history" placement="bottom">
 						<button
-							onClick={() => setShowHistoryMenu((v) => !v)}
+							onClick={() => setShowHistoryMenu(!showHistoryMenu)}
 							className="chat-button"
 						>
 							<FiClock />
@@ -3967,7 +2513,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				onSelectCell={(item) => {
 					const alias = item.alias; // already relPath#N
 					setInputValue(
-						(prev) => prev.replace(/@([^\s@]*)$/, `@${alias}`) + " "
+						inputValue.replace(/@([^\s@]*)$/, `@${alias}`) + " "
 					);
 					setMentionOpen(false);
 					setMentionQuery("");
