@@ -12,7 +12,7 @@
 	--font-size-3xl: 24px;
 
 	/* Animation */
-	--shimmer-duration: 3.5s; /* slower, consistent shimmer speed */
+	--shimmer-duration: 9s; /* slower, consistent shimmer speed */
 	--shimmer-easing: linear;
 }
 

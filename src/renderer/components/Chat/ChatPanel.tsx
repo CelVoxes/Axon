@@ -2077,23 +2077,26 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					{/* Pass through chatMode to Composer via props */}
 					<Tooltip content="New chat" placement="bottom">
 						<button
-							onClick={() => {
-								// Start a brand new chat session
-								analysisDispatch({ type: "NEW_CHAT_SESSION" });
-								clearSelectedDatasets();
-								clearAvailableDatasets();
-								setCurrentSuggestions(null);
-								setSuggestionButtons([]);
-								setProcessedEvents(new Set());
-								setAgentInstance(null);
-								setVirtualEnvStatus("");
-								setShowHistoryMenu(false);
-								setShowExamples(false);
-								suggestionsService?.startNewConversation?.();
-							}}
-							className="chat-button"
-						>
-							<FiPlus />
+                        onClick={() => {
+                            // Start a brand new chat session
+                            analysisDispatch({ type: "NEW_CHAT_SESSION" });
+                            clearSelectedDatasets();
+                            clearAvailableDatasets();
+                            setCurrentSuggestions(null);
+                            setSuggestionButtons([]);
+                            setProcessedEvents(new Set());
+                            setAgentInstance(null);
+                            setVirtualEnvStatus("");
+                            setShowHistoryMenu(false);
+                            setShowExamples(false);
+                            // Clear composer input for fresh session
+                            setInputValue("");
+                            inputValueRef.current = "";
+                            suggestionsService?.startNewConversation?.();
+                        }}
+                        className="chat-button"
+                    >
+                        <FiPlus />
 						</button>
 					</Tooltip>
 					<Tooltip content="Chat history" placement="bottom">
@@ -2288,26 +2291,29 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 												return (
 													<div
 														key={s.id}
-														onClick={async () => {
-															setShowHistoryMenu(false);
-															if (
-																s.id ===
-																(analysisState as any).activeChatSessionId
-															)
-																return;
-															analysisDispatch({
-																type: "SET_ACTIVE_CHAT_SESSION",
-																payload: s.id,
-															});
-															// Messages for the selected session will be loaded by context effect
-															clearSelectedDatasets();
-															clearAvailableDatasets();
-															setCurrentSuggestions(null);
-															setSuggestionButtons([]);
-															setProcessedEvents(new Set());
-															setAgentInstance(null);
-															setVirtualEnvStatus("");
-														}}
+                                        onClick={async () => {
+                                            setShowHistoryMenu(false);
+                                            if (
+                                                s.id ===
+                                                (analysisState as any).activeChatSessionId
+                                            )
+                                                return;
+                                            analysisDispatch({
+                                                type: "SET_ACTIVE_CHAT_SESSION",
+                                                payload: s.id,
+                                            });
+                                            // Messages for the selected session will be loaded by context effect
+                                            clearSelectedDatasets();
+                                            clearAvailableDatasets();
+                                            setCurrentSuggestions(null);
+                                            setSuggestionButtons([]);
+                                            setProcessedEvents(new Set());
+                                            setAgentInstance(null);
+                                            setVirtualEnvStatus("");
+                                            // Clear composer input when switching sessions
+                                            setInputValue("");
+                                            inputValueRef.current = "";
+                                        }}
 														style={{
 															padding: "10px 12px",
 															cursor: "pointer",

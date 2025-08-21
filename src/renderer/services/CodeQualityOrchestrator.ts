@@ -9,6 +9,7 @@ import {
 	CodeValidationResult,
 } from "./types";
 import { ruffLinter } from "./RuffLinter";
+import { EventManager } from "../utils/EventManager";
 
 export class CodeQualityOrchestrator implements ICodeQualityValidator {
 	private backendClient: IBackendClient;
@@ -89,29 +90,50 @@ export class CodeQualityOrchestrator implements ICodeQualityValidator {
 		}
 
 		// Simple Ruff-only validation fallback when no delegate is set
-		try {
-			this.updateStatus(`Validating code with Ruff for ${options.stepTitle || stepId}...`);
-			const ruffResult = await ruffLinter.lintCode(code, {
-				enableFixes: true,
-				filename: `${(options.stepTitle || stepId).replace(/\s+/g, "_").toLowerCase()}.py`,
-			});
-			const errors = ruffResult.diagnostics
-				.filter((d) => d.kind === "error")
-				.map((d) => `${d.code}: ${d.message} (line ${d.startLine})`);
-			const warnings = ruffResult.diagnostics
-				.filter((d) => d.kind === "warning")
-				.map((d) => `${d.code}: ${d.message} (line ${d.startLine})`);
+        try {
+            this.updateStatus(`Validating code with Ruff for ${options.stepTitle || stepId}...`);
+            const ruffResult = await ruffLinter.lintCode(code, {
+                enableFixes: true,
+                filename: `${(options.stepTitle || stepId).replace(/\s+/g, "_").toLowerCase()}.py`,
+            });
+            const errors = ruffResult.diagnostics
+                .filter((d) => d.kind === "error")
+                .map((d) => `${d.code}: ${d.message} (line ${d.startLine})`);
+            const warnings = ruffResult.diagnostics
+                .filter((d) => d.kind === "warning")
+                .map((d) => `${d.code}: ${d.message} (line ${d.startLine})`);
 
-			return {
-				isValid: ruffResult.isValid,
-				originalCode: code,
-				validatedCode: ruffResult.fixedCode || ruffResult.formattedCode || code,
-				errors: errors,
-				warnings: warnings,
-				improvements: [],
-				retryCount: 0,
-				success: ruffResult.isValid,
-			};
+            // Emit UI events so chat can reflect validation outcome (fallback path)
+            try {
+                if (errors.length > 0) {
+                    EventManager.dispatchEvent("code-validation-error", {
+                        stepId,
+                        errors,
+                        warnings,
+                        originalCode: code,
+                        fixedCode: ruffResult.fixedCode || ruffResult.formattedCode,
+                        timestamp: Date.now(),
+                    } as any);
+                } else {
+                    EventManager.dispatchEvent("code-validation-success", {
+                        stepId,
+                        message: `No linter errors found`,
+                        code: ruffResult.fixedCode || ruffResult.formattedCode || code,
+                        timestamp: Date.now(),
+                    } as any);
+                }
+            } catch (_) {}
+
+            return {
+                isValid: ruffResult.isValid,
+                originalCode: code,
+                validatedCode: ruffResult.fixedCode || ruffResult.formattedCode || code,
+                errors: errors,
+                warnings: warnings,
+                improvements: [],
+                retryCount: 0,
+                success: ruffResult.isValid,
+            };
 		} catch (e) {
 			return {
 				isValid: false,
