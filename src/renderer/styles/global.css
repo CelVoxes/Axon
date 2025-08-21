@@ -10,6 +10,10 @@
 	--font-size-xl: 18px;
 	--font-size-2xl: 20px;
 	--font-size-3xl: 24px;
+
+	/* Animation */
+	--shimmer-duration: 3.5s; /* slower, consistent shimmer speed */
+	--shimmer-easing: linear;
 }
 
 * {
@@ -854,7 +858,7 @@ textarea:focus {
     background-clip: text;
     -webkit-text-fill-color: transparent;
     color: transparent;
-    animation: shimmerChar 1.8s ease-in-out infinite;
+    animation: shimmerChar var(--shimmer-duration) var(--shimmer-easing) infinite;
     animation-delay: calc(var(--i) * 60ms);
 }
 
@@ -874,12 +878,12 @@ textarea:focus {
         #cfcfcf 60%,
         #a6a6a6 100%
     );
-    background-size: 400% 100%; /* wider sweep for slower, smoother pass */
+    background-size: 400% 100%; /* wider sweep for smoother pass */
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent; /* ensure per-glyph clipping */
     color: transparent;
-    animation: shimmerText 3s ease-in-out infinite;
+    animation: shimmerText var(--shimmer-duration) var(--shimmer-easing) infinite;
 }
 
 @keyframes shimmerText {
@@ -1110,7 +1114,7 @@ textarea:focus {
 		rgba(255, 255, 255, 0.3),
 		transparent
 	);
-	animation: shimmer 2s infinite;
+    animation: shimmer var(--shimmer-duration) var(--shimmer-easing) infinite;
 }
 
 @keyframes shimmer {

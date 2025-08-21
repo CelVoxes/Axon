@@ -454,12 +454,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		[notebookEditingService, addMessage, analysisDispatch]
 	);
 
-	const handleSendMessage = useCallback(async () => {
-		if (!inputValueRef.current.trim() || isLoading) return;
+    const handleSendMessage = useCallback(async () => {
+        if (!inputValueRef.current.trim() || isLoading) return;
 
-		// Clear lingering validation status for a fresh conversation cycle
-		setValidationErrors([]);
-		setValidationSuccessMessage("");
+        // Clear lingering validation status for a fresh conversation cycle
+        setValidationErrors([]);
+        setValidationSuccessMessage("");
+        // Hide examples once the user sends any message
+        setShowExamples(false);
 
 		const userMessage = inputValueRef.current.trim();
 
@@ -671,15 +673,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				const fileName = filePath.split("/").pop() || filePath;
 
 				// Use shared edit executor to avoid duplication
-				await performNotebookEdit({
-					filePath,
-					cellIndex,
-					language: lang,
-					fullCode,
-					userMessage,
-					selection: { selStart, selEnd, startLine, endLine, withinSelection },
-				});
-				return;
+                setIsProcessing(true);
+                try {
+                await performNotebookEdit({
+                    filePath,
+                    cellIndex,
+                    language: lang,
+                    fullCode,
+                    userMessage,
+                    selection: { selStart, selEnd, startLine, endLine, withinSelection },
+                });
+                } finally {
+                    scheduleProcessingStop(1200);
+                }
+                return;
 			}
 
 			// If there is an active code edit context (state or ref), perform edit-in-place and return early
@@ -708,19 +715,24 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				const startLine = (beforeSelection.match(/\n/g)?.length ?? 0) + 1;
 				const endLine = startLine + (withinSelection.match(/\n/g)?.length ?? 0);
 
-				await performNotebookEdit({
-					filePath,
-					cellIndex,
-					language: lang,
-					fullCode,
-					userMessage,
-					selection: { selStart, selEnd, startLine, endLine, withinSelection },
-					outputText: ctxAgent.outputText,
-					hasErrorOutput: ctxAgent.hasErrorOutput,
-				});
-				setCodeEditContext(null);
-				codeEditContextRef.current = null;
-				return;
+                setIsProcessing(true);
+                try {
+                await performNotebookEdit({
+                    filePath,
+                    cellIndex,
+                    language: lang,
+                    fullCode,
+                    userMessage,
+                    selection: { selStart, selEnd, startLine, endLine, withinSelection },
+                    outputText: ctxAgent.outputText,
+                    hasErrorOutput: ctxAgent.hasErrorOutput,
+                });
+                } finally {
+                    scheduleProcessingStop(1200);
+                }
+                setCodeEditContext(null);
+                codeEditContextRef.current = null;
+                return;
 			}
 			// If datasets are already selected, prioritize analysis/suggestions over intent classification
 			// to avoid accidentally routing to search or generic Q&A.
@@ -985,9 +997,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			// Use the hook's selectDatasets function
 			selectDatasets(selectedDatasetsArray);
 
-			if (selectedDatasetsArray.length > 0) {
-				// Give users a readable pause before auto-suggestions or downstream actions
-				await new Promise((resolve) => setTimeout(resolve, 600));
+            if (selectedDatasetsArray.length > 0) {
+                // Give users a readable pause before auto-suggestions or downstream actions
+                await new Promise((resolve) => setTimeout(resolve, 600));
 
 				// Show initial selection message
 				let responseContent = `## Selected ${selectedDatasetsArray.length} Datasets\n\n`;
@@ -1004,12 +1016,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					responseContent += `\n`;
 				});
 
-				addMessage(responseContent, false, undefined, undefined, undefined, {
-					suggestions: [],
-					recommended_approaches: [],
-					data_insights: [],
-					next_steps: [],
-				});
+                addMessage(responseContent, false, undefined, undefined, undefined, {
+                    suggestions: [],
+                    recommended_approaches: [],
+                    data_insights: [],
+                    next_steps: [],
+                });
+
+                // After datasets are selected, show example queries in chat
+                setShowExamples(true);
 
 				// Example queries UI will be rendered below the composer when datasets are selected
 
@@ -1853,7 +1868,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 	const MessagesView = React.useMemo(() => {
 		return (
-			<div className="chat-messages" ref={chatContainerRef}>
+            <div className="chat-messages" ref={chatContainerRef}>
+
 				{analysisState.messages.map((message: any) => (
 					<div key={message.id}>
 						<ChatMessage
@@ -1875,13 +1891,27 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					</div>
 				))}
 
-				{isProcessing && (
-					<ProcessingIndicator
-						text={
-							analysisState.analysisStatus || progressMessage || "Processing"
-						}
-					/>
-				)}
+                {/* After all prior messages, optionally show example queries as the last message */}
+                {(showExamples && selectedDatasets.length > 0 && !isProcessing) && (
+                    <div style={{ padding: 12 }}>
+                        <ExamplesComponent
+                            onExampleSelect={(example) => {
+                                setInputValue(example);
+                                inputValueRef.current = example;
+                                setShowExamples(false);
+                                try { composerRef.current?.focus(); } catch (_) {}
+                            }}
+                        />
+                    </div>
+                )}
+
+                {isProcessing && (
+                    <ProcessingIndicator
+                        text={
+                            analysisState.analysisStatus || progressMessage || "Processing"
+                        }
+                    />
+                )}
 
 				{/* Show success when there are no errors and a message exists */}
 				{!validationErrors?.length && (
@@ -2415,6 +2445,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					setMentionQuery("");
 				}}
 			/>
+
 
 			{/* @ mention suggestions menu */}
 			<MentionSuggestions
