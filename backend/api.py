@@ -313,7 +313,7 @@ async def root():
             "code_generate": "/llm/code",
             "tool_call": "/llm/tool",
             "query_analyze": "/llm/analyze",
-        "ask": "/llm/ask",
+            "ask": "/llm/ask",
             "intent": "/llm/intent",
         }
     }

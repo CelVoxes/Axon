@@ -396,6 +396,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		scrollToBottomImmediate();
 	}, [analysisState.messages, scrollToBottomImmediate]);
 
+	// Clear composer on chat session change (defensive in case session switches elsewhere)
+	useEffect(() => {
+		try {
+			setInputValue("");
+			inputValueRef.current = "";
+			setMentionOpen(false);
+			setMentionQuery("");
+		} catch (_) {}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [(analysisState as any).activeChatSessionId]);
+
 	const validateBackendClient = useCallback(
 		(customErrorMessage?: string): boolean => {
 			if (!backendClient) {
@@ -454,14 +465,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		[notebookEditingService, addMessage, analysisDispatch]
 	);
 
-    const handleSendMessage = useCallback(async () => {
-        if (!inputValueRef.current.trim() || isLoading) return;
+	const handleSendMessage = useCallback(async () => {
+		if (!inputValueRef.current.trim() || isLoading) return;
 
-        // Clear lingering validation status for a fresh conversation cycle
-        setValidationErrors([]);
-        setValidationSuccessMessage("");
-        // Hide examples once the user sends any message
-        setShowExamples(false);
+		// Clear lingering validation status for a fresh conversation cycle
+		setValidationErrors([]);
+		setValidationSuccessMessage("");
+		// Hide examples once the user sends any message
+		setShowExamples(false);
 
 		const userMessage = inputValueRef.current.trim();
 
@@ -549,6 +560,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			// Only show the snippet and return if the prompt clearly asks to "show/view" rather than edit.
 			if (cellMentionContext) {
 				const wantOutput = /\boutput\b/i.test(userMessage);
+				const explainIntent =
+					/(what\s+does|explain|describe|summariz(e|e\s+the)|meaning|purpose)/i.test(
+						userMessage
+					);
 				const lineMatch =
 					userMessage.match(/lines?\s+(\d+)(?:\s*-\s*(\d+))?/i) ||
 					userMessage.match(/line\s+(\d+)/i);
@@ -673,20 +688,26 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				const fileName = filePath.split("/").pop() || filePath;
 
 				// Use shared edit executor to avoid duplication
-                setIsProcessing(true);
-                try {
-                await performNotebookEdit({
-                    filePath,
-                    cellIndex,
-                    language: lang,
-                    fullCode,
-                    userMessage,
-                    selection: { selStart, selEnd, startLine, endLine, withinSelection },
-                });
-                } finally {
-                    scheduleProcessingStop(1200);
-                }
-                return;
+				setIsProcessing(true);
+				try {
+					await performNotebookEdit({
+						filePath,
+						cellIndex,
+						language: lang,
+						fullCode,
+						userMessage,
+						selection: {
+							selStart,
+							selEnd,
+							startLine,
+							endLine,
+							withinSelection,
+						},
+					});
+				} finally {
+					scheduleProcessingStop(1200);
+				}
+				return;
 			}
 
 			// If there is an active code edit context (state or ref), perform edit-in-place and return early
@@ -715,24 +736,30 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				const startLine = (beforeSelection.match(/\n/g)?.length ?? 0) + 1;
 				const endLine = startLine + (withinSelection.match(/\n/g)?.length ?? 0);
 
-                setIsProcessing(true);
-                try {
-                await performNotebookEdit({
-                    filePath,
-                    cellIndex,
-                    language: lang,
-                    fullCode,
-                    userMessage,
-                    selection: { selStart, selEnd, startLine, endLine, withinSelection },
-                    outputText: ctxAgent.outputText,
-                    hasErrorOutput: ctxAgent.hasErrorOutput,
-                });
-                } finally {
-                    scheduleProcessingStop(1200);
-                }
-                setCodeEditContext(null);
-                codeEditContextRef.current = null;
-                return;
+				setIsProcessing(true);
+				try {
+					await performNotebookEdit({
+						filePath,
+						cellIndex,
+						language: lang,
+						fullCode,
+						userMessage,
+						selection: {
+							selStart,
+							selEnd,
+							startLine,
+							endLine,
+							withinSelection,
+						},
+						outputText: ctxAgent.outputText,
+						hasErrorOutput: ctxAgent.hasErrorOutput,
+					});
+				} finally {
+					scheduleProcessingStop(1200);
+				}
+				setCodeEditContext(null);
+				codeEditContextRef.current = null;
+				return;
 			}
 			// If datasets are already selected, prioritize analysis/suggestions over intent classification
 			// to avoid accidentally routing to search or generic Q&A.
@@ -997,9 +1024,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			// Use the hook's selectDatasets function
 			selectDatasets(selectedDatasetsArray);
 
-            if (selectedDatasetsArray.length > 0) {
-                // Give users a readable pause before auto-suggestions or downstream actions
-                await new Promise((resolve) => setTimeout(resolve, 600));
+			if (selectedDatasetsArray.length > 0) {
+				// Give users a readable pause before auto-suggestions or downstream actions
+				await new Promise((resolve) => setTimeout(resolve, 600));
 
 				// Show initial selection message
 				let responseContent = `## Selected ${selectedDatasetsArray.length} Datasets\n\n`;
@@ -1016,15 +1043,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					responseContent += `\n`;
 				});
 
-                addMessage(responseContent, false, undefined, undefined, undefined, {
-                    suggestions: [],
-                    recommended_approaches: [],
-                    data_insights: [],
-                    next_steps: [],
-                });
+				addMessage(responseContent, false, undefined, undefined, undefined, {
+					suggestions: [],
+					recommended_approaches: [],
+					data_insights: [],
+					next_steps: [],
+				});
 
-                // After datasets are selected, show example queries in chat
-                setShowExamples(true);
+				// After datasets are selected, show example queries in chat
+				setShowExamples(true);
 
 				// Example queries UI will be rendered below the composer when datasets are selected
 
@@ -1119,7 +1146,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		async (analysisRequest: string) => {
 			if (selectedDatasets.length === 0) {
 				addMessage(
-					"I am a bioinformatics agent. I can help you with your data. Tag @files to analyze or just ask me a question.",
+					"I am a bioinformatics agent. I can help you with your data analysis. Tag @files to analyze or open a notebook to work on it.",
 					false
 				);
 				return;
@@ -1868,8 +1895,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 	const MessagesView = React.useMemo(() => {
 		return (
-            <div className="chat-messages" ref={chatContainerRef}>
-
+			<div className="chat-messages" ref={chatContainerRef}>
 				{analysisState.messages.map((message: any) => (
 					<div key={message.id}>
 						<ChatMessage
@@ -1891,27 +1917,29 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					</div>
 				))}
 
-                {/* After all prior messages, optionally show example queries as the last message */}
-                {(showExamples && selectedDatasets.length > 0 && !isProcessing) && (
-                    <div style={{ padding: 12 }}>
-                        <ExamplesComponent
-                            onExampleSelect={(example) => {
-                                setInputValue(example);
-                                inputValueRef.current = example;
-                                setShowExamples(false);
-                                try { composerRef.current?.focus(); } catch (_) {}
-                            }}
-                        />
-                    </div>
-                )}
+				{/* After all prior messages, optionally show example queries as the last message */}
+				{showExamples && selectedDatasets.length > 0 && !isProcessing && (
+					<div style={{ padding: 12 }}>
+						<ExamplesComponent
+							onExampleSelect={(example) => {
+								setInputValue(example);
+								inputValueRef.current = example;
+								setShowExamples(false);
+								try {
+									composerRef.current?.focus();
+								} catch (_) {}
+							}}
+						/>
+					</div>
+				)}
 
-                {isProcessing && (
-                    <ProcessingIndicator
-                        text={
-                            analysisState.analysisStatus || progressMessage || "Processing"
-                        }
-                    />
-                )}
+				{isProcessing && (
+					<ProcessingIndicator
+						text={
+							analysisState.analysisStatus || progressMessage || "Processing"
+						}
+					/>
+				)}
 
 				{/* Show success when there are no errors and a message exists */}
 				{!validationErrors?.length && (
@@ -2077,26 +2105,26 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					{/* Pass through chatMode to Composer via props */}
 					<Tooltip content="New chat" placement="bottom">
 						<button
-                        onClick={() => {
-                            // Start a brand new chat session
-                            analysisDispatch({ type: "NEW_CHAT_SESSION" });
-                            clearSelectedDatasets();
-                            clearAvailableDatasets();
-                            setCurrentSuggestions(null);
-                            setSuggestionButtons([]);
-                            setProcessedEvents(new Set());
-                            setAgentInstance(null);
-                            setVirtualEnvStatus("");
-                            setShowHistoryMenu(false);
-                            setShowExamples(false);
-                            // Clear composer input for fresh session
-                            setInputValue("");
-                            inputValueRef.current = "";
-                            suggestionsService?.startNewConversation?.();
-                        }}
-                        className="chat-button"
-                    >
-                        <FiPlus />
+							onClick={() => {
+								// Start a brand new chat session
+								analysisDispatch({ type: "NEW_CHAT_SESSION" });
+								clearSelectedDatasets();
+								clearAvailableDatasets();
+								setCurrentSuggestions(null);
+								setSuggestionButtons([]);
+								setProcessedEvents(new Set());
+								setAgentInstance(null);
+								setVirtualEnvStatus("");
+								setShowHistoryMenu(false);
+								setShowExamples(false);
+								// Clear composer input for fresh session
+								setInputValue("");
+								inputValueRef.current = "";
+								suggestionsService?.startNewConversation?.();
+							}}
+							className="chat-button"
+						>
+							<FiPlus />
 						</button>
 					</Tooltip>
 					<Tooltip content="Chat history" placement="bottom">
@@ -2291,29 +2319,29 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 												return (
 													<div
 														key={s.id}
-                                        onClick={async () => {
-                                            setShowHistoryMenu(false);
-                                            if (
-                                                s.id ===
-                                                (analysisState as any).activeChatSessionId
-                                            )
-                                                return;
-                                            analysisDispatch({
-                                                type: "SET_ACTIVE_CHAT_SESSION",
-                                                payload: s.id,
-                                            });
-                                            // Messages for the selected session will be loaded by context effect
-                                            clearSelectedDatasets();
-                                            clearAvailableDatasets();
-                                            setCurrentSuggestions(null);
-                                            setSuggestionButtons([]);
-                                            setProcessedEvents(new Set());
-                                            setAgentInstance(null);
-                                            setVirtualEnvStatus("");
-                                            // Clear composer input when switching sessions
-                                            setInputValue("");
-                                            inputValueRef.current = "";
-                                        }}
+														onClick={async () => {
+															setShowHistoryMenu(false);
+															if (
+																s.id ===
+																(analysisState as any).activeChatSessionId
+															)
+																return;
+															analysisDispatch({
+																type: "SET_ACTIVE_CHAT_SESSION",
+																payload: s.id,
+															});
+															// Messages for the selected session will be loaded by context effect
+															clearSelectedDatasets();
+															clearAvailableDatasets();
+															setCurrentSuggestions(null);
+															setSuggestionButtons([]);
+															setProcessedEvents(new Set());
+															setAgentInstance(null);
+															setVirtualEnvStatus("");
+															// Clear composer input when switching sessions
+															setInputValue("");
+															inputValueRef.current = "";
+														}}
 														style={{
 															padding: "10px 12px",
 															cursor: "pointer",
@@ -2451,7 +2479,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					setMentionQuery("");
 				}}
 			/>
-
 
 			{/* @ mention suggestions menu */}
 			<MentionSuggestions

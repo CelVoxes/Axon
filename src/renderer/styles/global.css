@@ -12,7 +12,7 @@
 	--font-size-3xl: 24px;
 
 	/* Animation */
-	--shimmer-duration: 9s; /* slower, consistent shimmer speed */
+	--shimmer-duration: 5s; /* slower, consistent shimmer speed */
 	--shimmer-easing: linear;
 }
 
@@ -839,56 +839,64 @@ textarea:focus {
 }
 
 .processing-text {
-    color: #ffffff;
-    font-size: var(--font-size-base);
-    font-weight: 500;
+	color: #ffffff;
+	font-size: var(--font-size-base);
+	font-weight: 500;
 }
 
 /* Per-letter shimmer for status text */
 .shimmer-line {
-    display: inline-flex;
-    align-items: baseline;
+	display: inline-flex;
+	align-items: baseline;
 }
 
 .shimmer-char {
-    display: inline-block;
-    background: linear-gradient(90deg, #9e9e9e, #ffffff, #9e9e9e);
-    background-size: 200% 100%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-    color: transparent;
-    animation: shimmerChar var(--shimmer-duration) var(--shimmer-easing) infinite;
-    animation-delay: calc(var(--i) * 60ms);
+	display: inline-block;
+	background: linear-gradient(90deg, #9e9e9e, #ffffff, #9e9e9e);
+	background-size: 200% 100%;
+	-webkit-background-clip: text;
+	background-clip: text;
+	-webkit-text-fill-color: transparent;
+	color: transparent;
+	animation: shimmerChar var(--shimmer-duration) var(--shimmer-easing) infinite;
+	animation-delay: calc(var(--i) * 60ms);
 }
 
 @keyframes shimmerChar {
-    0% { background-position: 200% 0; }
-    100% { background-position: -200% 0; }
+	0% {
+		background-position: 200% 0;
+	}
+	100% {
+		background-position: -200% 0;
+	}
 }
 
 /* Shimmering text effect for processing/status banners */
 .shimmer-text {
-    display: inline-block; /* ensure gradient bounds to text width */
-    background: linear-gradient(
-        90deg,
-        #a6a6a6 0%,
-        #cfcfcf 40%,
-        #ffffff 50%,
-        #cfcfcf 60%,
-        #a6a6a6 100%
-    );
-    background-size: 400% 100%; /* wider sweep for smoother pass */
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent; /* ensure per-glyph clipping */
-    color: transparent;
-    animation: shimmerText var(--shimmer-duration) var(--shimmer-easing) infinite;
+	display: inline-block; /* ensure gradient bounds to text width */
+	background: linear-gradient(
+		90deg,
+		#a6a6a6 0%,
+		#cfcfcf 40%,
+		#ffffff 50%,
+		#cfcfcf 60%,
+		#a6a6a6 100%
+	);
+	background-size: 400% 100%; /* wider sweep for smoother pass */
+	-webkit-background-clip: text;
+	background-clip: text;
+	-webkit-text-fill-color: transparent; /* ensure per-glyph clipping */
+	color: transparent;
+	animation: shimmerText var(--shimmer-duration) var(--shimmer-easing) infinite;
 }
 
 @keyframes shimmerText {
-    0% { background-position: 200% 0; }
-    100% { background-position: -200% 0; }
+	0% {
+		background-position: 200% 0;
+	}
+	100% {
+		background-position: -200% 0;
+	}
 }
 
 .loading-dots {
@@ -1114,7 +1122,7 @@ textarea:focus {
 		rgba(255, 255, 255, 0.3),
 		transparent
 	);
-    animation: shimmer var(--shimmer-duration) var(--shimmer-easing) infinite;
+	animation: shimmer var(--shimmer-duration) var(--shimmer-easing) infinite;
 }
 
 @keyframes shimmer {
