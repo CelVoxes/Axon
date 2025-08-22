@@ -876,11 +876,11 @@ textarea:focus {
 	display: inline-block; /* ensure gradient bounds to text width */
 	background: linear-gradient(
 		90deg,
-		#a6a6a6 0%,
-		#cfcfcf 40%,
+		#8e8e8e 0%,
+		#d4d4d4 40%,
 		#ffffff 50%,
-		#cfcfcf 60%,
-		#a6a6a6 100%
+		#d4d4d4 60%,
+		#8e8e8e 100%
 	);
 	background-size: 400% 100%; /* wider sweep for smoother pass */
 	-webkit-background-clip: text;
