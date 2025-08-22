@@ -1,7 +1,7 @@
 import { useState, useCallback, useMemo } from 'react';
-import { SearchService } from '../services/SearchService';
-import { BackendClient } from '../services/BackendClient';
-import { SearchConfig } from '../config/SearchConfig';
+import { SearchService } from '../../../services/SearchService';
+import { BackendClient } from '../../../services/BackendClient';
+import { SearchConfig } from '../../../config/SearchConfig';
 
 export interface DatasetSearchResult {
 	datasets: any[];
@@ -75,7 +75,7 @@ export function useDatasetSearch(
 					onProgressUpdate(progress);
 				});
 			} else if (backendClient && onProgressUpdate) {
-				backendClient.setProgressCallback((progress) => {
+				backendClient.setProgressCallback((progress: any) => {
 					setSearchProgress(progress);
 					onProgressUpdate(progress);
 				});

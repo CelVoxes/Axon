@@ -6,7 +6,7 @@ import {
 	useWorkspaceContext,
 } from "../../context/AppContext";
 import { BackendClient } from "../../services/BackendClient";
-import { useDatasetSearch } from "../../hooks/useDatasetSearch";
+import { useDatasetSearch } from "./hooks/useDatasetSearch";
 import { findWorkspacePath } from "../../utils/WorkspaceUtils";
 import { DatasetSelectionModal } from "./DatasetSelectionModal";
 import { ChatMessage } from "./ChatMessage";
@@ -1529,7 +1529,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
 	};
 
-	// Intent detection moved to useChatIntent hook
 
 	const handleStopProcessing = () => {
 		try {

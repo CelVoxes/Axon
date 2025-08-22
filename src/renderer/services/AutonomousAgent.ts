@@ -91,6 +91,7 @@ export class AutonomousAgent {
 	// Global code context to track all generated code across the conversation
 	private globalCodeContext = new Map<string, string>();
 	private conversationId: string;
+	private validationEventListener?: (event: Event) => void;
 
 	constructor(
 		backendClient: BackendClient,
@@ -131,8 +132,63 @@ export class AutonomousAgent {
 		this.conversationId = `conv_${Date.now()}_${Math.random()
 			.toString(36)
 			.substr(2, 9)}`;
+
+		// Set up event-driven validation
+		this.setupEventDrivenValidation();
 	}
 
+	/**
+	 * Set up event-driven validation that automatically validates code when generation completes
+	 */
+	private setupEventDrivenValidation() {
+		this.validationEventListener = async (event: Event) => {
+			const customEvent = event as CustomEvent<{
+				stepId: string;
+				stepDescription: string;
+				finalCode: string;
+				success: boolean;
+			}>;
+			
+			const { stepId, stepDescription, finalCode, success } = customEvent.detail;
+			
+			// Only trigger validation if code generation was successful
+			if (!success || !finalCode?.trim()) {
+				return;
+			}
+			
+			try {
+				// Trigger automatic validation
+				await this.codeQualityService.validateOnly(finalCode, stepId, {
+					stepTitle: stepDescription,
+					globalCodeContext: this.getGlobalCodeContext(),
+				});
+			} catch (error) {
+				console.error("Event-driven validation failed:", error);
+				// Emit validation error event as fallback
+				if (this.codeGenerator && typeof (this.codeGenerator as any).emitValidationErrors === 'function') {
+					(this.codeGenerator as any).emitValidationErrors(
+						stepId,
+						[error instanceof Error ? error.message : 'Validation failed'],
+						[],
+						finalCode,
+						finalCode
+					);
+				}
+			}
+		};
+		
+		EventManager.addEventListener("code-generation-completed", this.validationEventListener);
+	}
+
+	/**
+	 * Clean up resources and event listeners
+	 */
+	destroy() {
+		if (this.validationEventListener) {
+			EventManager.removeEventListener("code-generation-completed", this.validationEventListener);
+			this.validationEventListener = undefined;
+		}
+	}
 
 	setModel(model: string) {
 		this.selectedModel = model;
