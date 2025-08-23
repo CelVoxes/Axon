@@ -1,5 +1,5 @@
-import { Dataset, DataTypeAnalysis } from "./types";
-import { ElectronClient } from "../utils/ElectronClient";
+import { Dataset, DataTypeAnalysis } from "../types";
+import { ElectronClient } from "../../utils/ElectronClient";
 
 export interface FileAnalysis {
 	dataType: string;

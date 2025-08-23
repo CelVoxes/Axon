@@ -1,7 +1,7 @@
 // Centralized notebook step execution logic
-import { ErrorUtils } from "../utils/ErrorUtils";
-import { normalizePythonCode } from "../utils/CodeTextUtils";
-import { Cell, ExecutionResult, ICodeExecutor } from "./types";
+import { ErrorUtils } from "../../utils/ErrorUtils";
+import { normalizePythonCode } from "../../utils/CodeTextUtils";
+import { Cell, ExecutionResult, ICodeExecutor } from "../types";
 async function runNotebookStep(
 	stepId: string,
 	code: string,
@@ -93,7 +93,7 @@ async function runNotebookStep(
 
 // Interface definitions moved to types.ts to prevent circular dependencies
 // Re-export Cell interface for backwards compatibility
-export { Cell, ExecutionResult } from "./types";
+export { Cell, ExecutionResult } from "../types";
 
 export class CellExecutionService implements ICodeExecutor {
 	private workspacePath: string;

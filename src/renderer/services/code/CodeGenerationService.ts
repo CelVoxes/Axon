@@ -1,5 +1,5 @@
-import { BackendClient } from "./BackendClient";
-import { EventManager } from "../utils/EventManager";
+import { BackendClient } from "../backend/BackendClient";
+import { EventManager } from "../../utils/EventManager";
 import {
 	CodeGenerationStartedEvent,
 	CodeGenerationChunkEvent,
@@ -10,15 +10,15 @@ import {
 	CodeGenerationResult,
 	Dataset,
 	ICodeGenerator,
-} from "./types";
-import { ConfigManager } from "./ConfigManager";
+} from "../types";
+import { ConfigManager } from "../backend/ConfigManager";
 import {
 	getExistingImports as sharedGetExistingImports,
 	removeDuplicateImports as sharedRemoveDuplicateImports,
-} from "../utils/ImportUtils";
-import { Logger } from "../utils/Logger";
-import { ScanpyDocsService } from "./ScanpyDocsService";
-import { extractPythonCode as extractPythonCodeUtil } from "../utils/CodeTextUtils";
+} from "../../utils/ImportUtils";
+import { Logger } from "../../utils/Logger";
+import { ScanpyDocsService } from "../backend/ScanpyDocsService";
+import { extractPythonCode as extractPythonCodeUtil } from "../../utils/CodeTextUtils";
 
 export class CodeGenerationService implements ICodeGenerator {
 	private backendClient: BackendClient;
@@ -314,11 +314,13 @@ General requirements:
 			}
 
 			// Use generated code as-is, let CodeQualityService handle all enhancements
-			let finalCode = finalGeneratedCode || this.generateDataAwareBasicStepCode(
-				request.stepDescription,
-				request.datasets,
-				request.stepIndex
-			);
+			let finalCode =
+				finalGeneratedCode ||
+				this.generateDataAwareBasicStepCode(
+					request.stepDescription,
+					request.datasets,
+					request.stepIndex
+				);
 
 			this.log.debug("final code length after cleaning=%d", finalCode.length);
 

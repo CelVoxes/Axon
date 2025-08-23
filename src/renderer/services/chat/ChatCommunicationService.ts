@@ -1,5 +1,5 @@
-import { BackendClient } from "../../../services/BackendClient";
-import { LocalDatasetEntry } from "../../../services/LocalDatasetRegistry";
+import { BackendClient } from "../backend/BackendClient";
+import { LocalDatasetEntry } from "./LocalDatasetRegistry";
 
 export class ChatCommunicationService {
 	constructor(private backendClient: BackendClient) {}
@@ -25,7 +25,9 @@ export class ChatCommunicationService {
 		// This would contain the agent mode logic that was in handleSendMessage
 		// For now, this is a placeholder that would need to be implemented
 		// based on the specific agent logic in the ChatPanel
-		throw new Error("Agent mode not yet extracted - this is complex logic that needs careful extraction");
+		throw new Error(
+			"Agent mode not yet extracted - this is complex logic that needs careful extraction"
+		);
 	}
 
 	buildContextFromMessages(messages: any[]): string {

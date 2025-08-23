@@ -1,7 +1,7 @@
-import { BackendClient } from "./BackendClient";
-import { GEODataset } from "../types/DatasetTypes";
-import { Dataset, DataTypeAnalysis, AnalysisPlan } from "./types";
-import { WorkspaceManager } from "./WorkspaceManager";
+import { BackendClient } from "../backend/BackendClient";
+import { GEODataset } from "../../types/DatasetTypes";
+import { Dataset, DataTypeAnalysis, AnalysisPlan } from "../types";
+import { WorkspaceManager } from "../notebook/WorkspaceManager";
 
 // Types from AnalysisPlanner
 export interface AnalysisUnderstanding {

@@ -1,5 +1,5 @@
-import { useState, useCallback, useRef } from 'react';
-import { DataTypeSuggestions } from '../../../services/AnalysisOrchestrationService';
+import { useState, useCallback, useRef } from "react";
+import { DataTypeSuggestions } from "../../../services/chat/AnalysisOrchestrationService";
 
 export interface ChatUIState {
 	inputValue: string;
@@ -31,9 +31,13 @@ export interface ChatUIActions {
 	setValidationSuccessMessage: (message: string) => void;
 	setSuggestionButtons: (buttons: string[]) => void;
 	setVirtualEnvStatus: (status: string) => void;
-	setRecentMessages: (messages: string[] | ((prev: string[]) => string[])) => void;
+	setRecentMessages: (
+		messages: string[] | ((prev: string[]) => string[])
+	) => void;
 	setShowAllMessages: (show: boolean) => void;
-	setProcessedEvents: (events: Set<string> | ((prev: Set<string>) => Set<string>)) => void;
+	setProcessedEvents: (
+		events: Set<string> | ((prev: Set<string>) => Set<string>)
+	) => void;
 	setAgentInstance: (instance: any) => void;
 	setShowVirtualEnvLog: (show: boolean) => void;
 	setIsAutoExecuting: (executing: boolean) => void;
@@ -51,16 +55,20 @@ export function useChatUIState(): ChatUIState & ChatUIActions {
 	const [isProcessing, setIsProcessing] = useState(false);
 	const [progressData, setProgressData] = useState<any>(null);
 	const [validationErrors, setValidationErrors] = useState<string[]>([]);
-	const [validationSuccessMessage, setValidationSuccessMessage] = useState<string>("");
+	const [validationSuccessMessage, setValidationSuccessMessage] =
+		useState<string>("");
 	const [suggestionButtons, setSuggestionButtons] = useState<string[]>([]);
 	const [virtualEnvStatus, setVirtualEnvStatus] = useState("");
 	const [recentMessages, setRecentMessages] = useState<string[]>([]);
 	const [showAllMessages, setShowAllMessages] = useState(false);
-	const [processedEvents, setProcessedEvents] = useState<Set<string>>(new Set());
+	const [processedEvents, setProcessedEvents] = useState<Set<string>>(
+		new Set()
+	);
 	const [agentInstance, setAgentInstance] = useState<any>(null);
 	const [showVirtualEnvLog, setShowVirtualEnvLog] = useState(false);
 	const [isAutoExecuting, setIsAutoExecuting] = useState(false);
-	const [currentSuggestions, setCurrentSuggestions] = useState<DataTypeSuggestions | null>(null);
+	const [currentSuggestions, setCurrentSuggestions] =
+		useState<DataTypeSuggestions | null>(null);
 	const [showHistoryMenu, setShowHistoryMenu] = useState<boolean>(false);
 
 	const processingTimeoutRef = useRef<NodeJS.Timeout | null>(null);

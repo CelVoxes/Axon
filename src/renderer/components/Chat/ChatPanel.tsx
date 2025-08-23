@@ -5,7 +5,7 @@ import {
 	useUIContext,
 	useWorkspaceContext,
 } from "../../context/AppContext";
-import { BackendClient } from "../../services/BackendClient";
+import { BackendClient } from "../../services/backend/BackendClient";
 import { useDatasetSearch } from "./hooks/useDatasetSearch";
 import { findWorkspacePath } from "../../utils/WorkspaceUtils";
 import { DatasetSelectionModal } from "./DatasetSelectionModal";
@@ -26,17 +26,17 @@ import { ValidationErrors } from "./Status/ValidationErrors";
 import { ValidationSuccess } from "./Status/ValidationSuccess";
 import { SearchProgress as SearchProgressView } from "./Status/SearchProgress";
 import { EnvironmentStatus } from "./Status/EnvironmentStatus";
-import { AutonomousAgent } from "../../services/AutonomousAgent";
+import { AutonomousAgent } from "../../services/analysis/AutonomousAgent";
 import {
 	LocalDatasetRegistry,
 	LocalDatasetEntry,
-} from "../../services/LocalDatasetRegistry";
+} from "../../services/chat/LocalDatasetRegistry";
 import { electronAPI } from "../../utils/electronAPI";
 
 import {
 	AnalysisOrchestrationService,
 	DataTypeSuggestions,
-} from "../../services/AnalysisOrchestrationService";
+} from "../../services/chat/AnalysisOrchestrationService";
 import { ExamplesComponent } from "./AnalysisSuggestionsComponent";
 // EventManager already imported above; avoid duplicate imports
 import { AsyncUtils } from "../../utils/AsyncUtils";
@@ -49,9 +49,9 @@ import {
 	Dataset,
 } from "../../services/types";
 import { EventManager } from "../../utils/EventManager";
-import { NotebookService } from "../../services/NotebookService";
-import { ruffLinter } from "../../services/RuffLinter";
-import { autoFixWithRuffAndLLM } from "../../services/LintAutoFixService";
+import { NotebookService } from "../../services/notebook/NotebookService";
+import { ruffLinter } from "../../services/chat/RuffLinter";
+import { autoFixWithRuffAndLLM } from "../../services/chat/LintAutoFixService";
 import {
 	groupSessionsByTime,
 	stripCodeFences,
@@ -66,9 +66,9 @@ import { useVirtualEnvEvents } from "./hooks/useVirtualEnvEvents";
 import { useChatEvents } from "./hooks/useChatEvents";
 import { useChatUIState } from "./hooks/useChatUIState";
 import { useChatInteractions } from "./hooks/useChatInteractions";
-import { NotebookEditingService } from "./services/NotebookEditingService";
-import { DatasetResolutionService } from "./services/DatasetResolutionService";
-import { ChatCommunicationService } from "./services/ChatCommunicationService";
+import { NotebookEditingService } from "../../services/chat/NotebookEditingService";
+import { DatasetResolutionService } from "../../services/chat/DatasetResolutionService";
+import { ChatCommunicationService } from "../../services/chat/ChatCommunicationService";
 
 // Removed duplicated local code rendering. Use shared CodeBlock instead.
 
@@ -1528,7 +1528,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: false });
 		uiDispatch({ type: "SET_CHAT_COLLAPSED", payload: false });
 	};
-
 
 	const handleStopProcessing = () => {
 		try {

@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from 'react';
 import { SearchService } from '../../../services/SearchService';
-import { BackendClient } from '../../../services/BackendClient';
+import { BackendClient } from '../../../services/backend/BackendClient';
 import { SearchConfig } from '../../../config/SearchConfig';
 
 export interface DatasetSearchResult {

@@ -1,6 +1,6 @@
-import { Dataset } from "./types";
-import { AsyncUtils } from "../utils/AsyncUtils";
-import { ElectronClient } from "../utils/ElectronClient";
+import { Dataset } from "../types";
+import { AsyncUtils } from "../../utils/AsyncUtils";
+import { ElectronClient } from "../../utils/ElectronClient";
 
 export interface WorkspaceInfo {
 	path: string;

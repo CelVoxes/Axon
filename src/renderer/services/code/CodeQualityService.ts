@@ -1,13 +1,16 @@
-import { BackendClient } from "./BackendClient";
-import { CellExecutionService } from "./CellExecutionService";
+import { BackendClient } from "../backend/BackendClient";
+import { CellExecutionService } from "../notebook/CellExecutionService";
 import { CodeGenerationService } from "./CodeGenerationService";
-import { ruffLinter, RuffResult } from "./RuffLinter";
-import { normalizePythonCode } from "../utils/CodeTextUtils";
-import { diagnosticsToErrors, diagnosticsToWarnings } from "../utils/RuffUtils";
+import { ruffLinter, RuffResult } from "../chat/RuffLinter";
+import { normalizePythonCode } from "../../utils/CodeTextUtils";
+import {
+	diagnosticsToErrors,
+	diagnosticsToWarnings,
+} from "../../utils/RuffUtils";
 import {
 	getExistingImports as sharedGetExistingImports,
 	removeDuplicateImports as sharedRemoveDuplicateImports,
-} from "../utils/ImportUtils";
+} from "../../utils/ImportUtils";
 
 export interface CodeQualityResult {
 	isValid: boolean;

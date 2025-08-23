@@ -1,7 +1,7 @@
 import React from "react";
 import styled from "styled-components";
 import { typography } from "../../styles/design-system";
-import type { LocalDatasetEntry } from "../../services/LocalDatasetRegistry";
+import type { LocalDatasetEntry } from "../../services/chat/LocalDatasetRegistry";
 import { FiFolder, FiX } from "react-icons/fi";
 import { getFileTypeIcon } from "../shared/utils";
 

@@ -1,6 +1,6 @@
-import { Dataset } from "./types";
-import { electronAPI } from "../utils/electronAPI";
-import { DatasetManager } from "./DatasetManager";
+import { Dataset } from "../types";
+import { electronAPI } from "../../utils/electronAPI";
+import { DatasetManager } from "../analysis/DatasetManager";
 
 export interface LocalDatasetEntry extends Dataset {
 	/** Absolute filesystem path of the dataset (file or directory) */

@@ -1,9 +1,9 @@
-import { BackendClient } from "../../../services/BackendClient";
-import { NotebookService } from "../../../services/NotebookService";
-import { EventManager } from "../../../utils/EventManager";
-import { ruffLinter } from "../../../services/RuffLinter";
-import { autoFixWithRuffAndLLM } from "../../../services/LintAutoFixService";
-import { findWorkspacePath } from "../../../utils/WorkspaceUtils";
+import { BackendClient } from "../backend/BackendClient";
+import { NotebookService } from "../notebook/NotebookService";
+import { EventManager } from "../../utils/EventManager";
+import { ruffLinter } from "./RuffLinter";
+import { autoFixWithRuffAndLLM } from "./LintAutoFixService";
+import { findWorkspacePath } from "../../utils/WorkspaceUtils";
 import {
 	stripCodeFences,
 	computeSelectionFromMessage,
@@ -11,7 +11,7 @@ import {
 	parseJsonEdits,
 	applyLineEdits,
 	type LineEdit,
-} from "../ChatPanelUtils";
+} from "../../components/Chat/ChatPanelUtils";
 
 interface NotebookEditArgs {
 	filePath: string;
@@ -70,7 +70,9 @@ export class NotebookEditingService {
 		const fileName = filePath.split("/").pop() || filePath;
 
 		addMessage(
-			`Editing plan:\n\n- **Target**: cell ${cellIndex + 1} in \`${fileName}\`\n- **Scope**: replace lines ${startLine}-${endLine} of the selected code\n- **Process**: I will generate the revised snippet (streaming below), then apply it to the notebook and confirm the save.`,
+			`Editing plan:\n\n- **Target**: cell ${
+				cellIndex + 1
+			} in \`${fileName}\`\n- **Scope**: replace lines ${startLine}-${endLine} of the selected code\n- **Process**: I will generate the revised snippet (streaming below), then apply it to the notebook and confirm the save.`,
 			false
 		);
 
@@ -98,11 +100,11 @@ export class NotebookEditingService {
 			},
 		});
 
-        try {
-            const base = fullCode;
-            const start = selStart;
-            const end = selEnd;
-            let lastCellUpdate = 0;
+		try {
+			const base = fullCode;
+			const start = selStart;
+			const end = selEnd;
+			let lastCellUpdate = 0;
 
 			await this.backendClient.generateCodeStream(
 				{
@@ -153,13 +155,13 @@ export class NotebookEditingService {
 					}
 				}
 			);
-        } catch (e) {
-            addMessage(
-                `Code edit failed: ${e instanceof Error ? e.message : String(e)}`,
-                false
-            );
-            return;
-        }
+		} catch (e) {
+			addMessage(
+				`Code edit failed: ${e instanceof Error ? e.message : String(e)}`,
+				false
+			);
+			return;
+		}
 
 		// Use the streamed edited snippet; fallback to JSON edits if the model returned them
 		const base = fullCode;
@@ -188,7 +190,8 @@ export class NotebookEditingService {
 			}
 		} catch (_) {}
 
-		const newCode = base.substring(0, start) + newSelection + base.substring(end);
+		const newCode =
+			base.substring(0, start) + newSelection + base.substring(end);
 
 		// Validate generated code with Ruff; if issues remain, auto-fix via backend LLM
 		let validatedCode = newCode;
@@ -197,44 +200,57 @@ export class NotebookEditingService {
 			// Skip linting for package installation cells (pip/conda magics or commands)
 			const isInstallCell =
 				/(^|\n)\s*(%pip|%conda|pip\s+install|conda\s+install)\b/i.test(newCode);
-            if (isInstallCell) {
-                // Keep code as-is; prefer not to mutate install commands
-                addMessage(`ℹ️ Skipping lint/fix for package installation lines.`, false);
-                validatedCode = newCode;
-            } else {
-                const ruffResult = await ruffLinter.lintCode(newCode, {
-                    enableFixes: true,
-                    filename: `cell_${cellIndex + 1}.py`,
-                });
-                if (!ruffResult.isValid) {
-                    const errors = ruffResult.diagnostics
-                        .filter((d) => d.kind === "error")
-                        .map((d) => `${d.code}: ${d.message} (line ${d.startLine})`);
-                    addMessage(`⚠️ Code validation issues detected. Attempting auto-fix…`, false);
+			if (isInstallCell) {
+				// Keep code as-is; prefer not to mutate install commands
+				addMessage(
+					`ℹ️ Skipping lint/fix for package installation lines.`,
+					false
+				);
+				validatedCode = newCode;
+			} else {
+				const ruffResult = await ruffLinter.lintCode(newCode, {
+					enableFixes: true,
+					filename: `cell_${cellIndex + 1}.py`,
+				});
+				if (!ruffResult.isValid) {
+					const errors = ruffResult.diagnostics
+						.filter((d) => d.kind === "error")
+						.map((d) => `${d.code}: ${d.message} (line ${d.startLine})`);
+					addMessage(
+						`⚠️ Code validation issues detected. Attempting auto-fix…`,
+						false
+					);
 
-                    // Emit validation error event so Chat can show the error list box
-                    try {
-                        EventManager.dispatchEvent("code-validation-error", {
-                            stepId: streamingMessageId,
-                            errors,
-                            warnings: ruffResult.diagnostics
-                                .filter((d) => d.kind === "warning")
-                                .map((d) => `${d.code}: ${d.message} (line ${d.startLine})`),
-                            originalCode: newCode,
-                            fixedCode: ruffResult.fixedCode || ruffResult.formattedCode,
-                            timestamp: Date.now(),
-                        } as any);
-                    } catch (_) {}
-					const fixed = await autoFixWithRuffAndLLM(this.backendClient, newCode, {
-						filename: `cell_${cellIndex + 1}.py`,
-						stepTitle: `Inline edit for cell ${cellIndex + 1}`,
-					});
+					// Emit validation error event so Chat can show the error list box
+					try {
+						EventManager.dispatchEvent("code-validation-error", {
+							stepId: streamingMessageId,
+							errors,
+							warnings: ruffResult.diagnostics
+								.filter((d) => d.kind === "warning")
+								.map((d) => `${d.code}: ${d.message} (line ${d.startLine})`),
+							originalCode: newCode,
+							fixedCode: ruffResult.fixedCode || ruffResult.formattedCode,
+							timestamp: Date.now(),
+						} as any);
+					} catch (_) {}
+					const fixed = await autoFixWithRuffAndLLM(
+						this.backendClient,
+						newCode,
+						{
+							filename: `cell_${cellIndex + 1}.py`,
+							stepTitle: `Inline edit for cell ${cellIndex + 1}`,
+						}
+					);
 					validatedCode = fixed.fixedCode || ruffResult.fixedCode || newCode;
 					didAutoFix = !!fixed.wasFixed;
 					if (fixed.wasFixed) {
 						addMessage(`✅ Applied auto-fix for lint issues.`, false);
 					} else {
-						addMessage(`⚠️ Auto-fix attempted but some issues may remain.`, false);
+						addMessage(
+							`⚠️ Auto-fix attempted but some issues may remain.`,
+							false
+						);
 					}
 				} else {
 					// Prefer Ruff's improvements when available
@@ -252,15 +268,18 @@ export class NotebookEditingService {
 			validatedCode = newCode;
 		}
 
-        await notebookService.updateCellCode(filePath, cellIndex, validatedCode);
+		await notebookService.updateCellCode(filePath, cellIndex, validatedCode);
 
-        // Mark streaming snippet as completed now that validation and update are done
-        try {
-            analysisDispatch({
-                type: "UPDATE_MESSAGE",
-                payload: { id: streamingMessageId, updates: { isStreaming: false, status: "completed" as any } },
-            });
-        } catch (_) {}
+		// Mark streaming snippet as completed now that validation and update are done
+		try {
+			analysisDispatch({
+				type: "UPDATE_MESSAGE",
+				payload: {
+					id: streamingMessageId,
+					updates: { isStreaming: false, status: "completed" as any },
+				},
+			});
+		} catch (_) {}
 
 		// Final linting check on the updated code (skip for install cells)
 		try {
@@ -278,29 +297,29 @@ export class NotebookEditingService {
 				filename: `cell_${cellIndex + 1}_final.py`,
 			});
 
-            if (!finalLintResult.isValid) {
-                const issueLines = finalLintResult.diagnostics.map(
-                    (d) => `${d.code}: ${d.message} (line ${d.startLine})`
-                );
-                console.warn(
-                    `Linting issues found in cell ${cellIndex + 1}:`,
-                    issueLines.join(", ")
-                );
-                // Emit validation error event for final result
-                try {
-                    EventManager.dispatchEvent("code-validation-error", {
-                        stepId: streamingMessageId,
-                        errors: finalLintResult.diagnostics
-                            .filter((d) => d.kind === "error")
-                            .map((d) => `${d.code}: ${d.message} (line ${d.startLine})`),
-                        warnings: finalLintResult.diagnostics
-                            .filter((d) => d.kind === "warning")
-                            .map((d) => `${d.code}: ${d.message} (line ${d.startLine})`),
-                        originalCode: validatedCode,
-                        fixedCode: undefined,
-                        timestamp: Date.now(),
-                    } as any);
-                } catch (_) {}
+			if (!finalLintResult.isValid) {
+				const issueLines = finalLintResult.diagnostics.map(
+					(d) => `${d.code}: ${d.message} (line ${d.startLine})`
+				);
+				console.warn(
+					`Linting issues found in cell ${cellIndex + 1}:`,
+					issueLines.join(", ")
+				);
+				// Emit validation error event for final result
+				try {
+					EventManager.dispatchEvent("code-validation-error", {
+						stepId: streamingMessageId,
+						errors: finalLintResult.diagnostics
+							.filter((d) => d.kind === "error")
+							.map((d) => `${d.code}: ${d.message} (line ${d.startLine})`),
+						warnings: finalLintResult.diagnostics
+							.filter((d) => d.kind === "warning")
+							.map((d) => `${d.code}: ${d.message} (line ${d.startLine})`),
+						originalCode: validatedCode,
+						fixedCode: undefined,
+						timestamp: Date.now(),
+					} as any);
+				} catch (_) {}
 				const errorCount = finalLintResult.diagnostics.filter(
 					(d) => d.kind === "error"
 				).length;
@@ -330,18 +349,18 @@ export class NotebookEditingService {
 				}
 				lintBlock += "```";
 				// Skip adding lint error summary to reduce chat clutter
-            } else {
-                console.log(`Cell ${cellIndex + 1} passed final linting check`);
-                // Emit validation success so the green banner shows
-                try {
-                    EventManager.dispatchEvent("code-validation-success", {
-                        stepId: streamingMessageId,
-                        message: `No linter errors found`,
-                        code: validatedCode,
-                        timestamp: Date.now(),
-                    } as any);
-                } catch (_) {}
-            }
+			} else {
+				console.log(`Cell ${cellIndex + 1} passed final linting check`);
+				// Emit validation success so the green banner shows
+				try {
+					EventManager.dispatchEvent("code-validation-success", {
+						stepId: streamingMessageId,
+						message: `No linter errors found`,
+						code: validatedCode,
+						timestamp: Date.now(),
+					} as any);
+				} catch (_) {}
+			}
 		} catch (lintError) {
 			if (lintError) {
 				console.warn(
@@ -372,7 +391,9 @@ export class NotebookEditingService {
 				? "applied"
 				: "saved";
 		const validationText = didAutoFix ? " (auto-fixed)" : "";
-		const summary = `Applied notebook edit:\n\n- **Cell**: ${cellIndex + 1}\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Status**: ${statusText}${validationText}`;
+		const summary = `Applied notebook edit:\n\n- **Cell**: ${
+			cellIndex + 1
+		}\n- **Lines**: ${startLine}-${endLine} (${originalLineCount} → ${newLineCount} lines)\n- **Status**: ${statusText}${validationText}`;
 
 		// Build diff against the actual replacement we generated.
 		// Using validatedCode offsets can drift if a linter reformats outside the selection,

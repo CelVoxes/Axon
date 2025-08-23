@@ -25,8 +25,8 @@ import {
 } from "../shared/utils";
 import { FileItem, ContextMenuState } from "../shared/interfaces";
 import { typography } from "../../styles/design-system";
-import { BackendClient } from "../../services/BackendClient";
-import { AuthService } from "../../services/AuthService";
+import { BackendClient } from "../../services/backend/BackendClient";
+import { AuthService } from "../../services/backend/AuthService";
 import { electronAPI } from "../../utils/electronAPI";
 
 // Visual constants for the tree
@@ -123,11 +123,33 @@ const SearchInput = styled.input`
 const SidebarContent = styled.div<{ $isDragOver?: boolean }>`
 	flex: 1;
 	overflow-y: auto;
+	overflow-x: hidden;
 	padding: 8px 0;
 	position: relative;
-	min-height: calc(100vh - 200px);
 	width: 100%;
-	height: 100%;
+	min-height: 0;
+	max-height: calc(100vh - 120px);
+
+	/* Custom scrollbar styling */
+	scrollbar-width: thin;
+	scrollbar-color: #424242 #2d2d30;
+
+	&::-webkit-scrollbar {
+		width: 6px;
+	}
+
+	&::-webkit-scrollbar-track {
+		background: transparent;
+	}
+
+	&::-webkit-scrollbar-thumb {
+		background: rgba(255, 255, 255, 0.1);
+		border-radius: 3px;
+	}
+
+	&::-webkit-scrollbar-thumb:hover {
+		background: rgba(255, 255, 255, 0.2);
+	}
 
 	${(props) =>
 		props.$isDragOver &&

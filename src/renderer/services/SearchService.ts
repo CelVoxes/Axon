@@ -1,4 +1,4 @@
-import { BackendClient } from "./BackendClient";
+import { BackendClient } from "./backend/BackendClient";
 import { SearchProgress } from "./types";
 import { GEODataset } from "../types/DatasetTypes";
 import {

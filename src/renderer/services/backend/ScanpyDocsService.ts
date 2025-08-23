@@ -1,4 +1,4 @@
-import { ElectronClient } from "../utils/ElectronClient";
+import { ElectronClient } from "../../utils/ElectronClient";
 
 type ScanpySymbolDoc = {
 	qualifiedName: string; // e.g. scanpy.pp.normalize_total

@@ -1,11 +1,11 @@
 import axios from "axios";
-import { SearchConfig, MAX_SEARCH_ATTEMPTS } from "../config/SearchConfig";
-import { IBackendClient, SearchProgress } from "./types";
+import { SearchConfig, MAX_SEARCH_ATTEMPTS } from "../../config/SearchConfig";
+import { IBackendClient, SearchProgress } from "../types";
 import { ConfigManager } from "./ConfigManager";
-import { readNdjsonStream, readDataStream } from "../utils/StreamUtils";
-import { Logger } from "../utils/Logger";
-import { GEODataset } from "../types/DatasetTypes";
-import { deduplicateDatasets } from "../utils/SearchUtils";
+import { readNdjsonStream, readDataStream } from "../../utils/StreamUtils";
+import { Logger } from "../../utils/Logger";
+import { GEODataset } from "../../types/DatasetTypes";
+import { deduplicateDatasets } from "../../utils/SearchUtils";
 
 // GEODataset now sourced from shared types
 
@@ -535,7 +535,11 @@ export class BackendClient implements IBackendClient {
 				{ text: message },
 				{ signal: controller.signal }
 			);
-			return response.data as { intent: string; confidence?: number; reason?: string };
+			return response.data as {
+				intent: string;
+				confidence?: number;
+				reason?: string;
+			};
 		} catch (error) {
 			log.error("BackendClient: Error classifying intent:", error);
 			throw error;

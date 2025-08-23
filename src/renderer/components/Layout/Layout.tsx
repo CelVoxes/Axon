@@ -66,6 +66,8 @@ const ResizablePane = styled.div<{
 	flex-shrink: 0;
 	overflow: hidden;
 	position: relative;
+	display: flex;
+	flex-direction: column;
 `;
 
 const MainPane = styled.div`

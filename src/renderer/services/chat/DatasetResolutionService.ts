@@ -1,5 +1,8 @@
-import { LocalDatasetRegistry, LocalDatasetEntry } from "../../../services/LocalDatasetRegistry";
-import { electronAPI } from "../../../utils/electronAPI";
+import {
+	LocalDatasetRegistry,
+	LocalDatasetEntry,
+} from "./LocalDatasetRegistry";
+import { electronAPI } from "../../utils/electronAPI";
 
 // Cache for notebook paths to avoid repeated file system searches
 const notebookPathCache = new Map<string, string>();
@@ -40,8 +43,12 @@ export class DatasetResolutionService {
 		workspaceResolved: LocalDatasetEntry[];
 		cellMentionContext: CellMentionContext | null;
 	}> {
-		const tokens = Array.from(userMessage.matchAll(/@([^\s@]+)/g)).map((m) => m[1]);
-		const hashTokens = Array.from(userMessage.matchAll(/#(all|\d+)/gi)).map((m) => m[1]);
+		const tokens = Array.from(userMessage.matchAll(/@([^\s@]+)/g)).map(
+			(m) => m[1]
+		);
+		const hashTokens = Array.from(userMessage.matchAll(/#(all|\d+)/gi)).map(
+			(m) => m[1]
+		);
 		const workspaceResolved: LocalDatasetEntry[] = [];
 		let cellMentionContext: CellMentionContext | null = null;
 
@@ -56,7 +63,9 @@ export class DatasetResolutionService {
 					notebookContentCache.set(activeFile, nb);
 				}
 				const cells = Array.isArray(nb?.cells) ? nb.cells : [];
-				const wantAll = hashTokens.some((t) => String(t).toLowerCase() === "all");
+				const wantAll = hashTokens.some(
+					(t) => String(t).toLowerCase() === "all"
+				);
 				const targetIndices = wantAll
 					? cells.map((_: unknown, i: number) => i)
 					: hashTokens
@@ -107,7 +116,9 @@ export class DatasetResolutionService {
 							// Smart notebook resolution (cached)
 							candidatePath = notebookPathCache.get(pathPart) || "";
 							console.log(
-								`💾 Cache lookup for ${pathPart}: ${candidatePath || "NOT FOUND"}`
+								`💾 Cache lookup for ${pathPart}: ${
+									candidatePath || "NOT FOUND"
+								}`
 							);
 
 							if (!candidatePath) {
@@ -192,7 +203,9 @@ export class DatasetResolutionService {
 			// FALLBACK: Try to find it by searching only the immediate subdirectories
 			console.log(`⚡ No active file, trying subdirectories...`);
 			try {
-				const directories = await window.electronAPI.listDirectory(currentWorkspace);
+				const directories = await window.electronAPI.listDirectory(
+					currentWorkspace
+				);
 				for (const dir of directories) {
 					if (dir.isDirectory) {
 						const testPath = `${dir.path}/${pathPart}`;

@@ -1,12 +1,14 @@
-import { useCallback, useRef } from 'react';
-import { DataTypeSuggestions } from '../../../services/AnalysisOrchestrationService';
+import { useCallback, useRef } from "react";
+import { DataTypeSuggestions } from "../../../services/chat/AnalysisOrchestrationService";
 
 interface UseChatInteractionsProps {
 	analysisDispatch: any;
 	chatContainerRef: React.RefObject<HTMLDivElement>;
 	chatAutoScrollRef: React.MutableRefObject<boolean>;
 	recentMessages: string[];
-	setRecentMessages: (messages: string[] | ((prev: string[]) => string[])) => void;
+	setRecentMessages: (
+		messages: string[] | ((prev: string[]) => string[])
+	) => void;
 	setCurrentSuggestions: (suggestions: DataTypeSuggestions | null) => void;
 }
 
@@ -18,7 +20,6 @@ export function useChatInteractions({
 	setRecentMessages,
 	setCurrentSuggestions,
 }: UseChatInteractionsProps) {
-	
 	const scrollToBottomImmediate = useCallback(() => {
 		const el = chatContainerRef.current;
 		if (!el) return;
@@ -83,11 +84,11 @@ export function useChatInteractions({
 			scrollToBottomImmediate();
 		},
 		[
-			analysisDispatch, 
-			scrollToBottomImmediate, 
-			recentMessages, 
-			setRecentMessages, 
-			setCurrentSuggestions
+			analysisDispatch,
+			scrollToBottomImmediate,
+			recentMessages,
+			setRecentMessages,
+			setCurrentSuggestions,
 		]
 	);
 

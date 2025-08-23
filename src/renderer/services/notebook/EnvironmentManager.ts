@@ -1,6 +1,6 @@
-import { Dataset, DataTypeAnalysis } from "./types";
-import { DatasetManager } from "./DatasetManager";
-import { ElectronClient } from "../utils/ElectronClient";
+import { Dataset, DataTypeAnalysis } from "../types";
+import { DatasetManager } from "../analysis/DatasetManager";
+import { ElectronClient } from "../../utils/ElectronClient";
 
 export interface EnvironmentStatus {
 	venvExists: boolean;
@@ -392,7 +392,6 @@ except subprocess.CalledProcessError:
 	hasPackages(packages: string[]): boolean {
 		return packages.every((pkg) => this.installedPackages.has(pkg));
 	}
-
 
 	/**
 	 * Verify core packages are available - simplified for maximum speed

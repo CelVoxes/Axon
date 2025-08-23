@@ -1,7 +1,7 @@
-import { Dataset } from "./types";
-import { AsyncUtils } from "../utils/AsyncUtils";
-import { EventManager } from "../utils/EventManager";
-import { ElectronClient } from "../utils/ElectronClient";
+import { Dataset } from "../types";
+import { AsyncUtils } from "../../utils/AsyncUtils";
+import { EventManager } from "../../utils/EventManager";
+import { ElectronClient } from "../../utils/ElectronClient";
 
 export interface NotebookCell {
 	id: string;

@@ -16,7 +16,7 @@ import {
 	FiMoreVertical,
 	FiSquare,
 } from "react-icons/fi";
-import { CellExecutionService } from "../../services/CellExecutionService";
+import { CellExecutionService } from "../../services/notebook/CellExecutionService";
 import { ActionButton } from "@components/shared/StyledComponents";
 import { Tooltip } from "@components/shared/Tooltip";
 import ReactMarkdown from "react-markdown";
