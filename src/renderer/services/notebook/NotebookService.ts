@@ -103,14 +103,22 @@ export class NotebookService {
 		// Attach the acknowledgement listener BEFORE dispatch to avoid race conditions
 		const ackPromise = EventManager.waitForEvent<any>(
 			"notebook-cell-added",
-			15000
+			30000 // Increased timeout for validation
 		);
 		EventManager.dispatchEvent("add-notebook-cell", {
 			filePath: notebookPath,
 			cellType: "code",
 			content: code,
 		});
-		await ackPromise;
+		
+		const result = await ackPromise;
+		
+		// Check if the cell addition was successful
+		if (!result.success) {
+			throw new Error(`Failed to add cell to notebook: ${result.error || 'Unknown error'}`);
+		}
+		
+		console.log(`NotebookService: Successfully added code cell to ${notebookPath}`);
 	}
 
 	/**

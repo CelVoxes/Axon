@@ -27,22 +27,76 @@ export class RuffLinter {
 	private initPromise: Promise<void> | null = null;
 	private workspace: Workspace | null = null;
 
+	constructor() {
+		// Start initialization immediately when instance is created
+		console.log('RuffLinter: Constructor called, starting proactive initialization');
+		this.initPromise = this.initializeRuff();
+	}
+
 	/**
 	 * Initialize Ruff WebAssembly module
 	 */
 	private async ensureInitialized(): Promise<void> {
-		if (this.initialized) return;
+		console.log('RuffLinter: ensureInitialized called, initialized =', this.initialized);
+		if (this.initialized) {
+			console.log('RuffLinter: already initialized, returning');
+			return;
+		}
 		
 		if (!this.initPromise) {
+			console.log('RuffLinter: creating new init promise');
 			this.initPromise = this.initializeRuff();
 		}
 		
-		await this.initPromise;
+		console.log('RuffLinter: waiting for init promise...');
+		try {
+			await this.initPromise;
+			console.log('RuffLinter: init promise resolved');
+		} catch (error) {
+			console.error('RuffLinter: init promise rejected:', error);
+			throw error;
+		}
+		
+		// Double-check that initialization actually completed
+		if (!this.workspace || !this.initialized) {
+			console.error('RuffLinter: initialization failed - workspace not ready');
+			throw new Error('Ruff initialization failed - workspace not ready');
+		}
+		
+		console.log('RuffLinter: ensureInitialized completed successfully');
 	}
 
 	private async initializeRuff(): Promise<void> {
 		try {
-			await init();
+			console.log('RuffLinter: Starting WebAssembly initialization...');
+			
+			// Force synchronous initialization with proper error handling
+			await new Promise<void>((resolve, reject) => {
+				const initPromise = init();
+				console.log('RuffLinter: init() returned:', typeof initPromise, initPromise);
+				
+				if (initPromise && typeof initPromise.then === 'function') {
+					console.log('RuffLinter: init() is a Promise, awaiting...');
+					initPromise.then(() => {
+						console.log('RuffLinter: WebAssembly init() Promise resolved');
+						// Add extra delay to ensure WASM is fully ready
+						setTimeout(() => {
+							console.log('RuffLinter: WebAssembly init() completed with delay');
+							resolve();
+						}, 100);
+					}).catch((err) => {
+						console.error('RuffLinter: WebAssembly init() Promise rejected:', err);
+						reject(err);
+					});
+				} else {
+					// If init() is not a Promise, assume it's synchronous
+					console.log('RuffLinter: init() is synchronous');
+					setTimeout(() => {
+						console.log('RuffLinter: WebAssembly init() completed (sync with delay)');
+						resolve();
+					}, 100);
+				}
+			});
 			// Create workspace with settings optimized for data science notebooks
 			this.workspace = new Workspace({
 				'line-length': 88,
@@ -76,7 +130,14 @@ export class RuffLinter {
 		enableFixes?: boolean;
 		filename?: string;
 	} = {}): Promise<RuffResult> {
-		await this.ensureInitialized();
+		console.log(`RuffLinter: lintCode called for ${code.length} chars, filename: ${options.filename || 'unknown'}, enableFixes: ${options.enableFixes ?? true}`);
+		try {
+			await this.ensureInitialized();
+			console.log('RuffLinter: initialization completed, proceeding with linting...');
+		} catch (error) {
+			console.error('RuffLinter: initialization failed:', error);
+			throw error;
+		}
 
 		if (!this.workspace) {
 			throw new Error('Ruff workspace not initialized');
@@ -85,21 +146,26 @@ export class RuffLinter {
 		const enableFixes = options.enableFixes ?? true;
 
 		try {
+			console.log('RuffLinter: Running workspace.check()...');
 			// Run Ruff check on the code - returns Diagnostic[]
 			const ruffDiagnostics: Diagnostic[] = this.workspace.check(code);
+			console.log(`RuffLinter: workspace.check() returned ${ruffDiagnostics.length} diagnostics`);
 
 			// Convert Ruff diagnostics to our format
 			const diagnostics = this.parseRuffOutput(ruffDiagnostics);
 			const isValid = diagnostics.filter(d => d.kind === 'error').length === 0;
+			console.log(`RuffLinter: Parsed diagnostics - ${diagnostics.length} total, isValid: ${isValid}`);
 
 			let formattedCode: string | undefined;
 			let fixedCode: string | undefined;
 
 			// Format code
+			console.log('RuffLinter: Running workspace.format()...');
 			try {
 				formattedCode = this.workspace.format(code);
+				console.log(`RuffLinter: Formatting completed, code length: ${formattedCode?.length || 0}`);
 			} catch (formatError) {
-				console.warn('Ruff formatting failed:', formatError);
+				console.warn('RuffLinter: Formatting failed:', formatError);
 				// If formatting fails due to syntax issues, mark as invalid
 				if (formatError instanceof Error && formatError.message.includes('Expected an indented block')) {
 					return {
@@ -121,7 +187,10 @@ export class RuffLinter {
 			}
 
 			// Apply fixes if available and requested
-			if (enableFixes && diagnostics.some(d => d.fixable)) {
+			const fixableDiagnostics = diagnostics.filter(d => d.fixable);
+			console.log(`RuffLinter: Found ${fixableDiagnostics.length} fixable diagnostics, enableFixes: ${enableFixes}`);
+			if (enableFixes && fixableDiagnostics.length > 0) {
+				console.log('RuffLinter: Applying fixes...');
 				try {
 					console.log('🔧 Attempting to apply fixes for', diagnostics.filter(d => d.fixable).length, 'fixable issues');
 					fixedCode = this.applyRuffFixes(code, ruffDiagnostics);

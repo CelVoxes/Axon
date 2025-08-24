@@ -18,6 +18,14 @@ export interface CodeQualityResult {
 	lintedCode: string;
 	originalCode: string;
 	cleanedCode: string;
+	validationEventData?: {
+		isValid: boolean;
+		errors: string[];
+		warnings: string[];
+		wasFixed: boolean;
+		originalCode: string;
+		lintedCode: string;
+	};
 }
 
 export interface CodeQualityPipelineOptions {
@@ -30,6 +38,7 @@ export interface CodeQualityPipelineOptions {
 	addDirectoryCreation?: boolean;
 	stepDescription?: string;
 	globalCodeContext?: string;
+	skipValidationEvents?: boolean; // Skip emitting validation events (for manual emission)
 }
 
 export interface BatchTestResult {
@@ -88,6 +97,7 @@ export class CodeQualityService {
 		stepId: string,
 		options: CodeQualityPipelineOptions = {}
 	): Promise<CodeQualityResult> {
+		console.log(`CodeQualityService: validateAndTest called for stepId: ${stepId}, code length: ${code.length}`);
 		const {
 			skipValidation = false,
 			skipExecution = false,
@@ -97,6 +107,7 @@ export class CodeQualityService {
 			addErrorHandling = false, // Keep conservative - only add when explicitly requested
 			addDirectoryCreation = true, // Add directory creation when needed, but respect global context
 			stepDescription,
+			skipValidationEvents = false, // Skip emitting validation events (for manual emission)
 		} = options;
 
 		// Detect package-install or non-analytical utility cells and avoid mutating them
@@ -104,6 +115,8 @@ export class CodeQualityService {
 			/package\s*install|package-install|pip\s+install|%pip|%conda|conda\s+install/i.test(
 				`${stepTitle}\n${code}`
 			);
+		
+		console.log(`CodeQualityService: isInstallCell check for "${stepTitle}" - result: ${isInstallCell}`);
 
 		const result: CodeQualityResult = {
 			isValid: true,
@@ -149,8 +162,10 @@ export class CodeQualityService {
 		// Step 2: Code Validation (if not skipped) - Using unified Ruff+LLM service
 		if (!skipValidation) {
 			this.updateStatus(`Validating and fixing code for ${stepTitle}...`);
+			console.log(`CodeQualityService: Starting validation for: ${stepTitle}, code length: ${result.cleanedCode.length}, skipValidationEvents: ${skipValidationEvents}`);
 
 			try {
+				console.log('CodeQualityService: calling autoFixWithRuffAndLLM for:', stepTitle);
 				const fixResult = await autoFixWithRuffAndLLM(
 					this.backendClient,
 					result.cleanedCode,
@@ -159,11 +174,58 @@ export class CodeQualityService {
 						stepTitle
 					}
 				);
+				console.log('CodeQualityService: autoFixWithRuffAndLLM completed for:', stepTitle);
+
+				// Post-process undefined-name errors that are satisfied by prior cells' imports
+				const globalCtx = options.globalCodeContext || "";
+				const aliasToImport = new Map<string, string>([
+					["plt", "import matplotlib.pyplot as plt"],
+					["pd", "import pandas as pd"],
+					["np", "import numpy as np"],
+					["sns", "import seaborn as sns"],
+					["sc", "import scanpy as sc"],
+					["ad", "import anndata as ad"],
+					["Path", "from pathlib import Path"],
+					["os", "import os"],
+					["sys", "import sys"],
+				]);
+				const undefRe = /^F821: Undefined name `([^`]+)`/;
+				const filteredErrors: string[] = [];
+				const promotedWarnings: string[] = [...fixResult.warnings];
+				for (const err of fixResult.issues) {
+					// 1) Pure style: imported but unused → warning (do not block cell)
+					if (err.startsWith("F401:")) {
+						promotedWarnings.push(`${err} — Style warning (non-blocking)`);
+						continue;
+					}
+					const m = err.match(undefRe);
+					if (m) {
+						const name = m[1];
+						const expected = aliasToImport.get(name);
+						if (expected && globalCtx.includes(expected)) {
+							promotedWarnings.push(
+								`${err} — Tip: '${name}' is imported in a previous cell. Run that cell before this step.`
+							);
+							continue; // do not keep as an error
+						}
+						// 2) Variable defined earlier in notebook (e.g., adata) → warning with tip
+						try {
+							const assignRe = new RegExp(`(^|\\n)\\s*${name}\\s*=`, "m");
+							if (assignRe.test(globalCtx)) {
+								promotedWarnings.push(
+									`${err} — Tip: '${name}' is defined in a previous cell. Run that cell before this step.`
+								);
+								continue;
+							}
+						} catch (_) {}
+					}
+					filteredErrors.push(err);
+				}
 
 				result.lintedCode = fixResult.fixedCode;
-				result.isValid = fixResult.issues.length === 0; // Only errors matter for validity
-				result.validationErrors = fixResult.issues; // These are errors only
-				result.validationWarnings = fixResult.warnings; // These are warnings only
+				result.isValid = filteredErrors.length === 0; // Only remaining errors matter for validity
+				result.validationErrors = filteredErrors; // These are errors only
+				result.validationWarnings = promotedWarnings; // These are warnings only
 
 				// Emit validation events (existing UI will handle the display)
 
@@ -174,26 +236,55 @@ export class CodeQualityService {
 						`(${result.validationWarnings.length} warnings also found)`
 					);
 
-					// Emit validation error event (will show in chat)
-					this.codeGenerationService.emitValidationErrors(
-						stepId,
-						result.validationErrors,
-						result.validationWarnings,
-						result.originalCode,
-						result.lintedCode
-					);
+					// Emit validation error event (will show in chat) - unless skipped
+					if (!skipValidationEvents) {
+						this.codeGenerationService.emitValidationErrors(
+							stepId,
+							result.validationErrors,
+							result.validationWarnings,
+							result.originalCode,
+							result.lintedCode
+						);
+					}
+					
+					// Store validation data for manual emission if events are skipped
+					if (skipValidationEvents) {
+						result.validationEventData = {
+							isValid: false,
+							errors: result.validationErrors,
+							warnings: result.validationWarnings,
+							wasFixed: fixResult.wasFixed,
+							originalCode: result.originalCode,
+							lintedCode: result.lintedCode
+						};
+					}
 
 					this.updateStatus(
 						`⚠️ Code validation completed with remaining issues for ${stepTitle}`
 					);
 				} else {
-					// Only show success message if there were warnings or fixes applied
-					if (result.validationWarnings.length > 0 || fixResult.wasFixed) {
-						this.codeGenerationService.emitValidationSuccess(
-							stepId,
-							`Code validation passed${fixResult.wasFixed ? ' (fixes applied)' : ''}${result.validationWarnings.length > 0 ? ` with ${result.validationWarnings.length} warning(s)` : ''}`,
-							undefined
-						);
+					// Emit validation success event - unless skipped
+					if (!skipValidationEvents) {
+						// Only show success message if there were warnings or fixes applied
+						if (result.validationWarnings.length > 0 || fixResult.wasFixed) {
+							this.codeGenerationService.emitValidationSuccess(
+								stepId,
+								`Code validation passed${fixResult.wasFixed ? ' (fixes applied)' : ''}${result.validationWarnings.length > 0 ? ` with ${result.validationWarnings.length} warning(s)` : ''}`,
+								undefined
+							);
+						}
+					}
+					
+					// Store validation data for manual emission if events are skipped
+					if (skipValidationEvents) {
+						result.validationEventData = {
+							isValid: true,
+							errors: result.validationErrors,
+							warnings: result.validationWarnings,
+							wasFixed: fixResult.wasFixed,
+							originalCode: result.originalCode,
+							lintedCode: result.lintedCode
+						};
 					}
 					this.updateStatus(`✅ Code validation passed for ${stepTitle}`);
 				}

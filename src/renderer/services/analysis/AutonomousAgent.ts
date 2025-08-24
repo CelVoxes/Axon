@@ -93,7 +93,7 @@ export class AutonomousAgent {
 	// Global code context to track all generated code across the conversation
 	private globalCodeContext = new Map<string, string>();
 	private conversationId: string;
-	private validationEventListener?: (event: Event) => void;
+	// Legacy event listener removed - validation is now synchronous
 
 	constructor(
 		backendClient: BackendClient,
@@ -135,71 +135,16 @@ export class AutonomousAgent {
 			.toString(36)
 			.substr(2, 9)}`;
 
-		// Set up event-driven validation
-		this.setupEventDrivenValidation();
+		// Event-driven validation disabled - using synchronous validation
 	}
 
-	/**
-	 * Set up event-driven validation that automatically validates code when generation completes
-	 */
-	private setupEventDrivenValidation() {
-		this.validationEventListener = async (event: Event) => {
-			const customEvent = event as CustomEvent<{
-				stepId: string;
-				stepDescription: string;
-				finalCode: string;
-				success: boolean;
-			}>;
-
-			const { stepId, stepDescription, finalCode, success } =
-				customEvent.detail;
-
-			// Only trigger validation if code generation was successful
-			if (!success || !finalCode?.trim()) {
-				return;
-			}
-
-			try {
-				// Trigger automatic validation
-				await this.codeQualityService.validateOnly(finalCode, stepId, {
-					stepTitle: stepDescription,
-					globalCodeContext: this.getGlobalCodeContext(),
-				});
-			} catch (error) {
-				console.error("Event-driven validation failed:", error);
-				// Emit validation error event as fallback
-				if (
-					this.codeGenerator &&
-					typeof (this.codeGenerator as any).emitValidationErrors === "function"
-				) {
-					(this.codeGenerator as any).emitValidationErrors(
-						stepId,
-						[error instanceof Error ? error.message : "Validation failed"],
-						[],
-						finalCode,
-						finalCode
-					);
-				}
-			}
-		};
-
-		EventManager.addEventListener(
-			"code-generation-completed",
-			this.validationEventListener
-		);
-	}
+	// Legacy event-driven validation method removed - now using synchronous validation
 
 	/**
-	 * Clean up resources and event listeners
+	 * Clean up resources
 	 */
 	destroy() {
-		if (this.validationEventListener) {
-			EventManager.removeEventListener(
-				"code-generation-completed",
-				this.validationEventListener
-			);
-			this.validationEventListener = undefined;
-		}
+		// No event listeners to clean up - validation is now synchronous
 	}
 
 	setModel(model: string) {
@@ -220,6 +165,38 @@ export class AutonomousAgent {
 	private updateStatus(message: string) {
 		if (this.statusCallback) {
 			this.statusCallback(message);
+		}
+	}
+
+	/**
+	 * Seed the agent's global code context from an existing notebook file.
+	 * Adds code from all code cells so generation can avoid duplicate imports/setup.
+	 */
+	private async seedContextFromNotebook(notebookPath: string): Promise<void> {
+		try {
+			const fileContent = await (window as any).electronAPI.readFile(
+				notebookPath
+			);
+			const nb = JSON.parse(fileContent);
+			if (Array.isArray(nb?.cells)) {
+				let added = 0;
+				for (let idx = 0; idx < nb.cells.length; idx++) {
+					const c = nb.cells[idx];
+					if (c?.cell_type !== "code") continue;
+					const srcArr: string[] = Array.isArray(c.source) ? c.source : [];
+					const code = srcArr.join("");
+					if (code && code.trim().length > 0) {
+						const id = `nb-cell-${idx}`;
+						this.addCodeToContext(id, code);
+						added++;
+					}
+				}
+				if (added > 0) {
+					this.updateStatus(`Loaded ${added} prior code cells into context`);
+				}
+			}
+		} catch (e) {
+			console.warn("Failed to seed global context from notebook:", e);
 		}
 	}
 
@@ -642,7 +619,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 	}
 
 	/**
-	 * Simplified method for step-by-step generation using unified method
+	 * DEPRECATED: Use generateValidatedStepCode() instead
+	 * This method bypasses validation and should not be used
 	 */
 	public async generateSingleStepCode(
 		stepDescription: string,
@@ -651,28 +629,116 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		workingDir: string,
 		stepIndex: number
 	): Promise<string> {
-		this.updateStatus(
-			`Generating AI code for: ${stepDescription.substring(0, 50)}...`
-		);
+		console.warn('AutonomousAgent: generateSingleStepCode is deprecated, use generateValidatedStepCode instead');
+		
+		// Redirect to the validated path to maintain compatibility
+		const analysisStep = {
+			id: `deprecated-step-${Date.now()}`,
+			description: stepDescription,
+			code: "", 
+			status: "pending" as const,
+		};
 
-		const request: CodeGenerationRequest = {
-			stepDescription,
+		return await this.generateAndTestStepCode(
+			analysisStep,
 			originalQuestion,
 			datasets,
 			workingDir,
-			stepIndex,
-			globalCodeContext: this.getGlobalCodeContext(),
-			stepId: `step-${stepIndex}-${Date.now()}-${Math.random()
-				.toString(36)
-				.substr(2, 9)}`,
+			stepIndex
+		);
+	}
+
+	/**
+	 * UNIFIED CODE GENERATION API
+	 * Generate and validate code for any use case (chat, analysis, etc.)
+	 * Returns validated code without adding to notebook
+	 */
+	public async generateValidatedCode(
+		stepDescription: string,
+		originalQuestion: string,
+		datasets: Dataset[],
+		workingDir: string
+	): Promise<string> {
+		console.log('AutonomousAgent: generateValidatedCode called for:', stepDescription);
+		
+		const analysisStep = {
+			id: `unified-step-${Date.now()}`,
+			description: stepDescription,
+			code: "",
+			status: "pending" as const,
 		};
 
-		const result = await this.codeGenerator.generateCode(request);
+		return await this.generateAndTestStepCode(
+			analysisStep,
+			originalQuestion,
+			datasets,
+			workingDir,
+			0
+		);
+	}
 
-		// Store the generated code in global context
-		this.addCodeToContext(request.stepId!, result.code);
+	/**
+	 * Generate, validate, and add code to notebook
+	 * Uses the unified validation pipeline
+	 */
+	public async generateAndAddValidatedCode(
+		stepDescription: string,
+		originalQuestion: string,
+		datasets: Dataset[],
+		workingDir: string,
+		notebookPath: string
+	): Promise<void> {
+		console.log('AutonomousAgent: generateAndAddValidatedCode called for:', stepDescription);
+		
+		// Ensure context includes existing notebook cells to avoid duplicate imports/setup
+		await this.seedContextFromNotebook(notebookPath);
 
-		return result.code;
+		// Use the unified validated code generation
+		const stepCode = await this.generateValidatedCode(
+			stepDescription,
+			originalQuestion,
+			datasets,
+			workingDir
+		);
+
+		// Sanitize for notebook execution safety
+		const sanitized = this.sanitizeNotebookPythonCode(stepCode);
+
+		// Add to notebook and emit validation events in proper order
+		console.log('AutonomousAgent: Adding validated code to notebook...');
+		await this.notebookService.addCodeCell(notebookPath, sanitized);
+		
+		// Emit validation events AFTER notebook cell is successfully added  
+		if ((this as any).pendingValidationResult && this.codeGenerator) {
+			const validationResult = (this as any).pendingValidationResult;
+			const stepId = (this as any).pendingValidationStepId;
+			
+			if (validationResult?.validationEventData) {
+				const eventData = validationResult.validationEventData;
+				if (eventData.isValid) {
+					if (typeof (this.codeGenerator as any).emitValidationSuccess === "function") {
+						const message = `Code validation passed${eventData.wasFixed ? ' (fixes applied)' : ''}${eventData.warnings.length > 0 ? ` with ${eventData.warnings.length} warning(s)` : ''}`;
+						(this.codeGenerator as any).emitValidationSuccess(stepId, message, sanitized);
+					}
+				} else {
+					if (typeof (this.codeGenerator as any).emitValidationErrors === "function") {
+						(this.codeGenerator as any).emitValidationErrors(
+							stepId,
+							eventData.errors,
+							eventData.warnings,
+							eventData.originalCode,
+							eventData.lintedCode
+						);
+					}
+				}
+			}
+			
+			// Clear pending validation
+			(this as any).pendingValidationResult = null;
+			(this as any).pendingValidationStepId = null;
+		}
+
+		console.log('AutonomousAgent: Code generation and validation completed successfully');
 	}
 
 	async executeStep(
@@ -1016,31 +1082,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		}
 
 		// Seed global context from existing notebook so subsequent code is aware
-		try {
-			const fileContent = await (window as any).electronAPI.readFile(
-				notebookPath
-			);
-			const nb = JSON.parse(fileContent);
-			if (Array.isArray(nb?.cells)) {
-				let added = 0;
-				for (let idx = 0; idx < nb.cells.length; idx++) {
-					const c = nb.cells[idx];
-					if (c?.cell_type !== "code") continue;
-					const srcArr: string[] = Array.isArray(c.source) ? c.source : [];
-					const code = srcArr.join("");
-					if (code && code.trim().length > 0) {
-						const id = `nb-cell-${idx}`;
-						this.addCodeToContext(id, code);
-						added++;
-					}
-				}
-				if (added > 0) {
-					this.updateStatus(`Loaded ${added} prior code cells into context`);
-				}
-			}
-		} catch (e) {
-			console.warn("Failed to seed global context from notebook:", e);
-		}
+		await this.seedContextFromNotebook(notebookPath);
 
 		// Delegate the complex cell generation to a focused method
 		return await this.generateNotebookCells(
@@ -1208,6 +1250,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		addToContext: boolean,
 		contextKey?: string
 	): Promise<boolean> {
+		console.log(`AutonomousAgent: generateSetupCell called for: ${stepDescription}`);
 		if (this.shouldStopAnalysis) {
 			this.updateStatus("Analysis cancelled");
 			return false;
@@ -1237,26 +1280,71 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		});
 
 		// Validate and enhance code
-		const validationResult = await this.codeQualityService.validateAndTest(
-			rawCode,
-			stepId,
-			{
-				stepTitle: stepDescription,
-				skipExecution: true,
-				globalCodeContext: this.getGlobalCodeContext(),
+		console.log('AutonomousAgent: Starting validation for step:', stepId);
+		let validationResult;
+		try {
+			validationResult = await this.codeQualityService.validateAndTest(
+				rawCode,
+				stepId,
+				{
+					stepTitle: stepDescription,
+					skipExecution: true,
+					globalCodeContext: this.getGlobalCodeContext(),
+					skipValidationEvents: true, // We'll emit events manually after notebook cell addition
+				}
+			);
+			console.log('AutonomousAgent: Validation completed successfully for step:', stepId);
+			
+			// Note: Validation success event will be emitted AFTER notebook cell is added
+		} catch (error) {
+			console.error('AutonomousAgent: Validation failed for step:', stepId, 'Error:', error);
+			
+			// For validation errors, we still emit immediately since we won't be adding the cell
+			if (this.codeGenerator && typeof (this.codeGenerator as any).emitValidationErrors === "function") {
+				(this.codeGenerator as any).emitValidationErrors(
+					stepId,
+					[error instanceof Error ? error.message : "Validation failed"],
+					[],
+					rawCode,
+					rawCode
+				);
 			}
-		);
+			
+			throw error;
+		}
 
 		const finalCode = this.sanitizeNotebookPythonCode(
 			this.codeQualityService.getBestCode(validationResult)
 		);
 
-		// Add to notebook
-		await this.notebookService.addCodeCell(notebookPath, finalCode);
-
 		// Add to global context if requested
 		if (addToContext && contextKey) {
 			this.addCodeToContext(contextKey, finalCode);
+		}
+
+		// Add to notebook AFTER validation completes but BEFORE validation events are emitted
+		await this.notebookService.addCodeCell(notebookPath, finalCode);
+
+		// NOW emit validation events AFTER the cell is successfully added to notebook
+		// This ensures UI sees events in correct order: cell added → validation status
+		if (validationResult?.validationEventData && this.codeGenerator) {
+			const eventData = validationResult.validationEventData;
+			if (eventData.isValid) {
+				if (typeof (this.codeGenerator as any).emitValidationSuccess === "function") {
+					const message = `Setup cell validation passed${eventData.wasFixed ? ' (fixes applied)' : ''}${eventData.warnings.length > 0 ? ` with ${eventData.warnings.length} warning(s)` : ''}`;
+					(this.codeGenerator as any).emitValidationSuccess(stepId, message, finalCode);
+				}
+			} else {
+				if (typeof (this.codeGenerator as any).emitValidationErrors === "function") {
+					(this.codeGenerator as any).emitValidationErrors(
+						stepId,
+						eventData.errors,
+						eventData.warnings,
+						eventData.originalCode,
+						eventData.lintedCode
+					);
+				}
+			}
 		}
 
 		this.updateStatus(`${stepDescription} cell added`);
@@ -1280,6 +1368,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			}
 
 			const step = analysisSteps[i];
+			console.log('AutonomousAgent: Starting generateAndTestStepCode for step:', i + 1);
 			const stepCode = await this.generateAndTestStepCode(
 				step,
 				query,
@@ -1287,11 +1376,44 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				workspaceDir,
 				i + 2
 			);
+			console.log('AutonomousAgent: generateAndTestStepCode completed for step:', i + 1);
 
+			console.log('AutonomousAgent: Adding validated code to notebook for step:', i + 1);
 			await this.notebookService.addCodeCell(
 				notebookPath,
 				this.sanitizeNotebookPythonCode(stepCode)
 			);
+			console.log('AutonomousAgent: Code added to notebook for step:', i + 1);
+			
+			// Emit validation events AFTER notebook cell is successfully added
+			if ((this as any).pendingValidationResult && this.codeGenerator) {
+				const validationResult = (this as any).pendingValidationResult;
+				const stepId = (this as any).pendingValidationStepId;
+				
+				if (validationResult?.validationEventData) {
+					const eventData = validationResult.validationEventData;
+					if (eventData.isValid) {
+						if (typeof (this.codeGenerator as any).emitValidationSuccess === "function") {
+							const message = `Code validation passed${eventData.wasFixed ? ' (fixes applied)' : ''}${eventData.warnings.length > 0 ? ` with ${eventData.warnings.length} warning(s)` : ''}`;
+							(this.codeGenerator as any).emitValidationSuccess(stepId, message, stepCode);
+						}
+					} else {
+						if (typeof (this.codeGenerator as any).emitValidationErrors === "function") {
+							(this.codeGenerator as any).emitValidationErrors(
+								stepId,
+								eventData.errors,
+								eventData.warnings,
+								eventData.originalCode,
+								eventData.lintedCode
+							);
+						}
+					}
+				}
+				
+				// Clear pending validation
+				(this as any).pendingValidationResult = null;
+				(this as any).pendingValidationStepId = null;
+			}
 
 			this.updateStatus(
 				`Added analysis step ${i + 1} of ${analysisSteps.length}`
@@ -1317,6 +1439,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		workspaceDir: string,
 		stepIndex: number
 	): Promise<string> {
+		console.log(`AutonomousAgent: generateAndTestStepCode called for step: ${step.description}`);
 		const stepId = `step-${stepIndex}-${Date.now()}`;
 
 		// Generate code using unified method
@@ -1335,7 +1458,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		// Store generated code in global context
 		this.addCodeToContext(stepId, genResult.code);
 
-		// Validate, clean (strip ```python fences), auto-fix; DEFER EXECUTION to after appending to notebook
+		// Validate, clean (strip ```python fences), auto-fix; WAIT for validation to complete
 		try {
 			const quality = await this.codeQualityService.validateAndTest(
 				genResult.code,
@@ -1344,26 +1467,33 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 					stepTitle: step.description,
 					globalCodeContext: this.getGlobalCodeContext(),
 					skipExecution: true,
+					skipValidationEvents: true, // We'll emit events manually after notebook cell addition
 				}
 			);
-			return this.codeQualityService.getBestCode(quality);
+			
+			// Store the validated code and full validation result for later event emission
+			const validatedCode = this.codeQualityService.getBestCode(quality);
+			
+			// Store validation result for later emission (after notebook cell is added)
+			(this as any).pendingValidationResult = quality;
+			(this as any).pendingValidationStepId = stepId;
+			
+			return validatedCode;
 		} catch (e) {
 			console.warn(
 				`Code quality pipeline failed for step: ${step.description}:`,
 				e as any
 			);
 
-			// Ensure validation error event is emitted even if validation crashes
-			try {
-				(this.codeGenerator as any).emitValidationErrors?.(
+			// Emit validation error event to satisfy UI event system
+			if (this.codeGenerator && typeof (this.codeGenerator as any).emitValidationErrors === "function") {
+				(this.codeGenerator as any).emitValidationErrors(
 					stepId,
 					[e instanceof Error ? e.message : String(e)],
 					[],
 					genResult.code,
 					genResult.code
 				);
-			} catch (emitError) {
-				console.warn("Failed to emit validation error event:", emitError);
 			}
 
 			// Fall back to raw generated code
@@ -1417,8 +1547,30 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			stepDescription
 		);
 
-		// Update the same (last) notebook cell's code before re-executing
-		await this.notebookService.updateCellCode(notebookPath, -1, prepared);
+		// Validate the fixed code before updating cell
+		const fixStepId = `auto-fix-${Date.now()}`;
+		try {
+			const validationResult = await this.codeQualityService.validateAndTest(
+				prepared,
+				fixStepId,
+				{
+					stepTitle: `Auto-fix: ${stepDescription}`,
+					skipExecution: true,
+					globalCodeContext: this.getGlobalCodeContext(),
+				}
+			);
+
+			// Validation is synchronous, events are fired but code is already validated
+			
+			const validatedCode = this.codeQualityService.getBestCode(validationResult);
+			
+			// Update the same (last) notebook cell's code after validation
+			await this.notebookService.updateCellCode(notebookPath, -1, validatedCode);
+		} catch (e) {
+			console.warn("Auto-fix validation failed, using unvalidated code:", e);
+			// Fallback to unvalidated code if validation fails
+			await this.notebookService.updateCellCode(notebookPath, -1, prepared);
+		}
 		this.addCodeToContext(
 			`auto-fix-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
 			prepared

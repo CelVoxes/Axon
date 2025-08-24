@@ -1051,31 +1051,31 @@ textarea:focus {
 
 /* Validation Errors Indicator */
 .validation-errors-indicator {
-	background: #2d2d30;
-	border: 1px solid #ff6b6b;
-	border-radius: 8px;
-	margin: 8px 16px;
-	overflow: hidden;
-	animation: fadeIn 0.3s ease-in;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    margin: 8px 16px;
+    overflow: hidden;
+    animation: fadeIn 0.3s ease-in;
 }
 
 /* Validation Success Indicator */
 .validation-success-indicator {
-	background: #1e2b1e;
-	border: 1px solid #2ea043; /* GitHub-like green */
-	border-radius: 8px;
-	margin: 8px 16px;
-	overflow: hidden;
-	animation: fadeIn 0.3s ease-in;
+    background: transparent;
+    border: none; /* remove green outline */
+    border-radius: 8px;
+    margin: 8px 16px;
+    overflow: hidden;
+    animation: fadeIn 0.3s ease-in;
 }
 
 .validation-success-header {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	padding: 12px 16px;
-	background: #132815;
-	border-bottom: 1px solid #2ea043;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: transparent;
+    border-bottom: none; /* remove thin green line */
 }
 
 .validation-success-title {
@@ -1096,12 +1096,12 @@ textarea:focus {
 }
 
 .validation-errors-header {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	padding: 12px 16px;
-	background: #1e1e1e;
-	border-bottom: 1px solid #ff6b6b;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: transparent;
+    border-bottom: none; /* remove thin red line */
 }
 
 .validation-errors-title {

@@ -17,7 +17,16 @@ interface UseCodeGenerationEventsProps {
 	scheduleProcessingStop: (delayMs?: number) => void;
 	cancelProcessingStop: () => void;
 	enqueueStreamingUpdate: (stepId: string, content: string) => void;
-	addMessage: (content: string, isUser: boolean) => void;
+	addMessage: (
+		content: string,
+		isUser: boolean,
+		code?: string,
+		codeLanguage?: string,
+		codeTitle?: string,
+		suggestions?: any,
+		status?: "pending" | "completed" | "failed",
+		isStreaming?: boolean
+	) => void;
 }
 
 export function useCodeGenerationEvents({
@@ -32,7 +41,7 @@ export function useCodeGenerationEvents({
 	addMessage,
 }: UseCodeGenerationEventsProps) {
 	const activeStreams = useRef<
-		Map<string, { messageId: string; accumulatedCode: string }>
+		Map<string, { messageId: string; accumulatedCode: string; lastShownCode?: string }>
 	>(new Map());
 
 	const updateGlobalStreamingFlag = useCallback(() => {
@@ -115,48 +124,51 @@ export function useCodeGenerationEvents({
 			const { stepId, stepDescription, finalCode, success } =
 				customEvent.detail;
 
-			const stream = activeStreams.current.get(stepId);
-			if (stream) {
-				// Close the streaming message
-				analysisDispatch({
-					type: "UPDATE_MESSAGE",
-					payload: {
-						id: stream.messageId,
-						updates: {
-							code: finalCode,
-							codeLanguage: "python",
-							// Keep streaming indicator until validation success/error arrives
-							isStreaming: true,
-							status: "pending" as any,
-						},
-					},
-				});
+    const stream = activeStreams.current.get(stepId);
+    if (stream) {
+        // Close the streaming message
+        analysisDispatch({
+            type: "UPDATE_MESSAGE",
+            payload: {
+                id: stream.messageId,
+                updates: {
+                    code: finalCode,
+                    codeLanguage: "python",
+                    // Keep streaming indicator until validation success/error arrives
+                    isStreaming: true,
+                    status: "pending" as any,
+                },
+            },
+        });
 
-				// Set a timeout fallback in case validation events never arrive
-				const timeoutId = setTimeout(() => {
-					if (activeStreams.current.has(stepId)) {
-						console.warn(
-							`Validation timeout for step ${stepId}, marking as completed without validation`
-						);
-						analysisDispatch({
-							type: "UPDATE_MESSAGE",
-							payload: {
-								id: stream.messageId,
-								updates: { isStreaming: false, status: "completed" as any },
-							},
-						});
-						activeStreams.current.delete(stepId);
-						updateGlobalStreamingFlag();
-						if (activeStreams.current.size === 0) {
-							setIsProcessing(false);
-							setProgressMessage("");
-						}
-					}
-				}, 30000); // 30 second timeout
+        // Track what we showed to compare later with validated code
+        (stream as any).lastShownCode = finalCode;
 
-				// Store timeout ID to cancel it if validation events arrive
-				(stream as any).validationTimeoutId = timeoutId;
-			}
+        // Set a timeout fallback in case validation events never arrive
+        const timeoutId = setTimeout(() => {
+            if (activeStreams.current.has(stepId)) {
+                console.warn(
+                    `Validation timeout for step ${stepId}, marking as completed without validation`
+                );
+                analysisDispatch({
+                    type: "UPDATE_MESSAGE",
+                    payload: {
+                        id: stream.messageId,
+                        updates: { isStreaming: false, status: "completed" as any },
+                    },
+                });
+                activeStreams.current.delete(stepId);
+                updateGlobalStreamingFlag();
+                if (activeStreams.current.size === 0) {
+                    setIsProcessing(false);
+                    setProgressMessage("");
+                }
+            }
+        }, 30000); // 30 second timeout
+
+        // Store timeout ID to cancel it if validation events arrive
+        (stream as any).validationTimeoutId = timeoutId;
+    }
 		},
 		[
 			analysisDispatch,
@@ -202,7 +214,8 @@ export function useCodeGenerationEvents({
 	const handleValidationError = useCallback(
 		(event: Event) => {
 			const customEvent = event as CustomEvent<CodeValidationErrorEvent>;
-			const { errors, warnings, originalCode, fixedCode } = customEvent.detail;
+			const { errors, warnings, originalCode, fixedCode, stepId } =
+				customEvent.detail as any;
 
 			// Set validation errors for display (UI will show them)
 			setValidationSuccessMessage("");
@@ -221,22 +234,22 @@ export function useCodeGenerationEvents({
 				summary += "\n";
 				if (errorCount) {
 					summary += "Errors:\n";
-					summary += errors.map((e) => `- ${e}`).join("\n");
+						summary += errors.map((e: string) => `- ${e}`).join("\n");
 					summary += "\n";
 				}
 				if (warningCount) {
 					summary += "Warnings:\n";
-					summary += warnings.map((w) => `- ${w}`).join("\n");
+						summary += warnings.map((w: string) => `- ${w}`).join("\n");
 					summary += "\n";
 				}
 				summary += "```";
+				// Build a separate diff block message for proper highlighting via CodeBlock
 				if (
 					originalCode &&
 					fixedCode &&
 					typeof originalCode === "string" &&
 					typeof fixedCode === "string"
 				) {
-					// Lightweight line-by-line diff for the chat
 					const oldLines = originalCode.split("\n");
 					const newLines = fixedCode.split("\n");
 					const m = oldLines.length;
@@ -270,19 +283,20 @@ export function useCodeGenerationEvents({
 					}
 					ops.reverse();
 					const diffBody = ops
-						.map((o) => {
-							const content = o.s.length === 0 ? "" : o.s;
-							if (o.t === " ") {
-								return `  ${content}`; // Two spaces for unchanged lines
-							} else {
-								return `${o.t} ${content}`; // Space after + or -
-							}
-						})
+						.map((o) => (o.t === " " ? `  ${o.s}` : `${o.t} ${o.s}`))
 						.join("\n");
-					summary += `\n\n\`\`\`diff\n${diffBody}\n\`\`\``;
+					// Post lint summary (text), then a highlighted diff block
+					addMessage(summary, false);
+					addMessage(
+						"Validation changes",
+						false,
+						diffBody,
+						"diff",
+						"Diff vs generated"
+					);
+				} else {
+					addMessage(summary, false);
 				}
-				// Add lint error summary to chat for user visibility
-				addMessage(summary, false);
 				
 				// Mark streaming message as completed now
 				try {
@@ -295,13 +309,13 @@ export function useCodeGenerationEvents({
 							clearTimeout((stream as any).validationTimeoutId);
 						}
 
-						analysisDispatch({
-							type: "UPDATE_MESSAGE",
-							payload: {
-								id: stream.messageId,
-								updates: { isStreaming: false, status: "failed" as any },
-							},
-						});
+					analysisDispatch({
+						type: "UPDATE_MESSAGE",
+						payload: {
+							id: stream.messageId,
+							updates: { isStreaming: false, status: "failed" as any },
+						},
+					});
 						activeStreams.current.delete(customEvent.detail.stepId as any);
 						updateGlobalStreamingFlag();
 						if (activeStreams.current.size === 0) {
@@ -346,13 +360,75 @@ export function useCodeGenerationEvents({
 						clearTimeout((stream as any).validationTimeoutId);
 					}
 
-					analysisDispatch({
-						type: "UPDATE_MESSAGE",
-						payload: {
-							id: stream.messageId,
-							updates: { isStreaming: false, status: "completed" as any },
-						},
-					});
+
+					// If validated code is provided and differs, show a highlighted diff and update code block
+					if (typeof code === "string" && code.length > 0) {
+						const prev = (stream as any).lastShownCode || "";
+						const next = code;
+						if (prev !== next) {
+							const oldLines = prev.split("\n");
+							const newLines = next.split("\n");
+							const m = oldLines.length;
+							const n = newLines.length;
+							const lcs: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+							for (let i = 1; i <= m; i++) {
+								for (let j = 1; j <= n; j++) {
+									lcs[i][j] = oldLines[i - 1] === newLines[j - 1]
+										? lcs[i - 1][j - 1] + 1
+										: Math.max(lcs[i - 1][j], lcs[i][j - 1]);
+								}
+							}
+							const ops: Array<{ t: " " | "+" | "-"; s: string }> = [];
+							let i = m, j = n;
+							while (i > 0 || j > 0) {
+								if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+									ops.push({ t: " ", s: oldLines[i - 1] });
+									i--; j--;
+								} else if (j > 0 && (i === 0 || lcs[i][j - 1] > lcs[i - 1][j])) {
+									ops.push({ t: "+", s: newLines[j - 1] });
+									j--;
+								} else if (i > 0) {
+									ops.push({ t: "-", s: oldLines[i - 1] });
+									i--;
+								}
+							}
+							ops.reverse();
+							const diffBody = ops.map(o => (o.t === " " ? `  ${o.s}` : `${o.t} ${o.s}`)).join("\n");
+
+							addMessage(
+								"Final code saved to notebook differs from streamed code. Changes:",
+								false,
+								diffBody,
+								"diff",
+								"Validation changes"
+							);
+
+							analysisDispatch({
+								type: "UPDATE_MESSAGE",
+								payload: {
+									id: stream.messageId,
+									updates: { code: next, codeLanguage: "python", isStreaming: false, status: "completed" as any },
+								},
+							});
+							(stream as any).lastShownCode = next;
+						} else {
+							analysisDispatch({
+								type: "UPDATE_MESSAGE",
+								payload: {
+									id: stream.messageId,
+									updates: { isStreaming: false, status: "completed" as any },
+								},
+							});
+						}
+					} else {
+						analysisDispatch({
+							type: "UPDATE_MESSAGE",
+							payload: {
+								id: stream.messageId,
+								updates: { isStreaming: false, status: "completed" as any },
+							},
+						});
+					}
 					activeStreams.current.delete(stepId);
 					updateGlobalStreamingFlag();
 					if (activeStreams.current.size === 0) {

@@ -27,6 +27,7 @@ export async function autoFixWithRuffAndLLM(
 	code: string,
 	options: AutoFixOptions = {}
 ): Promise<AutoFixResult> {
+	console.log(`LintAutoFixService: autoFixWithRuffAndLLM started for: ${options.filename}, code length: ${code.length}`);
 	const filename = options.filename || `cell_${Date.now()}.py`;
 
 	// Normalize and strip code fences first to avoid formatter parse errors
@@ -38,7 +39,9 @@ export async function autoFixWithRuffAndLLM(
 	// First pass: Ruff lint + auto-fixes/formatting
 	let initial: RuffResult;
 	try {
+		console.log('LintAutoFixService: Starting Ruff linting for:', filename);
 		initial = await ruffLinter.lintCode(input, { enableFixes: true, filename });
+		console.log('LintAutoFixService: Ruff linting completed for:', filename, 'isValid:', initial.isValid);
 	} catch (e) {
 		console.warn("LintAutoFixService: Ruff WebAssembly failed, falling back to LLM", e);
 		// If Ruff fails entirely, use LLM as emergency fallback
@@ -52,6 +55,7 @@ export async function autoFixWithRuffAndLLM(
 	// If clean, prefer Ruff's fixed/formatted output
 	if (initial.isValid) {
 		const best = initial.fixedCode || initial.formattedCode || input;
+		console.log('LintAutoFixService: Returning clean result for:', filename);
 		// Detect changes relative to normalized input
 		return { fixedCode: best, issues: [], warnings, wasFixed: best !== input, ruffSucceeded: true };
 	}
@@ -102,6 +106,7 @@ export async function autoFixWithRuffAndLLM(
 		const recheckIssues = formatDiagnostics(recheck.diagnostics.filter(d => d.kind === 'error'));
 		const recheckWarnings = formatDiagnostics(recheck.diagnostics.filter(d => d.kind === 'warning'));
 		console.log(`⚠️ LLM fix incomplete: ${recheckIssues.length} errors, ${recheckWarnings.length} warnings remain`);
+		console.log('LintAutoFixService: autoFixWithRuffAndLLM returning incomplete fix for:', options.filename);
 		return {
 			fixedCode: chosen,
 			issues: recheckIssues,
