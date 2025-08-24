@@ -474,48 +474,20 @@ Generate the code now:
             yield fallback_code
     
     def validate_python_code(self, code: str) -> tuple[bool, str]:
-        """Validate Python code syntax and basic structure."""
+        """Emergency fallback validation for Python code (basic AST check only)."""
         import ast
-        import re
         
         if not code or not code.strip():
             return False, "Empty code"
         
-        # Check for basic syntax errors
+        # Basic syntax validation only - frontend should handle detailed linting
         try:
             ast.parse(code)
+            return True, "Basic syntax validation passed (frontend should handle detailed linting)"
         except SyntaxError as e:
             return False, f"Syntax error: {e}"
         except Exception as e:
             return False, f"AST parsing error: {e}"
-        
-        # Check for common issues
-        issues = []
-        
-        # Check for unclosed strings
-        if code.count('"') % 2 != 0 or code.count("'") % 2 != 0:
-            issues.append("Unclosed string literals")
-        
-        # Check for unclosed parentheses/brackets
-        if code.count('(') != code.count(')') or code.count('[') != code.count(']') or code.count('{') != code.count('}'):
-            issues.append("Unmatched parentheses/brackets")
-        
-        # Check for common problematic patterns
-        if re.search(r'f"[^"]*{[^}]*"[^}]*}', code):
-            issues.append("Malformed f-string")
-        
-        # Check for missing imports (basic check)
-        if 'pandas' in code and 'import pandas' not in code and 'from pandas' not in code:
-            issues.append("Missing pandas import")
-        
-        if 'numpy' in code and 'import numpy' not in code and 'from numpy' not in code:
-            issues.append("Missing numpy import")
-        
-        if 'matplotlib' in code and 'import matplotlib' not in code and 'from matplotlib' not in code:
-            issues.append("Missing matplotlib import")
-        
-        if issues:
-            return False, f"Code issues: {', '.join(issues)}"
         
         return True, "Code is valid"
     
@@ -882,15 +854,19 @@ JSON response:"""
             try:
                 system = (
                     "You classify user requests for a Jupyter-based data app into exactly one intent: "
-                    "ADD_CELL or SEARCH_DATA. Be conservative: if ambiguous, choose ADD_CELL. "
+                    "ADD_CELL or SEARCH_DATA. Focus on the user's primary goal. "
                     "Return compact JSON only."
                 )
                 user = (
                     "Text: " + text + "\n\n"
                     "Rules:\n"
-                    "- SEARCH_DATA only if user EXPLICITLY and CLEARLY asks to search/find/browse/fetch/download datasets with very specific language like 'search for datasets', 'find datasets', 'browse data', or mentions specific data portals (GEO, GSE IDs, CellxCensus, Broad SCP).\n"
-                    "- ADD_CELL for ALL other requests including: write/run code, add notebook cell, import/plot/analyze, code tasks, data analysis requests, gene queries, or any ambiguous requests.\n"
-                    "- Be VERY conservative with SEARCH_DATA - it should only trigger when the user is clearly looking for new datasets to download, not when they want to analyze existing data.\n\n"
+                    "- SEARCH_DATA if user wants to find, search, browse, get, or download datasets/data. This includes:\n"
+                    "  * 'find me [disease] data', 'get alzheimer data', 'search for cancer datasets'\n" 
+                    "  * 'find data about X', 'look for X data', 'need data on X'\n"
+                    "  * Mentions of diseases/conditions when seeking data (alzheimer, cancer, etc.)\n"
+                    "  * References to data portals (GEO, GSE IDs, CellxCensus, Broad SCP)\n"
+                    "- ADD_CELL for code/analysis tasks: write/run code, add notebook cell, plot, analyze existing data, compute, visualize.\n"
+                    "- When unsure between finding NEW data vs analyzing EXISTING data, prefer SEARCH_DATA if the request mentions specific diseases, conditions, or uses phrases like 'find me', 'get me', 'look for'.\n\n"
                     "Respond as JSON: {\"intent\": \"ADD_CELL|SEARCH_DATA\", \"confidence\": 0.0-1.0, \"reason\": \"...\"}"
                 )
                 resp = await self.provider.generate(
@@ -929,6 +905,14 @@ JSON response:"""
             "fetch datasets", "get datasets", "browse data", "search data",
             "cellxcensus", "single cell portal", "broad scp", "broad single cell",
             "data portal", "dataset portal", "metadataset",
+            # More natural data search patterns
+            "find me", "find data", "find some", "get me", "show me", "look for",
+            "need data", "want data", "data about", "data on", "data for",
+            # Disease and condition patterns
+            "alzheimer", "cancer", "diabetes", "parkinsons", "disease data",
+            "condition data", "disorder data", "syndrome data",
+            # General data seeking patterns  
+            "available data", "existing data", "public data", "open data",
         ]
         # Indicators for code/cell operations
         add_cell_keywords = [

@@ -532,6 +532,7 @@ print("Step completed successfully!")
 		});
 	}
 
+
 	extractPythonCode(response: string): string | null {
 		// Delegate to shared util to avoid duplication
 		return extractPythonCodeUtil(response);

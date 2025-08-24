@@ -1,7 +1,6 @@
 import { BackendClient } from "../backend/BackendClient";
 import { NotebookService } from "../notebook/NotebookService";
 import { EventManager } from "../../utils/EventManager";
-import { ruffLinter } from "./RuffLinter";
 import { autoFixWithRuffAndLLM } from "./LintAutoFixService";
 import { findWorkspacePath } from "../../utils/WorkspaceUtils";
 import {
@@ -143,16 +142,8 @@ export class NotebookEditingService {
 						},
 					});
 
-					// Throttled live update of the notebook cell so changes are visible during streaming
-					const now = Date.now();
-					if (now - lastCellUpdate > 500) {
-						const partialNewCode =
-							base.substring(0, start) + cleanedSnippet + base.substring(end);
-						notebookService
-							.updateCellCode(filePath, cellIndex, partialNewCode)
-							.catch(() => {});
-						lastCellUpdate = now;
-					}
+					// Skip live notebook updates during streaming to avoid adding unvalidated code
+					// The notebook will only be updated after validation and linting are complete
 				}
 			);
 		} catch (e) {
@@ -207,17 +198,33 @@ export class NotebookEditingService {
 					false
 				);
 				validatedCode = newCode;
+				
+				// Emit validation success event for install cells so UI shows them properly
+				try {
+					EventManager.dispatchEvent("code-validation-success", {
+						stepId: streamingMessageId,
+						message: `Package installation commands (no linting needed)`,
+						code: newCode,
+						timestamp: Date.now(),
+					} as any);
+				} catch (_) {}
 			} else {
-				const ruffResult = await ruffLinter.lintCode(newCode, {
-					enableFixes: true,
-					filename: `cell_${cellIndex + 1}.py`,
-				});
-				if (!ruffResult.isValid) {
-					const errors = ruffResult.diagnostics
-						.filter((d) => d.kind === "error")
-						.map((d) => `${d.code}: ${d.message} (line ${d.startLine})`);
+				// Use unified Ruff+LLM validation service
+				const fixed = await autoFixWithRuffAndLLM(
+					this.backendClient,
+					newCode,
+					{
+						filename: `cell_${cellIndex + 1}.py`,
+						stepTitle: `Inline edit for cell ${cellIndex + 1}`,
+					}
+				);
+
+				validatedCode = fixed.fixedCode;
+				didAutoFix = fixed.wasFixed;
+
+				if (fixed.issues.length > 0) {
 					addMessage(
-						`⚠️ Code validation issues detected. Attempting auto-fix…`,
+						`⚠️ Code validation found ${fixed.issues.length} issue${fixed.issues.length > 1 ? 's' : ''}`,
 						false
 					);
 
@@ -225,42 +232,30 @@ export class NotebookEditingService {
 					try {
 						EventManager.dispatchEvent("code-validation-error", {
 							stepId: streamingMessageId,
-							errors,
-							warnings: ruffResult.diagnostics
-								.filter((d) => d.kind === "warning")
-								.map((d) => `${d.code}: ${d.message} (line ${d.startLine})`),
+							errors: fixed.issues,
+							warnings: fixed.warnings,
 							originalCode: newCode,
-							fixedCode: ruffResult.fixedCode || ruffResult.formattedCode,
+							fixedCode: fixed.fixedCode,
 							timestamp: Date.now(),
 						} as any);
 					} catch (_) {}
-					const fixed = await autoFixWithRuffAndLLM(
-						this.backendClient,
-						newCode,
-						{
-							filename: `cell_${cellIndex + 1}.py`,
-							stepTitle: `Inline edit for cell ${cellIndex + 1}`,
-						}
-					);
-					validatedCode = fixed.fixedCode || ruffResult.fixedCode || newCode;
-					didAutoFix = !!fixed.wasFixed;
-					if (fixed.wasFixed) {
-						addMessage(`✅ Applied auto-fix for lint issues.`, false);
-					} else {
-						addMessage(
-							`⚠️ Auto-fix attempted but some issues may remain.`,
-							false
-						);
-					}
 				} else {
-					// Prefer Ruff's improvements when available
-					const improved = ruffResult.fixedCode || ruffResult.formattedCode;
-					if (improved && improved !== newCode) {
-						didAutoFix = true;
-						validatedCode = improved;
-					} else {
-						validatedCode = newCode;
-					}
+					addMessage(`✅ Code validation passed.`, false);
+				}
+
+				if (fixed.wasFixed) {
+					addMessage(`🔧 Applied code improvements and fixes.`, false);
+				}
+
+				if (fixed.warnings.length > 0) {
+					addMessage(
+						`ℹ️ ${fixed.warnings.length} warning${fixed.warnings.length > 1 ? 's' : ''} noted`,
+						false
+					);
+				}
+
+				if (!fixed.ruffSucceeded) {
+					addMessage(`⚠️ Used LLM fallback validation`, false);
 				}
 			}
 		} catch (error) {
@@ -268,87 +263,81 @@ export class NotebookEditingService {
 			validatedCode = newCode;
 		}
 
-		await notebookService.updateCellCode(filePath, cellIndex, validatedCode);
-
-		// Mark streaming snippet as completed now that validation and update are done
-		try {
-			analysisDispatch({
-				type: "UPDATE_MESSAGE",
-				payload: {
-					id: streamingMessageId,
-					updates: { isStreaming: false, status: "completed" as any },
-				},
-			});
-		} catch (_) {}
-
-		// Final linting check on the updated code (skip for install cells)
+		// Final linting check on the validated code BEFORE adding to notebook
+		let finalValidatedCode = validatedCode;
 		try {
 			const isInstallCellFinal =
 				/(^|\n)\s*(%pip|%conda|pip\s+install|conda\s+install)\b/i.test(
 					validatedCode
 				);
 			if (isInstallCellFinal) {
-				// No final lint for install lines
-				throw null; // jump to catch without logging error
+				// No final lint for install lines, but set finalValidatedCode correctly
+				finalValidatedCode = validatedCode;
+				console.log(`Cell ${cellIndex + 1} is package installation - skipping final validation`);
+				// Jump to the success path without logging error
+				throw null; 
 			}
-			console.log(`Final linting check for cell ${cellIndex + 1}...`);
-			const finalLintResult = await ruffLinter.lintCode(validatedCode, {
-				enableFixes: false, // Don't fix again, just check
-				filename: `cell_${cellIndex + 1}_final.py`,
-			});
+			console.log(`Final validation check for cell ${cellIndex + 1}...`);
+			// Quick validation check only (no fixes applied)
+			const finalValidation = await autoFixWithRuffAndLLM(
+				this.backendClient,
+				validatedCode,
+				{
+					filename: `cell_${cellIndex + 1}_final.py`,
+					stepTitle: `Final validation for cell ${cellIndex + 1}`,
+				}
+			);
 
-			if (!finalLintResult.isValid) {
-				const issueLines = finalLintResult.diagnostics.map(
-					(d) => `${d.code}: ${d.message} (line ${d.startLine})`
-				);
+			if (finalValidation.issues.length > 0 || finalValidation.warnings.length > 0) {
 				console.warn(
-					`Linting issues found in cell ${cellIndex + 1}:`,
-					issueLines.join(", ")
+					`Validation issues found in cell ${cellIndex + 1}:`,
+					[...finalValidation.issues, ...finalValidation.warnings].join(", ")
 				);
-				// Emit validation error event for final result
+				// Emit validation event for final result
 				try {
 					EventManager.dispatchEvent("code-validation-error", {
 						stepId: streamingMessageId,
-						errors: finalLintResult.diagnostics
-							.filter((d) => d.kind === "error")
-							.map((d) => `${d.code}: ${d.message} (line ${d.startLine})`),
-						warnings: finalLintResult.diagnostics
-							.filter((d) => d.kind === "warning")
-							.map((d) => `${d.code}: ${d.message} (line ${d.startLine})`),
+						errors: finalValidation.issues,
+						warnings: finalValidation.warnings,
 						originalCode: validatedCode,
-						fixedCode: undefined,
+						fixedCode: finalValidation.fixedCode,
 						timestamp: Date.now(),
 					} as any);
 				} catch (_) {}
-				const errorCount = finalLintResult.diagnostics.filter(
-					(d) => d.kind === "error"
-				).length;
-				const warningCount = finalLintResult.diagnostics.filter(
-					(d) => d.kind === "warning"
-				).length;
-				let lintBlock = "```lint\n";
-				lintBlock +=
-					`LINT_SUMMARY: ⚠️ Found ${errorCount} error(s)${
-						warningCount ? ` and ${warningCount} warning(s)` : ""
-					} in cell ${cellIndex + 1}` + "\n";
-				if (errorCount) {
-					lintBlock += "Errors:\n";
+
+				const errorCount = finalValidation.issues.length;
+				const warningCount = finalValidation.warnings.length;
+				
+				// Show lint summary for errors, or warnings if there are many
+				if (errorCount > 0 || warningCount >= 3) {
+					const status = errorCount > 0 ? '⚠️' : 'ℹ️';
+					let lintBlock = "```lint\n";
 					lintBlock +=
-						finalLintResult.diagnostics
-							.filter((d) => d.kind === "error")
-							.map((d) => `- ${d.code}: ${d.message} (line ${d.startLine})`)
-							.join("\n") + "\n";
+						`LINT_SUMMARY: ${status} Found ${errorCount > 0 ? `${errorCount} error(s)` : ''}${
+							errorCount > 0 && warningCount > 0 ? ' and ' : ''
+						}${warningCount > 0 ? `${warningCount} warning(s)` : ''} in cell ${cellIndex + 1}` + "\n";
+					if (errorCount > 0) {
+						lintBlock += "Errors:\n";
+						lintBlock += finalValidation.issues.map(issue => `- ${issue}`).join("\n") + "\n";
+					}
+					if (warningCount > 0) {
+						lintBlock += "Warnings:\n";
+						lintBlock += finalValidation.warnings.map(warning => `- ${warning}`).join("\n") + "\n";
+					}
+					lintBlock += "```";
+					
+					// Add lint summary to chat for visibility
+					addMessage(lintBlock, false);
+				} else if (warningCount > 0) {
+					// For few warnings, just show a simple message
+					addMessage(`ℹ️ ${warningCount} linting warning${warningCount > 1 ? 's' : ''} in cell ${cellIndex + 1}`, false);
 				}
-				if (warningCount) {
-					lintBlock += "Warnings:\n";
-					lintBlock +=
-						finalLintResult.diagnostics
-							.filter((d) => d.kind === "warning")
-							.map((d) => `- ${d.code}: ${d.message} (line ${d.startLine})`)
-							.join("\n") + "\n";
+
+				// Use the final fixed code if available
+				if (finalValidation.wasFixed && finalValidation.fixedCode !== validatedCode) {
+					finalValidatedCode = finalValidation.fixedCode;
+					console.log(`Applied final fixes to cell ${cellIndex + 1}`);
 				}
-				lintBlock += "```";
-				// Skip adding lint error summary to reduce chat clutter
 			} else {
 				console.log(`Cell ${cellIndex + 1} passed final linting check`);
 				// Emit validation success so the green banner shows
@@ -370,6 +359,25 @@ export class NotebookEditingService {
 			}
 			// Don't fail the whole operation if linting fails
 		}
+
+		// First, mark streaming as completed with the final validated code so highlighting works
+		try {
+			analysisDispatch({
+				type: "UPDATE_MESSAGE",
+				payload: {
+					id: streamingMessageId,
+					updates: { 
+						isStreaming: false, 
+						status: "completed" as any,
+						code: finalValidatedCode, // Update with the final linted/fixed code
+						codeTitle: didAutoFix ? "Edited snippet (auto-fixed)" : "Edited snippet"
+					},
+				},
+			});
+		} catch (_) {}
+
+		// ONLY AFTER highlighting is applied, add the validated code to notebook
+		await notebookService.updateCellCode(filePath, cellIndex, finalValidatedCode);
 
 		// Short confirmation window; fallback to optimistic success
 		let updateDetail: any = null;

@@ -348,6 +348,7 @@ const OutputContent = styled.div`
 	font-size: ${typography.base};
 	line-height: 1.4;
 	color: #d4d4d4;
+
 	/* Allow native wheel chaining so when this block reaches its scroll end, the parent notebook scrolls */
 	overscroll-behavior: auto;
 	overflow-y: auto;

@@ -1,7 +1,6 @@
 import { BackendClient } from "../backend/BackendClient";
-import { ruffLinter, RuffResult } from "./RuffLinter";
+import { ruffLinter, RuffResult, RuffDiagnostic } from "./RuffLinter";
 import { stripCodeFences } from "../../utils/CodeTextUtils";
-import { diagnosticsToIssueStrings } from "../../utils/RuffUtils";
 
 interface AutoFixOptions {
 	filename?: string;
@@ -11,7 +10,16 @@ interface AutoFixOptions {
 interface AutoFixResult {
 	fixedCode: string;
 	issues: string[];
+	warnings: string[];
 	wasFixed: boolean;
+	ruffSucceeded: boolean;
+}
+
+// Helper to format diagnostics consistently
+function formatDiagnostics(diagnostics: RuffDiagnostic[]): string[] {
+	return diagnostics.map(d => 
+		`${d.code}: ${d.message} (line ${d.endLine && d.endLine !== d.startLine ? `${d.startLine}-${d.endLine}` : d.startLine})`
+	);
 }
 
 export async function autoFixWithRuffAndLLM(
@@ -24,7 +32,7 @@ export async function autoFixWithRuffAndLLM(
 	// Normalize and strip code fences first to avoid formatter parse errors
 	const input = stripCodeFences(code);
 	if (!input || !input.trim()) {
-		return { fixedCode: code, issues: [], wasFixed: false };
+		return { fixedCode: code, issues: [], warnings: [], wasFixed: false, ruffSucceeded: true };
 	}
 
 	// First pass: Ruff lint + auto-fixes/formatting
@@ -32,19 +40,21 @@ export async function autoFixWithRuffAndLLM(
 	try {
 		initial = await ruffLinter.lintCode(input, { enableFixes: true, filename });
 	} catch (e) {
-		// If Ruff fails entirely, fall back to original code
-		// Compare against normalized input, not the original (possibly fenced) code
-		return { fixedCode: input, issues: [String(e)], wasFixed: false };
+		console.warn("LintAutoFixService: Ruff WebAssembly failed, falling back to LLM", e);
+		// If Ruff fails entirely, use LLM as emergency fallback
+		return await fallbackToLLMOnly(backendClient, input, options);
 	}
 
+	// Extract issues and warnings from Ruff results
+	const issues = formatDiagnostics(initial.diagnostics.filter(d => d.kind === 'error'));
+	const warnings = formatDiagnostics(initial.diagnostics.filter(d => d.kind === 'warning'));
+	
 	// If clean, prefer Ruff's fixed/formatted output
 	if (initial.isValid) {
 		const best = initial.fixedCode || initial.formattedCode || input;
 		// Detect changes relative to normalized input
-		return { fixedCode: best, issues: [], wasFixed: best !== input };
+		return { fixedCode: best, issues: [], warnings, wasFixed: best !== input, ruffSucceeded: true };
 	}
-
-	const issues = diagnosticsToIssueStrings(initial);
 
 	// Prepare prompt to backend LLM to correct code
 	let llmFixed = "";
@@ -65,7 +75,7 @@ export async function autoFixWithRuffAndLLM(
 	} catch (e) {
 		// If backend correction fails, fall back to Ruff's fixed/format attempt
 		const best = initial.fixedCode || initial.formattedCode || input;
-		return { fixedCode: best, issues, wasFixed: best !== input };
+		return { fixedCode: best, issues, warnings, wasFixed: best !== input, ruffSucceeded: true };
 	}
 
 	const cleaned = stripCodeFences(llmFixed);
@@ -79,7 +89,9 @@ export async function autoFixWithRuffAndLLM(
 
 		if (recheck.isValid) {
 			const best = recheck.fixedCode || recheck.formattedCode || cleaned;
-			return { fixedCode: best, issues: [], wasFixed: true };
+			const recheckWarnings = formatDiagnostics(recheck.diagnostics.filter(d => d.kind === 'warning'));
+			console.log(`🔧 LLM fix successful: ${recheckWarnings.length} warnings remain`);
+			return { fixedCode: best, issues: [], warnings: recheckWarnings, wasFixed: true, ruffSucceeded: true };
 		}
 
 		// Not fully valid; pick the better of Ruff's own fix vs LLM attempt
@@ -87,14 +99,59 @@ export async function autoFixWithRuffAndLLM(
 		const initialBest = initial.fixedCode || initial.formattedCode || input;
 		// Prefer the variant that changed from the normalized input (heuristic)
 		const chosen = fallback !== input ? fallback : initialBest;
+		const recheckIssues = formatDiagnostics(recheck.diagnostics.filter(d => d.kind === 'error'));
+		const recheckWarnings = formatDiagnostics(recheck.diagnostics.filter(d => d.kind === 'warning'));
+		console.log(`⚠️ LLM fix incomplete: ${recheckIssues.length} errors, ${recheckWarnings.length} warnings remain`);
 		return {
 			fixedCode: chosen,
-			issues: diagnosticsToIssueStrings(recheck),
+			issues: recheckIssues,
+			warnings: recheckWarnings,
 			wasFixed: chosen !== input,
+			ruffSucceeded: true,
 		};
 	} catch (_) {
 		// On re-lint failure, at least return the LLM's cleaned output
 		const best = cleaned || initial.fixedCode || initial.formattedCode || input;
-		return { fixedCode: best, issues, wasFixed: best !== input };
+		return { fixedCode: best, issues, warnings, wasFixed: best !== input, ruffSucceeded: false };
+	}
+}
+
+// Emergency fallback when Ruff WebAssembly completely fails
+async function fallbackToLLMOnly(
+	backendClient: BackendClient,
+	input: string,
+	options: AutoFixOptions
+): Promise<AutoFixResult> {
+	try {
+		let llmFixed = "";
+		await backendClient.generateCodeStream(
+			{
+				task_description:
+					`Fix and improve the following Python code. Focus on syntax errors, import issues, and basic best practices. Return ONLY the corrected code, no explanations.\n\n` +
+					`Code:\n${input}\n`,
+				language: "python",
+				context: options.stepTitle || "Emergency code fixing (Ruff unavailable)",
+			},
+			(chunk: string) => {
+				llmFixed += chunk;
+			}
+		);
+
+		const cleaned = stripCodeFences(llmFixed);
+		return { 
+			fixedCode: cleaned || input, 
+			issues: [], 
+			warnings: ["Ruff unavailable - used LLM-only validation"],
+			wasFixed: cleaned !== input, 
+			ruffSucceeded: false 
+		};
+	} catch (e) {
+		return { 
+			fixedCode: input, 
+			issues: [`Emergency fallback failed: ${e}`], 
+			warnings: ["Both Ruff and LLM validation failed"],
+			wasFixed: false, 
+			ruffSucceeded: false 
+		};
 	}
 }

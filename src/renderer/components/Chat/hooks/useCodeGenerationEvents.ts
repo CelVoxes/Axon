@@ -281,7 +281,9 @@ export function useCodeGenerationEvents({
 						.join("\n");
 					summary += `\n\n\`\`\`diff\n${diffBody}\n\`\`\``;
 				}
-				// Skip adding lint error summary to reduce chat clutter
+				// Add lint error summary to chat for user visibility
+				addMessage(summary, false);
+				
 				// Mark streaming message as completed now
 				try {
 					const stream = activeStreams.current.get(

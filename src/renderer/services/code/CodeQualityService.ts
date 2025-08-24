@@ -1,12 +1,8 @@
 import { BackendClient } from "../backend/BackendClient";
 import { CellExecutionService } from "../notebook/CellExecutionService";
 import { CodeGenerationService } from "./CodeGenerationService";
-import { ruffLinter, RuffResult } from "../chat/RuffLinter";
+import { autoFixWithRuffAndLLM } from "../chat/LintAutoFixService";
 import { normalizePythonCode } from "../../utils/CodeTextUtils";
-import {
-	diagnosticsToErrors,
-	diagnosticsToWarnings,
-} from "../../utils/RuffUtils";
 import {
 	getExistingImports as sharedGetExistingImports,
 	removeDuplicateImports as sharedRemoveDuplicateImports,
@@ -150,31 +146,35 @@ export class CodeQualityService {
 			});
 		}
 
-		// Step 2: Code Validation (if not skipped) - Using Ruff frontend linter
+		// Step 2: Code Validation (if not skipped) - Using unified Ruff+LLM service
 		if (!skipValidation) {
-			this.updateStatus(`Linting code with Ruff for ${stepTitle}...`);
+			this.updateStatus(`Validating and fixing code for ${stepTitle}...`);
 
 			try {
-				const ruffResult = await ruffLinter.lintCode(result.cleanedCode, {
-					enableFixes: true,
-					filename: `${stepTitle.replace(/\s+/g, "_").toLowerCase()}.py`,
-				});
+				const fixResult = await autoFixWithRuffAndLLM(
+					this.backendClient,
+					result.cleanedCode,
+					{
+						filename: `${stepTitle.replace(/\s+/g, "_").toLowerCase()}.py`,
+						stepTitle
+					}
+				);
 
-				result.isValid = ruffResult.isValid;
-				result.validationErrors = diagnosticsToErrors(ruffResult);
-				result.validationWarnings = diagnosticsToWarnings(ruffResult);
-				result.lintedCode =
-					ruffResult.fixedCode ||
-					ruffResult.formattedCode ||
-					result.cleanedCode;
+				result.lintedCode = fixResult.fixedCode;
+				result.isValid = fixResult.issues.length === 0; // Only errors matter for validity
+				result.validationErrors = fixResult.issues; // These are errors only
+				result.validationWarnings = fixResult.warnings; // These are warnings only
+
+				// Emit validation events (existing UI will handle the display)
 
 				if (!result.isValid) {
 					console.warn(
 						`Code validation failed for ${stepTitle}:`,
-						result.validationErrors
+						result.validationErrors,
+						`(${result.validationWarnings.length} warnings also found)`
 					);
 
-					// Emit validation error event
+					// Emit validation error event (will show in chat)
 					this.codeGenerationService.emitValidationErrors(
 						stepId,
 						result.validationErrors,
@@ -183,50 +183,23 @@ export class CodeQualityService {
 						result.lintedCode
 					);
 
-					// Attempt to auto-fix linting/validation errors via LLM
-					try {
-						this.updateStatus(
-							`Attempting to fix linting errors for ${stepTitle}...`
-						);
-						const fixed = await this.fixValidationErrors(
-							result.lintedCode || result.cleanedCode,
-							result.validationErrors
-						);
-
-						// Re-validate the fixed code using Ruff
-						const reRuffResult = await ruffLinter.lintCode(fixed, {
-							enableFixes: true,
-							filename: `${stepTitle
-								.replace(/\s+/g, "_")
-								.toLowerCase()}_fixed.py`,
-						});
-
-						result.isValid = reRuffResult.isValid;
-						result.validationErrors = diagnosticsToErrors(reRuffResult);
-						result.validationWarnings = diagnosticsToWarnings(reRuffResult);
-						result.lintedCode =
-							reRuffResult.fixedCode || reRuffResult.formattedCode || fixed;
-
-						if (result.isValid) {
-							this.updateStatus(`✅ Linting issues fixed for ${stepTitle}`);
-						} else {
-							this.updateStatus(
-								`⚠️ Auto-fix attempted but issues remain for ${stepTitle}`
-							);
-						}
-					} catch (fixErr) {
-						console.warn(`Auto-fix failed for ${stepTitle}:`, fixErr as any);
-					}
+					this.updateStatus(
+						`⚠️ Code validation completed with remaining issues for ${stepTitle}`
+					);
 				} else {
-					this.updateStatus(`✅ Code validation passed for ${stepTitle}`);
-					// Emit a success event so UI can display a summary in chat and show the validated code
-					try {
+					// Only show success message if there were warnings or fixes applied
+					if (result.validationWarnings.length > 0 || fixResult.wasFixed) {
 						this.codeGenerationService.emitValidationSuccess(
 							stepId,
-							`No linter errors found in ${stepTitle}`,
-							result.lintedCode
+							`Code validation passed${fixResult.wasFixed ? ' (fixes applied)' : ''}${result.validationWarnings.length > 0 ? ` with ${result.validationWarnings.length} warning(s)` : ''}`,
+							undefined
 						);
-					} catch (_) {}
+					}
+					this.updateStatus(`✅ Code validation passed for ${stepTitle}`);
+				}
+
+				if (fixResult.wasFixed) {
+					this.updateStatus(`🔧 Code improvements applied for ${stepTitle}`);
 				}
 			} catch (error) {
 				result.isValid = false;
@@ -529,38 +502,7 @@ ${code.replace(/while\s+(True|1):/g, (match) => {
 		return code;
 	}
 
-	/**
-	 * Fix validation errors using LLM
-	 */
-	async fixValidationErrors(code: string, errors: string[]): Promise<string> {
-		if (errors.length === 0) {
-			return code;
-		}
-
-		try {
-			let fixedCode = "";
-			await this.backendClient.generateCodeStream(
-				{
-					task_description: `Fix the following Python code validation errors:\n\nErrors:\n${errors.join(
-						"\n"
-					)}\n\nCode:\n${code}\n\nProvide only the corrected code, no explanations.`,
-					language: "python",
-					context: "Code validation error fixing",
-				},
-				(chunk: string) => {
-					fixedCode += chunk;
-				}
-			);
-
-			return this.enhanceCode(fixedCode.trim());
-		} catch (error) {
-			console.error(
-				"CodeQualityService: Error fixing validation errors:",
-				error
-			);
-			return code;
-		}
-	}
+	// fixValidationErrors method removed - now handled by LintAutoFixService
 
 	/**
 	 * Generate refactored code based on error output

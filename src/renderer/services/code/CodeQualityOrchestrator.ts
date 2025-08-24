@@ -8,8 +8,6 @@ import {
 	IBackendClient,
 	CodeValidationResult,
 } from "../types";
-import { ruffLinter } from "../chat/RuffLinter";
-import { EventManager } from "../../utils/EventManager";
 
 export class CodeQualityOrchestrator implements ICodeQualityValidator {
 	private backendClient: IBackendClient;
@@ -52,7 +50,7 @@ export class CodeQualityOrchestrator implements ICodeQualityValidator {
 	}
 
 	/**
-	 * Orchestrate the complete validation pipeline
+	 * Orchestrate the complete validation pipeline - always delegates to CodeQualityService
 	 */
 	async orchestrateValidation(
 		code: string,
@@ -64,7 +62,7 @@ export class CodeQualityOrchestrator implements ICodeQualityValidator {
 			globalCodeContext?: string;
 		} = {}
 	): Promise<CodeValidationResult> {
-		// If a quality service delegate is available, use it as the single source of truth
+		// Always delegate to CodeQualityService if available
 		if (this.qualityServiceDelegate) {
 			try {
 				this.updateStatus(
@@ -94,76 +92,36 @@ export class CodeQualityOrchestrator implements ICodeQualityValidator {
 					success: res.isValid,
 				};
 			} catch (e) {
-				console.warn(
-					"CodeQualityOrchestrator: delegate validation failed, falling back",
+				console.error(
+					"CodeQualityOrchestrator: delegate validation failed",
 					e as any
 				);
+				// Return error state rather than fallback to prevent inconsistent behavior
+				return {
+					isValid: false,
+					originalCode: code,
+					validatedCode: code,
+					errors: [e instanceof Error ? e.message : String(e)],
+					warnings: [],
+					improvements: [],
+					retryCount: 0,
+					success: false,
+				};
 			}
 		}
 
-		// Simple Ruff-only validation fallback when no delegate is set
-		try {
-			this.updateStatus(
-				`Validating code with Ruff for ${options.stepTitle || stepId}...`
-			);
-			const ruffResult = await ruffLinter.lintCode(code, {
-				enableFixes: true,
-				filename: `${(options.stepTitle || stepId)
-					.replace(/\s+/g, "_")
-					.toLowerCase()}.py`,
-			});
-			const errors = ruffResult.diagnostics
-				.filter((d) => d.kind === "error")
-				.map((d) => `${d.code}: ${d.message} (line ${d.startLine})`);
-			const warnings = ruffResult.diagnostics
-				.filter((d) => d.kind === "warning")
-				.map((d) => `${d.code}: ${d.message} (line ${d.startLine})`);
-
-			// Emit UI events so chat can reflect validation outcome (fallback path)
-			try {
-				if (errors.length > 0) {
-					EventManager.dispatchEvent("code-validation-error", {
-						stepId,
-						errors,
-						warnings,
-						originalCode: code,
-						fixedCode: ruffResult.fixedCode || ruffResult.formattedCode,
-						timestamp: Date.now(),
-					} as any);
-				} else {
-					EventManager.dispatchEvent("code-validation-success", {
-						stepId,
-						message: `No linter errors found`,
-						code: ruffResult.fixedCode || ruffResult.formattedCode || code,
-						timestamp: Date.now(),
-					} as any);
-				}
-			} catch (_) {}
-
-			return {
-				isValid: ruffResult.isValid,
-				originalCode: code,
-				validatedCode: ruffResult.fixedCode || ruffResult.formattedCode || code,
-				errors: errors,
-				warnings: warnings,
-				improvements: [],
-				retryCount: 0,
-				success: ruffResult.isValid,
-			};
-		} catch (e) {
-			return {
-				isValid: false,
-				originalCode: code,
-				validatedCode: code,
-				errors: [e instanceof Error ? e.message : String(e)],
-				warnings: [],
-				improvements: [],
-				retryCount: 0,
-				success: false,
-			};
-		}
-
-		// Validation handled above via delegate or Ruff fallback.
+		// No delegate available - return original code without validation
+		console.warn("CodeQualityOrchestrator: No delegate service available for validation");
+		return {
+			isValid: true, // Assume valid when no validation is available
+			originalCode: code,
+			validatedCode: code,
+			errors: [],
+			warnings: ["No validation service available"],
+			improvements: [],
+			retryCount: 0,
+			success: true,
+		};
 	}
 
 	/**

@@ -5,7 +5,7 @@ import { sanitizeMarkdown } from "../../utils/MarkdownUtils";
 import { FiChevronRight } from "react-icons/fi";
 import { typography } from "../../styles/design-system";
 import { Message } from "../../context/AppContext";
-import { CodeBlock } from "./shared/CodeBlock";
+import { CodeBlock } from "../shared/CodeBlock";
 // design-system typography already imported above
 
 interface ChatMessageProps {
@@ -61,85 +61,6 @@ const MessageText = styled.div<{ $messageType: string }>`
 					line-height: 1.5;
 					word-wrap: break-word;
 					
-					.expandable-code-block {
-						margin: 12px 0;
-						border: 1px solid #333;
-						border-radius: 8px;
-						overflow: hidden;
-						background: #1e1e1e;
-					}
-					
-					.code-header {
-						display: flex;
-						justify-content: space-between;
-						align-items: center;
-						padding: 8px 12px;
-						background: #2d2d2d;
-						border-bottom: 1px solid #333;
-						cursor: pointer;
-					}
-					
-					.code-language {
-						font-size: ${typography.xs};
-						color: #888;
-						text-transform: uppercase;
-						font-weight: 600;
-					}
-					
-					.copy-button {
-						background: #007acc;
-						color: white;
-						border: none;
-						border-radius: 4px;
-						padding: 4px 8px;
-						font-size: ${typography.xs};
-						cursor: pointer;
-						transition: background 0.2s;
-						
-						&:hover {
-							background: #005a9e;
-						}
-					}
-					
-					.code-content {
-						background: #1e1e1e;
-						border: none;
-						border-radius: 0;
-						padding: 16px;
-						margin: 0;
-						overflow-x: auto;
-						max-height: 400px;
-						overflow-y: auto;
-						font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-						font-size: ${typography.base};
-						line-height: 1.4;
-					}
-					
-					.inline-code {
-						background: #2d2d2d;
-						color: #e5e7eb;
-						padding: 2px 6px;
-						border-radius: 4px;
-						font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-						font-size: ${typography.sm};
-						border: 1px solid #444;
-					}
-
-					/* Lint summary/details presentation (normal grayish text) */
-					.lint-container { margin: 8px 0; }
-					.lint-header {
-						font-size: ${typography.sm};
-						display: flex;
-						align-items: center;
-						color: #9ca3af;
-						cursor: pointer;
-						user-select: none;
-						padding: 4px 0;
-					}
-					.lint-header:hover { color: #d1d5db; }
-					.lint-details { color: #9ca3af; font-size: ${typography.sm}; padding-left: 14px; }
-					.lint-details ul { margin: 6px 0 0 0; padding-left: 18px; }
-					.lint-section { margin-top: 6px; }
 				`;
 			case "system":
 				return `
@@ -147,7 +68,7 @@ const MessageText = styled.div<{ $messageType: string }>`
 					color: #93c5fd;
 					padding: 8px 12px;
 					border-radius: 8px;
-					font-size: ${typography.base};
+					font-size: ${typography.sm};
 					line-height: 1.4;
 					border-left: 3px solid #3b82f6;
 					word-wrap: break-word;
@@ -164,27 +85,6 @@ const MessageText = styled.div<{ $messageType: string }>`
 		}
 	}}
 
-	pre {
-		background: rgba(0, 0, 0, 0.3);
-		padding: 12px;
-		border-radius: 6px;
-		overflow-x: auto;
-		margin: 8px 0;
-		font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas,
-			"Courier New", monospace;
-		font-size: ${typography.base};
-		border: 1px solid rgba(75, 85, 99, 0.3);
-	}
-
-	code {
-		background: rgba(0, 0, 0, 0.3);
-		padding: 2px 6px;
-		border-radius: 4px;
-		font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas,
-			"Courier New", monospace;
-		font-size: ${typography.sm};
-		border: 1px solid rgba(75, 85, 99, 0.2);
-	}
 
 	strong {
 		font-weight: 600;
@@ -248,8 +148,8 @@ const formatTimestamp = (timestamp: Date): string => {
 };
 
 export const ChatMessage: React.FC<ChatMessageProps> = ({
-    message,
-    onAnalysisClick,
+	message,
+	onAnalysisClick,
 }) => {
 	// Use shared CodeBlock in markdown code renderer for all message types
 
@@ -262,13 +162,13 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 		return "assistant";
 	};
 
-    const messageType = getMessageType();
+	const messageType = getMessageType();
 
-    // Hide empty system placeholders (which otherwise render as a blue bar)
-    const trimmed = (message.content || "").trim();
-    if (!trimmed) {
-        return null;
-    }
+	// Hide empty system placeholders (which otherwise render as a blue bar)
+	const trimmed = (message.content || "").trim();
+	if (!trimmed) {
+		return null;
+	}
 
 	return (
 		<MessageContainer $messageType={messageType}>
@@ -281,109 +181,14 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 								const language = match ? match[1] : "text";
 								if (inline) {
 									return (
-										<code className="inline-code" {...props}>
-											{children}
-										</code>
+										<CodeBlock
+											variant="inline"
+											code={String(children || "")}
+										/>
 									);
 								}
 								let codeContent = String(children || "").trim();
 								let headerTitle = "";
-								// Support special "lint" blocks with a first-line summary
-								if ((match ? match[1] : "") === "lint") {
-									const lines = codeContent.split(/\r?\n/);
-									if (lines.length > 0 && /^LINT_SUMMARY:/i.test(lines[0])) {
-										headerTitle = lines[0]
-											.replace(/^LINT_SUMMARY:\s*/i, "")
-											.trim();
-										codeContent = lines.slice(1).join("\n");
-									}
-
-									// Render as normal grayish text, expandable via click
-									const [expanded, setExpanded] = React.useState(false);
-
-									// Parse sections by scanning lines to avoid regex split pitfalls
-									let errorsList: React.ReactNode[] = [];
-									let warningsList: React.ReactNode[] = [];
-									try {
-										const lines = codeContent.split(/\r?\n/);
-										let section: "none" | "errors" | "warnings" = "none";
-										let eIndex = 0;
-										let wIndex = 0;
-										for (const raw of lines) {
-											const line = raw.trim();
-											if (/^errors:\s*$/i.test(line)) {
-												section = "errors";
-												continue;
-											}
-											if (/^warnings:\s*$/i.test(line)) {
-												section = "warnings";
-												continue;
-											}
-											if (section === "errors" && /^-\s+/.test(line)) {
-												errorsList.push(
-													<li key={`e-${eIndex++}`}>
-														{line.replace(/^\-\s+/, "")}
-													</li>
-												);
-												continue;
-											}
-											if (section === "warnings" && /^-\s+/.test(line)) {
-												warningsList.push(
-													<li key={`w-${wIndex++}`}>
-														{line.replace(/^\-\s+/, "")}
-													</li>
-												);
-												continue;
-											}
-										}
-									} catch (_) {}
-
-									return (
-										<div className="lint-container">
-											<div
-												className="lint-header"
-												onClick={() => setExpanded((v) => !v)}
-											>
-												{headerTitle || "Lint results"}
-												<FiChevronRight
-													size={12}
-													style={{
-														marginLeft: 4,
-														marginTop: "2px",
-														color: "#9ca3af",
-														transform: expanded ? "rotate(90deg)" : undefined,
-													}}
-												/>
-											</div>
-											{expanded && (
-												<div className="lint-details">
-													{errorsList.length > 0 && (
-														<div className="lint-section">
-															<strong style={{ color: "#d1d5db" }}>
-																Errors
-															</strong>
-															<ul>{errorsList}</ul>
-														</div>
-													)}
-													{warningsList.length > 0 && (
-														<div className="lint-section">
-															<strong style={{ color: "#d1d5db" }}>
-																Warnings
-															</strong>
-															<ul>{warningsList}</ul>
-														</div>
-													)}
-													{errorsList.length === 0 &&
-														warningsList.length === 0 && (
-															<div className="lint-section">
-																No issues listed.
-															</div>
-														)}
-												</div>
-											)}
-										</div>
-									);
-								}
 								if (
 									codeContent.length === 0 ||
 									codeContent.replace(/\s/g, "").length === 0 ||
@@ -392,32 +197,31 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 									return null;
 								}
 
-								// Compute header title for diff blocks as "+<adds> -<dels>"
+								// Use the unified CodeBlock with appropriate variant
+								if (language === "lint") {
+									return (
+										<CodeBlock
+											variant="chat"
+											code={codeContent}
+											language={language}
+											isStreaming={!!message.isStreaming}
+										/>
+									);
+								}
+
 								if (language === "diff") {
-									try {
-										const lines = codeContent.split(/\r?\n/);
-										let adds = 0;
-										let dels = 0;
-										for (const line of lines) {
-											if (
-												line.startsWith("+++") ||
-												line.startsWith("---") ||
-												line.startsWith("diff ") ||
-												line.startsWith("@@")
-											) {
-												continue;
-											}
-											if (line.startsWith("+")) adds++;
-											else if (line.startsWith("-")) dels++;
-										}
-										headerTitle = `+${adds} -${dels}`;
-									} catch {
-										headerTitle = "";
-									}
+									return (
+										<CodeBlock
+											variant="diff"
+											code={codeContent}
+											showStats={true}
+										/>
+									);
 								}
 
 								return (
 									<CodeBlock
+										variant="chat"
 										code={codeContent}
 										language={language}
 										title={headerTitle}
@@ -478,9 +282,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 								}
 							},
 						}}
-                    >
-                        {sanitizeMarkdown(message.content)}
-                    </ReactMarkdown>
+					>
+						{sanitizeMarkdown(message.content)}
+					</ReactMarkdown>
 				</MessageText>
 				<MessageTimestamp>
 					{formatTimestamp(message.timestamp)}

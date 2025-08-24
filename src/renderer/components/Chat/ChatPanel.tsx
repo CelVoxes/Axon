@@ -18,7 +18,7 @@ import {
 	FiX,
 	FiTrash2,
 } from "react-icons/fi";
-import { CodeBlock } from "./shared/CodeBlock";
+import { CodeBlock } from "../shared/CodeBlock";
 import { Composer, ComposerRef } from "./Composer";
 import { MentionSuggestions } from "./MentionSuggestions";
 import { ProcessingIndicator } from "./Status/ProcessingIndicator";
@@ -33,34 +33,11 @@ import {
 } from "../../services/chat/LocalDatasetRegistry";
 import { electronAPI } from "../../utils/electronAPI";
 
-import {
-	AnalysisOrchestrationService,
-	DataTypeSuggestions,
-} from "../../services/chat/AnalysisOrchestrationService";
+import { AnalysisOrchestrationService } from "../../services/chat/AnalysisOrchestrationService";
 import { ExamplesComponent } from "./AnalysisSuggestionsComponent";
 // EventManager already imported above; avoid duplicate imports
-import { AsyncUtils } from "../../utils/AsyncUtils";
-import {
-	CodeGenerationStartedEvent,
-	CodeGenerationChunkEvent,
-	CodeGenerationCompletedEvent,
-	CodeGenerationFailedEvent,
-	CodeValidationErrorEvent,
-	Dataset,
-} from "../../services/types";
-import { EventManager } from "../../utils/EventManager";
-import { NotebookService } from "../../services/notebook/NotebookService";
-import { ruffLinter } from "../../services/chat/RuffLinter";
-import { autoFixWithRuffAndLLM } from "../../services/chat/LintAutoFixService";
-import {
-	groupSessionsByTime,
-	stripCodeFences,
-	computeSelectionFromMessage,
-	buildUnifiedDiff,
-	parseJsonEdits,
-	applyLineEdits,
-	type LineEdit,
-} from "./ChatPanelUtils";
+
+import { groupSessionsByTime } from "./ChatPanelUtils";
 import { useCodeGenerationEvents } from "./hooks/useCodeGenerationEvents";
 import { useVirtualEnvEvents } from "./hooks/useVirtualEnvEvents";
 import { useChatEvents } from "./hooks/useChatEvents";
@@ -1903,6 +1880,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						{(message.isStreaming || typeof message.code === "string") && (
 							<div style={{ marginTop: "8px" }}>
 								<CodeBlock
+									variant="expandable"
 									code={message.code || ""}
 									language={message.codeLanguage || "python"}
 									title={message.codeTitle || ""}

@@ -100,6 +100,24 @@ export class RuffLinter {
 				formattedCode = this.workspace.format(code);
 			} catch (formatError) {
 				console.warn('Ruff formatting failed:', formatError);
+				// If formatting fails due to syntax issues, mark as invalid
+				if (formatError instanceof Error && formatError.message.includes('Expected an indented block')) {
+					return {
+						isValid: false,
+						diagnostics: [{
+							kind: 'error',
+							code: 'E999',
+							message: `Syntax error: ${formatError.message}`,
+							startLine: 1,
+							startColumn: 1,
+							endLine: 1,
+							endColumn: 1,
+							fixable: false,
+						}],
+						formattedCode: undefined,
+						fixedCode: undefined,
+					};
+				}
 			}
 
 			// Apply fixes if available and requested
