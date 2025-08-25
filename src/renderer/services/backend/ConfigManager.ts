@@ -204,10 +204,17 @@ export class ConfigManager {
 	private loadDefaultConfig(): AppConfig {
 		// Use electronAPI to check if app is packaged
 		const isPackaged = window.electronAPI?.isPackaged?.() || false;
-		const backendUrl = isPackaged ? "http://axon.celvox.co:8002" : "http://localhost:8000";
-		
-		console.log("ConfigManager: isPackaged =", isPackaged, "backendUrl =", backendUrl);
-		
+		const backendUrl = isPackaged
+			? "http://axon.celvox.co:8002"
+			: "http://localhost:8000";
+
+		console.log(
+			"ConfigManager: isPackaged =",
+			isPackaged,
+			"backendUrl =",
+			backendUrl
+		);
+
 		return {
 			backend: {
 				baseUrl: backendUrl,
@@ -215,7 +222,7 @@ export class ConfigManager {
 				retryAttempts: 3,
 			},
 			analysis: {
-				defaultModel: "gpt-4.1", // Uses Chain-of-Thought reasoning internally
+				defaultModel: "gpt-4.1-mini",
 				availableModels: ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"],
 				maxSteps: 20,
 				timeout: 300000, // 5 minutes

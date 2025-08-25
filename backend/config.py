@@ -26,7 +26,7 @@ MAX_SEARCH_ATTEMPTS = 2
 DEFAULT_ORGANISM = "Homo sapiens"
 
 # LLM Configuration
-DEFAULT_LLM_MODEL = "gpt-4.1"  # Uses Chain-of-Thought reasoning internally
+DEFAULT_LLM_MODEL = "gpt-4.1-mini"  # Uses Chain-of-Thought reasoning internally
 
 # Caching
 CACHE_SEARCH_TTL_SECONDS = 15 * 60  # 15 minutes

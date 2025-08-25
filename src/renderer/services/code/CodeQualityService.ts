@@ -111,10 +111,17 @@ export class CodeQualityService {
 		} = options;
 
 		// Detect package-install or non-analytical utility cells and avoid mutating them
-		const isInstallCell =
-			/package\s*install|package-install|pip\s+install|%pip|%conda|conda\s+install/i.test(
-				`${stepTitle}\n${code}`
-			);
+        const isInstallCell =
+            /package\s*install|package-install|pip\s+install|%pip|%conda|conda\s+install/i.test(
+                `${stepTitle}\n${code}`
+            );
+
+        // Detect data download cells and skip linting similar to install cells
+        // Heuristics: keywords in title, presence of common download libs/APIs, or URLs
+        const isDataDownloadCell =
+            /\b(download|fetch|retrieve)\b/i.test(`${stepTitle}`) ||
+            /requests\s*\.|urllib\s*\.|gdown\b|wget\b|curl\b/i.test(code) ||
+            /(https?:\/\/|ftp:\/\/)/i.test(code);
 		
 		console.log(`CodeQualityService: isInstallCell check for "${stepTitle}" - result: ${isInstallCell}`);
 
@@ -128,24 +135,30 @@ export class CodeQualityService {
 			cleanedCode: code,
 		};
 
-		if (isInstallCell) {
-			// For install cells, keep code as-is (only normalize whitespace minimally)
-			this.updateStatus(`Skipping lint/fix for install cell: ${stepTitle}`);
-			result.cleanedCode = normalizePythonCode(code);
-			result.lintedCode = result.cleanedCode;
-			result.isValid = true;
+        if (isInstallCell || isDataDownloadCell) {
+            // For install cells, keep code as-is (only normalize whitespace minimally)
+            this.updateStatus(
+                isInstallCell
+                    ? `Skipping lint/fix for install cell: ${stepTitle}`
+                    : `Skipping lint/fix for data download cell: ${stepTitle}`
+            );
+            result.cleanedCode = normalizePythonCode(code);
+            result.lintedCode = result.cleanedCode;
+            result.isValid = true;
 
-			// Emit a validation success event so the UI doesn't wait for a timeout
-			try {
-				this.codeGenerationService.emitValidationSuccess(
-					stepId,
-					`Skipped linting for install cell: ${stepTitle}`,
-					result.lintedCode
-				);
-			} catch (_) {}
+            // Emit a validation success event so the UI doesn't wait for a timeout
+            try {
+                this.codeGenerationService.emitValidationSuccess(
+                    stepId,
+                    isInstallCell
+                        ? `Skipped linting for install cell: ${stepTitle}`
+                        : `Skipped linting for data download cell: ${stepTitle}`,
+                    result.lintedCode
+                );
+            } catch (_) {}
 
-			return result;
-		}
+            return result;
+        }
 
 		// Step 1: Single comprehensive code enhancement (if not skipped)
 		if (!skipCleaning) {
