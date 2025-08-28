@@ -73,6 +73,17 @@ const MessageText = styled.div<{ $messageType: string }>`
 					border-left: 3px solid #3b82f6;
 					word-wrap: break-word;
 				`;
+			case "tool":
+				return `
+					background: transparent;
+					color:rgb(153, 153, 153);
+					padding: 4px 0;
+					border-radius: 0;
+					font-size: ${typography.sm};
+					line-height: 1.3;
+					word-wrap: break-word;
+					opacity: 0.8;
+				`;
 			default:
 				return `
 					background: rgba(42, 42, 42, 0.6);
@@ -84,7 +95,6 @@ const MessageText = styled.div<{ $messageType: string }>`
 				`;
 		}
 	}}
-
 
 	strong {
 		font-weight: 600;
@@ -159,6 +169,19 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 		if (message.status === "pending" && !message.content.trim())
 			return "system";
 		if (message.status === "failed") return "system";
+
+		// Detect tool messages by content patterns
+		const content = message.content || "";
+		if (
+			content.startsWith("🔍 Auto-inspecting") ||
+			content.startsWith("📁 Inspected") ||
+			content.startsWith("❌ Could not inspect") ||
+			content.startsWith("✅ Inspected") ||
+			content.match(/^Tool > /)
+		) {
+			return "tool";
+		}
+
 		return "assistant";
 	};
 
@@ -181,10 +204,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 								const language = match ? match[1] : "text";
 								if (inline) {
 									return (
-										<CodeBlock
-											variant="inline"
-											code={String(children || "")}
-										/>
+										<CodeBlock variant="inline" code={String(children || "")} />
 									);
 								}
 								let codeContent = String(children || "").trim();

@@ -3,6 +3,9 @@ import { BackendClient } from "../../../services/backend/BackendClient";
 import { LocalDatasetEntry } from "../../../services/chat/LocalDatasetRegistry";
 import { DatasetResolutionService } from "../../../services/chat/DatasetResolutionService";
 import { NotebookEditingService } from "../../../services/chat/NotebookEditingService";
+import { ChatToolAgent } from "../../../services/tools/ChatToolAgent";
+import { ToolRegistry } from "../../../services/tools/ToolRegistry";
+import { AutonomousInspectionService } from "../../../services/tools/AutonomousInspectionService";
 
 interface UseChatMessageHandlingProps {
 	backendClient: BackendClient | null;
@@ -128,10 +131,64 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 			.join("\n\n");
 	}, []);
 
+	const autoPeekMentionedItems = useCallback(
+		async (userMessage: string) => {
+			const inspectionService = new AutonomousInspectionService(
+				workspaceState.currentWorkspace || undefined
+			);
+
+			// Only inspect if the message suggests it would be helpful
+			if (!inspectionService.shouldInspect(userMessage)) {
+				return "";
+			}
+
+			// Show what we're about to inspect
+			addMessage("🔍 Auto-inspecting mentioned files/folders...", false);
+			
+			// Add small delay to make inspection visible
+			await new Promise(resolve => setTimeout(resolve, 500));
+
+			// Perform autonomous inspection
+			const results = await inspectionService.inspectMentionedItems(
+				userMessage,
+				async (result) => {
+					// Show each inspected item in chat
+					if (result.success) {
+						addMessage(
+							`📁 Inspected ${result.path}`,
+							false,
+							result.content,
+							result.language,
+							result.title || result.path
+						);
+					} else {
+						addMessage(
+							`❌ Could not inspect ${result.path}: ${result.error}`,
+							false
+						);
+					}
+					// Small delay between each inspection result
+					await new Promise(resolve => setTimeout(resolve, 300));
+				}
+			);
+
+			// Show completion
+			const successCount = results.filter(r => r.success).length;
+			if (successCount > 0) {
+				addMessage(`✅ Inspected ${successCount} item(s). Proceeding with analysis...`, false);
+				// Brief pause before proceeding
+				await new Promise(resolve => setTimeout(resolve, 800));
+			}
+
+			// Return context for LLM
+			return inspectionService.buildInspectionContext(results);
+		},
+		[workspaceState.currentWorkspace, addMessage]
+	);
+
 	const handleAskMode = useCallback(
 		async (userMessage: string) => {
-			// Ask mode is strict Q&A: no edits, no searches, no dataset ops
-			// Ignore any codeEditContext and just perform a plain question/answer
+			// Ask mode: Q&A with autonomous tool usage for workspace inspection
 			addMessage(userMessage, true);
 			setInputValue("");
 			setIsLoading(true);
@@ -142,11 +199,23 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 				if (!validateBackendClient()) {
 					return;
 				}
-				const context = buildContextFromMessages(analysisState.messages);
-				const answer = await backendClient!.askQuestion({
-					question: userMessage,
-					context,
-				});
+				
+				// Auto-inspect mentioned items for Ask mode too
+				const inspectionContext = await autoPeekMentionedItems(userMessage);
+				const baseContext = buildContextFromMessages(analysisState.messages);
+				const enhancedContext = baseContext + inspectionContext;
+				
+				// Use ChatToolAgent for autonomous tool usage in Ask mode
+				const answer = await ChatToolAgent.askWithTools(
+					backendClient!,
+					userMessage,
+					enhancedContext,
+					{
+						workspaceDir: workspaceState.currentWorkspace || undefined,
+						addMessage, // Tools will show their output in chat
+					}
+				);
+				
 				if (isMounted) {
 					addMessage(answer || "(No answer)", false);
 				}
@@ -172,8 +241,10 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 			validateBackendClient,
 			buildContextFromMessages,
 			analysisState.messages,
+			workspaceState.currentWorkspace,
 			backendClient,
 			resetLoadingState,
+			autoPeekMentionedItems,
 		]
 	);
 
@@ -218,9 +289,45 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 			);
 		}
 
-		// Continue with agent mode handling...
-		// Note: The rest of the agent mode logic would be extracted here
-		// For now, this is a simplified version focusing on the core structure
+		addMessage(userMessage, true);
+		setInputValue("");
+		setIsLoading(true);
+		setIsProcessing(true);
+
+		try {
+			if (!validateBackendClient()) {
+				return;
+			}
+
+			// Auto-peek mentioned files/folders before proceeding
+			const inspectionContext = await autoPeekMentionedItems(userMessage);
+
+			// Continue with agent mode handling...
+			// (The full agent mode logic would be implemented here)
+			// For now, use tools-enhanced Q&A as fallback with inspection context
+			const baseContext = buildContextFromMessages(analysisState.messages);
+			const enhancedContext = baseContext + inspectionContext;
+			
+			const answer = await ChatToolAgent.askWithTools(
+				backendClient!,
+				userMessage,
+				enhancedContext,
+				{
+					workspaceDir: workspaceState.currentWorkspace || undefined,
+					addMessage,
+				}
+			);
+			
+			addMessage(answer || "(No answer)", false);
+		} catch (error) {
+			console.error("Agent mode error:", error);
+			addMessage(
+				"Sorry, I encountered an error. Please try again.",
+				false
+			);
+		} finally {
+			resetLoadingState();
+		}
 	}, [
 		inputValueRef,
 		isLoading,
@@ -234,12 +341,18 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 		mergeSelectedDatasets,
 		selectDatasets,
 		addMessage,
+		autoPeekMentionedItems,
+		validateBackendClient,
+		buildContextFromMessages,
+		backendClient,
+		resetLoadingState,
 	]);
 
 	return {
 		validateBackendClient,
 		performNotebookEdit,
 		buildContextFromMessages,
+		autoPeekMentionedItems,
 		handleAskMode,
 		handleSendMessage,
 	};

@@ -501,7 +501,67 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 			return;
 		}
-		// Resolve @mentions to local datasets and auto-attach (Agent mode only)
+		
+		// Add user message FIRST to avoid duplicates
+		addMessage(userMessage, true);
+		setInputValue("");
+		setIsLoading(true);
+		setIsProcessing(true);
+		
+		// THEN: Autonomous inspection of mentioned files/folders
+		let inspectedLocalData = false;
+		let inspectionContext = "";
+		let inspectedItems: Array<{path: string; success: boolean; content?: string; language?: string; title?: string}> = []; // Store the actual inspected items
+		
+		try {
+			const { AutonomousInspectionService } = await import("../../services/tools/AutonomousInspectionService");
+			const inspectionService = new AutonomousInspectionService(
+				workspaceState.currentWorkspace || undefined
+			);
+
+			if (inspectionService.shouldInspect(userMessage)) {
+				addMessage("🔍 Auto-inspecting mentioned files/folders...", false);
+				
+				// Add delay to make inspection visible
+				await new Promise(resolve => setTimeout(resolve, 800));
+				
+				const results = await inspectionService.inspectMentionedItems(
+					userMessage,
+					async (result) => {
+						if (result.success) {
+							addMessage(
+								`📁 Inspected ${result.path}`,
+								false,
+								result.content,
+								result.language,
+								result.title || result.path
+							);
+						} else {
+							addMessage(
+								`❌ Could not inspect ${result.path}: ${result.error}`,
+								false
+							);
+						}
+						// Delay between each inspection
+						await new Promise(resolve => setTimeout(resolve, 600));
+					}
+				);
+
+				const successCount = results.filter(r => r.success).length;
+				if (successCount > 0) {
+					inspectedLocalData = true;
+					inspectedItems = results.filter(r => r.success); // Store successful inspections
+					inspectionContext = inspectionService.buildInspectionContext(results);
+					addMessage(`✅ Inspected ${successCount} item(s). Proceeding with analysis...`, false);
+					// Pause before continuing
+					await new Promise(resolve => setTimeout(resolve, 1000));
+				}
+			}
+		} catch (error) {
+			console.warn("Autonomous inspection failed:", error);
+		}
+
+		// SECOND: Resolve @mentions to local datasets and auto-attach (Agent mode only)
 		const mentionDatasets = resolveAtMentions(userMessage);
 
 		// Resolve workspace and cell mentions using the service
@@ -526,10 +586,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				false
 			);
 		}
-		addMessage(userMessage, true);
-		setInputValue("");
-		setIsLoading(true);
-		setIsProcessing(true);
 
 		let isMounted = true;
 
@@ -739,11 +795,32 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				codeEditContextRef.current = null;
 				return;
 			}
-			// If datasets are already selected, prioritize analysis/suggestions over intent classification
-			// to avoid accidentally routing to search or generic Q&A.
+			// If we inspected local data, prepare datasets and continue with backend intent classification
+			if (inspectedLocalData && selectedDatasets.length === 0 && inspectedItems.length > 0) {
+				// Convert inspected local data to selected datasets for later use
+				const localDatasets = inspectedItems.map((item, index) => ({
+					id: `local_inspected_${index}`,
+					title: `Local Data: ${item.path}`,
+					source: "Local Workspace",
+					localPath: workspaceState.currentWorkspace ? `${workspaceState.currentWorkspace}/${item.path}` : item.path,
+					isLocalDirectory: true,
+					alias: item.path,
+					description: `Locally inspected data from workspace: ${item.path}`,
+					organism: "Unknown"
+				}));
+				
+				selectDatasets(localDatasets);
+				const aliases = localDatasets.map(d => d.alias).join(", ");
+				addMessage(`Using inspected local data: ${aliases}`, false);
+			}
+			
+			// If datasets are selected (either previously or just converted), proceed with analysis
 			if (selectedDatasets.length > 0) {
-				// Default with selected datasets: treat as analysis request
-				await handleAnalysisRequest(userMessage);
+				// Pass inspection context to analysis pipeline
+				const enhancedAnalysisRequest = inspectionContext 
+					? `${userMessage}\n\nINSPECTION CONTEXT:\n${inspectionContext}` 
+					: userMessage;
+				await handleAnalysisRequest(enhancedAnalysisRequest);
 				return; // handled
 			}
 
@@ -901,8 +978,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 			// Handle low confidence intents or unrecognized intents as general questions
 			else {
-				// General question handling - send to backend LLM
+				// General question handling - use autonomous tool integration
 				try {
+					// Import and use ChatToolAgent for autonomous tool usage
+					const { ChatToolAgent } = await import("../../services/tools/ChatToolAgent");
+					
 					// Build lightweight context from recent messages
 					const recent = (analysisState.messages || []).slice(-10);
 					const context = recent
@@ -919,10 +999,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						.filter(Boolean)
 						.join("\n\n");
 
-					const answer = await backendClient!.askQuestion({
-						question: userMessage,
+					const answer = await ChatToolAgent.askWithTools(
+						backendClient!,
+						userMessage,
 						context,
-					});
+						{
+							workspaceDir: workspaceState.currentWorkspace || undefined,
+							addMessage, // Tools will show their output in chat
+						}
+					);
 
 					if (isMounted) {
 						addMessage(answer || "(No answer received)", false);
