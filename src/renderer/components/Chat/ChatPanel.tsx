@@ -795,9 +795,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				codeEditContextRef.current = null;
 				return;
 			}
-			// If we inspected local data, prepare datasets and continue with backend intent classification
+			// If we inspected local data, prepare datasets and proceed directly with analysis
 			if (inspectedLocalData && selectedDatasets.length === 0 && inspectedItems.length > 0) {
-				// Convert inspected local data to selected datasets for later use
+				// Convert inspected local data to selected datasets
 				const localDatasets = inspectedItems.map((item, index) => ({
 					id: `local_inspected_${index}`,
 					title: `Local Data: ${item.path}`,
@@ -812,17 +812,27 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				selectDatasets(localDatasets);
 				const aliases = localDatasets.map(d => d.alias).join(", ");
 				addMessage(`Using inspected local data: ${aliases}`, false);
+				
+				// Proceed directly with analysis using the localDatasets we just created
+				console.log("✅ Using inspected local data, proceeding with analysis");
+				const enhancedAnalysisRequest = inspectionContext 
+					? `${userMessage}\n\nINSPECTION CONTEXT:\n${inspectionContext}` 
+					: userMessage;
+				await handleAnalysisRequest(enhancedAnalysisRequest, localDatasets);
+				return; // handled
 			}
 			
-			// If datasets are selected (either previously or just converted), proceed with analysis
+			// If datasets were already selected, proceed with analysis
 			if (selectedDatasets.length > 0) {
-				// Pass inspection context to analysis pipeline
+				console.log("✅ Previously selected datasets found, proceeding with analysis");
 				const enhancedAnalysisRequest = inspectionContext 
 					? `${userMessage}\n\nINSPECTION CONTEXT:\n${inspectionContext}` 
 					: userMessage;
 				await handleAnalysisRequest(enhancedAnalysisRequest);
 				return; // handled
 			}
+			
+			console.log("❌ No datasets available, continuing to intent classification");
 
 			// Use backend LLM to classify intent instead of local pattern matching
 			if (!validateBackendClient()) {
@@ -1174,8 +1184,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 	// Function to handle analysis requests
 	const handleAnalysisRequest = useCallback(
-		async (analysisRequest: string) => {
-			if (selectedDatasets.length === 0) {
+		async (analysisRequest: string, providedDatasets?: any[]) => {
+			const datasetsToUse = providedDatasets || selectedDatasets;
+			if (datasetsToUse.length === 0) {
 				addMessage(
 					"I am a bioinformatics agent. I can help you with your data analysis. Tag @files to analyze or open a notebook to work on it.",
 					false
@@ -1191,7 +1202,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				setAgentInstance(null);
 
 				// Convert selected datasets preserving source and urls for the agent/LLM
-				const datasets = selectedDatasets.map((dataset) => ({
+				const datasets = datasetsToUse.map((dataset) => ({
 					id: dataset.id,
 					title: dataset.title,
 					source: (dataset as any).source || "Unknown",
