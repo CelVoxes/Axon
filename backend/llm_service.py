@@ -244,6 +244,41 @@ class LLMService:
         except Exception as e:
             print(f"LLMService.ask error: {e}")
             return "Sorry, I couldn't generate an answer right now. Please try again."
+
+    async def ask_stream(self, question: str, context: str = "", **kwargs):
+        """Streaming Q&A. Yields text chunks from the provider.
+
+        We hint the model to separate internal reasoning using <thinking> tags
+        and place the user-visible response within <final>...</final>. The UI will
+        ignore any <thinking> content and only display the final answer.
+        """
+        if not self.provider:
+            # Fallback to non-streaming answer
+            yield await self.ask(question, context, **kwargs)
+            return
+
+        system_prompt = (
+            "You are Axon, an expert assistant.\n"
+            "If you need to plan internally, you MAY use <thinking>...</thinking>.\n"
+            "Place user-visible content inside <final>...</final>."
+        )
+        user_content = (
+            f"Question: {question}\n\n" + (f"Context:\n{context}" if context else "")
+        )
+
+        try:
+            async for chunk in self.provider.generate_stream(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=900,
+                temperature=0.2,
+            ):
+                if chunk:
+                    yield chunk
+        except Exception as e:
+            yield f"(error) {e}"
     
     async def generate_search_terms(
         self, 
@@ -321,7 +356,7 @@ Simplified query:"""
             return self._generate_fallback_code(task_description, language)
         
         prompt = f"""
-You are an expert Python programmer specializing in data analysis and bioinformatics. 
+You are an expert Python programmer specializing in data analysis and bioinformatics.
 Generate clean, well-documented code for the following task.
 
 Task: {task_description}
@@ -336,6 +371,9 @@ Requirements:
 - Add comments for clarity
 - Handle errors gracefully
 - Follow Python best practices
+- Respect any dataset access instructions found in CONTEXT. If CONTEXT specifies that data was
+  already downloaded to a local folder (e.g., data_dir = Path('data')) or that dataset variables
+  were preloaded, do not attempt to download files again. Load data exactly as instructed by CONTEXT.
 
 Code:
 """
@@ -391,7 +429,7 @@ Generate the replacement code now:
         else:
             # Enhanced prompt with better structure and examples for full code generation
             prompt = f"""
-You are an expert Python programmer specializing in data analysis and bioinformatics. 
+You are an expert Python programmer specializing in data analysis and bioinformatics.
 Generate clean, well-documented, EXECUTABLE code for the following task.
 
 TASK: {task_description}
@@ -400,7 +438,7 @@ LANGUAGE: {language}
 {f"CONTEXT: {context}" if context else ""}
 
 CRITICAL REQUIREMENTS:
-1. Write ONLY executable Python code - NO explanations, markdown, or non-code text
+1. Write ONLY executable Python code — NO explanations, markdown, or non-code text
 2. Include only the imports actually used in your code
 3. Do NOT re-import packages that are already imported in the CONTEXT
 4. Add clear comments explaining each step
@@ -409,32 +447,31 @@ CRITICAL REQUIREMENTS:
 7. Make the code production-ready and biologically meaningful
 8. Include print statements to show progress
 9. Save outputs to appropriate directories (results/, figures/, etc.)
-10. Use simple print formatting: print("Value:", value) instead of complex f-strings
+10. Use simple print formatting: print("Value:", value)
 11. Ensure all strings are properly closed and escaped
 
-DATASET HANDLING REQUIREMENTS:
-- ALWAYS validate URLs before downloading
-- Check HTTP status codes (200 = success, 404 = not found, etc.)
-- Handle different file formats (txt, csv, gz, gzip, etc.)
-- Validate downloaded content (check if it's HTML error page vs actual data)
-- Provide fallback options when downloads fail
-- Use proper headers for requests to avoid being blocked
-- Check file size and content type
-- For GEO datasets: Use proper NCBI URLs and handle series matrix files
+DATASET ACCESS RULES (DEFER TO CONTEXT):
+- If CONTEXT specifies how to access data (e.g., a 'DATA ACCESS CONTEXT' section, preloaded dataset
+  variables, or 'data_dir = Path("data")' with specific filenames), you MUST follow that pattern.
+- Do NOT download data again if previous steps already handled downloading or loading.
+- For remote datasets: assume files are present under 'data/' as instructed by CONTEXT; verify file
+  existence before reading; if missing, print a clear warning and continue without downloading.
+- For local datasets: assume variables are already loaded when CONTEXT indicates so; do not rebuild
+  paths or reload unless the TASK explicitly requests it.
+- Only perform network downloads if the TASK explicitly states to download and CONTEXT does not
+  already include download/setup code for the same data.
 
 ERROR HANDLING:
-- Always wrap downloads in try-except blocks
-- Check if response contains HTML error pages
-- Validate file content before processing
-- Provide meaningful error messages
-- Continue execution even if some datasets fail
+- Wrap I/O in try-except blocks; print meaningful error messages
+- Validate file existence and format before processing
+- Continue execution when possible and report missing inputs clearly
 
 CODE STRUCTURE:
-1. Start with imports (only those you actually use and not already present in CONTEXT)
-2. Create output directories
-3. Define helper functions
-4. Main execution code with error handling
-5. Save results and create visualizations
+1. Imports actually used (avoid duplicates w.r.t. CONTEXT)
+2. Output directories
+3. Helper functions (if needed)
+4. Main execution code respecting CONTEXT data access
+5. Save results and visualizations
 
 EXAMPLE STRUCTURE:
 ```python
@@ -450,7 +487,7 @@ figures_dir.mkdir(exist_ok=True)
 print("Starting analysis...")
 
 try:
-    # Your code here
+    # Your code here (load using CONTEXT-specified pattern)
     print("Analysis completed successfully!")
 except Exception as e:
     print("Error:", e)

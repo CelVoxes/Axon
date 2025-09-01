@@ -30,7 +30,7 @@ export interface CodeQualityResult {
 
 export interface CodeQualityPipelineOptions {
 	skipValidation?: boolean;
-	skipExecution?: boolean;
+	skipExecution?: boolean; // Default: true (execution disabled for performance)
 	skipCleaning?: boolean;
 	stepTitle?: string;
 	addImports?: boolean;
@@ -90,7 +90,7 @@ export class CodeQualityService {
 	// Duplicate helpers removed: using shared utils instead
 
 	/**
-	 * Comprehensive code quality check: validation + cleaning + execution
+	 * Comprehensive code quality check: validation + cleaning (execution disabled by default)
 	 */
 	async validateAndTest(
 		code: string,
@@ -100,7 +100,7 @@ export class CodeQualityService {
 		console.log(`CodeQualityService: validateAndTest called for stepId: ${stepId}, code length: ${code.length}`);
 		const {
 			skipValidation = false,
-			skipExecution = false,
+			skipExecution = true, // Default to skipping execution for performance
 			skipCleaning = false,
 			stepTitle = stepId,
 			addImports = true, // Add imports when needed, but respect global context
@@ -172,13 +172,11 @@ export class CodeQualityService {
 			});
 		}
 
-		// Step 2: Code Validation (if not skipped) - Using unified Ruff+LLM service
+		// Step 2: Code Validation (if not skipped) - Using optimized Ruff+LLM service
 		if (!skipValidation) {
-			this.updateStatus(`Validating and fixing code for ${stepTitle}...`);
-			console.log(`CodeQualityService: Starting validation for: ${stepTitle}, code length: ${result.cleanedCode.length}, skipValidationEvents: ${skipValidationEvents}`);
+			this.updateStatus(`Validating code for ${stepTitle}...`);
 
 			try {
-				console.log('CodeQualityService: calling autoFixWithRuffAndLLM for:', stepTitle);
 				const fixResult = await autoFixWithRuffAndLLM(
 					this.backendClient,
 					result.cleanedCode,
@@ -187,7 +185,6 @@ export class CodeQualityService {
 						stepTitle
 					}
 				);
-				console.log('CodeQualityService: autoFixWithRuffAndLLM completed for:', stepTitle);
 
 				// Post-process undefined-name errors that are satisfied by prior cells' imports
 				const globalCtx = options.globalCodeContext || "";
@@ -280,10 +277,16 @@ export class CodeQualityService {
 					if (!skipValidationEvents) {
 						// Only show success message if there were warnings or fixes applied
 						if (result.validationWarnings.length > 0 || fixResult.wasFixed) {
+							const usedLLMFallback = (fixResult as any).ruffSucceeded === false;
+							const base = usedLLMFallback
+								? `Code validation passed via LLM fallback (Ruff unavailable)`
+								: `Code validation passed${fixResult.wasFixed ? ' (fixes applied)' : ''}`;
+							const msg = `${base}${result.validationWarnings.length > 0 ? ` with ${result.validationWarnings.length} warning(s)` : ''}`;
+
 							this.codeGenerationService.emitValidationSuccess(
 								stepId,
-								`Code validation passed${fixResult.wasFixed ? ' (fixes applied)' : ''}${result.validationWarnings.length > 0 ? ` with ${result.validationWarnings.length} warning(s)` : ''}`,
-								undefined
+								msg,
+								result.lintedCode
 							);
 						}
 					}
@@ -314,9 +317,9 @@ export class CodeQualityService {
 			}
 		}
 
-		// Step 3: Execution Testing (if not skipped)
+		// Step 3: Execution Testing (disabled by default for performance)
 		if (!skipExecution) {
-			this.updateStatus(`Testing code execution for ${stepTitle}...`);
+			this.updateStatus(`Testing execution for ${stepTitle}...`);
 
 			try {
 				const executionResult = await this.cellExecutionService.executeCell(
@@ -325,35 +328,13 @@ export class CodeQualityService {
 					undefined
 				);
 
-				// minimal log
-
 				result.executionPassed = executionResult.status !== "failed";
 				result.executionOutput = executionResult.output;
 
 				if (executionResult.status === "failed") {
 					result.executionError =
 						executionResult.output || "Unknown execution error";
-					console.warn(
-						`Code execution failed for ${stepTitle}:`,
-						executionResult.output
-					);
-
-					// Check if this is a timeout error and suggest timeout-safe code
-					const isTimeoutError = result.executionError
-						.toLowerCase()
-						.includes("timeout");
-					if (isTimeoutError) {
-						this.updateStatus(
-							`⚠️ Code execution timed out for ${stepTitle} - consider using safer code patterns`
-						);
-						console.warn(
-							"CodeQualityService: Timeout detected - code may be too complex or have infinite loops"
-						);
-					} else {
-						this.updateStatus(
-							`⚠️ Code execution failed for ${stepTitle}, but test completed`
-						);
-					}
+					this.updateStatus(`⚠️ Code execution failed for ${stepTitle}`);
 				} else {
 					this.updateStatus(`✅ Code execution passed for ${stepTitle}`);
 				}
@@ -361,7 +342,6 @@ export class CodeQualityService {
 				result.executionPassed = false;
 				result.executionError =
 					error instanceof Error ? error.message : "Unknown execution error";
-				console.error(`Execution test error for ${stepTitle}:`, error);
 				this.updateStatus(`⚠️ Error testing code execution for ${stepTitle}`);
 			}
 		}
@@ -672,9 +652,9 @@ ${code.replace(/while\s+(True|1):/g, (match) => {
 			);
 			results.push(result);
 
-			// Small delay between tests to avoid overwhelming the system
+			// Minimal delay between tests
 			if (i < codeSnippets.length - 1) {
-				await new Promise((resolve) => setTimeout(resolve, 100));
+				await new Promise((resolve) => setTimeout(resolve, 25));
 			}
 		}
 

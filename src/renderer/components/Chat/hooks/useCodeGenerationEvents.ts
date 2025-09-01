@@ -8,6 +8,124 @@ import {
 	CodeValidationErrorEvent,
 } from "../../../services/types";
 
+// LCS-based diff that shows minimal additions/removals (bounded for performance)
+function generateFastDiff(
+    prevNormalized: string, 
+    nextNormalized: string, 
+    addMessage: (content: string, isUser: boolean, code?: string, codeLanguage?: string, codeTitle?: string) => void
+): void {
+    const oldLines = prevNormalized.split("\n");
+    const newLines = nextNormalized.split("\n");
+
+    // Myers O(ND) diff for scalability
+    const diffOps = myersOps(oldLines, newLines);
+
+    const diffLines: string[] = [];
+    for (const op of diffOps) {
+        if (op.t === '+') diffLines.push(`+ ${op.s ?? ''}`);
+        else if (op.t === '-') diffLines.push(`- ${op.s ?? ''}`);
+        // skip unchanged to keep chat concise
+    }
+
+    if (diffLines.length > 0) {
+        const diffBody = diffLines.join("\n");
+        if (diffBody.trim().length > 0) {
+            addMessage(
+                "Code validation made changes:",
+                false,
+                diffBody,
+                "diff",
+                "Validation changes"
+            );
+        } else {
+            const lengthDiff = nextNormalized.length - prevNormalized.length;
+            const lineDiff = (nextNormalized.split("\n").length - prevNormalized.split("\n").length);
+            addMessage(
+                `Code validation adjusted formatting (${lengthDiff > 0 ? '+' : ''}${lengthDiff} chars, ${lineDiff > 0 ? '+' : ''}${lineDiff} lines).`,
+                false
+            );
+        }
+        return;
+    }
+
+    // Fallback: texts differ but no visible per-line changes (edge cases)
+    const lengthDiff = nextNormalized.length - prevNormalized.length;
+    const lineDiff = (nextNormalized.split("\n").length - prevNormalized.split("\n").length);
+    addMessage(
+        `Code validation adjusted formatting (${lengthDiff > 0 ? '+' : ''}${lengthDiff} chars, ${lineDiff > 0 ? '+' : ''}${lineDiff} lines).`,
+        false
+    );
+}
+
+function myersOps(a: string[], b: string[]): Array<{ t: ' ' | '+' | '-'; s: string }> {
+    const N = a.length;
+    const M = b.length;
+    const max = N + M;
+    const offset = max;
+    const v: number[] = Array(2 * max + 1).fill(0);
+    const trace: number[][] = [];
+
+    let found = false;
+    for (let D = 0; D <= max; D++) {
+        for (let k = -D; k <= D; k += 2) {
+            let x: number;
+            if (k === -D || (k !== D && v[offset + k - 1] < v[offset + k + 1])) {
+                x = v[offset + k + 1];
+            } else {
+                x = v[offset + k - 1] + 1;
+            }
+            let y = x - k;
+            while (x < N && y < M && a[x] === b[y]) {
+                x++;
+                y++;
+            }
+            v[offset + k] = x;
+            if (x >= N && y >= M) {
+                trace.push(v.slice());
+                found = true;
+                break;
+            }
+        }
+        if (found) break;
+        trace.push(v.slice());
+    }
+
+    // Backtrack to build ops
+    const ops: Array<{ t: ' ' | '+' | '-'; s: string }> = [];
+    let x = N;
+    let y = M;
+    for (let D = trace.length - 1; D >= 0; D--) {
+        const vD = trace[D];
+        const k = x - y;
+        let prevK: number;
+        if (k === -D || (k !== D && vD[offset + k - 1] < vD[offset + k + 1])) {
+            prevK = k + 1; // insertion
+        } else {
+            prevK = k - 1; // deletion
+        }
+        const prevX = vD[offset + prevK];
+        const prevY = prevX - prevK;
+
+        // Diagonal (matches)
+        while (x > prevX && y > prevY) {
+            ops.push({ t: ' ', s: a[x - 1] });
+            x--;
+            y--;
+        }
+        if (D > 0) {
+            if (x === prevX) {
+                ops.push({ t: '+', s: b[y - 1] });
+                y--;
+            } else {
+                ops.push({ t: '-', s: a[x - 1] });
+                x--;
+            }
+        }
+    }
+
+    return ops.reverse();
+}
+
 interface UseCodeGenerationEventsProps {
 	analysisDispatch: any;
 	setIsProcessing: (value: boolean) => void;
@@ -16,7 +134,7 @@ interface UseCodeGenerationEventsProps {
 	setValidationSuccessMessage: (message: string) => void;
 	scheduleProcessingStop: (delayMs?: number) => void;
 	cancelProcessingStop: () => void;
-	enqueueStreamingUpdate: (stepId: string, content: string) => void;
+	enqueueStreamingUpdate?: (stepId: string, content: string) => void;
 	addMessage: (
 		content: string,
 		isUser: boolean,
@@ -113,7 +231,9 @@ export function useCodeGenerationEvents({
 			}
 
 			// Send raw code content for streaming (no markdown wrapping)
-			enqueueStreamingUpdate(stepId, stream.accumulatedCode);
+			if (enqueueStreamingUpdate) {
+				enqueueStreamingUpdate(stepId, stream.accumulatedCode);
+			}
 		},
 		[enqueueStreamingUpdate]
 	);
@@ -243,59 +363,20 @@ export function useCodeGenerationEvents({
 					summary += "\n";
 				}
 				summary += "```";
-				// Build a separate diff block message for proper highlighting via CodeBlock
+            // Show lint summary and optional LCS diff
+				addMessage(summary, false);
+				
 				if (
 					originalCode &&
 					fixedCode &&
 					typeof originalCode === "string" &&
-					typeof fixedCode === "string"
+					typeof fixedCode === "string" &&
+					originalCode.trim() !== fixedCode.trim()
 				) {
-					const oldLines = originalCode.split("\n");
-					const newLines = fixedCode.split("\n");
-					const m = oldLines.length;
-					const n = newLines.length;
-					const lcs: number[][] = Array.from({ length: m + 1 }, () =>
-						Array(n + 1).fill(0)
-					);
-					for (let i = 1; i <= m; i++) {
-						for (let j = 1; j <= n; j++) {
-							lcs[i][j] =
-								oldLines[i - 1] === newLines[j - 1]
-									? lcs[i - 1][j - 1] + 1
-									: Math.max(lcs[i - 1][j], lcs[i][j - 1]);
-						}
-					}
-					const ops: Array<{ t: " " | "+" | "-"; s: string }> = [];
-					let i = m,
-						j = n;
-					while (i > 0 || j > 0) {
-						if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
-							ops.push({ t: " ", s: oldLines[i - 1] });
-							i--;
-							j--;
-						} else if (j > 0 && (i === 0 || lcs[i][j - 1] > lcs[i - 1][j])) {
-							ops.push({ t: "+", s: newLines[j - 1] });
-							j--;
-						} else if (i > 0) {
-							ops.push({ t: "-", s: oldLines[i - 1] });
-							i--;
-						}
-					}
-					ops.reverse();
-					const diffBody = ops
-						.map((o) => (o.t === " " ? `  ${o.s}` : `${o.t} ${o.s}`))
-						.join("\n");
-					// Post lint summary (text), then a highlighted diff block
-					addMessage(summary, false);
-					addMessage(
-						"Validation changes",
-						false,
-						diffBody,
-						"diff",
-						"Diff vs generated"
-					);
-				} else {
-					addMessage(summary, false);
+                    // Use LCS diff for validation errors too
+					generateFastDiff(originalCode, fixedCode, (content, isUser, code, lang, title) => {
+						addMessage(content, isUser, code, lang, title);
+					});
 				}
 				
 				// Mark streaming message as completed now
@@ -361,47 +442,18 @@ export function useCodeGenerationEvents({
 					}
 
 
-					// If validated code is provided and differs, show a highlighted diff and update code block
-					if (typeof code === "string" && code.length > 0) {
+					// If validated code is provided and differs, show a fast summary
+					if (typeof code === "string" && code.length > 0 && stream.lastShownCode) {
 						const prev = (stream as any).lastShownCode || "";
 						const next = code;
-						if (prev !== next) {
-							const oldLines = prev.split("\n");
-							const newLines = next.split("\n");
-							const m = oldLines.length;
-							const n = newLines.length;
-							const lcs: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
-							for (let i = 1; i <= m; i++) {
-								for (let j = 1; j <= n; j++) {
-									lcs[i][j] = oldLines[i - 1] === newLines[j - 1]
-										? lcs[i - 1][j - 1] + 1
-										: Math.max(lcs[i - 1][j], lcs[i][j - 1]);
-								}
-							}
-							const ops: Array<{ t: " " | "+" | "-"; s: string }> = [];
-							let i = m, j = n;
-							while (i > 0 || j > 0) {
-								if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
-									ops.push({ t: " ", s: oldLines[i - 1] });
-									i--; j--;
-								} else if (j > 0 && (i === 0 || lcs[i][j - 1] > lcs[i - 1][j])) {
-									ops.push({ t: "+", s: newLines[j - 1] });
-									j--;
-								} else if (i > 0) {
-									ops.push({ t: "-", s: oldLines[i - 1] });
-									i--;
-								}
-							}
-							ops.reverse();
-							const diffBody = ops.map(o => (o.t === " " ? `  ${o.s}` : `${o.t} ${o.s}`)).join("\n");
-
-							addMessage(
-								"Final code saved to notebook differs from streamed code. Changes:",
-								false,
-								diffBody,
-								"diff",
-								"Validation changes"
-							);
+						
+						// Fast comparison: normalize and check if different
+						const prevNormalized = prev.trim().replace(/\r\n/g, '\n');
+						const nextNormalized = next.trim().replace(/\r\n/g, '\n');
+						
+						if (prevNormalized !== nextNormalized) {
+                            // Use LCS-based diff that shows actual changes
+							generateFastDiff(prevNormalized, nextNormalized, addMessage);
 
 							analysisDispatch({
 								type: "UPDATE_MESSAGE",

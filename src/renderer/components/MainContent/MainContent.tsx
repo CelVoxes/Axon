@@ -303,10 +303,21 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 			workspaceDispatch({ type: "SET_ACTIVE_FILE", payload: filePath });
 		};
 
-		const handleAddNotebookCell = (event: CustomEvent) => {
-			// This will be handled by the Notebook component
-			// The event is dispatched for the Notebook component to listen to
-		};
+        const handleAddNotebookCell = (event: CustomEvent) => {
+            // Ensure the target notebook is opened and focused so the FileEditor can process the event
+            try {
+                const { filePath } = (event.detail || {}) as any;
+                if (typeof filePath === 'string' && filePath.endsWith('.ipynb')) {
+                    if (!workspaceState.openFiles.includes(filePath)) {
+                        workspaceDispatch({ type: 'OPEN_FILE', payload: filePath });
+                    }
+                    workspaceDispatch({ type: 'SET_ACTIVE_FILE', payload: filePath });
+                }
+            } catch (_) {
+                // If anything goes wrong, let the Notebook component handle normally
+            }
+            // The Notebook/FileEditor component will handle actual cell addition
+        };
 
 		const handleUpdateNotebookCell = (event: CustomEvent) => {
 			// This will be handled by the Notebook component

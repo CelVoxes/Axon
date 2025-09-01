@@ -615,7 +615,7 @@ export class BackendClient implements IBackendClient {
 		}
 	}
 
-	// Business logic methods
+  // Business logic methods
 
 	// Utility method for basic term extraction (fallback)
 	private extractBasicTerms(query: string): string[] {
@@ -644,7 +644,36 @@ export class BackendClient implements IBackendClient {
 			.slice(0, 3);
 
 		return terms.length > 0 ? terms : [query];
-	}
+  }
+
+  /**
+   * Stream Ask (Q&A) with reasoning-aware events.
+   * onEvent receives objects: { type: 'status'|'answer'|'done', ... }
+   */
+  async askQuestionStream(
+    params: { question: string; context?: string },
+    onEvent: (evt: any) => void
+  ): Promise<void> {
+    const controller = new AbortController();
+    this.abortControllers.add(controller);
+    try {
+      const response = await fetch(`${this.baseUrl}/llm/ask/stream`, {
+        method: "POST",
+        headers: this.buildHeaders(),
+        body: JSON.stringify({
+          question: params.question,
+          context: params.context || "",
+        }),
+        signal: controller.signal,
+      });
+
+      await readNdjsonStream(response, {
+        onLine: (json: any) => onEvent(json),
+      });
+    } finally {
+      this.abortControllers.delete(controller);
+    }
+  }
 
 	// ===== LLM API Methods =====
 

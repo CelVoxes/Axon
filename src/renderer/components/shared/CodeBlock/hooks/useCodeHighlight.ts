@@ -24,17 +24,22 @@ export function useCodeHighlight({
     const el = codeRef.current;
     if (!el || !code) return;
 
-    requestAnimationFrame(() => {
-      try {
-        // Always reset to plain text to avoid leftover spans
-        el.textContent = code;
-        el.className = `hljs language-${language}`;
-        el.removeAttribute('data-highlighted');
-        hljs.highlightElement(el);
-      } catch (error) {
-        console.warn('Highlight.js error:', error);
-      }
-    });
+    // Debounce highlighting for better performance
+    const timeoutId = setTimeout(() => {
+      requestAnimationFrame(() => {
+        try {
+          // Always reset to plain text to avoid leftover spans
+          el.textContent = code;
+          el.className = `hljs language-${language}`;
+          el.removeAttribute('data-highlighted');
+          hljs.highlightElement(el);
+        } catch (error) {
+          console.warn('Highlight.js error:', error);
+        }
+      });
+    }, 50); // Small delay to batch rapid updates
+    
+    return () => clearTimeout(timeoutId);
   }, [code, language, isStreaming, enabled]);
 
   // One-time initial highlight when first content arrives during streaming

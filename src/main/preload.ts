@@ -166,6 +166,22 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		ipcRenderer.on("update-status", (_, data) => callback(data));
 	},
 
+	// PDF generation
+	generatePDF: (options: {
+		html: string;
+		outputPath: string;
+		options?: {
+			format?: string;
+			printBackground?: boolean;
+			margin?: {
+				top?: string;
+				right?: string;
+				bottom?: string;
+				left?: string;
+			};
+		};
+	}) => ipcRenderer.invoke("generate-pdf", options),
+
 	// Remove listeners
 	removeAllListeners: (channel: string) => {
 		ipcRenderer.removeAllListeners(channel);
@@ -296,6 +312,22 @@ export interface ElectronAPI {
 	checkForUpdates: () => Promise<{ success: boolean; error?: string }>;
 	installUpdate: () => Promise<{ success: boolean; error?: string }>;
 	onUpdateStatus: (callback: (data: any) => void) => void;
+
+	// PDF generation
+	generatePDF: (options: {
+		html: string;
+		outputPath: string;
+		options?: {
+			format?: string;
+			printBackground?: boolean;
+			margin?: {
+				top?: string;
+				right?: string;
+				bottom?: string;
+				left?: string;
+			};
+		};
+	}) => Promise<{ success: boolean; error?: string }>;
 
 	removeAllListeners: (channel: string) => void;
 }

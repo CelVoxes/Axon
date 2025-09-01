@@ -2120,6 +2120,71 @@ export class AxonApp {
 		ipcMain.handle("install-update", () => {
 			this.installUpdate();
 		});
+
+		// PDF generation handler
+		ipcMain.handle("generate-pdf", async (_, options: {
+			html: string;
+			outputPath: string;
+			options?: {
+				format?: string;
+				printBackground?: boolean;
+				margin?: {
+					top?: string;
+					right?: string;
+					bottom?: string;
+					left?: string;
+				};
+			};
+		}) => {
+			try {
+				if (!this.mainWindow) {
+					return { success: false, error: "Main window not available" };
+				}
+
+				// Create a hidden BrowserWindow to render the HTML
+				const pdfWindow = new BrowserWindow({
+					show: false,
+					webPreferences: {
+						nodeIntegration: false,
+						contextIsolation: true,
+					},
+				});
+
+				// Load the HTML content
+				await pdfWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(options.html)}`);
+
+				// Wait for the page to fully load
+				await new Promise(resolve => setTimeout(resolve, 2000));
+
+				// Generate PDF with specified options
+				const pdfOptions = {
+					format: options.options?.format || 'A4',
+					printBackground: options.options?.printBackground !== false,
+					margin: options.options?.margin || {
+						top: '1in',
+						right: '1in',
+						bottom: '1in',
+						left: '1in'
+					}
+				};
+
+				const pdfBuffer = await pdfWindow.webContents.printToPDF(pdfOptions);
+				
+				// Write the PDF buffer to file
+				fs.writeFileSync(options.outputPath, pdfBuffer);
+
+				// Clean up the hidden window
+				pdfWindow.close();
+
+				return { success: true };
+			} catch (error) {
+				console.error("PDF generation error:", error);
+				return { 
+					success: false, 
+					error: error instanceof Error ? error.message : String(error) 
+				};
+			}
+		});
 	}
 
 	/**

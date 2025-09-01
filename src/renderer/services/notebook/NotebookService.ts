@@ -53,10 +53,10 @@ export class NotebookService {
 		this.workspacePath = newWorkspacePath;
 	}
 
-	/**
-	 * Add a markdown cell to a notebook
-	 */
-	async addMarkdownCell(notebookPath: string, content: string): Promise<void> {
+  /**
+   * Add a markdown cell to a notebook
+   */
+  async addMarkdownCell(notebookPath: string, content: string): Promise<void> {
 		// Validate content before adding
 		if (!content || !content.trim()) {
 			console.warn(
@@ -65,17 +65,47 @@ export class NotebookService {
 			return;
 		}
 
-		console.log(
-			`NotebookService: Adding markdown cell with ${content.length} characters to ${notebookPath}`
-		);
+    console.log(
+      `NotebookService: Adding markdown cell with ${content.length} characters to ${notebookPath}`
+    );
+
+    // Ensure the target notebook is open and ready so the FileEditor can handle the event
+    try {
+      EventManager.dispatchEvent("open-workspace-file", { filePath: notebookPath });
+      const ready = await this.waitForNotebookReady(notebookPath, 15000);
+      if (!ready.isReady) {
+        console.warn(
+          `NotebookService: Proceeding to add markdown cell even though notebook not reported ready: ${notebookPath}`
+        );
+      }
+    } catch (e) {
+      console.warn(
+        `NotebookService: Failed to confirm notebook readiness before adding markdown cell: ${notebookPath}`,
+        e
+      );
+    }
 
 		// Ensure newlines are preserved when the FileEditor converts to ipynb source
 		const normalized = content.replace(/\r\n/g, "\n");
-		// Attach the acknowledgement listener BEFORE dispatch to avoid race conditions
-		const ackPromise = EventManager.waitForEvent<any>(
-			"notebook-cell-added",
-			15000
-		);
+		// Attach a filtered acknowledgement listener BEFORE dispatch to avoid cross-notebook races
+		const ackPromise = new Promise<any>((resolve, reject) => {
+			let cleanup: (() => void) | null = null;
+			const timeout = setTimeout(() => {
+				if (cleanup) cleanup();
+				reject(new Error("notebook-cell-added timeout"));
+			}, 15000);
+			cleanup = EventManager.createManagedListener(
+				"notebook-cell-added",
+				(event) => {
+					const detail = (event as CustomEvent).detail || {};
+					if (detail.filePath === notebookPath) {
+						clearTimeout(timeout);
+						if (cleanup) cleanup();
+						resolve(detail);
+					}
+				}
+			);
+		});
 		EventManager.dispatchEvent("add-notebook-cell", {
 			filePath: notebookPath,
 			cellType: "markdown",
@@ -84,10 +114,10 @@ export class NotebookService {
 		await ackPromise;
 	}
 
-	/**
-	 * Add a code cell to a notebook
-	 */
-	async addCodeCell(notebookPath: string, code: string): Promise<void> {
+  /**
+   * Add a code cell to a notebook
+   */
+  async addCodeCell(notebookPath: string, code: string): Promise<void> {
 		// Validate code content before adding
 		if (!code || !code.trim()) {
 			console.warn(
@@ -96,20 +126,50 @@ export class NotebookService {
 			return;
 		}
 
-		console.log(
-			`NotebookService: Adding code cell with ${code.length} characters to ${notebookPath}`
-		);
+    console.log(
+      `NotebookService: Adding code cell with ${code.length} characters to ${notebookPath}`
+    );
 
-		// Attach the acknowledgement listener BEFORE dispatch to avoid race conditions
-		const ackPromise = EventManager.waitForEvent<any>(
-			"notebook-cell-added",
-			30000 // Increased timeout for validation
-		);
-		EventManager.dispatchEvent("add-notebook-cell", {
-			filePath: notebookPath,
-			cellType: "code",
-			content: code,
+    // Ensure the target notebook is open and ready so the FileEditor can handle the event
+    try {
+      EventManager.dispatchEvent("open-workspace-file", { filePath: notebookPath });
+      const ready = await this.waitForNotebookReady(notebookPath, 15000);
+      if (!ready.isReady) {
+        console.warn(
+          `NotebookService: Proceeding to add cell even though notebook not reported ready: ${notebookPath}`
+        );
+      }
+    } catch (e) {
+      console.warn(
+        `NotebookService: Failed to confirm notebook readiness before adding cell: ${notebookPath}`,
+        e
+      );
+    }
+
+		// Attach a filtered acknowledgement listener BEFORE dispatch to avoid cross-notebook races
+		const ackPromise = new Promise<any>((resolve, reject) => {
+			let cleanup: (() => void) | null = null;
+			const timeout = setTimeout(() => {
+				if (cleanup) cleanup();
+				reject(new Error("notebook-cell-added timeout"));
+			}, 30000);
+			cleanup = EventManager.createManagedListener(
+				"notebook-cell-added",
+				(event) => {
+					const detail = (event as CustomEvent).detail || {};
+					if (detail.filePath === notebookPath) {
+						clearTimeout(timeout);
+						if (cleanup) cleanup();
+						resolve(detail);
+					}
+				}
+			);
 		});
+    EventManager.dispatchEvent("add-notebook-cell", {
+      filePath: notebookPath,
+      cellType: "code",
+      content: code,
+    });
 		
 		const result = await ackPromise;
 		

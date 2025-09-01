@@ -52,7 +52,11 @@ export function useCodeStreaming({
     
     if (isStreaming) {
       if (autoScrollRef.current && newHeight > (lastScrollHeightRef.current || 0)) {
-        el.scrollTop = newHeight;
+        // Throttle scroll updates during streaming to improve performance
+        const scrollDiff = newHeight - (lastScrollHeightRef.current || 0);
+        if (scrollDiff > 20 || newHeight < 200) { // Only scroll on significant changes
+          el.scrollTop = newHeight;
+        }
       }
       lastScrollHeightRef.current = newHeight;
     } else if (autoScrollRef.current) {

@@ -148,9 +148,8 @@ export class NotebookCodeGenerationService {
       throw e;
     }
 
-    const finalCode = this.sanitizeNotebookPythonCode(
-      this.codeQualityService.getBestCode(validation)
-    );
+    const bestCode = this.codeQualityService.getBestCode(validation);
+    const finalCode = this.sanitizeNotebookPythonCode(bestCode);
 
     // Add validated code as notebook cell first
     await this.notebookService.addCodeCell(notebookPath, finalCode);
@@ -161,7 +160,8 @@ export class NotebookCodeGenerationService {
       if (eventData.isValid) {
         if (typeof (this.codeGenerator as any).emitValidationSuccess === "function") {
           const message = `Code validation passed${eventData.wasFixed ? ' (fixes applied)' : ''}${eventData.warnings.length > 0 ? ` with ${eventData.warnings.length} warning(s)` : ''}`;
-          (this.codeGenerator as any).emitValidationSuccess(stepId, message, finalCode);
+          // Use bestCode (unsanitized) for UI comparison, not finalCode (sanitized for notebook)
+          (this.codeGenerator as any).emitValidationSuccess(stepId, message, bestCode);
         }
       } else {
         if (typeof (this.codeGenerator as any).emitValidationErrors === "function") {

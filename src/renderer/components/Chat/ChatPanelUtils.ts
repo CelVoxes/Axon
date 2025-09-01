@@ -100,64 +100,111 @@ export const computeSelectionFromMessage = (
 	return { selStart, selEnd, startLine, endLine, withinSelection };
 };
 
-// Helper: unified diff for selection updates
+// Unified diff using Myers' algorithm (near-linear in practice)
 export const buildUnifiedDiff = (
-	oldText: string,
-	newText: string,
-	file: string,
-	oldStart: number
+    oldText: string,
+    newText: string,
+    file: string,
+    oldStart: number
 ) => {
-	const oldLines = oldText.split("\n");
-	const newLines = newText.split("\n");
-	const m = oldLines.length;
-	const n = newLines.length;
-	const lcs: number[][] = Array.from({ length: m + 1 }, () =>
-		Array(n + 1).fill(0)
-	);
-	for (let i = 1; i <= m; i++) {
-		for (let j = 1; j <= n; j++) {
-			if (oldLines[i - 1] === newLines[j - 1]) {
-				lcs[i][j] = lcs[i - 1][j - 1] + 1;
-			} else {
-				lcs[i][j] = Math.max(lcs[i - 1][j], lcs[i][j - 1]);
-			}
-		}
-	}
-	const ops: Array<{ t: " " | "+" | "-"; s: string }> = [];
-	let i = m,
-		j = n;
-	while (i > 0 || j > 0) {
-		if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
-			ops.push({ t: " ", s: oldLines[i - 1] });
-			i--;
-			j--;
-		} else if (j > 0 && (i === 0 || lcs[i][j - 1] > lcs[i - 1][j])) {
-			ops.push({ t: "+", s: newLines[j - 1] });
-			j--;
-		} else if (i > 0) {
-			ops.push({ t: "-", s: oldLines[i - 1] });
-			i--;
-		}
-	}
-	ops.reverse();
-	const oldCount = m;
-	const newCount = n;
-	const newStart = oldStart; // selection replaced in place
-	const headerA = `--- a/${file}:${oldStart}-${oldStart + oldCount - 1}`;
-	const headerB = `+++ b/${file}:${newStart}-${newStart + newCount - 1}`;
-	const hunk = `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`;
-	const body = ops
-		.map((o) => {
-			const content = o.s.length === 0 ? "" : o.s;
-			if (o.t === " ") {
-				return `  ${content}`; // Two spaces for unchanged lines
-			} else {
-				return `${o.t} ${content}`; // Space after + or -
-			}
-		})
-		.join("\n");
-	return `${headerA}\n${headerB}\n${hunk}\n${body}`;
+    const oldLines = oldText.split("\n");
+    const newLines = newText.split("\n");
+    const m = oldLines.length;
+    const n = newLines.length;
+
+    // Myers' O(ND) diff for scalability on large inputs
+    const ops: Array<{ t: ' ' | '+' | '-'; s: string }> = myersDiff(oldLines, newLines);
+
+    const headerA = `--- a/${file}:${oldStart}-${oldStart + m - 1}`;
+    const headerB = `+++ b/${file}:${oldStart}-${oldStart + n - 1}`;
+    const hunk = `@@ -${oldStart},${m} +${oldStart},${n} @@`;
+
+    const hasChanges = ops.some((o) => o.t !== ' ');
+    if (!hasChanges) {
+        return `${headerA}\n${headerB}\n${hunk}\n# No changes`;
+    }
+
+    const body = ops
+        .map((o) => {
+            const content = o.s ?? '';
+            if (o.t === ' ') return `  ${content}`; // unchanged
+            return `${o.t} ${content}`; // + or -
+        })
+        .join('\n');
+
+    return `${headerA}\n${headerB}\n${hunk}\n${body}`;
 };
+
+function myersDiff(a: string[], b: string[]): Array<{ t: ' ' | '+' | '-'; s: string }> {
+    const N = a.length;
+    const M = b.length;
+    const max = N + M;
+    const offset = max;
+    const v: number[] = Array(2 * max + 1).fill(0);
+    const trace: number[][] = [];
+
+    let found = false;
+    for (let D = 0; D <= max; D++) {
+        for (let k = -D; k <= D; k += 2) {
+            let x: number;
+            if (k === -D || (k !== D && v[offset + k - 1] < v[offset + k + 1])) {
+                x = v[offset + k + 1];
+            } else {
+                x = v[offset + k - 1] + 1;
+            }
+            let y = x - k;
+            while (x < N && y < M && a[x] === b[y]) {
+                x++;
+                y++;
+            }
+            v[offset + k] = x;
+            if (x >= N && y >= M) {
+                trace.push(v.slice());
+                found = true;
+                break;
+            }
+        }
+        if (found) break;
+        trace.push(v.slice());
+    }
+
+    // Backtrack
+    const ops: Array<{ t: ' ' | '+' | '-'; s: string }> = [];
+    let x = N;
+    let y = M;
+    for (let D = trace.length - 1; D >= 0; D--) {
+        const vD = trace[D];
+        const k = x - y;
+        let prevK: number;
+        if (k === -D || (k !== D && vD[offset + k - 1] < vD[offset + k + 1])) {
+            prevK = k + 1; // insertion
+        } else {
+            prevK = k - 1; // deletion
+        }
+        const prevX = vD[offset + prevK];
+        const prevY = prevX - prevK;
+
+        // Diagonal (matches)
+        while (x > prevX && y > prevY) {
+            ops.push({ t: ' ', s: a[x - 1] });
+            x--;
+            y--;
+        }
+        if (D > 0) {
+            if (x === prevX) {
+                // insertion
+                ops.push({ t: '+', s: b[y - 1] });
+                y--;
+            } else {
+                // deletion
+                ops.push({ t: '-', s: a[x - 1] });
+                x--;
+            }
+        }
+    }
+
+    return ops.reverse();
+}
 
 // Types and functions for line edits
 export type LineEdit = {

@@ -343,8 +343,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			this.updateStatus("🔧 Setting up Python environment...");
 			await this.ensureEnvironmentReady(this.workspacePath);
 
-			// Start Jupyter with workspace kernels
-			this.updateStatus("🔧 Starting Jupyter with workspace kernels...");
+			// Start Jupyter with workspace kernels (EnvironmentManager will show status)
 			await this.environmentManager.startJupyterWithWorkspaceKernels(
 				this.workspacePath
 			);
@@ -566,54 +565,66 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		);
 
 		lines.push("from pathlib import Path");
+		lines.push("import scanpy as sc");
+		lines.push("import pandas as pd");
 		lines.push("import os");
-		lines.push("print('Preparing local datasets...')");
-		lines.push("local_datasets = {}");
+		lines.push("print('Loading local datasets directly...')");
 		lines.push("");
 
 		if (localDatasets.length === 0) {
 			lines.push("print('No local datasets selected')");
-			lines.push("# local_datasets will remain empty");
 			lines.push("");
 			return lines.join("\n");
 		}
 
 		for (const d of localDatasets as any[]) {
+			const datasetId = String(d.id);
 			const safeTitle = (d.title || d.id).replace(/\"/g, '\\"');
 			const safePath = (d.localPath || "")
 				.replace(/\\/g, "\\\\")
 				.replace(/\"/g, '\\"');
 			const isDir = Boolean(d.isLocalDirectory);
-			lines.push(`# ${safeTitle}`);
-			lines.push(`_path = Path("${safePath}")`);
-			lines.push("exists = _path.exists()");
-			lines.push(
-				"kind = 'directory' if _path.is_dir() else ('file' if _path.is_file() else 'unknown')"
-			);
-			lines.push(
-				"print(f'- ${safeTitle}: {kind} -> {str(_path)} | exists: {exists}')"
-			);
-			lines.push("if _path.is_dir():");
-			lines.push("    # 10x-style folder heuristics (also check gz variants)");
-			lines.push(
-				"    mtx = (_path / 'matrix.mtx').exists() or (_path / 'matrix.mtx.gz').exists()"
-			);
-			lines.push(
-				"    features = (_path / 'features.tsv').exists() or (_path / 'features.tsv.gz').exists() or (_path / 'genes.tsv').exists() or (_path / 'genes.tsv.gz').exists()"
-			);
-			lines.push(
-				"    barcodes = (_path / 'barcodes.tsv').exists() or (_path / 'barcodes.tsv.gz').exists()"
-			);
-			lines.push(
-				"    print('  contains 10x markers:' , 'matrix.mtx' if mtx else '-', 'features/genes' if features else '-', 'barcodes.tsv' if barcodes else '-')"
-			);
-			lines.push(`local_datasets["${String((d as any).id)}"] = str(_path)`);
+			
+			lines.push(`# Loading: ${safeTitle}`);
+			lines.push(`${datasetId}_path = Path("${safePath}")`);
+			lines.push(`print(f"Path: {${datasetId}_path}")`);
+			lines.push(`exists = ${datasetId}_path.exists()`);
+			lines.push(`kind = 'directory' if ${datasetId}_path.is_dir() else ('file' if ${datasetId}_path.is_file() else 'unknown')`);
+			lines.push(`print(f"Exists: {exists}")`);
+			lines.push(`print(f"Kind: {kind}")`);
+			lines.push(`print(f"Title: ${safeTitle}")`);
+			lines.push("");
+			
+			// Direct loading based on type
+			lines.push(`if exists:`);
+			lines.push(`    if ${datasetId}_path.is_dir():`);
+			lines.push(`        # Check for 10x format`);
+			lines.push(`        mtx_exists = (${datasetId}_path / 'matrix.mtx').exists() or (${datasetId}_path / 'matrix.mtx.gz').exists()`);
+			lines.push(`        if mtx_exists:`);
+			lines.push(`            print("  contains 10x markers: matrix.mtx features/genes barcodes.tsv")`);
+			lines.push(`            ${datasetId} = sc.read_10x_mtx(${datasetId}_path)`);
+			lines.push(`            ${datasetId}.var_names_unique()`);
+			lines.push(`            print(f"Successfully loaded {datasetId}: {${datasetId}.shape}")`);
+			lines.push(`        else:`);
+			lines.push(`            print(f"Warning: Directory format not recognized for ${safeTitle}")`);
+			lines.push(`            ${datasetId} = None`);
+			lines.push(`    elif ${datasetId}_path.is_file():`);
+			lines.push(`        if str(${datasetId}_path).endswith('.h5ad'):`);
+			lines.push(`            ${datasetId} = sc.read_h5ad(${datasetId}_path)`);
+			lines.push(`            print(f"Successfully loaded {datasetId}: {${datasetId}.shape}")`);
+			lines.push(`        elif str(${datasetId}_path).endswith('.csv'):`);
+			lines.push(`            ${datasetId} = pd.read_csv(${datasetId}_path)`);
+			lines.push(`            print(f"Successfully loaded {datasetId}: {${datasetId}.shape}")`);
+			lines.push(`        else:`);
+			lines.push(`            print(f"Warning: File format not supported for ${safeTitle}")`);
+			lines.push(`            ${datasetId} = None`);
+			lines.push(`else:`);
+			lines.push(`    print(f"Error: Path not found for ${safeTitle}: {${datasetId}_path}")`);
+			lines.push(`    ${datasetId} = None`);
 			lines.push("");
 		}
 
-		lines.push(
-			"print('Local dataset mapping prepared (variable: local_datasets)')"
-		);
+		lines.push("print('Local datasets loaded directly into variables.')")
 		lines.push("");
 		return lines.join("\n");
 	}
@@ -718,7 +729,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				if (eventData.isValid) {
 					if (typeof (this.codeGenerator as any).emitValidationSuccess === "function") {
 						const message = `Code validation passed${eventData.wasFixed ? ' (fixes applied)' : ''}${eventData.warnings.length > 0 ? ` with ${eventData.warnings.length} warning(s)` : ''}`;
-						(this.codeGenerator as any).emitValidationSuccess(stepId, message, sanitized);
+						// Use stepCode (unsanitized) for UI comparison, not sanitized code
+						(this.codeGenerator as any).emitValidationSuccess(stepId, message, stepCode);
 					}
 				} else {
 					if (typeof (this.codeGenerator as any).emitValidationErrors === "function") {
@@ -1184,8 +1196,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		workspaceDir: string
 	): Promise<boolean> {
 		// Generate package installation cell
-		if (
-			!(await this.generateSetupCell(
+		try {
+			const packageCellSuccess = await this.generateSetupCell(
 				"Package installation",
 				() =>
 					this.environmentManager.generatePackageInstallationCode(
@@ -1195,17 +1207,23 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 					),
 				notebookPath,
 				false // Don't add to global context
-			))
-		)
-			return false;
+			);
+			if (!packageCellSuccess) {
+				console.warn("Package installation cell generation returned false, but continuing...");
+			}
+		} catch (error) {
+			console.error("Package installation cell generation failed:", error);
+			// Continue with other setup cells even if package installation fails
+			// The user can still manually install packages if needed
+		}
 
 		// Generate data download cells
 		const remoteDatasets = datasets.filter(
 			(d: any) => Boolean((d as any).url) && !Boolean((d as any).localPath)
 		);
 		if (remoteDatasets.length > 0) {
-			if (
-				!(await this.generateSetupCell(
+			try {
+				const dataDownloadSuccess = await this.generateSetupCell(
 					"Data download",
 					() =>
 						Promise.resolve(
@@ -1214,9 +1232,14 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 					notebookPath,
 					true, // Add to global context
 					"data-download"
-				))
-			)
-				return false;
+				);
+				if (!dataDownloadSuccess) {
+					console.warn("Data download cell generation failed, but continuing...");
+				}
+			} catch (error) {
+				console.error("Data download cell generation failed:", error);
+				// Continue with other setup cells
+			}
 		}
 
 		// Generate local data preparation cell
@@ -1224,17 +1247,22 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			Boolean((d as any).localPath)
 		);
 		if (localDatasets.length > 0) {
-			if (
-				!(await this.generateSetupCell(
+			try {
+				const localDataSuccess = await this.generateSetupCell(
 					"Local data preparation",
 					() =>
 						Promise.resolve(this.buildLocalDataPreparationCode(localDatasets)),
 					notebookPath,
 					true, // Add to global context
 					"local-data-prep"
-				))
-			)
-				return false;
+				);
+				if (!localDataSuccess) {
+					console.warn("Local data preparation cell generation failed, but continuing...");
+				}
+			} catch (error) {
+				console.error("Local data preparation cell generation failed:", error);
+				// Continue - this is not critical for analysis
+			}
 		}
 
 		return true;
@@ -1269,6 +1297,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 
 		// Generate code
 		const rawCode = await codeGenerator();
+		console.log(`AutonomousAgent: Generated code for ${stepDescription}:`, rawCode.substring(0, 200) + "...");
 
 		// Emit generation completed event
 		EventManager.dispatchEvent("code-generation-completed", {
@@ -1280,7 +1309,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		});
 
 		// Validate and enhance code
-		console.log('AutonomousAgent: Starting validation for step:', stepId);
+		console.log('AutonomousAgent: Starting validation for step:', stepId, 'with stepTitle:', stepDescription);
 		let validationResult;
 		try {
 			validationResult = await this.codeQualityService.validateAndTest(
@@ -1313,9 +1342,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			throw error;
 		}
 
-		const finalCode = this.sanitizeNotebookPythonCode(
-			this.codeQualityService.getBestCode(validationResult)
-		);
+		const bestCode = this.codeQualityService.getBestCode(validationResult);
+		const finalCode = this.sanitizeNotebookPythonCode(bestCode);
 
 		// Add to global context if requested
 		if (addToContext && contextKey) {
@@ -1332,7 +1360,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			if (eventData.isValid) {
 				if (typeof (this.codeGenerator as any).emitValidationSuccess === "function") {
 					const message = `Setup cell validation passed${eventData.wasFixed ? ' (fixes applied)' : ''}${eventData.warnings.length > 0 ? ` with ${eventData.warnings.length} warning(s)` : ''}`;
-					(this.codeGenerator as any).emitValidationSuccess(stepId, message, finalCode);
+					// Use bestCode (unsanitized) for UI comparison, not finalCode (sanitized for notebook)
+					(this.codeGenerator as any).emitValidationSuccess(stepId, message, bestCode);
 				}
 			} else {
 				if (typeof (this.codeGenerator as any).emitValidationErrors === "function") {

@@ -4,6 +4,8 @@ import Editor from "@monaco-editor/react";
 import { CodeCell } from "./CodeCell";
 import { FiPlus, FiTrash2 } from "react-icons/fi";
 import { ActionButton } from "@components/shared/StyledComponents";
+import { SummaryButton } from "@components/shared/SummaryButton";
+import { SummaryOptionsModal, SummaryOptions } from "@components/shared/SummaryOptionsModal";
 import { Tooltip } from "@components/shared/Tooltip";
 import { useWorkspaceContext } from "../../context/AppContext";
 import { typography } from "../../styles/design-system";
@@ -12,6 +14,8 @@ import { findWorkspacePath } from "../../utils/WorkspaceUtils";
 import { electronAPI } from "../../utils/electronAPI";
 import { ElectronClient } from "../../utils/ElectronClient";
 import { COLORS } from "../../utils/ThemeUtils";
+import { NotebookSummaryService } from "../../services/notebook/NotebookSummaryService";
+import { BackendClient } from "../../services/backend/BackendClient";
 
 // Cache detected Python versions per workspace to avoid repeated kernel calls on save
 const workspacePythonVersionCache = new Map<string, string>();
@@ -181,6 +185,13 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		Array<{ code: string; output: string }>
 	>([]);
 	const [cellIds, setCellIds] = useState<string[]>([]);
+	
+	// Summary modal state
+	const [showSummaryModal, setShowSummaryModal] = useState<boolean>(false);
+	const [isGeneratingSummary, setIsGeneratingSummary] = useState<boolean>(false);
+	
+	// Summary service instance
+	const summaryServiceRef = useRef<NotebookSummaryService | null>(null);
 
 	// Use a ref to track the current notebook data to avoid closure issues in event handlers
 	const notebookDataRef = useRef<NotebookData | null>(null);
@@ -195,6 +206,18 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		notebookDataRef.current = notebookData;
 		isReadyRef.current = !!notebookData;
 	}, [notebookData]);
+	
+	// Initialize summary service
+	useEffect(() => {
+		if (!summaryServiceRef.current) {
+			try {
+				const backendClient = new BackendClient();
+				summaryServiceRef.current = new NotebookSummaryService(backendClient);
+			} catch (error) {
+				console.error('Failed to initialize NotebookSummaryService:', error);
+			}
+		}
+	}, []);
 
 	// Get workspace context at the top level to avoid React hooks warning
 	const { state: workspaceState, dispatch: workspaceDispatch } =
@@ -1051,6 +1074,68 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			setHasChanges(true);
 		}
 	};
+	
+	// Summary handling methods
+	const handleSummaryClick = () => {
+		setShowSummaryModal(true);
+	};
+	
+	const handleSummaryModalClose = () => {
+		setShowSummaryModal(false);
+	};
+	
+	const handleGenerateSummary = async (options: SummaryOptions) => {
+		if (!notebookData || !summaryServiceRef.current) {
+			console.error('Cannot generate summary: missing notebook data or summary service');
+			return;
+		}
+		
+		setIsGeneratingSummary(true);
+		try {
+			const summary = await summaryServiceRef.current.generateSummary(
+				notebookData.cells,
+				options,
+				filePath
+			);
+			
+			// Create filename for the summary
+			const baseName = filePath.split('/').pop()?.replace('.ipynb', '') || 'notebook';
+			const timestamp = new Date().toISOString().slice(0, 10);
+			const extension = options.outputFormat === 'html' ? 'html' : 
+							  options.outputFormat === 'pdf' ? 'pdf' : 'md';
+			const summaryFileName = `${baseName}_summary_${timestamp}.${extension}`;
+			
+			// Get the directory of the current notebook
+			const notebookDir = filePath.substring(0, filePath.lastIndexOf('/'));
+			const summaryPath = `${notebookDir}/${summaryFileName}`;
+			
+			// Export the summary
+			const exportSuccess = await summaryServiceRef.current.exportSummary(
+				summary,
+				summaryPath
+			);
+			
+			if (exportSuccess) {
+				// Show success message and optionally open the summary file
+				alert(`Summary generated successfully!\nSaved to: ${summaryFileName}`);
+				
+				// Optionally, open the summary file in the editor
+				setTimeout(() => {
+					EventManager.dispatchEvent('file-open-request', {
+						filePath: summaryPath,
+					});
+				}, 500);
+			} else {
+				alert('Summary generated but failed to save to file. Please try again.');
+			}
+		} catch (error) {
+			console.error('Error generating summary:', error);
+			alert('Failed to generate summary. Please try again.');
+		} finally {
+			setIsGeneratingSummary(false);
+			setShowSummaryModal(false);
+		}
+	};
 
 	const getLanguage = (filePath: string): string => {
 		const extension = filePath.split(".").pop()?.toLowerCase();
@@ -1104,6 +1189,15 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 							<MetaItem>Cells: {notebookData.cells.length}</MetaItem>
 						</MetaRow>
 					</NotebookMetadata>
+					
+					{/* Notebook Actions */}
+					<NotebookActions>
+						<SummaryButton
+							onClick={handleSummaryClick}
+							disabled={!notebookData.cells || notebookData.cells.length === 0 || isGeneratingSummary}
+							cellCount={notebookData.cells ? notebookData.cells.length : 0}
+						/>
+					</NotebookActions>
 				</NotebookHeader>
 
 				{/* Insert controls at the very top */}
@@ -1298,6 +1392,17 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 						}}
 					/>
 				</EditorContent>
+			)}
+			
+			{/* Summary Options Modal */}
+			{filePath.endsWith(".ipynb") && notebookData && (
+				<SummaryOptionsModal
+					isOpen={showSummaryModal}
+					onClose={handleSummaryModalClose}
+					onGenerate={handleGenerateSummary}
+					cells={notebookData.cells}
+					isGenerating={isGeneratingSummary}
+				/>
 			)}
 		</EditorContainer>
 	);

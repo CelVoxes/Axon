@@ -181,6 +181,10 @@ export const CodeBlockContent = styled.div<CodeBlockStyleProps>`
 					$isStreaming ? `3px solid ${colors.primary[600]}` : "none"
 				};
         scroll-behavior: ${$isStreaming ? "auto" : "smooth"};
+        /* Performance optimizations for streaming */
+        contain: layout style paint;
+        will-change: ${$isStreaming ? "scroll-position" : "auto"};
+        transform: translateZ(0); /* Force GPU layer */
       `;
 		}
 
@@ -188,6 +192,10 @@ export const CodeBlockContent = styled.div<CodeBlockStyleProps>`
       ${baseStyles}
       max-height: ${$maxHeight}px;
       background: #1e1e1e;
+      /* Performance optimizations for expandable blocks */
+      contain: layout style paint;
+      will-change: ${$isStreaming ? "scroll-position" : "auto"};
+      ${$isStreaming ? "transform: translateZ(0);" : ""}
     `;
 	}}
 `;
@@ -200,6 +208,8 @@ export const CodeBlockPre = styled.pre<{ $wrap?: boolean; $isDiff?: boolean }>`
 	border: none;
 	white-space: ${({ $wrap = true }) => ($wrap ? "pre-wrap" : "pre")};
 	word-break: ${({ $wrap = true }) => ($wrap ? "break-word" : "normal")};
+	/* Performance optimization for text rendering */
+	text-rendering: optimizeSpeed;
 
 	${({ $isDiff }) =>
 		$isDiff

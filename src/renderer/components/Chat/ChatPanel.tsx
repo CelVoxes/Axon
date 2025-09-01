@@ -44,9 +44,11 @@ import { useVirtualEnvEvents } from "./hooks/useVirtualEnvEvents";
 import { useChatEvents } from "./hooks/useChatEvents";
 import { useChatUIState } from "./hooks/useChatUIState";
 import { useChatInteractions } from "./hooks/useChatInteractions";
+import { useNotebookDetection } from "./hooks/useNotebookDetection";
 import { NotebookEditingService } from "../../services/chat/NotebookEditingService";
 import { DatasetResolutionService } from "../../services/chat/DatasetResolutionService";
 import { ChatCommunicationService } from "../../services/chat/ChatCommunicationService";
+import { withBackendValidation, safeAsyncOperation, validateDependencies } from "./utils/backendValidation";
 
 // Removed duplicated local code rendering. Use shared CodeBlock instead.
 
@@ -66,6 +68,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		useAnalysisContext();
 	const { state: uiState, dispatch: uiDispatch } = useUIContext();
 	const { state: workspaceState } = useWorkspaceContext();
+	
+	// Reliable notebook detection without race conditions
+	const { notebookFile, isNotebookOpen, isDetecting: isDetectingNotebook } = 
+		useNotebookDetection(workspaceState);
+		
 	// UI State Management with custom hook
 	const {
 		inputValue,
@@ -120,59 +127,107 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		Map<string, string>
 	>(new Map());
 
-	// rAF-batched streaming updates for smoother UI with throttling
+	// rAF-batched streaming updates for smoother UI with throttling and proper cleanup
 	const rafStateRef = useRef<{
 		pending: Record<string, string>;
 		scheduled: boolean;
 		lastUpdate: number;
-	}>({ pending: {}, scheduled: false, lastUpdate: 0 });
+		timeoutRef: NodeJS.Timeout | null;
+		rafRef: number | null;
+		isMounted: boolean;
+	}>({ 
+		pending: {}, 
+		scheduled: false, 
+		lastUpdate: 0, 
+		timeoutRef: null, 
+		rafRef: null, 
+		isMounted: true 
+	});
+
+	// Cleanup function to prevent memory leaks
+	const cleanupStreaming = useCallback(() => {
+		const state = rafStateRef.current;
+		if (state.timeoutRef) {
+			clearTimeout(state.timeoutRef);
+			state.timeoutRef = null;
+		}
+		if (state.rafRef) {
+			cancelAnimationFrame(state.rafRef);
+			state.rafRef = null;
+		}
+		state.pending = {};
+		state.scheduled = false;
+		state.isMounted = false;
+	}, []);
+
+	// Proper cleanup on unmount
+	useEffect(() => {
+		rafStateRef.current.isMounted = true;
+		return () => {
+			cleanupStreaming();
+		};
+	}, [cleanupStreaming]);
 
 	const scheduleRafUpdate = useCallback(() => {
-		if (rafStateRef.current.scheduled) return;
+		const state = rafStateRef.current;
+		if (state.scheduled || !state.isMounted) return;
 
 		const now = Date.now();
-		const timeSinceLastUpdate = now - rafStateRef.current.lastUpdate;
-		const minInterval = 100; // Slower updates to reduce flicker (10fps instead of 60fps)
+		const timeSinceLastUpdate = now - state.lastUpdate;
+		const minInterval = 150; // Throttle to 6.7fps for better performance
 
 		if (timeSinceLastUpdate < minInterval) {
-			// Throttle updates to prevent excessive re-renders
-			setTimeout(() => {
-				if (!rafStateRef.current.scheduled) {
+			// Clear any existing timeout and set a new one
+			if (state.timeoutRef) {
+				clearTimeout(state.timeoutRef);
+			}
+			state.timeoutRef = setTimeout(() => {
+				state.timeoutRef = null;
+				if (state.isMounted && !state.scheduled) {
 					scheduleRafUpdate();
 				}
 			}, minInterval - timeSinceLastUpdate);
 			return;
 		}
 
-		rafStateRef.current.scheduled = true;
-		requestAnimationFrame(() => {
-			const pending = rafStateRef.current.pending;
-			rafStateRef.current.pending = {};
-			rafStateRef.current.scheduled = false;
-			rafStateRef.current.lastUpdate = Date.now();
+		state.scheduled = true;
+		state.rafRef = requestAnimationFrame(() => {
+			state.rafRef = null;
+			if (!state.isMounted) return;
+
+			const pending = state.pending;
+			state.pending = {};
+			state.scheduled = false;
+			state.lastUpdate = Date.now();
 
 			for (const stepId of Object.keys(pending)) {
 				const stream = activeStreams.get(stepId);
 				if (!stream) continue;
-				analysisDispatch({
-					type: "UPDATE_MESSAGE",
-					payload: {
-						id: stream.messageId,
-						updates: {
-							code: pending[stepId],
-							codeLanguage: "python",
+				try {
+					analysisDispatch({
+						type: "UPDATE_MESSAGE",
+						payload: {
+							id: stream.messageId,
+							updates: {
+								code: pending[stepId],
+								codeLanguage: "python",
+							},
 						},
-					},
-				});
+					});
+				} catch (error) {
+					console.warn('Failed to update streaming message:', stream.messageId, error);
+				}
 			}
-			// Avoid forcing parent container scroll during streaming; inner code blocks handle it.
 		});
 	}, [analysisDispatch]);
 
 	const enqueueStreamingUpdate = useCallback(
 		(stepId: string, content: string) => {
+			const state = rafStateRef.current;
+			if (!state.isMounted) return;
+
 			// Only update if content has actually changed to prevent flickering
-			const currentPending = rafStateRef.current.pending[stepId];
+			const currentPending = state.pending[stepId];
 			if (currentPending === content) return;
 
 			// Also check if the content is already in the current message
@@ -181,10 +236,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				const currentMessage = analysisState.messages.find(
 					(m) => m.id === stream.messageId
 				);
-				if (currentMessage && currentMessage.content === content) return;
+				if (currentMessage && currentMessage.code === content) return;
+				
+				// Only update if there's substantial content change (reduces micro-updates)
+				if (currentMessage && currentMessage.code) {
+					const lengthDiff = Math.abs(content.length - currentMessage.code.length);
+					if (lengthDiff < 50 && content.length > 100) {
+						return;
+					}
+				}
 			}
 
-			rafStateRef.current.pending[stepId] = content;
+			state.pending[stepId] = content;
 			scheduleRafUpdate();
 		},
 		[scheduleRafUpdate, analysisState.messages]
@@ -224,18 +287,37 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const codeEditContextRef = useRef<CodeEditContext | null>(null);
 
 	// Use custom hooks for event handling
-	const { activeStreams } = useCodeGenerationEvents({
-		analysisDispatch,
-		setIsProcessing,
-		setProgressMessage,
-		setValidationErrors,
-		setValidationSuccessMessage,
-		scheduleProcessingStop,
-		cancelProcessingStop,
-		enqueueStreamingUpdate,
-		addMessage: (content: string, isUser: boolean) =>
-			addMessage(content, isUser),
-	});
+    const { activeStreams } = useCodeGenerationEvents({
+        analysisDispatch,
+        setIsProcessing,
+        setProgressMessage,
+        setValidationErrors,
+        setValidationSuccessMessage,
+        scheduleProcessingStop,
+        cancelProcessingStop,
+        enqueueStreamingUpdate,
+        // Forward full arguments so diff/code payloads aren't dropped
+        addMessage: (
+            content: string,
+            isUser: boolean,
+            code?: string,
+            codeLanguage?: string,
+            codeTitle?: string,
+            suggestions?: any,
+            status?: "pending" | "completed" | "failed",
+            isStreaming?: boolean
+        ) =>
+            addMessage(
+                content,
+                isUser,
+                code,
+                codeLanguage,
+                codeTitle,
+                suggestions,
+                status,
+                isStreaming
+            ),
+    });
 
 	useVirtualEnvEvents({
 		setVirtualEnvStatus,
@@ -387,16 +469,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 	const validateBackendClient = useCallback(
 		(customErrorMessage?: string): boolean => {
-			if (!backendClient) {
-				addMessage(
-					customErrorMessage ||
-						"❌ Backend client not initialized. Please wait a moment and try again.",
-					false
-				);
-				resetLoadingState();
-				return false;
-			}
-			return true;
+			return validateDependencies(
+				{ "Backend Client": backendClient },
+				addMessage,
+				resetLoadingState
+			);
 		},
 		[backendClient, addMessage, resetLoadingState]
 	);
@@ -479,21 +556,71 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					})
 					.filter(Boolean)
 					.join("\n\n");
-				const answer = await backendClient!.askQuestion({
-					question: userMessage,
-					context,
+
+				// Prepare a streaming assistant message
+				const streamingMessageId = `ask-${Date.now()}`;
+				analysisDispatch({
+					type: "ADD_MESSAGE",
+					payload: {
+						id: streamingMessageId,
+						content: "",
+						isUser: false,
+						isStreaming: true,
+						status: "pending",
+					},
 				});
-				if (isMounted) {
-					addMessage(answer || "(No answer)", false);
-				}
+				setProgressMessage("Thinking...");
+
+				let accumulated = "";
+				await backendClient!.askQuestionStream(
+					{ question: userMessage, context },
+					(evt: any) => {
+						if (!isMounted) return;
+						try {
+							if (evt?.type === "status") {
+								setProgressMessage("Thinking...");
+								return;
+							}
+							if (evt?.type === "answer" && typeof evt.delta === "string") {
+								if (accumulated.length === 0) {
+									setProgressMessage("Drafting answer...");
+								}
+								accumulated += evt.delta;
+								analysisDispatch({
+									type: "UPDATE_MESSAGE",
+									payload: {
+										id: streamingMessageId,
+										updates: {
+											content: accumulated,
+											isStreaming: true,
+											status: "pending" as any,
+										},
+									},
+								});
+								return;
+							}
+							if (evt?.type === "done") {
+								analysisDispatch({
+									type: "UPDATE_MESSAGE",
+									payload: {
+										id: streamingMessageId,
+										updates: {
+											isStreaming: false,
+											status: "completed" as any,
+										},
+									},
+								});
+								setProgressMessage("");
+							}
+						} catch (_) {}
+					}
+				);
 			} catch (error) {
 				console.error("Ask mode error:", error);
-				if (isMounted) {
-					addMessage(
-						"Sorry, I couldn't answer that right now. Please try again.",
-						false
-					);
-				}
+				addMessage(
+					"Sorry, I couldn't answer that right now. Please try again.",
+					false
+				);
 			} finally {
 				if (isMounted) {
 					resetLoadingState();
@@ -822,28 +949,29 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				return; // handled
 			}
 			
-			// If datasets were already selected, proceed with analysis
-			if (selectedDatasets.length > 0) {
-				console.log("✅ Previously selected datasets found, proceeding with analysis");
-				const enhancedAnalysisRequest = inspectionContext 
-					? `${userMessage}\n\nINSPECTION CONTEXT:\n${inspectionContext}` 
-					: userMessage;
-				await handleAnalysisRequest(enhancedAnalysisRequest);
-				return; // handled
-			}
-			
-			console.log("❌ No datasets available, continuing to intent classification");
-
-			// Use backend LLM to classify intent instead of local pattern matching
+			// Use backend LLM to classify intent instead of local pattern matching FIRST
 			if (!validateBackendClient()) {
 				return;
 			}
 
 			// Get intent classification from backend
 			const intentResult = await backendClient!.classifyIntent(userMessage);
+			
+			// Debug intent classification
+			console.log("🎯 Intent Classification Result:", {
+				userMessage,
+				intent: intentResult.intent,
+				confidence: intentResult.confidence,
+				reason: intentResult.reason
+			});
 
-			// If confidence is too low (< 0.8), treat as general question instead of forcing into specific intent
-			const isLowConfidence = (intentResult.confidence || 0) < 0.8;
+			// If confidence is too low (< 0.7), treat as general question instead of forcing into specific intent
+			const isLowConfidence = (intentResult.confidence || 0) < 0.7;
+			console.log("🎯 Intent Analysis:", {
+				isLowConfidence,
+				threshold: 0.7,
+				actualConfidence: intentResult.confidence
+			});
 
 			// Handle dataset search based on backend intent
 			if (intentResult.intent === "SEARCH_DATA" && !isLowConfidence) {
@@ -883,59 +1011,29 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					}
 				}
 			}
-			// Handle ADD_CELL intent or analysis requests for active notebooks (only if confident)
-			else if (intentResult.intent === "ADD_CELL" && !isLowConfidence) {
-				// Robust notebook detection - check multiple sources due to potential race conditions
-				const activeFile = (workspaceState as any).activeFile as string | null;
-				const openFiles = ((workspaceState as any).openFiles || []) as string[];
-
-				// Primary detection: workspace state
-				let notebookFile =
-					activeFile && activeFile.endsWith(".ipynb") ? activeFile : null;
-				if (!notebookFile) {
-					notebookFile =
-						openFiles.find(
-							(f) => typeof f === "string" && f.endsWith(".ipynb")
-						) || null;
-				}
-
-				// Fallback detection: check DOM for open notebook tabs if workspace state is empty
-				// This handles race conditions where workspace state isn't synced yet
-				if (!notebookFile && openFiles.length === 0) {
-					try {
-						// The Tab component sets the full file path on the parent element's title attribute
-						// and renders a child span with class "tab-title". Use that structure to find .ipynb tabs.
-						const titleSpans = document.querySelectorAll(".tab-title");
-						for (const span of Array.from(titleSpans)) {
-							const parent = (span as HTMLElement).parentElement;
-							const filePath = parent?.getAttribute("title");
-							if (filePath && filePath.endsWith(".ipynb")) {
-								notebookFile = filePath;
-								console.log(
-									"📂 Found notebook via tab DOM fallback:",
-									notebookFile
-								);
-								break;
-							}
-						}
-					} catch (domError) {
-						console.warn("Failed DOM fallback detection:", domError);
-					}
-				}
-
-				const isNotebookOpen = Boolean(notebookFile);
-				console.log(
-					"📂 Final notebook detection - activeFile:",
-					activeFile,
-					"openFiles:",
-					openFiles,
-					"notebookFile:",
+			// Handle ADD_CELL intent for active notebooks (prioritize over dataset-based analysis)
+			else if (
+				(intentResult.intent === "ADD_CELL" && !isLowConfidence) ||
+				// Local heuristic: if a notebook is open and the user clearly asks to add/insert a cell,
+				// honor it even if LLM confidence is low.
+				(isNotebookOpen && /\b(add|insert|new)\s+(markdown\s+)?cell\b/i.test(userMessage))
+			) {
+				console.log("🔬 ADD_CELL intent detected, checking for open notebooks...");
+				
+				// Use reliable notebook detection hook (no race conditions)
+				console.log("🔬 Notebook detection result:", {
 					notebookFile,
-					"isOpen:",
-					isNotebookOpen
-				);
+					isNotebookOpen,
+					isDetecting: isDetectingNotebook,
+					workspaceState: {
+						currentWorkspace: workspaceState.currentWorkspace,
+						activeFile: workspaceState.activeFile,
+						openFilesCount: workspaceState.openFiles?.length || 0
+					}
+				});
 
 				if (isNotebookOpen && notebookFile) {
+					console.log("✅ Notebook is open, adding cell to existing notebook:", notebookFile);
 					// Append new analysis step to the current notebook (skip dataset search)
 					addMessage(
 						`Detected analysis request for the current notebook. Starting background code generation for: ${userMessage}`,
@@ -980,16 +1078,40 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					});
 					return;
 				} else {
-					// No active notebook but intent is ADD_CELL - treat as general analysis request
-					// This handles cases like "add a cell for B-cell markers" when no notebook is open
-					await handleAnalysisRequest(userMessage);
+					console.log("❌ No notebook open but ADD_CELL intent detected");
+					// No active notebook but intent is ADD_CELL - inform user
+					addMessage(
+						"To add a cell, please first open a Jupyter notebook (.ipynb file) in the editor. " +
+						"You can create a new notebook or open an existing one from the file explorer.",
+						false
+					);
 					return;
 				}
 			}
+			// Check for previously selected datasets AFTER ADD_CELL handling to avoid misrouting add-cell requests
+			else if (selectedDatasets.length > 0) {
+				console.log("✅ Previously selected datasets found, proceeding with analysis");
+				const enhancedAnalysisRequest = inspectionContext
+					? `${userMessage}\n\nINSPECTION CONTEXT:\n${inspectionContext}`
+					: userMessage;
+				await handleAnalysisRequest(enhancedAnalysisRequest);
+				return; // handled
+			}
 			// Handle low confidence intents or unrecognized intents as general questions
 			else {
+				console.log("🤷 Intent not ADD_CELL or low confidence, falling back to general question handling", {
+					intent: intentResult.intent,
+					isLowConfidence,
+					confidence: intentResult.confidence,
+					hasSelectedDatasets: selectedDatasets.length > 0
+				});
 				// General question handling - use autonomous tool integration
 				try {
+					// Validate backend before proceeding
+					if (!validateBackendClient()) {
+						return;
+					}
+					
 					// Import and use ChatToolAgent for autonomous tool usage
 					const { ChatToolAgent } = await import("../../services/tools/ChatToolAgent");
 					
@@ -1220,8 +1342,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				}));
 
 				// Get the original query from the last user message
+				// Use the most recent user message as the original query
 				const originalQuery =
-					analysisState.messages.find((m: any) => m.isUser)?.content ||
+					[...analysisState.messages]
+						.reverse()
+						.find((m: any) => m.isUser)?.content ||
 					"Analysis of selected datasets";
 
 				// Use the current workspace directory
@@ -1254,6 +1379,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						status.includes("workspace") ||
 						status.includes("notebook") ||
 						status.includes("steps") ||
+						status.toLowerCase().includes("install") ||
+						status.toLowerCase().includes("package") ||
 						status.includes("⚠️") ||
 						status.includes("fallback")
 					) {
@@ -1942,19 +2069,28 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							message={message}
 							onAnalysisClick={handleAnalysisClick}
 						/>
-						{(message.isStreaming || typeof message.code === "string") && (
-							<div style={{ marginTop: "8px" }}>
-								<CodeBlock
-									variant="expandable"
-									code={message.code || ""}
-									language={message.codeLanguage || "python"}
-									title={message.codeTitle || ""}
-									isStreaming={
-										message.status === "pending" || !!message.isStreaming
-									}
-								/>
-							</div>
-						)}
+                        {(message.isStreaming || typeof message.code === "string") && (
+                            <div style={{ marginTop: "8px" }}>
+                                {message.codeLanguage === 'diff' ? (
+                                    <CodeBlock
+                                        variant="diff"
+                                        code={message.code || ''}
+                                        title={message.codeTitle || ''}
+                                        showStats={true}
+                                    />
+                                ) : (
+                                    <CodeBlock
+                                        variant="expandable"
+                                        code={message.code || ""}
+                                        language={message.codeLanguage || "python"}
+                                        title={message.codeTitle || ""}
+                                        isStreaming={
+                                            message.status === "pending" || !!message.isStreaming
+                                        }
+                                    />
+                                )}
+                            </div>
+                        )}
 					</div>
 				))}
 
@@ -1963,12 +2099,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					<div style={{ padding: 12 }}>
 						<ExamplesComponent
 							onExampleSelect={(example) => {
-								setInputValue(example);
-								inputValueRef.current = example;
+								// Hide examples and show the user's selection in chat
 								setShowExamples(false);
+								setInputValue("");
+								inputValueRef.current = "";
+
+								// Add the selected example as a user message
+								addMessage(example, true);
+
+								// Directly start the analysis pipeline using selected datasets
+								// This bypasses intent classification (which may default to ADD_CELL)
 								try {
-									composerRef.current?.focus();
-								} catch (_) {}
+									setIsProcessing(true);
+									// Small delay to ensure UI listeners/state are settled before kicking off
+									setTimeout(() => {
+										void handleAnalysisRequest(example);
+									}, 120);
+								} catch (_) {
+									// Swallow errors here; handleAnalysisRequest reports failures to chat
+								}
 							}}
 						/>
 					</div>

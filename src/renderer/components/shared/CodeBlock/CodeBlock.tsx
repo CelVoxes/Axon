@@ -297,19 +297,21 @@ const StreamingCodeBlock: React.FC<
 
 // Diff code block variant
 const DiffCodeBlock: React.FC<Extract<CodeBlockProps, { variant: "diff" }>> = ({
-	code,
-	title,
-	showStats = true,
-	className,
+    code,
+    title,
+    showStats = true,
+    className,
 }) => {
-	const [isExpanded, setIsExpanded] = useState(false);
-	const [expandedSegments, setExpandedSegments] = useState<
-		Record<number, boolean>
-	>({});
-	const [copied, setCopied] = useState(false);
+    // Auto-expand diffs that contain any changes so users don't miss them
+    const initialStats = getDiffStats(code);
+    const [isExpanded, setIsExpanded] = useState(initialStats.additions + initialStats.deletions > 0);
+    const [expandedSegments, setExpandedSegments] = useState<
+        Record<number, boolean>
+    >({});
+    const [copied, setCopied] = useState(false);
 
-	const diffSegments = parseDiffContent(code);
-	const { additions, deletions } = getDiffStats(code);
+    const diffSegments = parseDiffContent(code);
+    const { additions, deletions } = getDiffStats(code);
 
 	const displayTitle =
 		title || (showStats ? `+${additions} -${deletions}` : "Diff");

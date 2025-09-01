@@ -313,7 +313,8 @@ async def root():
             "code_generate": "/llm/code",
             "tool_call": "/llm/tool",
             "query_analyze": "/llm/analyze",
-            "ask": "/llm/ask",
+        "ask": "/llm/ask",
+            "ask_stream": "/llm/ask/stream",
             "intent": "/llm/intent",
         }
     }
@@ -965,6 +966,83 @@ async def ask_question(request: AskRequest, user=Depends(get_current_user)):
         return AskResponse(answer=answer)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ask failed: {str(e)}")
+
+
+@app.post("/llm/ask/stream")
+async def ask_question_stream(request: AskRequest, user=Depends(get_current_user)):
+    """Streaming Ask endpoint with reasoning-aware output.
+
+    Emits SSE events:
+    - {"type":"status","status":"thinking"}
+    - {"type":"answer","delta":"..."} for streamed answer tokens
+    - {"type":"done"} at completion
+    """
+    try:
+        llm_service = get_llm_service()
+
+        async def generate():
+            # Initial thinking status event
+            yield f"data: {json.dumps({'type': 'status', 'status': 'thinking'})}\n\n"
+
+            in_answer = False
+            buffer = ""
+
+            async for chunk in llm_service.ask_stream(
+                question=request.question,
+                context=request.context or ""
+            ):
+                # Accumulate and check for explicit final markers
+                buffer += chunk
+
+                # Heuristics: if model uses <final>...</final>, begin streaming after <final>
+                if not in_answer:
+                    lower = buffer.lower()
+                    # Prefer explicit <final> tags if present
+                    fin_tag = lower.find("<final>")
+                    if fin_tag >= 0:
+                        in_answer = True
+                        # take substring after <final>
+                        start = fin_tag + len("<final>")
+                        answer_part = buffer[start:]
+                        if answer_part:
+                            yield f"data: {json.dumps({'type': 'answer', 'delta': answer_part})}\n\n"
+                        buffer = ""  # reset buffer after switching mode
+                        continue
+
+                    # Secondary heuristic: if the text contains 'final answer:' marker
+                    for marker in ("final answer:", "final answer\n", "answer:"):
+                        idx = lower.find(marker)
+                        if idx >= 0:
+                            in_answer = True
+                            start = idx + len(marker)
+                            answer_part = buffer[start:]
+                            if answer_part:
+                                yield f"data: {json.dumps({'type': 'answer', 'delta': answer_part})}\n\n"
+                            buffer = ""
+                            break
+
+                else:
+                    # Already in answer mode - stream chunk directly
+                    if chunk:
+                        yield f"data: {json.dumps({'type': 'answer', 'delta': chunk})}\n\n"
+
+            # If we never detected a final marker, stream whatever we collected
+            if not in_answer and buffer.strip():
+                yield f"data: {json.dumps({'type': 'answer', 'delta': buffer})}\n\n"
+
+            # Done
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ask stream failed: {str(e)}")
 
 
 @app.post("/llm/intent", response_model=IntentResponse)

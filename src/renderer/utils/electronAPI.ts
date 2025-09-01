@@ -306,4 +306,24 @@ export const electronAPI = {
 			// ignore
 		}
 	},
+
+	/**
+	 * Safely generate a PDF from HTML content
+	 */
+	async generatePDF(options: {
+		html: string;
+		outputPath: string;
+		options?: {
+			format?: string;
+			printBackground?: boolean;
+			margin?: {
+				top?: string;
+				right?: string;
+				bottom?: string;
+				left?: string;
+			};
+		};
+	}): Promise<{ success: boolean; error?: string }> {
+		return safeElectronAPICall<boolean>("generatePDF", options);
+	},
 };

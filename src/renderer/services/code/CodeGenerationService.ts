@@ -161,6 +161,9 @@ export class CodeGenerationService implements ICodeGenerator {
 		const existingImports = sharedGetExistingImports(request.globalCodeContext);
 		const existingImportsList = Array.from(existingImports).join("\n");
 
+		// Build data access context for the analysis step
+		const dataAccessContext = this.buildDataAccessContext(request.datasets);
+
 		let context = `Original question: ${request.originalQuestion}
 Working directory: ${request.workingDir}
 Step index: ${request.stepIndex}
@@ -168,16 +171,14 @@ Step index: ${request.stepIndex}
 Available datasets (use ONLY these, do NOT invent links):
 ${datasetInfo}
 
-Dataset handling constraints:
-		- Data files should already exist in ./data (from a prior step) or be available via localPath.
-		- Do NOT re-download data in this step; if a file is missing, print a clear message and skip.
-		- For format=h5ad: use anndata.read_h5ad on the existing file.
-		- For format=csv/tsv/txt: use pandas read_csv with the appropriate separator.
-		- Add robust error handling; continue if a specific dataset fails.
+DATA ACCESS CONTEXT - IMPORTANT:
+${dataAccessContext}
 
-Local datasets:
-- If localPath is provided, prefer loading from that path instead of downloading.
-- For localPath directories that look like 10x MTX (matrix.mtx, barcodes.tsv, features.tsv), use scanpy.read_10x_mtx.
+Dataset handling constraints:
+- Data files should already exist from previous loading steps
+- Use the data loading helpers provided below to access datasets consistently
+- For missing data, print clear messages and continue with available datasets
+- Add robust error handling with try-except blocks
 
 General requirements:
 - Use proper error handling with try-except blocks
@@ -498,6 +499,141 @@ print("Step completed successfully!")
 		// Let CodeQualityService handle import deduplication
 
 		return code;
+	}
+
+	/**
+	 * Build context about how to access previously loaded data
+	 */
+	private buildDataAccessContext(datasets: Dataset[]): string {
+		const lines: string[] = [];
+		
+		// Check for remote datasets (downloaded to data_dir)
+		const remoteDatasets = datasets.filter((d: any) => 
+			Boolean((d as any).url) && !Boolean((d as any).localPath)
+		);
+		
+		// Check for local datasets (referenced via localPath)
+		const localDatasets = datasets.filter((d: any) => 
+			Boolean((d as any).localPath)
+		);
+
+		lines.push("Previous data loading steps have prepared the following data access patterns:");
+		lines.push("");
+
+		if (remoteDatasets.length > 0) {
+			lines.push("## DOWNLOADED DATA (from URLs):");
+			lines.push("- Location: data_dir = Path('data')");
+			lines.push("- Access pattern:");
+			lines.push("  ```python");
+			lines.push("  from pathlib import Path");
+			lines.push("  data_dir = Path('data')");
+			lines.push("  ");
+			
+			remoteDatasets.forEach(dataset => {
+				const datasetId = dataset.id;
+				const url = (dataset as any).url || "";
+				const format = this.detectDataFormat(url);
+				const filename = this.generateFilename(url, datasetId);
+				
+				lines.push(`  # Dataset: ${dataset.title || datasetId}`);
+				lines.push(`  ${datasetId}_path = data_dir / '${filename}'`);
+				lines.push(`  if ${datasetId}_path.exists():`);
+				
+				if (format === 'h5ad') {
+					lines.push(`      import anndata`);
+					lines.push(`      ${datasetId} = anndata.read_h5ad(${datasetId}_path)`);
+				} else if (format === 'csv') {
+					lines.push(`      import pandas as pd`);
+					lines.push(`      ${datasetId} = pd.read_csv(${datasetId}_path)`);
+				} else if (format === 'tsv') {
+					lines.push(`      import pandas as pd`);
+					lines.push(`      ${datasetId} = pd.read_csv(${datasetId}_path, sep='\\t')`);
+				} else {
+					lines.push(`      import pandas as pd`);
+					lines.push(`      ${datasetId} = pd.read_csv(${datasetId}_path)  # Auto-detect format`);
+				}
+				lines.push(`  else:`);
+				lines.push(`      print(f"Warning: {datasetId} not found at {${datasetId}_path}")`);
+				lines.push("  ");
+			});
+			
+			lines.push("  ```");
+			lines.push("");
+		}
+
+		if (localDatasets.length > 0) {
+			lines.push("## LOCAL DATA - ALREADY LOADED IN VARIABLES:");
+			lines.push("- Previous cells have already loaded local datasets directly into variables");
+			lines.push("- Data is immediately available for analysis - no path manipulation needed");
+			lines.push("- SIMPLY USE the dataset variables that are already loaded");
+			lines.push("");
+			lines.push("### AVAILABLE DATASET VARIABLES:");
+			lines.push("  ```python");
+			lines.push("  # These variables are already loaded and ready to use:");
+			
+			localDatasets.forEach(dataset => {
+				const datasetId = dataset.id;
+				lines.push(`  # ${dataset.title || datasetId} -> variable: ${datasetId}`);
+				lines.push(`  # Type: AnnData object (for single-cell) or DataFrame (for tabular)`);
+				lines.push(`  print(f"Dataset {datasetId} shape: {${datasetId}.shape if ${datasetId} is not None else 'Not loaded'}")`);
+				lines.push("  ");
+			});
+			
+			lines.push("  ```");
+			lines.push("");
+			lines.push("### CRITICAL INSTRUCTIONS:");
+			lines.push("- Dataset variables are already loaded - just use them directly");
+			lines.push("- No need to load data again or construct paths");
+			lines.push("- Check if variable is not None before using");
+			lines.push("- Example: Use `example_data.obs` instead of loading from paths");
+			lines.push("");
+		}
+
+		if (datasets.length > 0) {
+			const hasLocal = localDatasets.length > 0;
+			const hasRemote = remoteDatasets.length > 0;
+			lines.push("CRITICAL REQUIREMENTS:");
+			if (hasLocal) {
+				lines.push("1. LOCAL DATA: Dataset variables are already loaded and ready to use directly");
+			}
+			if (hasRemote) {
+				lines.push("2. REMOTE DATA: Use ONLY data_dir / filename pattern for downloaded data (do not re-download)");
+				lines.push("   If a file is missing, print a clear warning and continue.");
+				lines.push("   Do NOT assume variables exist for remote data unless CONTEXT says so.");
+			}
+			lines.push("3. FORBIDDEN: Any path construction like 'data/local-*' or hardcoded absolute paths");
+			if (hasLocal) {
+				lines.push("4. FORBIDDEN: Trying to load local datasets again — they're already loaded");
+				lines.push("5. REQUIRED: Use the dataset variables that are already available (local only)");
+				lines.push("6. REMINDER: Previous cells already loaded your local datasets into variables");
+			}
+		}
+
+		return lines.join("\n");
+	}
+
+	/**
+	 * Detect data format from URL
+	 */
+	private detectDataFormat(url: string | undefined): string {
+		const urlLower = (url || "").toLowerCase();
+		if (urlLower.endsWith(".h5ad")) return "h5ad";
+		if (urlLower.endsWith(".csv")) return "csv";
+		if (urlLower.endsWith(".tsv")) return "tsv";
+		if (urlLower.endsWith(".txt")) return "txt";
+		return "csv"; // default
+	}
+
+	/**
+	 * Generate consistent filename for downloaded data
+	 */
+	private generateFilename(url: string | undefined, datasetId: string): string {
+		const urlLower = (url || "").toLowerCase();
+		if (urlLower.endsWith(".h5ad")) return `${datasetId}.h5ad`;
+		if (urlLower.endsWith(".csv")) return `${datasetId}.csv`;
+		if (urlLower.endsWith(".tsv")) return `${datasetId}.tsv`;
+		if (urlLower.endsWith(".txt")) return `${datasetId}.txt`;
+		return `${datasetId}.data`;
 	}
 
 	/**
