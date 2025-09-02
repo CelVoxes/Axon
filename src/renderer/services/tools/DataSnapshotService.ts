@@ -11,8 +11,24 @@ function toRel(path: string, base?: string) {
 async function safeList(dir: string): Promise<string[]> {
   try {
     // @ts-ignore
-    const items: string[] = await window.electronAPI.listDirectory(dir);
-    return items || [];
+    const items: any[] = await window.electronAPI.listDirectory(dir);
+    const normalized = (items || []).map((entry: any) => {
+      if (typeof entry === "string") {
+        const base = entry.split("/").pop() || entry;
+        return base;
+      }
+      if (entry && typeof entry === "object") {
+        const name = (entry as any).name;
+        const path = (entry as any).path;
+        if (typeof name === "string" && name.trim()) return name;
+        if (typeof path === "string" && path.trim()) {
+          const base = path.split("/").pop() || path;
+          return base;
+        }
+      }
+      return String(entry);
+    });
+    return normalized;
   } catch (_) {
     return [];
   }
@@ -34,8 +50,7 @@ export async function buildDatasetSnapshot(
     }
     lines.push(`  localPath: ${toRel(localPath, workingDir)}`);
     if (isDir) {
-      const entries = await safeList(localPath);
-      const names = entries.map((p) => p.split("/").pop() || p);
+      const names = await safeList(localPath);
       const hasMtx = names.some((n) => /matrix\.mtx(\.gz)?$/i.test(n));
       const hasFeatures = names.some((n) => /(features|genes)\.tsv(\.gz)?$/i.test(n));
       const hasBarcodes = names.some((n) => /barcodes\.tsv(\.gz)?$/i.test(n));
@@ -54,4 +69,3 @@ export async function buildDatasetSnapshot(
   if (lines.length === 0) return "(no datasets)";
   return lines.join("\n");
 }
-

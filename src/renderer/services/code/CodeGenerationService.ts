@@ -19,6 +19,7 @@ import {
 import { Logger } from "../../utils/Logger";
 import { ScanpyDocsService } from "../backend/ScanpyDocsService";
 import { extractPythonCode as extractPythonCodeUtil } from "../../utils/CodeTextUtils";
+import { buildDatasetSnapshot } from "../tools/DataSnapshotService";
 
 export class CodeGenerationService implements ICodeGenerator {
 	private backendClient: BackendClient;
@@ -41,9 +42,10 @@ export class CodeGenerationService implements ICodeGenerator {
 	}
 
 	private buildSessionId(request: CodeGenerationRequest): string {
-		if (this.sessionOverride && this.sessionOverride.trim()) return this.sessionOverride;
-		const ws = (request.workingDir || "").trim();
-		return ws ? `session:${ws}` : `session:default`;
+		const sessionId = this.sessionOverride && this.sessionOverride.trim() ? this.sessionOverride : 
+			(request.workingDir || "").trim() ? `session:${request.workingDir}` : `session:default`;
+		console.log(`🔧 CodeGenerationService: Using session ID: ${sessionId}`);
+		return sessionId;
 	}
 
 	setModel(model: string) {
@@ -212,25 +214,44 @@ General requirements:
 	/**
 	 * Build enhanced context and augment with Scanpy RAG snippets (version-aware docstrings)
 	 */
-	private async buildEnhancedContextWithDocs(
-		request: CodeGenerationRequest
-	): Promise<string> {
-		let context = this.buildEnhancedContext(request);
-		try {
-			const rag =
-				await ScanpyDocsService.getInstance().buildRagContextForRequest(
-					request.stepDescription,
-					request.originalQuestion,
-					request.workingDir
-				);
-			if (rag && rag.trim()) {
-				context += `\n\nAuthoritative Scanpy references (from installed environment):\n${rag}\n\nStrict rules:\n- Prefer APIs present above; do not invent parameters.\n- If an API is not present, adapt to available alternatives.\n- Cite the function names you used.`;
-			}
-		} catch (e) {
-			// Best-effort; silently continue without RAG if unavailable
-		}
-		return context;
-	}
+    private async buildEnhancedContextWithDocs(
+        request: CodeGenerationRequest
+    ): Promise<string> {
+        let context = this.buildEnhancedContext(request);
+
+        // Append a concise snapshot of local datasets (data_dir) to inform loader choice
+        try {
+            const localDatasets = (request.datasets || []).filter(
+                (d: any) => Boolean((d as any).localPath)
+            );
+            if (localDatasets.length > 0) {
+                const snapshot = await buildDatasetSnapshot(
+                    localDatasets as any,
+                    request.workingDir
+                );
+                if (snapshot && snapshot.trim()) {
+                    context += `\n\nFolder snapshot (for local mentions; use data_dir):\n${snapshot}`;
+                    context += `\n\nGuidance: Decide how to load based on snapshot and file extensions/markers (e.g., 10x matrix.mtx -> scanpy.read_10x_mtx(data_dir), *.h5ad -> anndata.read_h5ad, *.csv/*.tsv -> pandas.read_csv). Do not assume pre-defined helpers.`;
+                }
+            }
+        } catch (_) {
+            // Best-effort; snapshot is optional
+        }
+        try {
+            const rag =
+                await ScanpyDocsService.getInstance().buildRagContextForRequest(
+                    request.stepDescription,
+                    request.originalQuestion,
+                    request.workingDir
+                );
+            if (rag && rag.trim()) {
+                context += `\n\nAuthoritative Scanpy references (from installed environment):\n${rag}\n\nStrict rules:\n- Prefer APIs present above; do not invent parameters.\n- If an API is not present, adapt to available alternatives.\n- Cite the function names you used.`;
+            }
+        } catch (e) {
+            // Best-effort; silently continue without RAG if unavailable
+        }
+        return context;
+    }
 
 	// Note: Code cleaning and validation is now handled by CodeQualityService
 
@@ -469,25 +490,12 @@ print("Step completed successfully!")
 	): string {
 		const datasetIds = datasets.map((d) => d.id).join(", ");
 
-		// Respect constraint: do NOT download in this step; prefer localPath if provided
+		// Respect constraint: do NOT download in this step; use data_dir set by setup cells
 		let datasetLoadingCode = [
 			"from pathlib import Path",
-			"data_dir = Path('data')",
-			"data_dir.mkdir(exist_ok=True)",
-			...datasets
-				.map((dataset) => {
-					const url: string | undefined = (dataset as any).url;
-					const localPath: string | undefined = (dataset as any).localPath;
-					const title = dataset.title || dataset.id;
-					if (localPath) {
-						return `print(f"Using local dataset: ${title} -> ${localPath}")\nlocal_path = Path(r"${localPath}")\nif not local_path.exists():\n    print(f"Warning: local path not found for ${title}: ${localPath}")`;
-					}
-					if (!url) {
-						return `print("No URL or localPath for dataset: ${title}")`;
-					}
-					return `# URL provided for ${title} but downloads are disabled in this step\nprint("Skipping download for ${title}; use localPath if available.")`;
-				})
-				.filter(Boolean),
+			"try:\n    data_dir\nexcept NameError:\n    data_dir = Path('data')",
+			"# Ensure default data_dir exists if we created it here",
+			"try:\n    data_dir.mkdir(exist_ok=True)\nexcept Exception:\n    pass",
 		].join("\n");
 
 		let code = `# Step ${stepIndex + 1}: ${stepDescription}
@@ -528,7 +536,7 @@ print("Step completed successfully!")
 			Boolean((d as any).localPath)
 		);
 
-		lines.push("Previous data loading steps have prepared the following data access patterns:");
+		lines.push("Use data_dir as your base path. Decide loaders dynamically from extensions or 10x markers.");
 		lines.push("");
 
 		if (remoteDatasets.length > 0) {
@@ -546,25 +554,11 @@ print("Step completed successfully!")
 				const format = this.detectDataFormat(url);
 				const filename = this.generateFilename(url, datasetId);
 				
-				lines.push(`  # Dataset: ${dataset.title || datasetId}`);
-				lines.push(`  ${datasetId}_path = data_dir / '${filename}'`);
-				lines.push(`  if ${datasetId}_path.exists():`);
-				
-				if (format === 'h5ad') {
-					lines.push(`      import anndata`);
-					lines.push(`      ${datasetId} = anndata.read_h5ad(${datasetId}_path)`);
-				} else if (format === 'csv') {
-					lines.push(`      import pandas as pd`);
-					lines.push(`      ${datasetId} = pd.read_csv(${datasetId}_path)`);
-				} else if (format === 'tsv') {
-					lines.push(`      import pandas as pd`);
-					lines.push(`      ${datasetId} = pd.read_csv(${datasetId}_path, sep='\\t')`);
-				} else {
-					lines.push(`      import pandas as pd`);
-					lines.push(`      ${datasetId} = pd.read_csv(${datasetId}_path)  # Auto-detect format`);
-				}
-				lines.push(`  else:`);
-				lines.push(`      print(f"Warning: {datasetId} not found at {${datasetId}_path}")`);
+				lines.push(`  # ${dataset.title || datasetId}`);
+				lines.push(`  path = data_dir / '${filename}'`);
+				lines.push(`  # if path.suffix == '.h5ad': import anndata as ad; data = ad.read_h5ad(path)`);
+				lines.push(`  # elif path.suffix == '.csv': import pandas as pd; data = pd.read_csv(path)`);
+				lines.push(`  # elif path.suffix == '.tsv': import pandas as pd; data = pd.read_csv(path, sep='\\t')`);
 				lines.push("  ");
 			});
 			
@@ -573,51 +567,42 @@ print("Step completed successfully!")
 		}
 
 		if (localDatasets.length > 0) {
-			lines.push("## LOCAL DATA - ALREADY LOADED IN VARIABLES:");
-			lines.push("- Previous cells have already loaded local datasets directly into variables");
-			lines.push("- Data is immediately available for analysis - no path manipulation needed");
-			lines.push("- SIMPLY USE the dataset variables that are already loaded");
+				lines.push("## LOCAL DATA (mentioned folder):");
+				lines.push("- Access pattern (set data_dir and choose loader):");
 			lines.push("");
-			lines.push("### AVAILABLE DATASET VARIABLES:");
-			lines.push("  ```python");
-			lines.push("  # These variables are already loaded and ready to use:");
+				lines.push("  ```python");
+				lines.push("  from pathlib import Path");
+				lines.push("  # data_dir = Path('<MENTIONED_PATH>')");
+				lines.push("  # if (data_dir / 'matrix.mtx').exists(): import scanpy as sc; data = sc.read_10x_mtx(data_dir)");
+				lines.push("  # elif any(data_dir.glob('*.h5ad')): import anndata as ad; data = ad.read_h5ad(next(data_dir.glob('*.h5ad')))");
+				lines.push("  # elif any(data_dir.glob('*.csv')): import pandas as pd; data = pd.read_csv(next(data_dir.glob('*.csv')))");
 			
-			localDatasets.forEach(dataset => {
-				const datasetId = dataset.id;
-				lines.push(`  # ${dataset.title || datasetId} -> variable: ${datasetId}`);
-				lines.push(`  # Type: AnnData object (for single-cell) or DataFrame (for tabular)`);
-				lines.push(`  print(f"Dataset {datasetId} shape: {${datasetId}.shape if ${datasetId} is not None else 'Not loaded'}")`);
-				lines.push("  ");
-			});
+			// Load data yourself using data_dir (do not assume preloaded variables)
+
 			
 			lines.push("  ```");
 			lines.push("");
-			lines.push("### CRITICAL INSTRUCTIONS:");
-			lines.push("- Dataset variables are already loaded - just use them directly");
-			lines.push("- No need to load data again or construct paths");
-			lines.push("- Check if variable is not None before using");
-			lines.push("- Example: Use `example_data.obs` instead of loading from paths");
+				lines.push("");
+				lines.push("");
+				lines.push("");
+				lines.push("");
+				lines.push("");
 			lines.push("");
 		}
 
 		if (datasets.length > 0) {
 			const hasLocal = localDatasets.length > 0;
 			const hasRemote = remoteDatasets.length > 0;
-			lines.push("CRITICAL REQUIREMENTS:");
-			if (hasLocal) {
-				lines.push("1. LOCAL DATA: Dataset variables are already loaded and ready to use directly");
-			}
-			if (hasRemote) {
-				lines.push("2. REMOTE DATA: Use ONLY data_dir / filename pattern for downloaded data (do not re-download)");
-				lines.push("   If a file is missing, print a clear warning and continue.");
-				lines.push("   Do NOT assume variables exist for remote data unless CONTEXT says so.");
-			}
-			lines.push("3. FORBIDDEN: Any path construction like 'data/local-*' or hardcoded absolute paths");
-			if (hasLocal) {
-				lines.push("4. FORBIDDEN: Trying to load local datasets again — they're already loaded");
-				lines.push("5. REQUIRED: Use the dataset variables that are already available (local only)");
-				lines.push("6. REMINDER: Previous cells already loaded your local datasets into variables");
-			}
+				lines.push("CRITICAL REQUIREMENTS:");
+				lines.push("1. Use data_dir consistently for all file access");
+				if (hasRemote) {
+					lines.push("2. REMOTE DATA: Use ONLY data_dir / filename pattern for downloaded data (do not re-download)");
+					lines.push("   If a file is missing, print a clear warning and continue.");
+				}
+				if (hasLocal) {
+					lines.push("3. LOCAL DATA: Do not overwrite data_dir; it is set to your folder by setup cells");
+				}
+				lines.push("4. Avoid hardcoded absolute paths; always build paths from data_dir");
 		}
 
 		return lines.join("\n");

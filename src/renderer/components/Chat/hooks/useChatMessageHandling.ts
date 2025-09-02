@@ -311,12 +311,16 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 			const baseContext = buildContextFromMessages(analysisState.messages);
 			const enhancedContext = baseContext + inspectionContext;
 			
+			const chatId = (analysisState as any).activeChatSessionId || 'global';
+			const sessionId = `session:${workspaceState.currentWorkspace || 'global'}:${chatId}`;
+			
 			const answer = await ChatToolAgent.askWithTools(
 				backendClient!,
 				userMessage,
 				enhancedContext,
 				{
 					workspaceDir: workspaceState.currentWorkspace || undefined,
+					sessionId,
 					addMessage,
 				}
 			);

@@ -66,8 +66,14 @@ export const StatusBar: React.FC = () => {
 					if (mounted) setTokenStats(null);
 					return;
 				}
+				// Backend now handles fuzzy matching, so try the most specific session ID first
 				const sessionId = `session:${ws}:${chatId}`;
+				console.log(`📊 StatusBar: ws="${ws}", chatId="${chatId}", sessionId="${sessionId}"`);
+				console.log(`📊 StatusBar: activeChatSessionId:`, (analysisState as any).activeChatSessionId);
+				
 				const stats = await client.getSessionStats(sessionId);
+				console.log(`📊 StatusBar: Received stats:`, stats);
+				console.log(`📊 StatusBar: Token count: ${stats.approx_tokens}`);
 				if (!mounted) return;
 				setTokenStats({
 					approx: stats.approx_tokens || 0,
@@ -75,6 +81,7 @@ export const StatusBar: React.FC = () => {
 					near: !!stats.near_limit,
 				});
 			} catch (e) {
+				console.warn(`📊 StatusBar: Failed to get token stats:`, e);
 				if (mounted) setTokenStats(null);
 			}
 		}

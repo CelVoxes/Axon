@@ -302,9 +302,9 @@ const DiffCodeBlock: React.FC<Extract<CodeBlockProps, { variant: "diff" }>> = ({
     showStats = true,
     className,
 }) => {
-    // Auto-expand diffs that contain any changes so users don't miss them
+    // Keep diffs collapsed by default
     const initialStats = getDiffStats(code);
-    const [isExpanded, setIsExpanded] = useState(initialStats.additions + initialStats.deletions > 0);
+    const [isExpanded, setIsExpanded] = useState(false);
     const [expandedSegments, setExpandedSegments] = useState<
         Record<number, boolean>
     >({});

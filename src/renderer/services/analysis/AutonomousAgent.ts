@@ -666,73 +666,42 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 	 */
 	private buildLocalDataPreparationCode(datasets: Dataset[]): string {
 		const lines: string[] = [];
-		const localDatasets = datasets.filter((d: any) =>
-			Boolean((d as any).localPath)
-		);
+		const localDatasets = datasets.filter((d: any) => Boolean((d as any).localPath));
 
 		lines.push("from pathlib import Path");
-		lines.push("import scanpy as sc");
-		lines.push("import pandas as pd");
-		lines.push("print('Loading local datasets directly...')");
+		lines.push("print('Using mentioned local data folder as data_dir...')");
 		lines.push("");
 
 		if (localDatasets.length === 0) {
 			lines.push("print('No local datasets selected')");
 			lines.push("");
-			return lines.join("\n");
+			return lines.join("\\n");
 		}
 
-		for (const d of localDatasets as any[]) {
-			const datasetId = String(d.id);
-			const safeTitle = (d.title || d.id).replace(/\"/g, '\\"');
-			const safePath = (d.localPath || "")
-				.replace(/\\/g, "\\\\")
-				.replace(/\"/g, '\\"');
-			const isDir = Boolean(d.isLocalDirectory);
-			
-			lines.push(`# Loading: ${safeTitle}`);
-			lines.push(`${datasetId}_path = Path("${safePath}")`);
-			lines.push(`print(f"Path: {${datasetId}_path}")`);
-			lines.push(`exists = ${datasetId}_path.exists()`);
-			lines.push(`kind = 'directory' if ${datasetId}_path.is_dir() else ('file' if ${datasetId}_path.is_file() else 'unknown')`);
-			lines.push(`print(f"Exists: {exists}")`);
-			lines.push(`print(f"Kind: {kind}")`);
-			lines.push(`print(f"Title: ${safeTitle}")`);
-			lines.push("");
-			
-			// Direct loading based on type
-			lines.push(`if exists:`);
-			lines.push(`    if ${datasetId}_path.is_dir():`);
-			lines.push(`        # Check for 10x format`);
-			lines.push(`        mtx_exists = (${datasetId}_path / 'matrix.mtx').exists() or (${datasetId}_path / 'matrix.mtx.gz').exists()`);
-			lines.push(`        if mtx_exists:`);
-			lines.push(`            print("  contains 10x markers: matrix.mtx features/genes barcodes.tsv")`);
-			lines.push(`            ${datasetId} = sc.read_10x_mtx(${datasetId}_path)`);
-			lines.push(`            ${datasetId}.var_names_unique()`);
-			lines.push(`            print(f"Successfully loaded {${datasetId}}: {{${datasetId}.shape}}")`);
-			lines.push(`        else:`);
-			lines.push(`            print(f"Warning: Directory format not recognized for {safeTitle}")`);
-			lines.push(`            ${datasetId} = None`);
-			lines.push(`    elif ${datasetId}_path.is_file():`);
-			lines.push(`        if str(${datasetId}_path).endswith('.h5ad'):`);
-			lines.push(`            ${datasetId} = sc.read_h5ad(${datasetId}_path)`);
-			lines.push(`            print(f"Successfully loaded {${datasetId}}: {{${datasetId}.shape}}")`);
-			lines.push(`        elif str(${datasetId}_path).endswith('.csv'):`);
-			lines.push(`            ${datasetId} = pd.read_csv(${datasetId}_path)`);
-			lines.push(`            print(f"Successfully loaded {${datasetId}}: {{${datasetId}.shape}}")`);
-			lines.push(`        else:`);
-			lines.push(`            print(f"Warning: File format not supported for {safeTitle}")`);
-			lines.push(`            ${datasetId} = None`);
-			lines.push(`else:`);
-			lines.push(`    print(f"Error: Path not found for {safeTitle}: {{${datasetId}_path}}")`);
-			lines.push(`    ${datasetId} = None`);
-			lines.push("");
-		}
-
-		lines.push("print('Local datasets loaded directly into variables.')");
+        // Choose a single folder as data_dir (prefer the first directory; otherwise the parent of the first file)
+        const firstDir = (localDatasets as any[]).find((d) => Boolean(d.isLocalDirectory));
+        const firstAny = (localDatasets as any[])[0];
+        const chosen = firstDir || firstAny;
+        const chosenPath = (chosen?.localPath || "")
+            .replace(/\\/g, "\\\\")
+            .replace(/\"/g, '\\"');
+        lines.push(`# Use the mentioned path as data_dir`);
+        lines.push(`p = Path("${chosenPath}")`);
+        lines.push("if not p.exists():\n    raise FileNotFoundError(f'Path not found: {p}')");
+        lines.push("data_dir = p if p.is_dir() else p.parent");
+        lines.push("print(f'data_dir set to: {data_dir}')");
+        lines.push("# Optional: quick peek at contents");
+        lines.push("try:");
+        lines.push("    items = list(data_dir.iterdir())");
+        lines.push("    print(f'Items in data_dir ({len(items)}):')");
+        lines.push("    for x in items[:10]: print(' -', x.name)");
+        lines.push("except Exception as e:");
+        lines.push("    print('Could not list data_dir contents:', e)");
 		lines.push("");
-		return lines.join("\n") + "\n";
+		return lines.join("\\n") + "\\n";
 	}
+
+
 
 	/**
 	 * DEPRECATED: Use generateValidatedStepCode() instead
@@ -1364,23 +1333,11 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			Boolean((d as any).localPath)
 		);
 		if (localDatasets.length > 0) {
-			try {
-				const localDataSuccess = await this.generateSetupCell(
-					"Local data preparation",
-					() =>
-						Promise.resolve(this.buildLocalDataPreparationCode(localDatasets)),
-					notebookPath,
-					true, // Add to global context
-					"local-data-prep"
-				);
-				if (!localDataSuccess) {
-					console.warn("Local data preparation cell generation failed, but continuing...");
-				}
-			} catch (error) {
-				console.error("Local data preparation cell generation failed:", error);
-				// Continue - this is not critical for analysis
-			}
+			// Do not auto-add a cell; LLM will set data_dir and load based on context (snapshot + localPath)
+			console.log("🔎 Skipping auto-added local data prep; LLM decides loading from data_dir");
 		}
+
+		// Do not precreate any loader helpers; LLM will decide loading approach in analysis cells
 
 		return true;
 	}
@@ -1425,20 +1382,23 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			timestamp: Date.now(),
 		});
 
-		// Validate and enhance code
-		console.log('AutonomousAgent: Starting validation for step:', stepId, 'with stepTitle:', stepDescription);
-		let validationResult;
-		try {
-			validationResult = await this.codeQualityService.validateAndTest(
-				rawCode,
-				stepId,
-				{
-					stepTitle: stepDescription,
-					skipExecution: true,
-					globalCodeContext: this.getGlobalCodeContext(),
-					skipValidationEvents: true, // We'll emit events manually after notebook cell addition
-				}
-			);
+        // Validate and enhance code
+        console.log('AutonomousAgent: Starting validation for step:', stepId, 'with stepTitle:', stepDescription);
+        let validationResult;
+        try {
+            // For local-data-prep, avoid injecting output directory boilerplate that can break simple guards
+            const disableDirCreation = contextKey === "local-data-prep";
+            validationResult = await this.codeQualityService.validateAndTest(
+                rawCode,
+                stepId,
+                {
+                    stepTitle: stepDescription,
+                    skipExecution: true,
+                    globalCodeContext: this.getGlobalCodeContext(),
+                    skipValidationEvents: true, // We'll emit events manually after notebook cell addition
+                    addDirectoryCreation: !disableDirCreation,
+                }
+            );
 			console.log('AutonomousAgent: Validation completed successfully for step:', stepId);
 			
 			// Note: Validation success event will be emitted AFTER notebook cell is added
@@ -1614,6 +1574,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 					globalCodeContext: this.getGlobalCodeContext(),
 					skipExecution: true,
 					skipValidationEvents: true, // We'll emit events manually after notebook cell addition
+					addDirectoryCreation: false,
 				}
 			);
 			

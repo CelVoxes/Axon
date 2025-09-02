@@ -79,6 +79,7 @@ export class ChatToolAgent {
   ): Promise<string> {
     const maxCalls = options.maxCalls ?? 2;
     const sessId = options.sessionId || (options.workspaceDir ? `session:${options.workspaceDir}` : 'session:global');
+    console.log(`🔧 ChatToolAgent: Using session ID: ${sessId}`);
     let workingContext = `${this.buildSystemPreamble()}\n\nCONTEXT:\n${context || ""}`;
     let lastAnswer = "";
 

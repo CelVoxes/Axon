@@ -1,4 +1,6 @@
 import { ChatTool, ToolContext, ToolResult } from "./ToolTypes";
+import { buildDatasetSnapshot } from "./DataSnapshotService";
+import type { Dataset } from "../types";
 
 function toRel(path: string, base?: string) {
 	if (!base) return path;
@@ -50,38 +52,27 @@ export const AutoPeekTool: ChatTool = {
 
 		// Heuristic: directory vs file (listDirectory returns entries or throws)
 		const entries = await safeList(target);
-		if (entries.length > 0) {
-			// Directory: show top-level entries + 10x markers if present
-			const names = entries.map((p) => {
-				// Handle both string entries and object entries with name/path properties
-				if (typeof p === 'string') {
-					return p.split("/").pop() || p;
-				} else if (p && typeof p === 'object') {
-					return (p as any).name || (p as any).path || String(p);
-				}
-				return String(p);
-			});
-			const hasMtx = names.some((n) => /matrix\.mtx(\.gz)?$/i.test(n));
-			const hasFeatures = names.some((n) =>
-				/(features|genes)\.tsv(\.gz)?$/i.test(n)
-			);
-			const hasBarcodes = names.some((n) => /barcodes\.tsv(\.gz)?$/i.test(n));
-			const body = names
-				.slice(0, 20)
-				.map((n) => `- ${n}`)
-				.join("\n");
-            const msg = `Peek directory > ${rel}${
-                names.length > 20 ? ` (showing 20 of ${names.length})` : ""
-            }`;
-            const markers = `Markers: 10x matrix.mtx=${hasMtx}, features/genes=${hasFeatures}, barcodes=${hasBarcodes}`;
-			return {
-				ok: true,
-				message: `${msg}\n${markers}`,
-				code: body,
-				codeLanguage: "text",
-				title: rel,
-			};
-		}
+        if (entries.length > 0) {
+            // Directory: reuse the shared snapshot builder for consistent output
+            const ds: Dataset = {
+                id: `peek-${Math.random().toString(36).slice(2, 8)}`,
+                title: rel,
+                organism: undefined,
+                source: "Local",
+                description: "Peeked directory",
+                platform: "Local",
+            } as any;
+            (ds as any).localPath = target;
+            (ds as any).isLocalDirectory = true;
+            const snapshot = await buildDatasetSnapshot([ds], ws);
+            return {
+                ok: true,
+                message: `Peek directory > ${rel}`,
+                code: snapshot,
+                codeLanguage: "text",
+                title: rel,
+            };
+        }
 
 		// File peek by extension
 		const lower = rel.toLowerCase();

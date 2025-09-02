@@ -268,6 +268,7 @@ export const CodeBlockCode = styled.code<{ $wrap?: boolean }>`
 	&.hljs {
 		color: inherit;
 		background: inherit;
+		padding: 0 !important; /* Override highlight.js default 1em padding */
 
 		/* Let all hljs token colors show through */
 		* {

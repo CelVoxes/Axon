@@ -389,8 +389,11 @@ class LLMService:
         if isinstance(last_usage, dict):
             pt = last_usage.get('prompt_tokens') or last_usage.get('input_tokens') or 0
             ct = last_usage.get('completion_tokens') or last_usage.get('output_tokens') or 0
+            prev_tokens = int(meta.get('approx_tokens', 0) or 0)
+            new_tokens = int((pt or 0) + (ct or 0))
+            total_tokens = prev_tokens + new_tokens
             try:
-                meta['approx_tokens'] = int(meta.get('approx_tokens', 0) or 0) + int((pt or 0) + (ct or 0))
+                meta['approx_tokens'] = total_tokens
             except Exception:
                 pass
 
@@ -409,14 +412,69 @@ class LLMService:
         return approx_tokens > int(self.default_context_tokens * threshold)
 
     def get_session_stats(self, session_id: str) -> Dict[str, Any]:
-        meta = self.session_meta.get(session_id) or {}
+        # Debug: Print what we're looking for and what we have
+        print(f"📊 LLM Service: get_session_stats - Looking for: {session_id}")
+        print(f"📊 LLM Service: Available sessions: {list(self.session_meta.keys())}")
+        
+        # First try exact match
+        meta = self.session_meta.get(session_id)
+        if meta is not None:
+            tokens = int(meta.get('approx_tokens', 0) or 0)
+            print(f"📊 LLM Service: Found exact match with {tokens} tokens")
+            return {
+                "session_id": session_id,
+                "last_response_id": meta.get('last_response_id'),
+                "approx_tokens": tokens,
+                "approx_chars": int(meta.get('approx_chars', 0) or 0),
+                "limit_tokens": int(self.default_context_tokens),
+                "near_limit": self._is_near_context_limit(session_id),
+            }
+        
+        # If no exact match, find the session with the most tokens that contains the chat ID suffix
+        if ':' in session_id:
+            chat_id_suffix = session_id.split(':')[-1]
+            print(f"📊 LLM Service: Looking for sessions ending with: {chat_id_suffix}")
+            best_match = None
+            max_tokens = 0
+            
+            for existing_session_id, session_meta in self.session_meta.items():
+                tokens = int(session_meta.get('approx_tokens', 0) or 0)
+                print(f"📊 LLM Service: Checking session: {existing_session_id} (tokens: {tokens})")
+                
+                if existing_session_id.endswith(chat_id_suffix):
+                    print(f"📊 LLM Service: Found suffix match: {existing_session_id} with {tokens} tokens")
+                    if tokens > max_tokens:
+                        max_tokens = tokens
+                        best_match = (existing_session_id, session_meta)
+                # Also try if the existing session is contained within the requested session
+                elif chat_id_suffix in existing_session_id:
+                    print(f"📊 LLM Service: Found partial match: {existing_session_id} with {tokens} tokens")
+                    if tokens > max_tokens:
+                        max_tokens = tokens
+                        best_match = (existing_session_id, session_meta)
+            
+            if best_match:
+                best_session_id, best_meta = best_match
+                tokens = int(best_meta.get('approx_tokens', 0) or 0)
+                print(f"📊 LLM Service: Using best match: {best_session_id} with {tokens} tokens")
+                return {
+                    "session_id": best_session_id,
+                    "last_response_id": best_meta.get('last_response_id'),
+                    "approx_tokens": tokens,
+                    "approx_chars": int(best_meta.get('approx_chars', 0) or 0),
+                    "limit_tokens": int(self.default_context_tokens),
+                    "near_limit": self._is_near_context_limit(best_session_id),
+                }
+        
+        print(f"📊 LLM Service: No match found, returning empty stats")
+        # No match found, return empty stats for the requested session
         return {
             "session_id": session_id,
-            "last_response_id": meta.get('last_response_id'),
-            "approx_tokens": int(meta.get('approx_tokens', 0) or 0),
-            "approx_chars": int(meta.get('approx_chars', 0) or 0),
+            "last_response_id": None,
+            "approx_tokens": 0,
+            "approx_chars": 0,
             "limit_tokens": int(self.default_context_tokens),
-            "near_limit": self._is_near_context_limit(session_id),
+            "near_limit": False,
         }
     
     def _create_provider(self, provider: str, **kwargs) -> Optional[LLMProvider]:
