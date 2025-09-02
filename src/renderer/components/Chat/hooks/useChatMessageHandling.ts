@@ -206,15 +206,18 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 				const enhancedContext = baseContext + inspectionContext;
 				
 				// Use ChatToolAgent for autonomous tool usage in Ask mode
-				const answer = await ChatToolAgent.askWithTools(
-					backendClient!,
-					userMessage,
-					enhancedContext,
-					{
-						workspaceDir: workspaceState.currentWorkspace || undefined,
-						addMessage, // Tools will show their output in chat
-					}
-				);
+                const chatId = (analysisState as any).activeChatSessionId || 'global';
+                const sessionId = `session:${workspaceState.currentWorkspace || 'global'}:${chatId}`;
+                const answer = await ChatToolAgent.askWithTools(
+                    backendClient!,
+                    userMessage,
+                    enhancedContext,
+                    {
+                        workspaceDir: workspaceState.currentWorkspace || undefined,
+                        sessionId,
+                        addMessage, // Tools will show their output in chat
+                    }
+                );
 				
 				if (isMounted) {
 					addMessage(answer || "(No answer)", false);

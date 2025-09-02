@@ -32,6 +32,29 @@ export interface NotebookReadyResult {
 	timeout?: boolean;
 }
 
+export interface NotebookData {
+	cells: Array<{
+		cell_type: "code" | "markdown";
+		source: string[];
+		metadata: any;
+		execution_count?: number | null;
+		outputs?: any[];
+	}>;
+	metadata: {
+		kernelspec?: {
+			display_name: string;
+			language: string;
+			name: string;
+		};
+		language_info?: {
+			name: string;
+			version: string;
+		};
+	};
+	nbformat: number;
+	nbformat_minor: number;
+}
+
 /**
  * NotebookService - Pure file operations for Jupyter notebooks
  * Responsibilities: ONLY notebook file creation/modification
@@ -71,16 +94,15 @@ export class NotebookService {
 
     // Ensure the target notebook is open and ready so the FileEditor can handle the event
     try {
-      EventManager.dispatchEvent("open-workspace-file", { filePath: notebookPath });
-      const ready = await this.waitForNotebookReady(notebookPath, 15000);
-      if (!ready.isReady) {
+      const opened = await this.openNotebookInEditor(notebookPath);
+      if (!opened) {
         console.warn(
-          `NotebookService: Proceeding to add markdown cell even though notebook not reported ready: ${notebookPath}`
+          `NotebookService: Proceeding to add markdown cell even though openNotebookInEditor() returned false: ${notebookPath}`
         );
       }
     } catch (e) {
       console.warn(
-        `NotebookService: Failed to confirm notebook readiness before adding markdown cell: ${notebookPath}`,
+        `NotebookService: Failed to open notebook before adding markdown cell: ${notebookPath}`,
         e
       );
     }
@@ -132,16 +154,15 @@ export class NotebookService {
 
     // Ensure the target notebook is open and ready so the FileEditor can handle the event
     try {
-      EventManager.dispatchEvent("open-workspace-file", { filePath: notebookPath });
-      const ready = await this.waitForNotebookReady(notebookPath, 15000);
-      if (!ready.isReady) {
+      const opened = await this.openNotebookInEditor(notebookPath);
+      if (!opened) {
         console.warn(
-          `NotebookService: Proceeding to add cell even though notebook not reported ready: ${notebookPath}`
+          `NotebookService: Proceeding to add code cell even though openNotebookInEditor() returned false: ${notebookPath}`
         );
       }
     } catch (e) {
       console.warn(
-        `NotebookService: Failed to confirm notebook readiness before adding cell: ${notebookPath}`,
+        `NotebookService: Failed to open notebook before adding code cell: ${notebookPath}`,
         e
       );
     }
@@ -179,6 +200,43 @@ export class NotebookService {
 		}
 		
 		console.log(`NotebookService: Successfully added code cell to ${notebookPath}`);
+
+		// For package installation cells, add a small delay to ensure proper saving
+		const isPackageInstall = /(^|\n)\s*(%pip|%conda|pip\s+install|conda\s+install)\b/i.test(code);
+		if (isPackageInstall) {
+			console.log(`NotebookService: Package installation cell detected - adding save delay`);
+			await this.waitForSaveCompletion(notebookPath);
+		}
+	}
+
+	/**
+	 * Wait for notebook save completion to ensure file is persisted
+	 */
+	private async waitForSaveCompletion(notebookPath: string): Promise<void> {
+		// Add a delay to allow the debounced save to trigger
+		await new Promise(resolve => setTimeout(resolve, 1000));
+		
+		// Verify the file exists and is readable
+		let attempts = 0;
+		const maxAttempts = 5;
+		while (attempts < maxAttempts) {
+			try {
+				const content = await ElectronClient.readFile(notebookPath);
+				if (content && content.length > 0) {
+					console.log(`NotebookService: Confirmed notebook save completion after ${attempts + 1} attempts`);
+					return;
+				}
+			} catch (error) {
+				console.warn(`NotebookService: Save verification attempt ${attempts + 1} failed:`, error);
+			}
+			
+			attempts++;
+			if (attempts < maxAttempts) {
+				await new Promise(resolve => setTimeout(resolve, 500));
+			}
+		}
+		
+		console.warn(`NotebookService: Could not verify save completion after ${maxAttempts} attempts`);
 	}
 
 	/**
@@ -458,6 +516,35 @@ export class NotebookService {
 		} catch (error) {
 			console.error("Error adding multiple cells:", error);
 			return false;
+		}
+	}
+
+	/**
+	 * Read and parse notebook file
+	 */
+	async readNotebook(notebookPath: string): Promise<NotebookData> {
+		try {
+			const fileContent = await ElectronClient.readFile(notebookPath);
+			return JSON.parse(fileContent);
+		} catch (error) {
+			console.error("Error reading notebook:", error);
+			// Return empty notebook structure if file doesn't exist or can't be parsed
+			return {
+				cells: [],
+				metadata: {
+					kernelspec: {
+						display_name: "Python 3",
+						language: "python",
+						name: "python3",
+					},
+					language_info: {
+						name: "python",
+						version: "3.8+",
+					},
+				},
+				nbformat: 4,
+				nbformat_minor: 4,
+			};
 		}
 	}
 

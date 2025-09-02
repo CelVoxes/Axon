@@ -59,6 +59,7 @@ export class CodeGenToolAgent {
       const answer = await backend.askQuestion({
         question,
         context: workingContext,
+        sessionId: `session:${workspaceDir || 'global'}`,
       });
       const tool = this.parseToolCall(answer || "");
       if (!tool) break;
@@ -78,4 +79,3 @@ export class CodeGenToolAgent {
     return observations.trim();
   }
 }
-

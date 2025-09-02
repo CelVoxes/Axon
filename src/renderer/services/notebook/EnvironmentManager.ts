@@ -358,25 +358,29 @@ export class EnvironmentManager {
 			a.localeCompare(b)
 		);
 
-		return `# Install required packages as a single pip transaction for consistent dependency resolution
-import subprocess
-import sys
-
-required_packages = ${JSON.stringify(packages)}
-
-print("Installing required packages as one pip call...")
-try:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", *required_packages])
-    print("✓ All packages installed")
-except subprocess.CalledProcessError:
-    print("⚠ Failed to install one or more packages")
-
-# Optional: verify dependency conflicts
-try:
-    subprocess.check_call([sys.executable, "-m", "pip", "check"])  # verifies dependency conflicts
-    print("Dependency check passed")
-except subprocess.CalledProcessError:
-    print("⚠ Dependency conflicts detected")`;
+		const installationCode = [
+			"# Install required packages as a single pip transaction for consistent dependency resolution",
+			"import subprocess",
+			"import sys",
+			"",
+			`required_packages = ${JSON.stringify(packages)}`,
+			"",
+			'print("Installing required packages as one pip call...")',
+			"try:",
+			'    subprocess.check_call([sys.executable, "-m", "pip", "install", *required_packages])',
+			'    print("✓ All packages installed")',
+			"except subprocess.CalledProcessError:",
+			'    print("⚠ Failed to install one or more packages")',
+			"",
+			"# Optional: verify dependency conflicts",
+			"try:",
+			'    subprocess.check_call([sys.executable, "-m", "pip", "check"])  # verifies dependency conflicts',
+			'    print("Dependency check passed")',
+			"except subprocess.CalledProcessError:",
+			'    print("⚠ Dependency conflicts detected")',
+		].join("\n");
+		
+		return installationCode;
 	}
 
 	/**

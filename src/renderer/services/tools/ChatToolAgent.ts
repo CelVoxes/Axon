@@ -4,6 +4,7 @@ import { ToolRegistry } from "./ToolRegistry";
 interface AskWithToolsOptions {
   workspaceDir?: string;
   maxCalls?: number;
+  sessionId?: string;
   addMessage?: (
     content: string,
     isUser: boolean,
@@ -77,6 +78,7 @@ export class ChatToolAgent {
     options: AskWithToolsOptions = {}
   ): Promise<string> {
     const maxCalls = options.maxCalls ?? 2;
+    const sessId = options.sessionId || (options.workspaceDir ? `session:${options.workspaceDir}` : 'session:global');
     let workingContext = `${this.buildSystemPreamble()}\n\nCONTEXT:\n${context || ""}`;
     let lastAnswer = "";
 
@@ -90,6 +92,7 @@ export class ChatToolAgent {
       const answer = await backend.askQuestion({
         question: q,
         context: workingContext,
+        sessionId: sessId,
       });
       lastAnswer = answer || "";
 

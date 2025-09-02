@@ -213,6 +213,7 @@ class CodeGenerationRequest(BaseModel):
     language: str = "python"
     context: Optional[str] = None
     model: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 class CodeGenerationResponse(BaseModel):
@@ -246,6 +247,15 @@ class QueryAnalysisResponse(BaseModel):
     complexity: str
 
 
+class SessionStatsResponse(BaseModel):
+    session_id: str
+    last_response_id: Optional[str]
+    approx_tokens: int
+    approx_chars: int
+    limit_tokens: int
+    near_limit: bool
+
+
 class SearchTermsRequest(BaseModel):
     query: str
     attempt: int = 1
@@ -273,6 +283,7 @@ class DataTypeSuggestionsResponse(BaseModel):
 class AskRequest(BaseModel):
     question: str
     context: Optional[str] = ""
+    session_id: Optional[str] = None
 
 
 class AskResponse(BaseModel):
@@ -282,7 +293,7 @@ class IntentRequest(BaseModel):
     context: Optional[Dict[str, Any]] = None
 
 class IntentResponse(BaseModel):
-    intent: str  # "ADD_CELL" | "SEARCH_DATA"
+    intent: str  # "ADD_CELL" | "SEARCH_DATA" | "START_ANALYSIS"
     confidence: float
     reason: str
 class GoogleAuthRequest(BaseModel):
@@ -691,7 +702,8 @@ async def generate_code(request: dict, user=Depends(get_current_user)):
         code = await llm_service.generate_code(
             task_description=task_description,
             language=language,
-            context=context
+            context=context,
+            session_id=request.get("session_id") if isinstance(request, dict) else getattr(request, "session_id", None)
         )
         
         # Log usage
@@ -757,7 +769,8 @@ async def generate_code_stream(request: dict, user=Depends(get_current_user)):
                 async for chunk in llm_service.generate_code_stream(
                     task_description=task_description,
                     language=language,
-                    context=context
+                    context=context,
+                    session_id=request.get("session_id") if isinstance(request, dict) else getattr(request, "session_id", None)
                 ):
                     if chunk:  # Only yield non-empty chunks
                         yield f"data: {json.dumps({'chunk': chunk})}\n\n"
@@ -962,7 +975,7 @@ async def ask_question(request: AskRequest, user=Depends(get_current_user)):
     """General Q&A endpoint. No environment creation or editing, just answers."""
     try:
         llm_service = get_llm_service()
-        answer = await llm_service.ask(request.question, request.context or "")
+        answer = await llm_service.ask(request.question, request.context or "", session_id=request.session_id)
         return AskResponse(answer=answer)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ask failed: {str(e)}")
@@ -989,7 +1002,8 @@ async def ask_question_stream(request: AskRequest, user=Depends(get_current_user
 
             async for chunk in llm_service.ask_stream(
                 question=request.question,
-                context=request.context or ""
+                context=request.context or "",
+                session_id=request.session_id
             ):
                 # Accumulate and check for explicit final markers
                 buffer += chunk
@@ -1045,19 +1059,39 @@ async def ask_question_stream(request: AskRequest, user=Depends(get_current_user
         raise HTTPException(status_code=500, detail=f"Ask stream failed: {str(e)}")
 
 
+@app.get("/llm/session/stats", response_model=SessionStatsResponse)
+async def get_session_stats(session_id: str):
+    """Return approximate session usage and whether the session is near the context limit.
+
+    Note: Token counts are best-effort and may be approximated, especially for streaming calls where
+    the SDK does not provide full usage metrics in real time. For Responses API, we chain via
+    previous_response_id and track last_response_id for observability.
+    """
+    try:
+        llm_service = get_llm_service()
+        stats = llm_service.get_session_stats(session_id)
+        return SessionStatsResponse(**stats)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve session stats: {e}")
+
+
 @app.post("/llm/intent", response_model=IntentResponse)
 async def classify_intent(request: IntentRequest):
-    """Classify user intent into ADD_CELL or SEARCH_DATA (conservative default to ADD_CELL).
+    """Classify user intent into ADD_CELL, SEARCH_DATA, or START_ANALYSIS.
 
     This endpoint is deterministic even without an LLM provider; it falls back to
     a rule-based classifier to avoid random search triggers.
+    
+    START_ANALYSIS: user wants to start/trigger the analysis pipeline on existing data
+    ADD_CELL: user wants code, analysis, plotting, computing, visualization  
+    SEARCH_DATA: user wants to find/discover new datasets
     """
     try:
         llm_service = get_llm_service()
         result = await llm_service.classify_intent(request.text, request.context)
         # Normalize response
         intent = str(result.get("intent", "ADD_CELL")).upper()
-        if intent not in ("ADD_CELL", "SEARCH_DATA"):
+        if intent not in ("ADD_CELL", "SEARCH_DATA", "START_ANALYSIS"):
             intent = "ADD_CELL"
         confidence = float(result.get("confidence", 0.7))
         reason = str(result.get("reason", "")) or f"Classified as {intent}"

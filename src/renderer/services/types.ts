@@ -219,6 +219,7 @@ export interface IBackendClient {
 		model: string;
 		max_tokens?: number;
 		temperature?: number;
+		session_id?: string;
 	}): Promise<any>;
 
 	generateSuggestions(request: {
@@ -228,5 +229,5 @@ export interface IBackendClient {
 		contextInfo?: string;
 	}): Promise<any>;
 
-	askQuestion(params: { question: string; context?: string }): Promise<string>;
+	askQuestion(params: { question: string; context?: string; sessionId?: string }): Promise<string>;
 }

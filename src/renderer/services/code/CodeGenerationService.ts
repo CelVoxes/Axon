@@ -23,6 +23,7 @@ import { extractPythonCode as extractPythonCodeUtil } from "../../utils/CodeText
 export class CodeGenerationService implements ICodeGenerator {
 	private backendClient: BackendClient;
 	private selectedModel: string;
+	private sessionOverride?: string;
 	private activeGenerations = new Map<
 		string,
 		{ accumulatedCode: string; startTime: number }
@@ -31,10 +32,18 @@ export class CodeGenerationService implements ICodeGenerator {
 
 	constructor(
 		backendClient: BackendClient,
-		selectedModel: string = ConfigManager.getInstance().getDefaultModel()
+		selectedModel: string = ConfigManager.getInstance().getDefaultModel(),
+		sessionOverride?: string
 	) {
 		this.backendClient = backendClient;
 		this.selectedModel = selectedModel;
+		this.sessionOverride = sessionOverride;
+	}
+
+	private buildSessionId(request: CodeGenerationRequest): string {
+		if (this.sessionOverride && this.sessionOverride.trim()) return this.sessionOverride;
+		const ws = (request.workingDir || "").trim();
+		return ws ? `session:${ws}` : `session:default`;
 	}
 
 	setModel(model: string) {
@@ -295,6 +304,7 @@ General requirements:
 					language: "python",
 					context: enhancedContext,
 					model: ConfigManager.getInstance().getDefaultModel(),
+					session_id: this.buildSessionId(request),
 				},
 				chunkCallback
 			);
@@ -385,6 +395,7 @@ General requirements:
 				model: this.selectedModel,
 				max_tokens: 2000,
 				temperature: 0.1,
+				session_id: this.buildSessionId(request),
 			});
 
 			const code = result.code || result.response || "";

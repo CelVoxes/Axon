@@ -5,6 +5,7 @@ import {
 	useAnalysisContext,
 } from "../../context/AppContext";
 import { typography } from "../../styles/design-system";
+import { BackendClient } from "../../services/backend/BackendClient";
 
 const StatusBarContainer = styled.div`
 	height: 24px;
@@ -46,6 +47,47 @@ export const StatusBar: React.FC = () => {
 	const { state } = useWorkspaceContext();
 	const { state: analysisState } = useAnalysisContext();
 
+	const [tokenStats, setTokenStats] = React.useState<{
+		approx: number;
+		limit: number;
+		near: boolean;
+	} | null>(null);
+
+	React.useEffect(() => {
+		let mounted = true;
+		const client = new BackendClient();
+		const intervalMs = 10000;
+
+		async function poll() {
+			try {
+				const ws = state.currentWorkspace || "";
+				const chatId = (analysisState as any).activeChatSessionId || "global";
+				if (!ws) {
+					if (mounted) setTokenStats(null);
+					return;
+				}
+				const sessionId = `session:${ws}:${chatId}`;
+				const stats = await client.getSessionStats(sessionId);
+				if (!mounted) return;
+				setTokenStats({
+					approx: stats.approx_tokens || 0,
+					limit: stats.limit_tokens || 0,
+					near: !!stats.near_limit,
+				});
+			} catch (e) {
+				if (mounted) setTokenStats(null);
+			}
+		}
+
+		// initial and interval
+		poll();
+		const t = setInterval(poll, intervalMs);
+		return () => {
+			mounted = false;
+			clearInterval(t);
+		};
+	}, [state.currentWorkspace, (analysisState as any).activeChatSessionId]);
+
 	return (
 		<StatusBarContainer>
 			<StatusLeft>
@@ -57,6 +99,17 @@ export const StatusBar: React.FC = () => {
 			</StatusLeft>
 
 			<StatusRight>
+				{tokenStats && tokenStats.limit > 0 && (
+					<StatusItem title={`LLM session tokens used`}>
+						<span style={{ color: tokenStats.near ? "#ff5555" : "#9aa0a6" }}>
+							Tokens:
+						</span>
+						<span style={{ fontWeight: 600 }}>
+							{Math.round(tokenStats.approx / 100) / 10}k /{" "}
+							{Math.round(tokenStats.limit / 1000)}k
+						</span>
+					</StatusItem>
+				)}
 				<StatusItem>
 					<span
 						className={analysisState.isStreaming ? "pulse-dot" : ""}

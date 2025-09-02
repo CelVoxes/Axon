@@ -1,8 +1,11 @@
 import { BackendClient } from "../backend/BackendClient";
+import { ConfigManager } from "../backend/ConfigManager";
 import { CodeGenerationService } from "../code/CodeGenerationService";
 import { CodeQualityService } from "../code/CodeQualityService";
 import { CellExecutionService } from "../notebook/CellExecutionService";
 import { NotebookService } from "../notebook/NotebookService";
+import { EnvironmentManager } from "../notebook/EnvironmentManager";
+import { DatasetManager } from "../analysis/DatasetManager";
 import { Dataset, CodeGenerationRequest } from "../types";
 
 interface GenerateAndAddArgs {
@@ -23,20 +26,28 @@ export class NotebookCodeGenerationService {
   private codeGenerator: CodeGenerationService;
   private codeQualityService: CodeQualityService;
   private notebookService: NotebookService;
+  private environmentManager: EnvironmentManager;
   private statusCallback?: (status: string) => void;
+  private workspacePath: string;
 
   // Global code context from the notebook/session to avoid duplicate imports/setup
   private globalCodeContext = new Map<string, string>();
 
-  constructor(backendClient: BackendClient, workspacePath: string) {
+  constructor(backendClient: BackendClient, workspacePath: string, sessionId?: string) {
     this.backendClient = backendClient;
-    this.codeGenerator = new CodeGenerationService(backendClient);
+    this.workspacePath = workspacePath;
+    this.codeGenerator = new CodeGenerationService(
+      backendClient,
+      ConfigManager.getInstance().getDefaultModel(),
+      sessionId
+    );
     this.codeQualityService = new CodeQualityService(
       backendClient,
       new CellExecutionService(workspacePath) as any,
       this.codeGenerator as any
     );
     this.notebookService = new NotebookService({ workspacePath });
+    this.environmentManager = new EnvironmentManager(new DatasetManager());
   }
 
   setStatusCallback(cb: (status: string) => void) {
@@ -97,6 +108,70 @@ export class NotebookCodeGenerationService {
     }
   }
 
+  // Extract pip/conda packages suggested by LLM code snippets
+  private extractPackagesFromCode(code: string): string[] {
+    const pkgs = new Set<string>();
+    try {
+      const c = String(code || "");
+      // Match lines like: pip install a b c  OR  %pip install a b  OR  python -m pip install a b
+      const installRe = /(\%?pip|python\s+-m\s+pip)\s+install\s+([^\n;#]+)/gi;
+      let m: RegExpExecArray | null;
+      while ((m = installRe.exec(c)) !== null) {
+        const raw = m[2] || "";
+        raw
+          .split(/\s+/)
+          .map((t) => t.trim())
+          .filter((t) => !!t && !t.startsWith("-") && !t.startsWith("#"))
+          .forEach((t) => pkgs.add(t));
+      }
+      // Match subprocess style: subprocess.check_call([... 'pip', 'install', 'a', 'b'])
+      const subprocRe = /subprocess\.(?:check_call|run)\([^\)]*?([\[\(][^\]\)]+[\]\)])\)/gi;
+      const arrayTokenRe = /['\"]([^'\"]+)['\"]/g;
+      while ((m = subprocRe.exec(c)) !== null) {
+        const list = m[1] || "";
+        const tokens: string[] = [];
+        let tm: RegExpExecArray | null;
+        while ((tm = arrayTokenRe.exec(list)) !== null) {
+          tokens.push(tm[1]);
+        }
+        const pipIdx = tokens.findIndex((t) => t.toLowerCase() === "pip");
+        const installIdx = tokens.findIndex((t) => t.toLowerCase() === "install");
+        if (pipIdx >= 0 && installIdx > pipIdx) {
+          const pkgTokens = tokens.slice(installIdx + 1);
+          pkgTokens
+            .filter((t) => !!t && !t.startsWith("-"))
+            .forEach((t) => pkgs.add(t));
+        }
+      }
+    } catch (_) {}
+    return Array.from(pkgs);
+  }
+
+  private buildInstallCellCode(packages: string[]): string {
+    const unique = Array.from(new Set(packages)).filter(Boolean).sort((a, b) => a.localeCompare(b));
+    return [
+      "# Install required packages as a single pip transaction for consistent dependency resolution",
+      "import subprocess",
+      "import sys",
+      "",
+      `required_packages = ${JSON.stringify(unique)}`,
+      "",
+      'print("Installing required packages as one pip call...")',
+      "try:",
+      '    subprocess.check_call([sys.executable, "-m", "pip", "install", *required_packages])',
+      '    print("✓ All packages installed")',
+      "except subprocess.CalledProcessError:",
+      '    print("⚠ Failed to install one or more packages")',
+      "",
+      "# Optional: verify dependency conflicts",
+      "try:",
+      '    subprocess.check_call([sys.executable, "-m", "pip", "check"])  # verifies dependency conflicts',
+      '    print("Dependency check passed")',
+      "except subprocess.CalledProcessError:",
+      '    print("⚠ Dependency conflicts detected")',
+    ].join("\n");
+  }
+
   /**
    * Generate and validate code, then add as a new notebook cell.
    * Emits validation events after the cell is successfully added.
@@ -151,7 +226,13 @@ export class NotebookCodeGenerationService {
     const bestCode = this.codeQualityService.getBestCode(validation);
     const finalCode = this.sanitizeNotebookPythonCode(bestCode);
 
-    // Add validated code as notebook cell first
+    // Extract any package hints from the generated code
+    const llmSuggestedPkgs = this.extractPackagesFromCode(generatedCode);
+
+    // Check if we need to add package installation cell first
+    await this.ensurePackageInstallationCell(notebookPath, datasets, llmSuggestedPkgs);
+
+    // Add validated code as notebook cell
     await this.notebookService.addCodeCell(notebookPath, finalCode);
 
     // Now emit validation events for UI in the correct order
@@ -176,5 +257,70 @@ export class NotebookCodeGenerationService {
       }
     }
   }
-}
 
+  /**
+   * Ensure that a package installation cell is added to the notebook if needed.
+   * This should be called before adding any code cells to ensure dependencies are available.
+   */
+  private async ensurePackageInstallationCell(
+    notebookPath: string,
+    datasets: Dataset[],
+    llmSuggestedPkgs?: string[]
+  ): Promise<void> {
+    try {
+      console.log('🔍 ensurePackageInstallationCell called with:', { notebookPath, datasets: datasets.length });
+      
+      // Check if the notebook already has a package installation cell
+      // by looking for pip install commands in existing cells
+      const notebookContent = await this.notebookService.readNotebook(notebookPath);
+      const existingCode = notebookContent.cells
+        .filter(cell => cell.cell_type === 'code')
+        .map(cell => Array.isArray(cell.source) ? cell.source.join('') : String(cell.source || ''))
+        .join('\n');
+
+      // Robust detection for existing install logic (pip/conda or python -m pip)
+      const installRegex = /(\b%?pip\s+install\b|\b%?conda\s+install\b)/i;
+      const pipModuleRegex = /sys\.executable[\s\S]*?"-m"[\s\S]*?"pip"[\s\S]*?"install"/i;
+      const subprocessPipRegex = /subprocess\.(check_call|run)\([^\)]*"pip"[^\)]*"install"/i;
+      const hasInstall =
+        installRegex.test(existingCode) || pipModuleRegex.test(existingCode) || subprocessPipRegex.test(existingCode);
+
+      console.log('📖 Existing notebook has install step:', hasInstall);
+
+      // If package installation already exists, skip
+      if (hasInstall) {
+        console.log('⏭️ Skipping package installation - already exists in notebook');
+        return;
+      }
+
+      // Generate package installation code
+      console.log('🔧 Generating package installation code...');
+      const packageInstallCode = await this.environmentManager.generatePackageInstallationCode(
+        datasets,
+        [],
+        this.workspacePath
+      );
+
+      // Merge environment-derived packages with any LLM-suggested ones (if env code empty)
+      let finalInstallCode = packageInstallCode && packageInstallCode.trim().length > 0
+        ? packageInstallCode
+        : undefined;
+
+      if (!finalInstallCode && Array.isArray(llmSuggestedPkgs) && llmSuggestedPkgs.length > 0) {
+        console.log('📦 Falling back to LLM-suggested packages for install cell:', llmSuggestedPkgs);
+        finalInstallCode = this.buildInstallCellCode(llmSuggestedPkgs);
+      }
+
+      if (finalInstallCode && finalInstallCode.trim().length > 0) {
+        console.log('➕ Adding package installation cell to notebook');
+        await this.notebookService.addCodeCell(notebookPath, finalInstallCode);
+        console.log('✅ Package installation cell added successfully');
+      } else {
+        console.log('❌ No package installation code generated');
+      }
+    } catch (error) {
+      // Don't fail the main operation if package installation fails
+      console.warn('Failed to ensure package installation cell:', error);
+    }
+  }
+}

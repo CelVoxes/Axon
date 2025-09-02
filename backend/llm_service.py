@@ -3,7 +3,7 @@
 import os
 import asyncio
 import json
-from typing import List, Optional, Dict, Any, Union, Sequence
+from typing import List, Optional, Dict, Any, Union, Sequence, cast
 from abc import ABC, abstractmethod
 import openai
 from openai import AsyncOpenAI
@@ -33,6 +33,7 @@ class OpenAIProvider(LLMProvider):
         default_model = SearchConfig.get_default_llm_model()
         self.model = model if isinstance(model, str) and model else (default_model if isinstance(default_model, str) and default_model else "gpt-4o-mini")
         self.last_usage = None
+        self.last_response_id: Optional[str] = None
     
     def _prepare_kwargs(self, kwargs: dict) -> dict:
         """Prepare kwargs for OpenAI API, handling model-specific parameter differences."""
@@ -57,14 +58,66 @@ class OpenAIProvider(LLMProvider):
         return any(model in self.model for model in new_models)
     
     async def generate(self, messages: Sequence[ChatCompletionMessageParam], **kwargs) -> str:
+        """Generate with Responses API when available, else fall back to Chat Completions."""
         prepared_kwargs = self._prepare_kwargs(kwargs)
-        
+
+        # Try Responses API first
+        try:
+            responses_api = getattr(self.client, "responses", None)
+            if responses_api is not None and hasattr(responses_api, "create"):
+                # The Responses API can accept message-style input
+                resp = await responses_api.create(
+                    model=self.model,
+                    input=list(messages),
+                    **{k: v for k, v in prepared_kwargs.items() if k not in ("messages",)}
+                )
+                try:
+                    self.last_response_id = getattr(resp, "id", None)
+                except Exception:
+                    self.last_response_id = None
+                # Best-effort extraction of text
+                text = None
+                try:
+                    text = getattr(resp, "output_text", None)
+                except Exception:
+                    text = None
+                if not text and hasattr(resp, "output"):
+                    parts = []
+                    try:
+                        for item in resp.output:
+                            if getattr(item, "type", None) == "message":
+                                for c in getattr(item, "content", []) or []:
+                                    ct = getattr(c, "type", None)
+                                    if ct in ("output_text", "text"):
+                                        parts.append(getattr(c, "text", "") or "")
+                    except Exception:
+                        pass
+                    text = "".join(parts) if parts else None
+                # Estimate usage so session stats can advance even when Responses API
+                # doesn't expose token usage directly
+                try:
+                    est_prompt_tokens = sum(len(str(m.get('content', ''))) for m in messages) // 4
+                    est_completion_tokens = len(text or "") // 4
+                    self.last_usage = {
+                        'prompt_tokens': est_prompt_tokens,
+                        'completion_tokens': est_completion_tokens,
+                        'total_tokens': est_prompt_tokens + est_completion_tokens,
+                    }
+                except Exception:
+                    self.last_usage = None
+                if text:
+                    return text.strip()
+        except Exception as e:
+            print(f"Responses API (non-stream) error, falling back to chat: {e}")
+
+        # Fallback to Chat Completions
+        cc_kwargs = {k: v for k, v in prepared_kwargs.items() if k not in ("store", "previous_response_id")}
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=list(messages),
-            **prepared_kwargs
+            **cc_kwargs
         )
-        
+
         # Check for COT usage and log it
         if hasattr(response, 'usage') and hasattr(response.usage, 'completion_tokens_details'):
             details = response.usage.completion_tokens_details
@@ -85,33 +138,134 @@ class OpenAIProvider(LLMProvider):
                 self.last_usage = None
         except Exception:
             self.last_usage = None
-        
+
         return response.choices[0].message.content.strip()
     
     async def generate_stream(self, messages: Sequence[ChatCompletionMessageParam], **kwargs):
-        """Generate streaming response from messages."""
+        """Generate streaming response using Responses API when available, else Chat Completions."""
+        prepared_kwargs = self._prepare_kwargs(kwargs)
+
+        # Try Responses streaming first
         try:
-            prepared_kwargs = self._prepare_kwargs(kwargs)
-            
+            responses_api = getattr(self.client, "responses", None)
+            if responses_api is not None:
+                # Prefer the streaming helper if available
+                if hasattr(responses_api, "stream"):
+                    try:
+                        stream_ctx = responses_api.stream(
+                            model=self.model,
+                            input=list(messages),
+                            **{k: v for k, v in prepared_kwargs.items() if k not in ("messages",)}
+                        )
+                        # The SDK streaming is an async context manager in recent versions
+                        async with stream_ctx as stream:
+                            total_text = ""
+                            async for event in stream:
+                                etype = getattr(event, "type", "")
+                                # Emit text deltas
+                                delta = getattr(event, "delta", None)
+                                if delta and ("output_text" in etype or etype.endswith(".delta")):
+                                    s = str(delta)
+                                    total_text += s
+                                    yield s
+                                # Capture response id if available
+                                try:
+                                    resp_obj = getattr(event, "response", None)
+                                    if resp_obj is not None and getattr(resp_obj, "id", None):
+                                        self.last_response_id = getattr(resp_obj, "id", None)
+                                except Exception:
+                                    pass
+                            # Estimate usage after stream completes
+                            try:
+                                est_prompt_tokens = sum(len(str(m.get('content', ''))) for m in messages) // 4
+                                est_completion_tokens = len(total_text) // 4
+                                self.last_usage = {
+                                    'prompt_tokens': est_prompt_tokens,
+                                    'completion_tokens': est_completion_tokens,
+                                    'total_tokens': est_prompt_tokens + est_completion_tokens,
+                                }
+                            except Exception:
+                                self.last_usage = None
+                        return
+                    except Exception as e:
+                        print(f"Responses API .stream failed, trying create(stream=True): {e}")
+
+                if hasattr(responses_api, "create"):
+                    resp_stream = await responses_api.create(
+                        model=self.model,
+                        input=list(messages),
+                        stream=True,
+                        **{k: v for k, v in prepared_kwargs.items() if k not in ("messages",)}
+                    )
+                    total_text = ""
+                    async for event in resp_stream:
+                        etype = getattr(event, "type", "")
+                        delta = getattr(event, "delta", None)
+                        if delta and ("output_text" in etype or etype.endswith(".delta")):
+                            s = str(delta)
+                            total_text += s
+                            yield s
+                        # Capture id from streaming events when present
+                        try:
+                            resp_obj = getattr(event, "response", None)
+                            if resp_obj is not None and getattr(resp_obj, "id", None):
+                                self.last_response_id = getattr(resp_obj, "id", None)
+                        except Exception:
+                            pass
+                    # Estimate usage after stream completes
+                    try:
+                        est_prompt_tokens = sum(len(str(m.get('content', ''))) for m in messages) // 4
+                        est_completion_tokens = len(total_text) // 4
+                        self.last_usage = {
+                            'prompt_tokens': est_prompt_tokens,
+                            'completion_tokens': est_completion_tokens,
+                            'total_tokens': est_prompt_tokens + est_completion_tokens,
+                        }
+                    except Exception:
+                        self.last_usage = None
+                    return
+        except Exception as e:
+            print(f"Responses API (stream) error, falling back to chat: {e}")
+
+        # Fallback to Chat Completions streaming
+        try:
+            cc_kwargs = {k: v for k, v in prepared_kwargs.items() if k not in ("store", "previous_response_id")}
             stream = await self.client.chat.completions.create(
                 model=self.model,
                 messages=list(messages),
                 stream=True,
-                **prepared_kwargs
+                **cc_kwargs
             )
             
-            # For streaming, we'll collect usage info at the end if available
-            total_content = ""
+            # Track usage for streaming responses
+            total_tokens = 0
             async for chunk in stream:
                 if chunk.choices[0].delta.content is not None:
                     content = chunk.choices[0].delta.content
-                    total_content += content
+                    # Rough token estimation for streaming (4 chars ≈ 1 token)
+                    total_tokens += len(content) // 4
                     yield content
                     
-                # The OpenAI Python SDK does not expose usage on stream chunks reliably; skip
-                    
+                # Capture final usage if available in the last chunk
+                if hasattr(chunk, 'usage') and chunk.usage is not None:
+                    self.last_usage = {
+                        'prompt_tokens': getattr(chunk.usage, 'prompt_tokens', None),
+                        'completion_tokens': getattr(chunk.usage, 'completion_tokens', None),
+                        'total_tokens': getattr(chunk.usage, 'total_tokens', None),
+                    }
+            
+            # If no usage in chunks, estimate from content length
+            if not hasattr(self, 'last_usage') or not self.last_usage:
+                # Rough estimation: assume prompt is similar size to messages
+                estimated_prompt_tokens = sum(len(str(m.get('content', ''))) for m in messages) // 4
+                self.last_usage = {
+                    'prompt_tokens': estimated_prompt_tokens,
+                    'completion_tokens': total_tokens,
+                    'total_tokens': estimated_prompt_tokens + total_tokens,
+                }
+                
         except Exception as e:
-            print(f"OpenAI streaming error: {e}")
+            print(f"OpenAI streaming error (chat fallback): {e}")
             # Return a simple fallback message
             yield f"# Error: Could not generate code due to: {e}\nprint('Code generation failed')"
 
@@ -185,6 +339,85 @@ class LLMService:
         """
         self.provider_name = provider
         self.provider = self._create_provider(provider, **kwargs)
+        # In-memory session conversations: session_id -> [messages]
+        self.sessions: Dict[str, List[ChatCompletionMessageParam]] = {}
+        # Session metadata for Responses chaining and budget tracking
+        # { session_id: { 'last_response_id': str|None, 'approx_chars': int, 'approx_tokens': int } }
+        self.session_meta: Dict[str, Dict[str, Any]] = {}
+        # Default heuristic for model context budget (tokens)
+        self.default_context_tokens = 128000
+
+    def _get_or_init_session(self, session_id: Optional[str], system_prompt: str) -> Optional[List[ChatCompletionMessageParam]]:
+        if not session_id:
+            return None
+        messages = self.sessions.get(session_id)
+        if messages is None:
+            messages = [cast(ChatCompletionMessageParam, {"role": "system", "content": system_prompt})]
+            self.sessions[session_id] = messages
+            self.session_meta[session_id] = {
+                'last_response_id': None,
+                'approx_chars': len(system_prompt or ""),
+                'approx_tokens': 0,
+            }
+        return messages
+
+    def _append_and_prune(self, session_id: Optional[str], role: str, content: str, max_chars: int = 80000) -> None:
+        if not session_id:
+            return
+        messages = self.sessions.get(session_id)
+        if messages is None:
+            return
+        messages.append(cast(ChatCompletionMessageParam, {"role": role, "content": content}))
+        def total_len() -> int:
+            return sum(len(str(m.get("content", ""))) for m in messages)
+        # Naive pruning: keep system message, drop oldest after it until under threshold
+        while total_len() > max_chars and len(messages) > 2:
+            messages.pop(1)
+
+    def _update_session_usage(self, session_id: Optional[str]):
+        if not session_id:
+            return
+        meta = self.session_meta.get(session_id)
+        if meta is None:
+            return
+        # Capture last response id from provider if present
+        last_resp_id = getattr(self.provider, 'last_response_id', None)
+        if last_resp_id:
+            meta['last_response_id'] = last_resp_id
+        # Accumulate token usage if available
+        last_usage = getattr(self.provider, 'last_usage', None)
+        if isinstance(last_usage, dict):
+            pt = last_usage.get('prompt_tokens') or last_usage.get('input_tokens') or 0
+            ct = last_usage.get('completion_tokens') or last_usage.get('output_tokens') or 0
+            try:
+                meta['approx_tokens'] = int(meta.get('approx_tokens', 0) or 0) + int((pt or 0) + (ct or 0))
+            except Exception:
+                pass
+
+    def _get_previous_response_id(self, session_id: Optional[str]) -> Optional[str]:
+        if not session_id:
+            return None
+        meta = self.session_meta.get(session_id) or {}
+        val = meta.get('last_response_id')
+        return val if isinstance(val, str) else None
+
+    def _is_near_context_limit(self, session_id: Optional[str], threshold: float = 0.8) -> bool:
+        if not session_id:
+            return False
+        meta = self.session_meta.get(session_id) or {}
+        approx_tokens = int(meta.get('approx_tokens', 0) or 0)
+        return approx_tokens > int(self.default_context_tokens * threshold)
+
+    def get_session_stats(self, session_id: str) -> Dict[str, Any]:
+        meta = self.session_meta.get(session_id) or {}
+        return {
+            "session_id": session_id,
+            "last_response_id": meta.get('last_response_id'),
+            "approx_tokens": int(meta.get('approx_tokens', 0) or 0),
+            "approx_chars": int(meta.get('approx_chars', 0) or 0),
+            "limit_tokens": int(self.default_context_tokens),
+            "near_limit": self._is_near_context_limit(session_id),
+        }
     
     def _create_provider(self, provider: str, **kwargs) -> Optional[LLMProvider]:
         """Create LLM provider instance."""
@@ -212,7 +445,7 @@ class LLMService:
         print("No provider created, returning None")
         return None
 
-    async def ask(self, question: str, context: str = "", **kwargs) -> str:
+    async def ask(self, question: str, context: str = "", session_id: Optional[str] = None, **kwargs) -> str:
         """General Q&A. Uses provider if available, otherwise a simple fallback."""
         system_prompt = (
             "You are Axon, an expert assistant for answering questions about code, "
@@ -232,20 +465,35 @@ class LLMService:
             )
 
         try:
-            response = await self.provider.generate(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                max_tokens=800,
-                temperature=0.2,
-            )
-            return response
+            session_msgs = self._get_or_init_session(session_id, system_prompt)
+            if session_msgs is not None:
+                self._append_and_prune(session_id, "user", user_content)
+                response = await self.provider.generate(
+                    session_msgs,
+                    max_tokens=800,
+                    temperature=0.2,
+                    store=True,
+                    previous_response_id=self._get_previous_response_id(session_id),
+                )
+                self._update_session_usage(session_id)
+                self._append_and_prune(session_id, "assistant", response)
+                return response
+            else:
+                response = await self.provider.generate(
+                    [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                    max_tokens=800,
+                    temperature=0.2,
+                    store=True,
+                )
+                return response
         except Exception as e:
             print(f"LLMService.ask error: {e}")
             return "Sorry, I couldn't generate an answer right now. Please try again."
 
-    async def ask_stream(self, question: str, context: str = "", **kwargs):
+    async def ask_stream(self, question: str, context: str = "", session_id: Optional[str] = None, **kwargs):
         """Streaming Q&A. Yields text chunks from the provider.
 
         We hint the model to separate internal reasoning using <thinking> tags
@@ -267,16 +515,34 @@ class LLMService:
         )
 
         try:
-            async for chunk in self.provider.generate_stream(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                max_tokens=900,
-                temperature=0.2,
-            ):
-                if chunk:
-                    yield chunk
+            session_msgs = self._get_or_init_session(session_id, system_prompt)
+            total = ""
+            if session_msgs is not None:
+                self._append_and_prune(session_id, "user", user_content)
+                async for chunk in self.provider.generate_stream(
+                    session_msgs,
+                    max_tokens=900,
+                    temperature=0.2,
+                    store=True,
+                    previous_response_id=self._get_previous_response_id(session_id),
+                ):
+                    if chunk:
+                        total += chunk
+                        yield chunk
+                self._update_session_usage(session_id)
+                self._append_and_prune(session_id, "assistant", total)
+            else:
+                async for chunk in self.provider.generate_stream(
+                    [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                    max_tokens=900,
+                    temperature=0.2,
+                    store=True,
+                ):
+                    if chunk:
+                        yield chunk
         except Exception as e:
             yield f"(error) {e}"
     
@@ -349,7 +615,8 @@ Simplified query:"""
         self, 
         task_description: str, 
         language: str = "python",
-        context: Optional[str] = None
+        context: Optional[str] = None,
+        session_id: Optional[str] = None
     ) -> str:
         """Generate code for a given task description."""
         if not self.provider:
@@ -379,11 +646,24 @@ Code:
 """
         
         try:
-            response = await self.provider.generate([
-                {"role": "system", "content": "You are an expert Python programmer. Generate only code, no explanations."},
-                {"role": "user", "content": prompt}
-            ], max_tokens=2000, temperature=0.1)
-            
+            system_prompt = "You are an expert Python programmer. Generate only code, no explanations."
+            session_msgs = self._get_or_init_session(session_id, system_prompt)
+            if session_msgs is not None:
+                self._append_and_prune(session_id, "user", prompt)
+                response = await self.provider.generate(
+                    session_msgs,
+                    max_tokens=2000,
+                    temperature=0.1,
+                    store=True,
+                    previous_response_id=self._get_previous_response_id(session_id),
+                )
+                self._update_session_usage(session_id)
+                self._append_and_prune(session_id, "assistant", response)
+            else:
+                response = await self.provider.generate([
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ], max_tokens=2000, temperature=0.1, store=True)
             return self.extract_python_code(response) or self._generate_fallback_code(task_description, language)
             
         except Exception as e:
@@ -395,7 +675,8 @@ Code:
         task_description: str, 
         language: str = "python",
         context: Optional[str] = None,
-        notebook_edit: bool = False
+        notebook_edit: bool = False,
+        session_id: Optional[str] = None
     ):
         """Generate code with streaming for a given task description."""
         
@@ -498,11 +779,30 @@ Generate the code now:
 """
         
         try:
-            async for chunk in self.provider.generate_stream([
-                {"role": "system", "content": "You are an expert Python programmer specializing in bioinformatics and data analysis. Generate ONLY executable Python code, importing only modules actually used. Do not re-import packages already present in the provided CONTEXT. Never include explanations, markdown, or non-code text. Avoid complex f-strings and ensure all syntax is correct. Always include error handling and proper directory structure."},
-                {"role": "user", "content": prompt}
-            ], max_tokens=3000, temperature=0.1):
-                yield chunk
+            # Session-aware: build/extend the conversation
+            system_prompt = "You are an expert Python programmer specializing in bioinformatics and data analysis. Generate ONLY executable Python code, importing only modules actually used. Do not re-import packages already present in the provided CONTEXT. Never include explanations, markdown, or non-code text. Avoid complex f-strings and ensure all syntax is correct. Always include error handling and proper directory structure."
+            session_msgs = self._get_or_init_session(session_id, system_prompt)
+            total = ""
+            if session_msgs is not None:
+                self._append_and_prune(session_id, "user", prompt)
+                async for chunk in self.provider.generate_stream(
+                    session_msgs,
+                    max_tokens=3000,
+                    temperature=0.1,
+                    store=True,
+                    previous_response_id=self._get_previous_response_id(session_id),
+                ):
+                    if chunk:
+                        total += chunk
+                        yield chunk
+                self._update_session_usage(session_id)
+                self._append_and_prune(session_id, "assistant", total)
+            else:
+                async for chunk in self.provider.generate_stream([
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ], max_tokens=3000, temperature=0.1, store=True):
+                    yield chunk
                 
         except Exception as e:
             print(f"Error generating streaming code: {e}")
@@ -891,20 +1191,25 @@ JSON response:"""
             try:
                 system = (
                     "You classify user requests for a Jupyter-based data app into exactly one intent: "
-                    "ADD_CELL or SEARCH_DATA. Focus on the user's primary goal. "
+                    "ADD_CELL, SEARCH_DATA, or START_ANALYSIS. Focus on the user's primary goal. "
                     "Return compact JSON only."
                 )
                 user = (
                     "Text: " + text + "\n\n"
                     "Rules:\n"
+                    "- START_ANALYSIS if user wants to start, begin, run, or trigger analysis pipeline on existing data. This includes:\n"
+                    "  * 'start analysis', 'begin analysis', 'run analysis', 'analyze this data'\n"
+                    "  * 'start the pipeline', 'trigger analysis', 'run the analysis'\n" 
+                    "  * 'let's analyze', 'begin processing', 'start processing'\n"
+                    "  * Implies data is already loaded and ready for analysis\n"
                     "- SEARCH_DATA if user wants to find, search, browse, get, or download datasets/data. This includes:\n"
                     "  * 'find me [disease] data', 'get alzheimer data', 'search for cancer datasets'\n" 
                     "  * 'find data about X', 'look for X data', 'need data on X'\n"
                     "  * Mentions of diseases/conditions when seeking data (alzheimer, cancer, etc.)\n"
                     "  * References to data portals (GEO, GSE IDs, CellxCensus, Broad SCP)\n"
                     "- ADD_CELL for code/analysis tasks: write/run code, add notebook cell, plot, analyze existing data, compute, visualize.\n"
-                    "- When unsure between finding NEW data vs analyzing EXISTING data, prefer SEARCH_DATA if the request mentions specific diseases, conditions, or uses phrases like 'find me', 'get me', 'look for'.\n\n"
-                    "Respond as JSON: {\"intent\": \"ADD_CELL|SEARCH_DATA\", \"confidence\": 0.0-1.0, \"reason\": \"...\"}"
+                    "- Priority order: START_ANALYSIS > SEARCH_DATA > ADD_CELL when ambiguous.\n\n"
+                    "Respond as JSON: {\"intent\": \"ADD_CELL|SEARCH_DATA|START_ANALYSIS\", \"confidence\": 0.0-1.0, \"reason\": \"...\"}"
                 )
                 resp = await self.provider.generate(
                     [
@@ -916,7 +1221,7 @@ JSON response:"""
                 )
                 parsed = json.loads(resp)
                 intent = str(parsed.get("intent", "ADD_CELL")).strip().upper()
-                if intent not in ("ADD_CELL", "SEARCH_DATA"):
+                if intent not in ("ADD_CELL", "SEARCH_DATA", "START_ANALYSIS"):
                     intent = "ADD_CELL"
                 conf = parsed.get("confidence")
                 try:
@@ -936,6 +1241,15 @@ JSON response:"""
         import re
         t = text.lower().strip()
 
+        # Indicators for starting analysis pipeline - highest priority
+        start_analysis_keywords = [
+            "start analysis", "begin analysis", "run analysis", "trigger analysis",
+            "start the analysis", "begin the analysis", "run the analysis",
+            "start pipeline", "begin pipeline", "run pipeline", "trigger pipeline",
+            "let's analyze", "let's start", "begin processing", "start processing",
+            "analyze this", "analyze the data", "start analyzing", "begin analyzing",
+        ]
+        
         # Indicators for dataset search - more restrictive
         search_keywords = [
             "search for datasets", "find datasets", "browse datasets", "download datasets",
@@ -966,6 +1280,10 @@ JSON response:"""
         # Keyword checks
         def any_kw(kws: list[str]) -> bool:
             return any(kw in t for kw in kws)
+
+        # Priority order: START_ANALYSIS > SEARCH_DATA > ADD_CELL
+        if any_kw(start_analysis_keywords):
+            return {"intent": "START_ANALYSIS", "confidence": 0.85, "reason": "Analysis start/trigger phrasing detected"}
 
         if any_kw(search_keywords):
             return {"intent": "SEARCH_DATA", "confidence": 0.75, "reason": "Search-oriented phrasing detected"}

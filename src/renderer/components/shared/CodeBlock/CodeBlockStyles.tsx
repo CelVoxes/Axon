@@ -41,6 +41,7 @@ export const CodeBlockContainer = styled.div<CodeBlockStyleProps>`
           margin: 12px 0;
           overflow: hidden;
           background: #1e1e1e;
+          font-size: ${typography.sm}; /* Match chat variant font size */
         `;
 
 			default:
@@ -257,15 +258,11 @@ export const CodeBlockPre = styled.pre<{ $wrap?: boolean; $isDiff?: boolean }>`
 
 // Code element
 export const CodeBlockCode = styled.code<{ $wrap?: boolean }>`
-	font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
-	font-size: ${typography.base};
+	font-size: inherit; /* Inherit from container to ensure consistency */
 	line-height: 1.4;
 	background: transparent;
 	white-space: inherit;
 	word-break: inherit;
-
-	/* Allow hljs to completely override colors */
-	color: #e1e4e8;
 
 	/* Ensure hljs styles take precedence */
 	&.hljs {

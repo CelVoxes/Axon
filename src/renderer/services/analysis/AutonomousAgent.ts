@@ -67,11 +67,115 @@ export class AutonomousAgent {
 	private notebookService: NotebookService;
 	private environmentManager: EnvironmentManager;
 	private workspaceManager: WorkspaceManager;
-	private workspacePath: string;
-	private originalQuery: string = "";
-	public isRunning: boolean = false;
-	private shouldStopAnalysis: boolean = false;
-	private selectedModel: string = ConfigManager.getInstance().getDefaultModel();
+    private workspacePath: string;
+    private originalQuery: string = "";
+    public isRunning: boolean = false;
+    private shouldStopAnalysis: boolean = false;
+    private selectedModel: string = ConfigManager.getInstance().getDefaultModel();
+
+    // Extract pip/conda packages suggested by LLM code snippets
+    private extractPackagesFromCode(code: string): string[] {
+        const pkgs = new Set<string>();
+        try {
+            const c = String(code || "");
+            const installRe = /(\%?pip|python\s+-m\s+pip)\s+install\s+([^\n;#]+)/gi;
+            let m: RegExpExecArray | null;
+            while ((m = installRe.exec(c)) !== null) {
+                const raw = m[2] || "";
+                raw
+                    .split(/\s+/)
+                    .map((t) => t.trim())
+                    .filter((t) => !!t && !t.startsWith("-") && !t.startsWith("#"))
+                    .forEach((t) => pkgs.add(t));
+            }
+            const subprocRe = /subprocess\.(?:check_call|run)\([^\)]*?([\[\(][^\]\)]+[\]\)])\)/gi;
+            const arrayTokenRe = /['\"]([^'\"]+)['\"]/g;
+            while ((m = subprocRe.exec(c)) !== null) {
+                const list = m[1] || "";
+                const tokens: string[] = [];
+                let tm: RegExpExecArray | null;
+                while ((tm = arrayTokenRe.exec(list)) !== null) {
+                    tokens.push(tm[1]);
+                }
+                const pipIdx = tokens.findIndex((t) => t.toLowerCase() === "pip");
+                const installIdx = tokens.findIndex((t) => t.toLowerCase() === "install");
+                if (pipIdx >= 0 && installIdx > pipIdx) {
+                    const pkgTokens = tokens.slice(installIdx + 1);
+                    pkgTokens
+                        .filter((t) => !!t && !t.startsWith("-"))
+                        .forEach((t) => pkgs.add(t));
+                }
+            }
+        } catch (_) {}
+        return Array.from(pkgs);
+    }
+
+    private buildInstallCellCode(packages: string[]): string {
+        const unique = Array.from(new Set(packages)).filter(Boolean).sort((a, b) => a.localeCompare(b));
+        return [
+            "# Install required packages as a single pip transaction for consistent dependency resolution",
+            "import subprocess",
+            "import sys",
+            "",
+            `required_packages = ${JSON.stringify(unique)}`,
+            "",
+            'print("Installing required packages as one pip call...")',
+            "try:",
+            '    subprocess.check_call([sys.executable, "-m", "pip", "install", *required_packages])',
+            '    print("✓ All packages installed")',
+            "except subprocess.CalledProcessError:",
+            '    print("⚠ Failed to install one or more packages")',
+            "",
+            "# Optional: verify dependency conflicts",
+            "try:",
+            '    subprocess.check_call([sys.executable, "-m", "pip", "check"])  # verifies dependency conflicts',
+            '    print("Dependency check passed")',
+            "except subprocess.CalledProcessError:",
+            '    print("⚠ Dependency conflicts detected")',
+        ].join("\n");
+    }
+
+    private async ensurePackageInstallationCell(
+        notebookPath: string,
+        datasets: Dataset[],
+        llmSuggestedPkgs?: string[]
+    ): Promise<void> {
+        try {
+            // Check if notebook already contains an install step
+            const nb = await this.notebookService.readNotebook(notebookPath);
+            const existingCode = (nb.cells || [])
+                .filter((c: any) => c?.cell_type === 'code')
+                .map((c: any) => Array.isArray(c.source) ? c.source.join('') : String(c.source || ''))
+                .join('\n');
+            const installRegex = /(\b%?pip\s+install\b|\b%?conda\s+install\b)/i;
+            const pipModuleRegex = /sys\.executable[\s\S]*?"-m"[\s\S]*?"pip"[\s\S]*?"install"/i;
+            const subprocessPipRegex = /subprocess\.(check_call|run)\([^\)]*"pip"[^\)]*"install"/i;
+            const hasInstall = installRegex.test(existingCode) || pipModuleRegex.test(existingCode) || subprocessPipRegex.test(existingCode);
+            if (hasInstall) {
+                console.log('⏭️ Skipping package installation - already exists in notebook');
+                return;
+            }
+
+            // Try environment-derived package list
+            const envInstall = await this.environmentManager.generatePackageInstallationCode(
+                datasets,
+                [],
+                this.workspacePath
+            );
+
+            let finalInstallCode = envInstall && envInstall.trim().length > 0 ? envInstall : undefined;
+            if (!finalInstallCode && Array.isArray(llmSuggestedPkgs) && llmSuggestedPkgs.length > 0) {
+                console.log('📦 Falling back to LLM-suggested packages for install cell (agent):', llmSuggestedPkgs);
+                finalInstallCode = this.buildInstallCellCode(llmSuggestedPkgs);
+            }
+
+            if (finalInstallCode && finalInstallCode.trim().length > 0) {
+                await this.notebookService.addCodeCell(notebookPath, finalInstallCode);
+            }
+        } catch (e) {
+            console.warn('AutonomousAgent: ensurePackageInstallationCell failed:', e);
+        }
+    }
 	// Ensure generated Python code is safe to run inside a notebook (no CLI arg parsing surprises)
 	private sanitizeNotebookPythonCode(code: string): string {
 		try {
@@ -95,12 +199,13 @@ export class AutonomousAgent {
 	private conversationId: string;
 	// Legacy event listener removed - validation is now synchronous
 
-	constructor(
-		backendClient: BackendClient,
-		workspacePath: string,
-		selectedModel?: string,
-		kernelName?: string
-	) {
+    constructor(
+        backendClient: BackendClient,
+        workspacePath: string,
+        selectedModel?: string,
+        kernelName?: string,
+        sessionId?: string
+    ) {
 		this.backendClient = backendClient;
 		this.analysisOrchestrator = new AnalysisOrchestrationService(backendClient);
 		this.datasetManager = new DatasetManager();
@@ -108,10 +213,11 @@ export class AutonomousAgent {
 		this.workspaceManager = new WorkspaceManager();
 
 		// Use dependency injection to break circular dependencies
-		this.codeGenerator = new CodeGenerationService(
-			backendClient,
-			selectedModel || ConfigManager.getInstance().getDefaultModel()
-		);
+        this.codeGenerator = new CodeGenerationService(
+            backendClient,
+            selectedModel || ConfigManager.getInstance().getDefaultModel(),
+            sessionId
+        );
 		this.codeExecutor = new CellExecutionService(workspacePath);
 
 		// Single code quality service handles all validation and enhancement
@@ -567,7 +673,6 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		lines.push("from pathlib import Path");
 		lines.push("import scanpy as sc");
 		lines.push("import pandas as pd");
-		lines.push("import os");
 		lines.push("print('Loading local datasets directly...')");
 		lines.push("");
 
@@ -604,29 +709,29 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			lines.push(`            print("  contains 10x markers: matrix.mtx features/genes barcodes.tsv")`);
 			lines.push(`            ${datasetId} = sc.read_10x_mtx(${datasetId}_path)`);
 			lines.push(`            ${datasetId}.var_names_unique()`);
-			lines.push(`            print(f"Successfully loaded {datasetId}: {${datasetId}.shape}")`);
+			lines.push(`            print(f"Successfully loaded {${datasetId}}: {{${datasetId}.shape}}")`);
 			lines.push(`        else:`);
-			lines.push(`            print(f"Warning: Directory format not recognized for ${safeTitle}")`);
+			lines.push(`            print(f"Warning: Directory format not recognized for {safeTitle}")`);
 			lines.push(`            ${datasetId} = None`);
 			lines.push(`    elif ${datasetId}_path.is_file():`);
 			lines.push(`        if str(${datasetId}_path).endswith('.h5ad'):`);
 			lines.push(`            ${datasetId} = sc.read_h5ad(${datasetId}_path)`);
-			lines.push(`            print(f"Successfully loaded {datasetId}: {${datasetId}.shape}")`);
+			lines.push(`            print(f"Successfully loaded {${datasetId}}: {{${datasetId}.shape}}")`);
 			lines.push(`        elif str(${datasetId}_path).endswith('.csv'):`);
 			lines.push(`            ${datasetId} = pd.read_csv(${datasetId}_path)`);
-			lines.push(`            print(f"Successfully loaded {datasetId}: {${datasetId}.shape}")`);
+			lines.push(`            print(f"Successfully loaded {${datasetId}}: {{${datasetId}.shape}}")`);
 			lines.push(`        else:`);
-			lines.push(`            print(f"Warning: File format not supported for ${safeTitle}")`);
+			lines.push(`            print(f"Warning: File format not supported for {safeTitle}")`);
 			lines.push(`            ${datasetId} = None`);
 			lines.push(`else:`);
-			lines.push(`    print(f"Error: Path not found for ${safeTitle}: {${datasetId}_path}")`);
+			lines.push(`    print(f"Error: Path not found for {safeTitle}: {{${datasetId}_path}}")`);
 			lines.push(`    ${datasetId} = None`);
 			lines.push("");
 		}
 
-		lines.push("print('Local datasets loaded directly into variables.')")
+		lines.push("print('Local datasets loaded directly into variables.')");
 		lines.push("");
-		return lines.join("\n");
+		return lines.join("\n") + "\n";
 	}
 
 	/**
@@ -692,13 +797,13 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 	 * Generate, validate, and add code to notebook
 	 * Uses the unified validation pipeline
 	 */
-	public async generateAndAddValidatedCode(
-		stepDescription: string,
-		originalQuestion: string,
-		datasets: Dataset[],
-		workingDir: string,
-		notebookPath: string
-	): Promise<void> {
+    public async generateAndAddValidatedCode(
+        stepDescription: string,
+        originalQuestion: string,
+        datasets: Dataset[],
+        workingDir: string,
+        notebookPath: string
+    ): Promise<void> {
 		console.log('AutonomousAgent: generateAndAddValidatedCode called for:', stepDescription);
 		
 		// Ensure context includes existing notebook cells to avoid duplicate imports/setup
@@ -712,12 +817,16 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			workingDir
 		);
 
-		// Sanitize for notebook execution safety
-		const sanitized = this.sanitizeNotebookPythonCode(stepCode);
+        // Sanitize for notebook execution safety
+        const sanitized = this.sanitizeNotebookPythonCode(stepCode);
 
-		// Add to notebook and emit validation events in proper order
-		console.log('AutonomousAgent: Adding validated code to notebook...');
-		await this.notebookService.addCodeCell(notebookPath, sanitized);
+        // Ensure install cell if needed (use LLM-suggested packages as hint)
+        const llmSuggestedPkgs = this.extractPackagesFromCode(stepCode);
+        await this.ensurePackageInstallationCell(notebookPath, datasets, llmSuggestedPkgs);
+
+        // Add to notebook and emit validation events in proper order
+        console.log('AutonomousAgent: Adding validated code to notebook...');
+        await this.notebookService.addCodeCell(notebookPath, sanitized);
 		
 		// Emit validation events AFTER notebook cell is successfully added  
 		if ((this as any).pendingValidationResult && this.codeGenerator) {
@@ -1197,22 +1306,30 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 	): Promise<boolean> {
 		// Generate package installation cell
 		try {
+			console.log("🔧 AutonomousAgent: About to generate package installation code for datasets:", datasets.length);
+			
+			// Test the package installation code generation directly first
+			const testPackageCode = await this.environmentManager.generatePackageInstallationCode(
+				datasets,
+				analysisSteps,
+				workspaceDir
+			);
+			console.log("📦 AutonomousAgent: Generated package installation code length:", testPackageCode?.length);
+			console.log("📦 AutonomousAgent: Package code preview:", testPackageCode?.substring(0, 200));
+			
 			const packageCellSuccess = await this.generateSetupCell(
 				"Package installation",
-				() =>
-					this.environmentManager.generatePackageInstallationCode(
-						datasets,
-						analysisSteps,
-						workspaceDir
-					),
+				() => Promise.resolve(testPackageCode), // Use pre-generated code to avoid double generation
 				notebookPath,
 				false // Don't add to global context
 			);
 			if (!packageCellSuccess) {
-				console.warn("Package installation cell generation returned false, but continuing...");
+				console.warn("⚠️ Package installation cell generation returned false, but continuing...");
+			} else {
+				console.log("✅ Package installation cell generation succeeded");
 			}
 		} catch (error) {
-			console.error("Package installation cell generation failed:", error);
+			console.error("❌ Package installation cell generation failed:", error);
 			// Continue with other setup cells even if package installation fails
 			// The user can still manually install packages if needed
 		}

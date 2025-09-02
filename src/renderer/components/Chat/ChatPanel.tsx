@@ -1011,6 +1011,28 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					}
 				}
 			}
+			// Handle START_ANALYSIS intent - start/trigger analysis pipeline on existing data
+			else if (intentResult.intent === "START_ANALYSIS" && !isLowConfidence) {
+				console.log("🚀 START_ANALYSIS intent detected");
+				
+				if (selectedDatasets.length > 0) {
+					console.log("✅ Selected datasets found, starting analysis pipeline");
+					addMessage("🚀 Starting analysis pipeline on selected datasets...", false);
+					
+					const enhancedAnalysisRequest = inspectionContext
+						? `${userMessage}\n\nINSPECTION CONTEXT:\n${inspectionContext}`
+						: userMessage;
+					await handleAnalysisRequest(enhancedAnalysisRequest);
+					return; // handled
+				} else {
+					console.log("❌ No datasets selected for START_ANALYSIS intent");
+					addMessage(
+						"To start analysis, please first search for and select datasets. Use a search query like 'find alzheimer data' to discover relevant datasets.",
+						false
+					);
+					return;
+				}
+			}
 			// Handle ADD_CELL intent for active notebooks (prioritize over dataset-based analysis)
 			else if (
 				(intentResult.intent === "ADD_CELL" && !isLowConfidence) ||
@@ -1051,15 +1073,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								"";
 							if (!backendClient || !wsDir)
 								throw new Error("Backend not ready");
+                            const chatId = (analysisState as any).activeChatSessionId || 'global';
+                            const sessionId = `session:${wsDir}:${chatId}`;
                             const nbCodeService = new NotebookCodeGenerationService(
                                 backendClient,
-                                wsDir
+                                wsDir,
+                                sessionId
                             );
 
                             await nbCodeService.generateAndAddValidatedCode({
                                 stepDescription: userMessage,
                                 originalQuestion: userMessage,
-                                datasets: [], // notebook already has its context
+                                datasets: selectedDatasets, // Pass selected datasets for package installation detection
                                 workingDir: wsDir,
                                 notebookPath: notebookFile,
                             });
@@ -1131,15 +1156,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						.filter(Boolean)
 						.join("\n\n");
 
-					const answer = await ChatToolAgent.askWithTools(
-						backendClient!,
-						userMessage,
-						context,
-						{
-							workspaceDir: workspaceState.currentWorkspace || undefined,
-							addMessage, // Tools will show their output in chat
-						}
-					);
+                        const chatId = (analysisState as any).activeChatSessionId || 'global';
+                        const sessionId = `session:${workspaceState.currentWorkspace || 'global'}:${chatId}`;
+                        const answer = await ChatToolAgent.askWithTools(
+                            backendClient!,
+                            userMessage,
+                            context,
+                            {
+                                workspaceDir: workspaceState.currentWorkspace || undefined,
+                                sessionId,
+                                addMessage, // Tools will show their output in chat
+                            }
+                        );
 
 					if (isMounted) {
 						addMessage(answer || "(No answer received)", false);
@@ -1365,12 +1393,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				}
 
 				// Create AutonomousAgent instance (kernel name will be set after workspace is created)
-				const agent = new AutonomousAgent(
-					backendClient!,
-					workspaceDir,
-					undefined,
-					undefined
-				);
+                const chatId = (analysisState as any).activeChatSessionId || 'global';
+                const sessionId = `session:${workspaceDir}:${chatId}`;
+                const agent = new AutonomousAgent(
+                    backendClient!,
+                    workspaceDir,
+                    undefined,
+                    undefined,
+                    sessionId
+                );
 				agent.setStatusCallback((status) => {
 					setProgressMessage(status);
 					analysisDispatch({ type: "SET_ANALYSIS_STATUS", payload: status });

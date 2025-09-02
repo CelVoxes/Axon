@@ -272,7 +272,9 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	// Function to process pending events
 	const processPendingEvents = () => {
 		const currentNotebookData = notebookDataRef.current;
+		console.log('🔄 FileEditor: Processing pending events', { hasNotebookData: !!currentNotebookData, pendingEventsCount: pendingEvents.length });
 		if (currentNotebookData && pendingEvents.length > 0) {
+			console.log('📤 FileEditor: Re-dispatching', pendingEvents.length, 'pending events');
 			pendingEvents.forEach((pendingEvent) => {
 				// Re-dispatch the event to be handled by the current handlers
 				const event = new CustomEvent(pendingEvent.type, {
@@ -372,14 +374,18 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 				cellType,
 				content: cellContent,
 			} = event.detail;
+			console.log('🎯 FileEditor: handleAddNotebookCell called', { eventFilePath, filePath, cellType, contentLength: cellContent?.length });
 
 			// Only handle events for the current notebook file
 			if (eventFilePath === filePath && filePath.endsWith(".ipynb")) {
+				console.log('📄 FileEditor: File paths match and is notebook');
 				// Use the ref to get the current notebook data
 				const currentNotebookData = notebookDataRef.current;
 				const isReady = isReadyRef.current;
+				console.log('🔍 FileEditor: Notebook state', { hasNotebookData: !!currentNotebookData, isReady });
 
 				if (currentNotebookData && isReady) {
+					console.log('✅ FileEditor: Adding cell to notebook');
 					// Create new cell in Jupyter notebook format
 					const newCell: NotebookCell = {
 						cell_type: cellType,
@@ -399,9 +405,20 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					setCellIds((prev) => [...prev, generateCellId()]);
 					setHasChanges(true);
 
-					// Auto-save (debounced) and dispatch success event after scheduling
+					// Auto-save and dispatch success event after scheduling
 					try {
-						queueNotebookSave(updatedNotebook);
+						// Check if this is a package installation cell - if so, save immediately
+						const isPackageInstallCell = /(^|\n)\s*(%pip|%conda|pip\s+install|conda\s+install)\b/i.test(cellContent);
+						
+						if (isPackageInstallCell) {
+							console.log('📦 FileEditor: Package installation cell detected - saving immediately');
+							// Save immediately without debouncing for package installation cells
+							await saveNotebookToFile(updatedNotebook, true);
+						} else {
+							// Regular debounced save for other cells
+							queueNotebookSave(updatedNotebook);
+						}
+						
 						EventManager.dispatchEvent("notebook-cell-added", {
 							filePath: eventFilePath,
 							cellType,
@@ -421,7 +438,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					}
 				} else {
 					// Queue the event for later processing
-
+					console.log('⏳ FileEditor: Queuing add-notebook-cell event for later processing');
 					setPendingEvents((prev) => [
 						...prev,
 						{
@@ -1092,11 +1109,13 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		
 		setIsGeneratingSummary(true);
 		try {
-			const summary = await summaryServiceRef.current.generateSummary(
-				notebookData.cells,
-				options,
-				filePath
-			);
+        const sessionId = `session:${workspacePath || 'global'}`;
+        const summary = await summaryServiceRef.current.generateSummary(
+            notebookData.cells,
+            options,
+            filePath,
+            sessionId
+        );
 			
 			// Create filename for the summary
 			const baseName = filePath.split('/').pop()?.replace('.ipynb', '') || 'notebook';

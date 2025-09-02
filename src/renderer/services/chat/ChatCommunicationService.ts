@@ -4,12 +4,13 @@ import { LocalDatasetEntry } from "./LocalDatasetRegistry";
 export class ChatCommunicationService {
 	constructor(private backendClient: BackendClient) {}
 
-	async askQuestion(question: string, context: string): Promise<string> {
-		return await this.backendClient.askQuestion({
-			question,
-			context,
-		});
-	}
+    async askQuestion(question: string, context: string, sessionId?: string): Promise<string> {
+        return await this.backendClient.askQuestion({
+            question,
+            context,
+            sessionId,
+        });
+    }
 
 	async generateAgentResponse(
 		userMessage: string,

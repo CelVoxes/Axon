@@ -216,19 +216,20 @@ export class NotebookSummaryService {
 	/**
 	 * Generate AI-powered summary based on processed cells and options
 	 */
-	async generateSummary(
-		cells: NotebookCell[],
-		options: SummaryOptions,
-		filePath: string
-	): Promise<GeneratedSummary> {
+    async generateSummary(
+        cells: NotebookCell[],
+        options: SummaryOptions,
+        filePath: string,
+        sessionId?: string
+    ): Promise<GeneratedSummary> {
 		const processedCells = this.processCells(cells, options.selectedCells);
 		const analysis = this.analyzeNotebook(cells, filePath);
 
 		// Build context for AI model
 		const context = this.buildAnalysisContext(processedCells, analysis, options);
 		
-		// Generate summary using backend AI
-		const summaryContent = await this.generateAISummary(context, options);
+        // Generate summary using backend AI
+        const summaryContent = await this.generateAISummary(context, options, sessionId);
 
 		// Format the final summary
 		const formattedSummary = this.formatSummary(summaryContent, options, analysis);
@@ -345,15 +346,16 @@ export class NotebookSummaryService {
 	/**
 	 * Generate AI summary using backend client
 	 */
-	private async generateAISummary(context: string, options: SummaryOptions): Promise<string> {
+    private async generateAISummary(context: string, options: SummaryOptions, sessionId?: string): Promise<string> {
 		const prompt = this.buildSummaryPrompt(options.reportType, options.summaryLength);
 
 		try {
 			// Use the backend client's askQuestion method for AI generation
-			const response = await this.backendClient.askQuestion({
-				question: prompt,
-				context: context,
-			});
+            const response = await this.backendClient.askQuestion({
+                question: prompt,
+                context: context,
+                sessionId,
+            });
 
 			return response || "Unable to generate summary at this time.";
 		} catch (error) {

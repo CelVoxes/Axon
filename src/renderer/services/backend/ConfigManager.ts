@@ -206,7 +206,7 @@ export class ConfigManager {
 		const isPackaged = window.electronAPI?.isPackaged?.() || false;
 		const backendUrl = isPackaged
 			? "http://axon.celvox.co:8002"
-			: "http://localhost:8000";
+			: "http://localhost:8001";
 
 		console.log(
 			"ConfigManager: isPackaged =",

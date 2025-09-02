@@ -22,6 +22,11 @@ export class BackendClient implements IBackendClient {
 
 	constructor(baseUrl?: string) {
 		const cfg = ConfigManager.getInstance().getSection("backend");
+
+		console.log(
+			"BackendClient: process.env.BACKEND_URL =",
+			process.env.BACKEND_URL
+		);
 		this.baseUrl = baseUrl || cfg.baseUrl || "http://localhost:8001";
 
 		// Initialize axios instance with base URL and timeout
@@ -523,7 +528,7 @@ export class BackendClient implements IBackendClient {
 	 * Classify chat intent using backend LLM analyzer. Returns a simplified intent string.
 	 */
 	async classifyIntent(message: string): Promise<{
-		intent: string; // "ADD_CELL" | "SEARCH_DATA"
+		intent: string; // "ADD_CELL" | "SEARCH_DATA" | "START_ANALYSIS"
 		confidence?: number;
 		reason?: string;
 	}> {
@@ -584,6 +589,7 @@ export class BackendClient implements IBackendClient {
 	async askQuestion(params: {
 		question: string;
 		context?: string;
+		sessionId?: string;
 	}): Promise<string> {
 		const controller = new AbortController();
 		this.abortControllers.add(controller);
@@ -594,6 +600,7 @@ export class BackendClient implements IBackendClient {
 				body: JSON.stringify({
 					question: params.question,
 					context: params.context || "",
+					session_id: params.sessionId,
 				}),
 				signal: controller.signal,
 			});
@@ -615,7 +622,7 @@ export class BackendClient implements IBackendClient {
 		}
 	}
 
-  // Business logic methods
+	// Business logic methods
 
 	// Utility method for basic term extraction (fallback)
 	private extractBasicTerms(query: string): string[] {
@@ -644,36 +651,37 @@ export class BackendClient implements IBackendClient {
 			.slice(0, 3);
 
 		return terms.length > 0 ? terms : [query];
-  }
+	}
 
-  /**
-   * Stream Ask (Q&A) with reasoning-aware events.
-   * onEvent receives objects: { type: 'status'|'answer'|'done', ... }
-   */
-  async askQuestionStream(
-    params: { question: string; context?: string },
-    onEvent: (evt: any) => void
-  ): Promise<void> {
-    const controller = new AbortController();
-    this.abortControllers.add(controller);
-    try {
-      const response = await fetch(`${this.baseUrl}/llm/ask/stream`, {
-        method: "POST",
-        headers: this.buildHeaders(),
-        body: JSON.stringify({
-          question: params.question,
-          context: params.context || "",
-        }),
-        signal: controller.signal,
-      });
+	/**
+	 * Stream Ask (Q&A) with reasoning-aware events.
+	 * onEvent receives objects: { type: 'status'|'answer'|'done', ... }
+	 */
+	async askQuestionStream(
+		params: { question: string; context?: string; sessionId?: string },
+		onEvent: (evt: any) => void
+	): Promise<void> {
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
+		try {
+			const response = await fetch(`${this.baseUrl}/llm/ask/stream`, {
+				method: "POST",
+				headers: this.buildHeaders(),
+				body: JSON.stringify({
+					question: params.question,
+					context: params.context || "",
+					session_id: params.sessionId,
+				}),
+				signal: controller.signal,
+			});
 
-      await readNdjsonStream(response, {
-        onLine: (json: any) => onEvent(json),
-      });
-    } finally {
-      this.abortControllers.delete(controller);
-    }
-  }
+			await readNdjsonStream(response, {
+				onLine: (json: any) => onEvent(json),
+			});
+		} finally {
+			this.abortControllers.delete(controller);
+		}
+	}
 
 	// ===== LLM API Methods =====
 
@@ -702,8 +710,6 @@ export class BackendClient implements IBackendClient {
 				available_datasets: request.selectedDatasets,
 				current_context: request.contextInfo || "",
 			};
-
-			console.log("BackendClient: Request body:", requestBody);
 
 			const response = await fetch(`${this.baseUrl}/llm/suggestions`, {
 				method: "POST",
@@ -831,6 +837,7 @@ export class BackendClient implements IBackendClient {
 		model: string;
 		max_tokens?: number;
 		temperature?: number;
+		session_id?: string;
 	}): Promise<any> {
 		try {
 			const response = await fetch(`${this.baseUrl}/llm/code`, {
@@ -847,6 +854,29 @@ export class BackendClient implements IBackendClient {
 		} catch (error) {
 			log.error("BackendClient: Error generating code fix:", error);
 			throw error;
+		}
+	}
+
+	/**
+	 * Get per-session approximate token usage and budget status
+	 */
+	async getSessionStats(sessionId: string): Promise<{
+		session_id: string;
+		last_response_id?: string | null;
+		approx_tokens: number;
+		approx_chars: number;
+		limit_tokens: number;
+		near_limit: boolean;
+	}> {
+		try {
+			const url = `${
+				this.baseUrl
+			}/llm/session/stats?session_id=${encodeURIComponent(sessionId)}`;
+			const res = await fetch(url, { headers: this.buildHeaders() });
+			if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+			return await res.json();
+		} catch (e) {
+			throw e;
 		}
 	}
 }

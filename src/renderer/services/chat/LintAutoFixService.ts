@@ -52,25 +52,25 @@ export async function autoFixWithRuffAndLLM(
 	const best = initial.fixedCode || initial.formattedCode || input;
 	const wasFixed = best !== input;
 	
-	// Skip expensive LLM double-checking unless there are critical errors
-	const hasCriticalErrors = issues.some(issue => 
-		issue.includes('F821:') || // Undefined name
+	// Always prefer Ruff output first, even with errors
+	// Only use LLM for syntax errors that completely break the code
+	const hasSyntaxErrors = issues.some(issue => 
 		issue.includes('E999:') || // Syntax error
-		issue.includes('F401:')    // Unused import (less critical)
+		issue.includes('SyntaxError') // Python syntax errors
 	);
 	
-	// Only use LLM for critical errors that Ruff couldn't fix
-	if (hasCriticalErrors && !initial.isValid) {
+	// Only use LLM for syntax errors that make code completely unusable
+	if (hasSyntaxErrors && !initial.formattedCode && !initial.fixedCode) {
 		try {
 			let llmFixed = "";
 			await backendClient.generateCodeStream(
 				{
 					task_description:
-						`Fix critical Python errors. Return ONLY corrected code.\n\n` +
-						`Errors:\n${issues.join("\n")}\n\n` +
+						`Fix only syntax errors in Python code. Return ONLY corrected code with minimal changes.\n\n` +
+						`Syntax Errors:\n${issues.filter(i => i.includes('E999:') || i.includes('SyntaxError')).join("\n")}\n\n` +
 						`Code:\n${input}\n`,
 					language: "python",
-					context: options.stepTitle || "Critical error fixing",
+					context: options.stepTitle || "Syntax error fixing",
 				},
 				(chunk: string) => {
 					llmFixed += chunk;
