@@ -7,20 +7,24 @@ import {
 } from "../../../styles/design-system";
 import type { CodeBlockStyleProps, CodeBlockVariant } from "./CodeBlockTypes";
 
+// Inline code element to avoid invalid <div> inside <p>
+export const InlineCode = styled.code`
+  display: inline;
+  background: #2d2d2d;
+  color: #e5e7eb;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: ${typography.sm};
+  border: 1px solid #444;
+`;
+
 // Base container for all code block variants
 export const CodeBlockContainer = styled.div<CodeBlockStyleProps>`
 	${({ $variant }) => {
 		switch ($variant) {
 			case "inline":
-				return `
-          display: inline;
-          background: #2d2d2d;
-          color: #e5e7eb;
-          padding: 2px 6px;
-          border-radius: 4px;
-          font-size: ${typography.sm};
-          border: 1px solid #444;
-        `;
+				// Inline variant now uses <InlineCode>. Keep container styles minimal.
+				return ``;
 
 			case "chat":
 				return `

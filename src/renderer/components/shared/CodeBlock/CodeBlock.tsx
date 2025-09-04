@@ -25,6 +25,7 @@ import {
 	LintHeader,
 	LintDetails,
 	LintSection,
+    InlineCode,
 } from "./CodeBlockStyles";
 
 import { FiChevronRight } from "react-icons/fi";
@@ -33,11 +34,7 @@ import { FiChevronRight } from "react-icons/fi";
 const InlineCodeBlock: React.FC<
 	Extract<CodeBlockProps, { variant: "inline" }>
 > = ({ code, className }) => {
-	return (
-		<CodeBlockContainer $variant="inline" className={className}>
-			{code}
-		</CodeBlockContainer>
-	);
+	return <InlineCode className={className}>{code}</InlineCode>;
 };
 
 // Chat message code block variant

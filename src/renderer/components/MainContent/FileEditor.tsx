@@ -1110,38 +1110,27 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		setIsGeneratingSummary(true);
 		try {
         const sessionId = `session:${workspacePath || 'global'}`;
-        const summary = await summaryServiceRef.current.generateSummary(
+        
+        // Use generateAndExportSummary for proper timestamp and reports/ folder handling
+        const result = await summaryServiceRef.current.generateAndExportSummary(
             notebookData.cells,
             options,
             filePath,
             sessionId
         );
+        
+        const { summary, exportResult } = result;
+        const exportSuccess = exportResult;
 			
-			// Create filename for the summary
-			const baseName = filePath.split('/').pop()?.replace('.ipynb', '') || 'notebook';
-			const timestamp = new Date().toISOString().slice(0, 10);
-			const extension = options.outputFormat === 'html' ? 'html' : 
-							  options.outputFormat === 'pdf' ? 'pdf' : 'md';
-			const summaryFileName = `${baseName}_summary_${timestamp}.${extension}`;
-			
-			// Get the directory of the current notebook
-			const notebookDir = filePath.substring(0, filePath.lastIndexOf('/'));
-			const summaryPath = `${notebookDir}/${summaryFileName}`;
-			
-			// Export the summary
-			const exportSuccess = await summaryServiceRef.current.exportSummary(
-				summary,
-				summaryPath
-			);
-			
-			if (exportSuccess) {
-				// Show success message and optionally open the summary file
-				alert(`Summary generated successfully!\nSaved to: ${summaryFileName}`);
+			if (exportSuccess.success && exportSuccess.filePath) {
+				// Show success message with the actual file path
+				const fileName = exportSuccess.filePath.split('/').pop();
+				alert(`Summary generated successfully!\nSaved to: reports/${fileName}`);
 				
 				// Optionally, open the summary file in the editor
 				setTimeout(() => {
 					EventManager.dispatchEvent('file-open-request', {
-						filePath: summaryPath,
+						filePath: exportSuccess.filePath,
 					});
 				}, 500);
 			} else {

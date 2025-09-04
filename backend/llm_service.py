@@ -539,7 +539,7 @@ class LLMService:
                 self._append_and_prune(session_id, "user", user_content)
                 response = await self.provider.generate(
                     session_msgs,
-                    max_tokens=800,
+                    max_tokens=3000,  # Increased for detailed summaries (was 800)
                     temperature=0.2,
                     store=True,
                     previous_response_id=self._get_previous_response_id(session_id),
@@ -553,7 +553,7 @@ class LLMService:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_content},
                     ],
-                    max_tokens=800,
+                    max_tokens=3000,  # Increased for detailed summaries (was 800)
                     temperature=0.2,
                     store=True,
                 )
@@ -590,7 +590,7 @@ class LLMService:
                 self._append_and_prune(session_id, "user", user_content)
                 async for chunk in self.provider.generate_stream(
                     session_msgs,
-                    max_tokens=900,
+                    max_tokens=3000,  # Increased for detailed summaries (was 900)
                     temperature=0.2,
                     store=True,
                     previous_response_id=self._get_previous_response_id(session_id),
@@ -606,7 +606,7 @@ class LLMService:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_content},
                     ],
-                    max_tokens=900,
+                    max_tokens=3000,  # Increased for detailed summaries (was 900)
                     temperature=0.2,
                     store=True,
                 ):

@@ -287,10 +287,59 @@ export const SummaryOptionsModal: React.FC<SummaryOptionsModalProps> = ({
 	const [includeTables, setIncludeTables] = useState(true);
 	const [summaryLength, setSummaryLength] = useState<SummaryOptions["summaryLength"]>("medium");
 
-	// Initialize with all cells selected when modal opens
+	/**
+	 * Get smart default cell selection, excluding boilerplate cells
+	 */
+	const getDefaultCellSelection = (cells: NotebookCell[]): number[] => {
+		return cells.map((cell, index) => ({ cell, index }))
+			.filter(({ cell, index }) => {
+				// Skip first cell if it's a markdown title/header
+				if (index === 0 && cell.cell_type === 'markdown') {
+					const content = Array.isArray(cell.source) ? cell.source.join('') : cell.source || '';
+					// Skip if it's just a title or simple header
+					if (content.trim().match(/^#[^#]/) || content.trim().length < 100) {
+						return false;
+					}
+				}
+				
+				// Skip package installation cells
+				if (cell.cell_type === 'code') {
+					const content = Array.isArray(cell.source) ? cell.source.join('') : cell.source || '';
+					// Skip cells that are primarily package installation
+					const installPatterns = [
+						/pip\s+install/,
+						/!pip\s+install/,
+						/conda\s+install/,
+						/import\s+subprocess[\s\S]*pip\s+install/,
+						/required_packages\s*=/,
+						/# Install required packages/
+					];
+					
+					if (installPatterns.some(pattern => pattern.test(content))) {
+						// Only skip if the cell is PRIMARILY about installation (>70% of content)
+						const lines = content.split('\n').filter(line => line.trim());
+						const installLines = lines.filter(line => 
+							installPatterns.some(pattern => pattern.test(line)) ||
+							line.includes('Installing') ||
+							line.includes('Collecting') ||
+							line.includes('Requirement already satisfied')
+						);
+						
+						if (installLines.length / lines.length > 0.7) {
+							return false;
+						}
+					}
+				}
+				
+				return true;
+			})
+			.map(({ index }) => index);
+	};
+
+	// Initialize with smart default selection when modal opens
 	useEffect(() => {
 		if (isOpen && cells.length > 0) {
-			setSelectedCells(cells.map((_, index) => index));
+			setSelectedCells(getDefaultCellSelection(cells));
 		}
 	}, [isOpen, cells.length]);
 
