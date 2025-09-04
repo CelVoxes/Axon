@@ -649,7 +649,9 @@ export class NotebookSummaryService {
 			workspaceDir
 		);
 
-		const savedFiguresWithData = await Promise.all(
+
+		// Load figures and then filter to only those referenced in the summary content
+		const savedFiguresWithDataAll = await Promise.all(
 			figuresWithPaths.map(async (figure) => {
 				const base64Data = await this.loadImageAsBase64(figure.fullPath);
 				return {
@@ -658,6 +660,24 @@ export class NotebookSummaryService {
 				};
 			})
 		);
+
+		let savedFiguresWithData = savedFiguresWithDataAll;
+		if (options.includeFigures) {
+			const referenced = new Set(
+				this.getReferencedFigureFilenames(formattedSummary)
+			);
+			if (referenced.size > 0) {
+				savedFiguresWithData = savedFiguresWithDataAll.filter((f) =>
+					referenced.has(f.filename)
+				);
+			} else {
+				// If no explicit references found, default to none (don't include all)
+				savedFiguresWithData = [];
+			}
+		} else {
+			// Respect option to exclude figures entirely
+			savedFiguresWithData = [];
+		}
 
 		// Generate timestamped filename and suggested path
 		const timestamp = new Date()
@@ -744,17 +764,19 @@ export class NotebookSummaryService {
 			);
 		}
 
-		// Figures
-		const workspaceDir = analysis.title.includes("/")
-			? analysis.title.substring(0, analysis.title.lastIndexOf("/"))
-			: ".";
-		const savedFigures = this.extractSavedFigures(processedCells, workspaceDir);
-		if (savedFigures.length > 0) {
-			sections.push(
-				`\n## Figures Generated\n${savedFigures
-					.map((f) => `- ${f.filename} (${f.description})`)
-					.join("\n")}`
-			);
+		// Figures (only include in context if user wants figures)
+		if (options.includeFigures) {
+			const workspaceDir = analysis.title.includes("/")
+				? analysis.title.substring(0, analysis.title.lastIndexOf("/"))
+				: ".";
+			const savedFigures = this.extractSavedFigures(processedCells, workspaceDir);
+			if (savedFigures.length > 0) {
+				sections.push(
+					`\n## Figures Generated\n${savedFigures
+						.map((f) => `- ${f.filename} (${f.description})`)
+						.join("\n")}`
+				);
+			}
 		}
 
 		// Cell content
@@ -796,7 +818,8 @@ export class NotebookSummaryService {
 		try {
 			const prompt = this.buildPrompt(
 				options.reportType,
-				options.summaryLength
+				options.summaryLength,
+				options.includeFigures
 			);
 
 			if (onStream) {
@@ -857,7 +880,8 @@ export class NotebookSummaryService {
 	 */
 	private buildPrompt(
 		reportType: SummaryOptions["reportType"],
-		summaryLength: SummaryOptions["summaryLength"]
+		summaryLength: SummaryOptions["summaryLength"],
+		includeFigures: boolean
 	): string {
 		const lengthGuide =
 			{
@@ -879,9 +903,13 @@ export class NotebookSummaryService {
 		const baseInstruction =
 			"Base your analysis entirely on the provided code, outputs, and results. Reference specific findings and figures by name.";
 
+		const figureInstruction = includeFigures
+			? " When referring to a figure, insert an inline marker exactly where the figure should appear using [[FIG: filename.ext]] with the exact saved filename from the context. You may also use Markdown image syntax ![caption](filename.ext). Only reference figures that are relevant to your narrative."
+			: " Do not include any figure references or markers.";
+
 		return `${
 			typePrompts[reportType] || "Summarize the notebook analysis."
-		} ${lengthGuide} ${baseInstruction}`;
+		} ${lengthGuide} ${baseInstruction}${figureInstruction}`;
 	}
 
 	/**
@@ -956,6 +984,32 @@ export class NotebookSummaryService {
 		)}\n`;
 
 		return formatted;
+	}
+
+	/**
+	 * Find figure filenames referenced in markdown content via [[FIG: filename]] or markdown image links
+	 */
+	private getReferencedFigureFilenames(markdown: string): string[] {
+		const referenced = new Set<string>();
+
+		// [[FIG: filename.ext]] pattern
+		const figTagRegex = /\[\[(?:FIG|Figure)\s*:\s*([^\]\n]+)\]\]/g;
+		let match: RegExpExecArray | null;
+		while ((match = figTagRegex.exec(markdown)) !== null) {
+			const raw = match[1].trim();
+			const base = raw.split("/").pop() || raw;
+			referenced.add(base);
+		}
+
+		// Markdown image syntax ![alt](path/filename.ext)
+		const mdImgRegex = /!\[[^\]]*\]\(([^)]+)\)/g;
+		while ((match = mdImgRegex.exec(markdown)) !== null) {
+			const rawPath = match[1].trim();
+			const base = rawPath.split("/").pop() || rawPath;
+			referenced.add(base);
+		}
+
+		return Array.from(referenced);
 	}
 
 	/**
@@ -1036,6 +1090,12 @@ export class NotebookSummaryService {
 					success: result,
 					filePath: result ? finalOutputPath : undefined,
 				};
+			} else if (summary.format === "markdown") {
+				// Inline figures into markdown using data URLs when available
+				finalContent = this.inlineFiguresInMarkdown(
+					summary.content,
+					summary.savedFigures
+				);
 			}
 
 			// Use electron API to write file
@@ -1048,6 +1108,60 @@ export class NotebookSummaryService {
 			console.error("Error exporting summary:", error);
 			return { success: false };
 		}
+	}
+
+	/**
+	 * Inject inline images into markdown using data URLs for referenced figures.
+	 */
+	private inlineFiguresInMarkdown(
+		markdown: string,
+		savedFigures?: Array<{
+			filename: string;
+			fullPath: string;
+			base64Data?: string;
+			description: string;
+		}>
+	): string {
+		if (!savedFigures || savedFigures.length === 0) return markdown;
+
+		const figMap: Record<string, { dataUrl?: string; description?: string; ext?: string; fullPath?: string }> = {};
+		for (const f of savedFigures) {
+			const base = f.filename.split("/").pop() || f.filename;
+			figMap[base] = {
+				dataUrl: f.base64Data,
+				description: f.description,
+				ext: base.split(".").pop()?.toLowerCase(),
+				fullPath: f.fullPath,
+			};
+		}
+
+		let processed = markdown;
+
+		// Replace [[FIG: filename.ext]] placeholders
+		processed = processed.replace(/\[\[(?:FIG|Figure)\s*:\s*([^\]\n]+)\]\]/g, (m, p1) => {
+			const raw = String(p1).trim();
+			const base = (raw.split("/").pop() || raw).trim();
+			const entry = figMap[base];
+			if (!entry) return ""; // Unknown marker
+			const alt = entry.description || base;
+			if (entry.dataUrl && ["png", "jpg", "jpeg", "svg"].includes(entry.ext || "")) {
+				return `![${alt}](${entry.dataUrl})`;
+			}
+			// Fallback to a link to the file path if available
+			return entry.fullPath ? `[${base}](${entry.fullPath})` : `(${base})`;
+		});
+
+		// Replace markdown images referencing local filenames with data URLs if available
+		processed = processed.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m, alt, link) => {
+			const base = (String(link).split("/").pop() || String(link)).trim();
+			const entry = figMap[base];
+			if (entry && entry.dataUrl && ["png", "jpg", "jpeg", "svg"].includes(entry.ext || "")) {
+				return `![${alt || base}](${entry.dataUrl})`;
+			}
+			return m; // keep original
+		});
+
+		return processed;
 	}
 
 	/**
@@ -1252,9 +1366,48 @@ ${htmlContent}
 			description: string;
 		}>
 	): string {
+		// Inline figure placeholders and markdown images before converting to HTML
+		let processed = markdown;
+
+		const figMap: Record<string, { base64?: string; description?: string; ext?: string }> = {};
+		if (savedFigures && savedFigures.length > 0) {
+			for (const f of savedFigures) {
+				const base = f.filename.split("/").pop() || f.filename;
+				figMap[base] = {
+					base64: f.base64Data,
+					description: f.description,
+					ext: base.split(".").pop()?.toLowerCase(),
+				};
+			}
+
+			// Replace [[FIG: filename.ext]] markers with inline <img>
+			processed = processed.replace(/\[\[(?:FIG|Figure)\s*:\s*([^\]\n]+)\]\]/g, (m, p1) => {
+				const raw = String(p1).trim();
+				const base = (raw.split("/").pop() || raw).trim();
+				const entry = figMap[base];
+				if (!entry) return ""; // Unknown marker -> drop
+				if (!entry.base64) return `<div class="figure-container"><p><strong>File:</strong> ${base} (not found)</p></div>`;
+				if (["png", "jpg", "jpeg", "svg"].includes(entry.ext || "")) {
+					const desc = entry.description ? `<p class="figure-description"><em>${entry.description}</em></p>` : "";
+					return `<div class="figure-container"><img src="${entry.base64}" alt="${base}" style="max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 5px; margin: 10px 0;">${desc}</div>`;
+				}
+				return `<div class="figure-container"><p><strong>File:</strong> ${base} (${(entry.ext || "").toUpperCase()} format - not displayed inline)</p></div>`;
+			});
+
+			// Replace markdown images with inline <img> where possible
+			processed = processed.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m, alt, link) => {
+				const base = (String(link).split("/").pop() || String(link)).trim();
+				const entry = figMap[base];
+				if (entry && entry.base64 && ["png", "jpg", "jpeg", "svg"].includes(entry.ext || "")) {
+					return `<img src="${entry.base64}" alt="${alt || base}" style="max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 5px; margin: 10px 0;">`;
+				}
+				return `<img src="${link}" alt="${alt || base}" style="max-width: 100%; height: auto; margin: 10px 0;">`;
+			});
+		}
+
 		// Basic markdown to HTML conversion
 		// In a real implementation, you'd use a proper markdown parser
-		let html = markdown
+		let html = processed
 			.replace(/^# (.+)$/gm, "<h1>$1</h1>")
 			.replace(/^## (.+)$/gm, "<h2>$1</h2>")
 			.replace(/^### (.+)$/gm, "<h3>$1</h3>")
@@ -1265,39 +1418,6 @@ ${htmlContent}
 			.replace(/`(.+?)`/g, "<code>$1</code>")
 			.replace(/```(.+?)```/gs, "<pre><code>$1</code></pre>")
 			.replace(/\n/g, "<br>\n");
-
-		// If we have figures with base64 data, embed them in HTML
-		let figuresHtml = "";
-		if (savedFigures && savedFigures.length > 0) {
-			figuresHtml += '\n<div class="figures-section">\n';
-			figuresHtml += "<h2>Generated Figures</h2>\n";
-
-			savedFigures.forEach((figure, index) => {
-				figuresHtml += `<div class="figure-container">\n`;
-				figuresHtml += `<h3>Figure ${index + 1}: ${figure.filename}</h3>\n`;
-
-				if (figure.base64Data) {
-					// Only embed PNG, JPG, JPEG, and SVG images (not PDF)
-					const extension = figure.filename.split(".").pop()?.toLowerCase();
-					if (["png", "jpg", "jpeg", "svg"].includes(extension || "")) {
-						figuresHtml += `<img src="${figure.base64Data}" alt="${figure.filename}" style="max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 5px; margin: 10px 0;">\n`;
-					} else {
-						figuresHtml += `<p><strong>File:</strong> ${
-							figure.filename
-						} (${extension?.toUpperCase()} format - not displayed inline)</p>\n`;
-					}
-				} else {
-					figuresHtml += `<p><strong>File:</strong> ${figure.filename} (file not found or could not be loaded)</p>\n`;
-				}
-
-				if (figure.description) {
-					figuresHtml += `<p class="figure-description"><em>${figure.description}</em></p>\n`;
-				}
-				figuresHtml += "</div>\n";
-			});
-
-			figuresHtml += "</div>\n";
-		}
 
 		return `<!DOCTYPE html>
 <html>
@@ -1315,7 +1435,6 @@ ${htmlContent}
 </head>
 <body>
 ${html}
-${figuresHtml}
 </body>
 </html>`;
 	}
