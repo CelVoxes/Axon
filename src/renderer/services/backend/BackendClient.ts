@@ -22,12 +22,23 @@ export class BackendClient implements IBackendClient {
 
 	constructor(baseUrl?: string) {
 		const cfg = ConfigManager.getInstance().getSection("backend");
-
+		const isPackaged = (window as any)?.electronAPI?.isPackaged?.() || false;
+		const defaultUrl = isPackaged
+			? "http://axon.celvox.co:8002"
+			: "http://localhost:8001";
+		this.baseUrl = baseUrl || cfg.baseUrl || defaultUrl;
+		if (isPackaged && /localhost|127\.0\.0\.1/.test(this.baseUrl)) {
+			console.warn(
+				"BackendClient: Overriding localhost baseUrl in packaged app; using production server"
+			);
+			this.baseUrl = "http://axon.celvox.co:8002";
+		}
 		console.log(
-			"BackendClient: process.env.BACKEND_URL =",
-			process.env.BACKEND_URL
+			"BackendClient: resolved baseUrl =",
+			this.baseUrl,
+			"isPackaged =",
+			isPackaged
 		);
-		this.baseUrl = baseUrl || cfg.baseUrl || "http://localhost:8001";
 
 		// Initialize axios instance with base URL and timeout
 		this.axiosInstance = axios.create({

@@ -65,6 +65,14 @@ export class ConfigManager {
 		this.config = this.loadDefaultConfig();
 		this.loadFromStorage();
 		this.loadFromEnvironment(); // Load environment after storage to ensure env vars take precedence
+
+		// In packaged builds, force backend URL to production server
+		try {
+			const isPackaged = window.electronAPI?.isPackaged?.() || false;
+			if (isPackaged) {
+				this.config.backend.baseUrl = "http://axon.celvox.co:8002";
+			}
+		} catch (_) {}
 	}
 
 	/**
@@ -134,7 +142,11 @@ export class ConfigManager {
 	 */
 	private loadFromEnvironment(): void {
 		// Backend configuration
-		if (process.env.BACKEND_URL) {
+		// In packaged (production) builds, ignore BACKEND_URL from env to avoid
+		// accidentally embedding/using a localhost URL from build-time .env.
+		// Rely on the packaged default instead (remote server).
+		const isPackaged = window.electronAPI?.isPackaged?.() || false;
+		if (!isPackaged && process.env.BACKEND_URL) {
 			this.config.backend.baseUrl = process.env.BACKEND_URL;
 		}
 		if (process.env.BACKEND_TIMEOUT) {
