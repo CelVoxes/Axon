@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import styled from "styled-components";
 import { FiX, FiCheck, FiFileText, FiDownload, FiZap } from "react-icons/fi";
 import { typography } from "../../styles/design-system";
@@ -207,17 +207,17 @@ const StreamingPreview = styled.div`
 	margin: 16px 20px;
 	max-height: 200px;
 	overflow-y: auto;
-	font-family: 'SF Mono', 'Monaco', 'Cascadia Code', monospace;
+	font-family: "SF Mono", "Monaco", "Cascadia Code", monospace;
 	font-size: 12px;
 	line-height: 1.4;
 	color: #d4d4d4;
 	white-space: pre-wrap;
 	word-break: break-word;
-	
+
 	&::-webkit-scrollbar {
 		width: 6px;
 	}
-	
+
 	&::-webkit-scrollbar-thumb {
 		background: #404040;
 		border-radius: 3px;
@@ -311,40 +311,47 @@ export const SummaryOptionsModal: React.FC<SummaryOptionsModalProps> = ({
 	onGenerate,
 	cells = [],
 	isGenerating = false,
-	streamContent = '',
+	streamContent = "",
 }) => {
 	const [selectedCells, setSelectedCells] = useState<number[]>([]);
 	const [reportType, setReportType] =
 		useState<SummaryOptions["reportType"]>("research-report");
 	const [outputFormat, setOutputFormat] =
-		useState<SummaryOptions["outputFormat"]>("markdown");
+		useState<SummaryOptions["outputFormat"]>("html");
 	const [includeCode, setIncludeCode] = useState(true);
 	const [includeOutputs, setIncludeOutputs] = useState(true);
 	const [includeFigures, setIncludeFigures] = useState(true);
 	const [includeTables, setIncludeTables] = useState(true);
-	const [summaryLength, setSummaryLength] = useState<SummaryOptions["summaryLength"]>("medium");
+	const [summaryLength, setSummaryLength] =
+		useState<SummaryOptions["summaryLength"]>("medium");
+
+	// Ref for auto-scrolling streaming preview
+	const streamingPreviewRef = useRef<HTMLDivElement>(null);
 
 	/**
 	 * Get smart default cell selection, excluding boilerplate cells
 	 */
 	const getDefaultCellSelection = (cells: NotebookCell[]): number[] => {
-		return cells.map((cell, index) => ({ cell, index }))
+		return cells
+			.map((cell, index) => ({ cell, index }))
 			.filter(({ cell, index }) => {
 				// Skip first cell if it's a markdown title/header
-				if (index === 0 && cell.cell_type === 'markdown') {
-					const content = Array.isArray(cell.source) ? cell.source.join('') : cell.source || '';
+				if (index === 0 && cell.cell_type === "markdown") {
+					const content = Array.isArray(cell.source)
+						? cell.source.join("")
+						: cell.source || "";
 					// Skip if it's just a title or simple header
 					if (content.trim().match(/^#[^#]/) || content.trim().length < 100) {
-						console.log(`Skipping markdown header cell ${index}`);
 						return false;
 					}
 				}
-				
+
 				// Skip package installation cells
-				if (cell.cell_type === 'code') {
-					const content = Array.isArray(cell.source) ? cell.source.join('') : cell.source || '';
-					console.log(`Cell ${index} content:`, content.substring(0, 100) + '...');
-					
+				if (cell.cell_type === "code") {
+					const content = Array.isArray(cell.source)
+						? cell.source.join("")
+						: cell.source || "";
+
 					// Skip cells that contain package installation commands
 					const installPatterns = [
 						/pip\s+install/,
@@ -353,41 +360,40 @@ export const SummaryOptionsModal: React.FC<SummaryOptionsModalProps> = ({
 						/import\s+subprocess[\s\S]*pip\s+install/,
 						/required_packages\s*=/,
 						/# Install required packages/,
-						/%pip\s+install/,  // Jupyter magic command
-						/import\s+sys[\s\S]*subprocess.*install/,  // subprocess pip install
-						/os\.system.*pip\s+install/  // os.system pip install
+						/%pip\s+install/, // Jupyter magic command
+						/import\s+sys[\s\S]*subprocess.*install/, // subprocess pip install
+						/os\.system.*pip\s+install/, // os.system pip install
 					];
-					
-					const hasInstallPattern = installPatterns.some(pattern => pattern.test(content));
-					console.log(`Cell ${index} has install pattern:`, hasInstallPattern);
-					
+
+					const hasInstallPattern = installPatterns.some((pattern) =>
+						pattern.test(content)
+					);
+
 					// More aggressive filtering - skip if ANY installation pattern is found
 					// and the cell has fewer than 5 non-installation lines of actual analysis
 					if (hasInstallPattern) {
-						const lines = content.split('\n').filter(line => line.trim());
-						const nonInstallLines = lines.filter(line => {
+						const lines = content.split("\n").filter((line) => line.trim());
+						const nonInstallLines = lines.filter((line) => {
 							const lineContent = line.trim();
-							return lineContent && 
-								!installPatterns.some(pattern => pattern.test(lineContent)) &&
-								!lineContent.includes('Installing') &&
-								!lineContent.includes('Collecting') &&
-								!lineContent.includes('Requirement already satisfied') &&
-								!lineContent.startsWith('#') &&  // Skip comments
-								!lineContent.startsWith('import ') &&  // Skip simple imports
-								lineContent.length > 10;  // Skip very short lines
+							return (
+								lineContent &&
+								!installPatterns.some((pattern) => pattern.test(lineContent)) &&
+								!lineContent.includes("Installing") &&
+								!lineContent.includes("Collecting") &&
+								!lineContent.includes("Requirement already satisfied") &&
+								!lineContent.startsWith("#") && // Skip comments
+								!lineContent.startsWith("import ") && // Skip simple imports
+								lineContent.length > 10
+							); // Skip very short lines
 						});
-						
-						console.log(`Cell ${index} non-install lines:`, nonInstallLines.length, nonInstallLines);
-						
+
 						// Skip if there are fewer than 5 substantial non-installation lines
 						if (nonInstallLines.length < 5) {
-							console.log(`Skipping installation cell ${index}`);
 							return false;
 						}
 					}
 				}
-				
-				console.log(`Including cell ${index}`);
+
 				return true;
 			})
 			.map(({ index }) => index);
@@ -399,6 +405,23 @@ export const SummaryOptionsModal: React.FC<SummaryOptionsModalProps> = ({
 			setSelectedCells(getDefaultCellSelection(cells));
 		}
 	}, [isOpen, cells.length]);
+
+	// Auto-scroll streaming preview to bottom when new content arrives
+	useEffect(() => {
+		if (streamingPreviewRef.current && streamContent) {
+			const element = streamingPreviewRef.current;
+			// Use smooth scrolling if browser supports it
+			if (element.scrollTo) {
+				element.scrollTo({
+					top: element.scrollHeight,
+					behavior: "smooth",
+				});
+			} else {
+				// Fallback for older browsers
+				element.scrollTop = element.scrollHeight;
+			}
+		}
+	}, [streamContent]);
 
 	const handleCellToggle = (index: number) => {
 		setSelectedCells((prev) =>
@@ -584,13 +607,17 @@ export const SummaryOptionsModal: React.FC<SummaryOptionsModalProps> = ({
 								<Select
 									value={summaryLength}
 									onChange={(e) =>
-										setSummaryLength(e.target.value as SummaryOptions["summaryLength"])
+										setSummaryLength(
+											e.target.value as SummaryOptions["summaryLength"]
+										)
 									}
 								>
 									<option value="brief">Brief (~200 words)</option>
 									<option value="medium">Medium (~500 words)</option>
 									<option value="detailed">Detailed (~1000 words)</option>
-									<option value="comprehensive">Comprehensive (~2000+ words)</option>
+									<option value="comprehensive">
+										Comprehensive (~2000+ words)
+									</option>
 								</Select>
 							</OptionRow>
 						</OptionGroup>
@@ -604,8 +631,8 @@ export const SummaryOptionsModal: React.FC<SummaryOptionsModalProps> = ({
 							<FiZap size={14} />
 							Live Generation Preview
 						</StreamingTitle>
-						<StreamingPreview>
-							{streamContent || 'Starting generation...'}
+						<StreamingPreview ref={streamingPreviewRef}>
+							{streamContent || "Starting generation..."}
 						</StreamingPreview>
 					</>
 				)}
