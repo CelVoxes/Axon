@@ -189,6 +189,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	// Summary modal state
 	const [showSummaryModal, setShowSummaryModal] = useState<boolean>(false);
 	const [isGeneratingSummary, setIsGeneratingSummary] = useState<boolean>(false);
+	const [summaryStreamContent, setSummaryStreamContent] = useState<string>('');
 	
 	// Summary service instance
 	const summaryServiceRef = useRef<NotebookSummaryService | null>(null);
@@ -1108,15 +1109,20 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		}
 		
 		setIsGeneratingSummary(true);
+		setSummaryStreamContent(''); // Reset stream content
 		try {
         const sessionId = `session:${workspacePath || 'global'}`;
         
-        // Use generateAndExportSummary for proper timestamp and reports/ folder handling
+        // Use generateAndExportSummary with streaming for real-time updates
         const result = await summaryServiceRef.current.generateAndExportSummary(
             notebookData.cells,
             options,
             filePath,
-            sessionId
+            sessionId,
+            (chunk: string) => {
+            	// Stream callback - update UI with each chunk
+            	setSummaryStreamContent(prev => prev + chunk);
+            }
         );
         
         const { summary, exportResult } = result;
@@ -1410,6 +1416,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					onGenerate={handleGenerateSummary}
 					cells={notebookData.cells}
 					isGenerating={isGeneratingSummary}
+					streamContent={summaryStreamContent}
 				/>
 			)}
 		</EditorContainer>

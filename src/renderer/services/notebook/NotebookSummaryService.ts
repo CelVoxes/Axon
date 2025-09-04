@@ -162,107 +162,35 @@ export class NotebookSummaryService {
 	}
 
 	/**
-	 * Analyze figure content using code context (synchronous for now)
-	 * In the future, this could use AI vision models to analyze the actual image
+	 * Extract insights from plotting code
 	 */
-	private analyzeFigureContent(imageData: string, cellCode: string): string | null {
-		try {
-			// For now, we'll analyze based on the code that generated the figure
-			const codeAnalysis = this.extractVisualizationInsights(cellCode);
-			return codeAnalysis;
-		} catch (error) {
-			console.warn('Error analyzing figure content:', error);
-			return null;
-		}
-	}
-
-	/**
-	 * Extract figure-related context from code
-	 */
-	private extractFigureContext(code: string): string {
+	private extractPlotInsights(code: string): string {
 		const insights: string[] = [];
 		
-		// Look for plotting libraries and methods
-		if (code.includes('matplotlib') || code.includes('plt.')) {
-			insights.push('Created using Matplotlib');
-		}
-		if (code.includes('seaborn') || code.includes('sns.')) {
-			insights.push('Created using Seaborn');
-		}
-		if (code.includes('plotly')) {
-			insights.push('Created using Plotly (interactive)');
+		// Libraries
+		if (code.includes('plt.') || code.includes('matplotlib')) insights.push('matplotlib');
+		if (code.includes('sns.') || code.includes('seaborn')) insights.push('seaborn');
+		if (code.includes('plotly')) insights.push('plotly');
+		
+		// Plot types - simplified detection
+		const plotPatterns = {
+			'scatter': /\.(scatter|scatterplot)\(/,
+			'line': /\.(plot|lineplot)\(/,
+			'bar': /\.(bar|barplot)\(/,
+			'histogram': /\.(hist|histogram)\(/,
+			'heatmap': /\.heatmap\(/,
+			'box': /\.(box|boxplot)\(/
+		};
+		
+		for (const [type, pattern] of Object.entries(plotPatterns)) {
+			if (pattern.test(code)) insights.push(type);
 		}
 		
-		// Extract plot types
-		const plotTypes = [];
-		if (code.includes('.scatter(') || code.includes('scatterplot')) plotTypes.push('scatter plot');
-		if (code.includes('.plot(') || code.includes('lineplot')) plotTypes.push('line plot');
-		if (code.includes('.bar(') || code.includes('barplot')) plotTypes.push('bar chart');
-		if (code.includes('.hist(') || code.includes('histogram')) plotTypes.push('histogram');
-		if (code.includes('.box(') || code.includes('boxplot')) plotTypes.push('box plot');
-		if (code.includes('.heatmap(')) plotTypes.push('heatmap');
-		if (code.includes('.violin(') || code.includes('violinplot')) plotTypes.push('violin plot');
-		
-		if (plotTypes.length > 0) {
-			insights.push(`Plot type(s): ${plotTypes.join(', ')}`);
-		}
-		
-		// Look for titles, labels, and annotations
+		// Extract labels if present
 		const titleMatch = code.match(/title\s*=\s*['"]([^'"]+)['"]/);
-		if (titleMatch) insights.push(`Title: "${titleMatch[1]}"`);
+		if (titleMatch) insights.push(`"${titleMatch[1]}"`);
 		
-		const xlabelMatch = code.match(/xlabel\s*=\s*['"]([^'"]+)['"]/);
-		if (xlabelMatch) insights.push(`X-axis: ${xlabelMatch[1]}`);
-		
-		const ylabelMatch = code.match(/ylabel\s*=\s*['"]([^'"]+)['"]/);
-		if (ylabelMatch) insights.push(`Y-axis: ${ylabelMatch[1]}`);
-		
-		return insights.join('; ');
-	}
-
-	/**
-	 * Extract visualization insights from code
-	 */
-	private extractVisualizationInsights(code: string): string {
-		const insights: string[] = [];
-		
-		// Look for data being plotted
-		const dataVariables: string[] = [];
-		const dataVarMatches = code.match(/(\w+)\s*\[\s*['"]([^'"]+)['"]\s*\]/g);
-		if (dataVarMatches) {
-			dataVarMatches.forEach(match => {
-				const varMatch = match.match(/(\w+)\s*\[\s*['"]([^'"]+)['"]\s*\]/);
-				if (varMatch) {
-					dataVariables.push(`${varMatch[1]}['${varMatch[2]}']`);
-				}
-			});
-		}
-		
-		if (dataVariables.length > 0) {
-			insights.push(`Data variables: ${dataVariables.join(', ')}`);
-		}
-		
-		// Look for grouping/coloring
-		const colorMatch = code.match(/(?:color|hue|c)\s*=\s*['"]?([^'",\s)]+)['"]?/);
-		if (colorMatch) insights.push(`Grouped by: ${colorMatch[1]}`);
-		
-		// Look for size variations
-		const sizeMatch = code.match(/(?:size|s)\s*=\s*['"]?([^'",\s)]+)['"]?/);
-		if (sizeMatch) insights.push(`Sized by: ${sizeMatch[1]}`);
-		
-		// Look for statistical operations
-		if (code.includes('corr()')) insights.push('Shows correlation analysis');
-		if (code.includes('value_counts()')) insights.push('Shows frequency distribution');
-		if (code.includes('describe()')) insights.push('Shows statistical summary');
-		if (code.includes('groupby(')) insights.push('Shows grouped analysis');
-		
-		// Look for filtering or subsetting
-		const filterMatches = code.match(/\[([^\]]+\s*[<>=!]+\s*[^\]]+)\]/g);
-		if (filterMatches) {
-			insights.push(`Applied filters: ${filterMatches.slice(0, 2).join(', ')}`);
-		}
-		
-		return insights.join('; ');
+		return insights.length > 0 ? insights.join(', ') : 'visualization';
 	}
 
 	/**
@@ -283,7 +211,7 @@ export class NotebookSummaryService {
 						const fullPath = filename.includes('/') ? 
 							`${workspaceDir}/${filename}` : 
 							`${workspaceDir}/figures/${filename}`;
-						const description = this.analyzeFigureFilename(filename);
+						const description = this.getFileDescription(filename);
 						if (!figureFiles.some(f => f.filename === filename)) {
 							figureFiles.push({ filename, fullPath, description });
 						}
@@ -301,7 +229,7 @@ export class NotebookSummaryService {
 							if (!figureFiles.some(f => f.filename === filename)) {
 								// Figures are typically saved to the figures subdirectory
 								const fullPath = `${workspaceDir}/figures/${filename}`;
-								const description = this.analyzeFigureFilename(filename);
+								const description = this.getFileDescription(filename);
 								figureFiles.push({ filename, fullPath, description });
 							}
 						});
@@ -319,7 +247,7 @@ export class NotebookSummaryService {
 									`${workspaceDir}/${filepath}` : 
 									`${workspaceDir}/figures/${filepath}`;
 								const filename = filepath.split('/').pop() || filepath;
-								const description = this.analyzeFigureFilename(filename);
+								const description = this.getFileDescription(filename);
 								figureFiles.push({ filename, fullPath, description });
 							}
 						});
@@ -359,50 +287,47 @@ export class NotebookSummaryService {
 	}
 
 	/**
-	 * Analyze figure filename to extract insights about its content
+	 * Get simple description from figure filename
 	 */
-	private analyzeFigureFilename(filename: string): string {
-		const insights: string[] = [];
-		const nameLower = filename.toLowerCase();
+	private getFileDescription(filename: string): string {
+		const name = filename.toLowerCase();
 		
-		// Plot type detection
-		if (nameLower.includes('umap')) insights.push('UMAP dimensionality reduction plot');
-		if (nameLower.includes('tsne')) insights.push('t-SNE dimensionality reduction plot');
-		if (nameLower.includes('pca')) insights.push('PCA analysis plot');
-		if (nameLower.includes('heatmap')) insights.push('Heatmap visualization');
-		if (nameLower.includes('scatter')) insights.push('Scatter plot');
-		if (nameLower.includes('violin')) insights.push('Violin plot');
-		if (nameLower.includes('box')) insights.push('Box plot');
-		if (nameLower.includes('bar')) insights.push('Bar chart');
-		if (nameLower.includes('hist')) insights.push('Histogram');
-		if (nameLower.includes('corr')) insights.push('Correlation analysis');
+		// Common plot types
+		const types = ['scatter', 'heatmap', 'violin', 'box', 'bar', 'hist', 'umap', 'tsne', 'pca'];
+		const foundType = types.find(type => name.includes(type));
 		
-		// Biology/analysis context
-		if (nameLower.includes('gene')) insights.push('Gene expression analysis');
-		if (nameLower.includes('marker')) insights.push('Marker gene analysis');
-		if (nameLower.includes('qc')) insights.push('Quality control metrics');
-		if (nameLower.includes('filter')) insights.push('Filtering analysis');
-		if (nameLower.includes('cluster')) insights.push('Clustering analysis');
-		if (nameLower.includes('cell')) insights.push('Cell-level analysis');
-		if (nameLower.includes('before')) insights.push('Pre-processing state');
-		if (nameLower.includes('after')) insights.push('Post-processing state');
+		if (foundType) return `${foundType} plot`;
+		if (name.includes('qc')) return 'quality control plot';
+		if (name.includes('gene')) return 'gene analysis plot';
+		return 'figure';
+	}
+
+	/**
+	 * Extract key results from outputs - simplified
+	 */
+	private extractKeyResults(processedCells: ProcessedCell[]): string[] {
+		const results = new Set<string>();
 		
-		// Specific gene names or markers
-		const geneMatches = filename.match(/([A-Z][A-Z0-9]+\d+|CD\d+|[A-Z]{2,}[0-9]+)/g);
-		if (geneMatches) {
-			insights.push(`Specific markers: ${geneMatches.join(', ')}`);
-		}
+		processedCells.forEach(cell => {
+			cell.outputs?.forEach(output => {
+				// Look for common patterns
+				const patterns = [
+					/\b(accuracy|precision|recall|f1.score|r2.score):\s*([\d.]+)/gi,
+					/\b(mean|median|std|min|max):\s*([\d.-]+)/gi,
+					/shape:\s*\((\d+,\s*\d+)\)/gi,
+					/([\d.]+)%/g
+				];
+				
+				patterns.forEach(pattern => {
+					const matches = [...output.matchAll(pattern)];
+					matches.slice(0, 3).forEach(match => { // Limit matches per pattern
+						results.add(match[0].trim());
+					});
+				});
+			});
+		});
 		
-		// Dataset or sample identifiers
-		if (nameLower.includes('_bm_')) insights.push('Bone marrow dataset');
-		if (nameLower.includes('_pbmc_')) insights.push('PBMC dataset');
-		
-		// Metrics or measurements
-		if (nameLower.includes('metric')) insights.push('Quantitative metrics visualization');
-		if (nameLower.includes('count')) insights.push('Count-based analysis');
-		if (nameLower.includes('expression')) insights.push('Expression level analysis');
-		
-		return insights.length > 0 ? `Likely content: ${insights.join('; ')}` : '';
+		return Array.from(results).slice(0, 10); // Return top 10 results
 	}
 
 	/**
@@ -604,7 +529,8 @@ export class NotebookSummaryService {
         cells: NotebookCell[],
         options: SummaryOptions,
         filePath: string,
-        sessionId?: string
+        sessionId?: string,
+        onStream?: (chunk: string) => void
     ): Promise<GeneratedSummary> {
 		const processedCells = this.processCells(cells, options.selectedCells);
 		const analysis = this.analyzeNotebook(cells, filePath);
@@ -613,7 +539,7 @@ export class NotebookSummaryService {
 		const context = this.buildAnalysisContext(processedCells, analysis, options);
 		
         // Generate summary using backend AI
-        const summaryContent = await this.generateAISummary(context, options, sessionId);
+        const summaryContent = await this.generateAISummary(context, options, sessionId, onStream);
 
 		// Format the final summary with workspace context
 		const formattedSummary = this.formatSummary(summaryContent, options, analysis, filePath);
@@ -661,10 +587,11 @@ export class NotebookSummaryService {
 		cells: NotebookCell[],
 		options: SummaryOptions,
 		filePath: string,
-		sessionId?: string
+		sessionId?: string,
+		onStream?: (chunk: string) => void
 	): Promise<{ summary: GeneratedSummary; exportResult: { success: boolean; filePath?: string } }> {
 		// Generate the summary
-		const summary = await this.generateSummary(cells, options, filePath, sessionId);
+		const summary = await this.generateSummary(cells, options, filePath, sessionId, onStream);
 		
 		// Automatically export to suggested path
 		const exportResult = await this.exportSummary(summary);
@@ -673,324 +600,141 @@ export class NotebookSummaryService {
 	}
 
 	/**
-	 * Build structured context for AI analysis
+	 * Build context for AI analysis - simplified
 	 */
 	private buildAnalysisContext(
 		processedCells: ProcessedCell[],
 		analysis: NotebookAnalysis,
 		options: SummaryOptions
 	): string {
-		let context = `# Notebook Analysis Context\n\n`;
+		const sections = [];
 		
-		// Count visual elements for context
-		const figureCount = processedCells.reduce((count, cell) => 
-			count + (cell.visualOutputs?.filter(vo => vo.type === 'figure').length || 0), 0);
-		const tableCount = processedCells.reduce((count, cell) => 
-			count + (cell.visualOutputs?.filter(vo => vo.type === 'table').length || 0), 0);
+		// Basic overview
+		sections.push(`# Notebook: ${analysis.title}`);
+		sections.push(`${processedCells.length} cells selected, ${analysis.hasOutputs ? 'with outputs' : 'no outputs'}`);
 		
-		// Notebook overview
-		context += `## Notebook Overview\n`;
-		context += `- Title: ${analysis.title}\n`;
-		context += `- Total cells: ${analysis.cellCount}\n`;
-		context += `- Selected cells: ${processedCells.length}\n`;
-		context += `- Code cells: ${analysis.codeCount}\n`;
-		context += `- Markdown cells: ${analysis.markdownCount}\n`;
-		context += `- Has outputs: ${analysis.hasOutputs}\n`;
-		if (figureCount > 0 || tableCount > 0) {
-			context += `- Visual elements: ${figureCount} figures, ${tableCount} tables\n`;
+		// Key results
+		const keyResults = this.extractKeyResults(processedCells);
+		if (keyResults.length > 0) {
+			sections.push(`\n## Key Results\n${keyResults.map((r: string) => `- ${r}`).join('\n')}`);
 		}
-		context += `\n`;
-
-		// Sections if available
-		if (analysis.sections.length > 0) {
-			context += `## Document Sections\n`;
-			analysis.sections.forEach(section => {
-				context += `- ${section}\n`;
-			});
-			context += `\n`;
-		}
-
-		// Key findings if available
-		if (analysis.keyFindings.length > 0) {
-			context += `## Key Findings\n`;
-			analysis.keyFindings.forEach(finding => {
-				context += `- ${finding}\n`;
-			});
-			context += `\n`;
-		}
-
-		// Extract and highlight actual quantitative results
-		const quantitativeResults = this.extractQuantitativeResults(processedCells);
-		if (quantitativeResults.length > 0) {
-			context += `## ACTUAL QUANTITATIVE RESULTS (USE THESE SPECIFIC VALUES)\n`;
-			quantitativeResults.forEach((result, idx) => {
-				context += `${idx + 1}. ${result}\n`;
-			});
-			context += `\n`;
-		}
-
-		// Extract and highlight saved figure files
-		const workspaceDir = analysis.title.includes('/') 
-			? analysis.title.substring(0, analysis.title.lastIndexOf('/'))
-			: '.';
+		
+		// Figures
+		const workspaceDir = analysis.title.includes('/') ? analysis.title.substring(0, analysis.title.lastIndexOf('/')) : '.';
 		const savedFigures = this.extractSavedFigures(processedCells, workspaceDir);
 		if (savedFigures.length > 0) {
-			context += `## ACTUAL SAVED FIGURE FILES (REFERENCE THESE SPECIFIC FILES)\n`;
-			context += `The following figure files were generated and saved during the analysis:\n`;
-			savedFigures.forEach((figure, idx) => {
-				context += `${idx + 1}. **${figure.filename}** - This figure file was actually created and saved\n`;
-				// Include the description from filename analysis
-				if (figure.description) {
-					context += `   ${figure.description}\n`;
-				}
-			});
-			context += `\n**REPORT INSTRUCTION**: Reference these specific figure files by name in your report. ` +
-				`Describe what each figure likely contains based on its filename and the analysis context.\n\n`;
+			sections.push(`\n## Figures Generated\n${savedFigures.map(f => `- ${f.filename} (${f.description})`).join('\n')}`);
 		}
-
-		// Cell contents with enhanced output emphasis
-		context += `## Cell Contents and Execution Results\n\n`;
+		
+		// Cell content
+		sections.push('\n## Analysis Content');
 		processedCells.forEach(cell => {
-			context += `### Cell ${cell.index + 1} (${cell.type.toUpperCase()})\n`;
+			sections.push(`\n### Cell ${cell.index + 1}`);
 			
-			if (cell.content) {
-				if (options.includeCode || cell.type === 'markdown') {
-					context += `**Code executed:**\n`;
-					context += `\`\`\`${cell.type === 'code' ? 'python' : 'markdown'}\n`;
-					context += cell.content;
-					context += `\n\`\`\`\n\n`;
-				}
+			if (options.includeCode && cell.content) {
+				sections.push(`\`\`\`${cell.type}\n${cell.content}\n\`\`\``);
 			}
 			
-			if (options.includeOutputs && cell.outputs && cell.outputs.length > 0) {
-				context += `**ACTUAL EXECUTION OUTPUTS (cite these exact results):**\n`;
-				cell.outputs.forEach((output, idx) => {
-					context += `Output ${idx + 1}:\n\`\`\`\n${output}\n\`\`\`\n`;
-				});
-				context += `\n`;
+			if (options.includeOutputs && cell.outputs?.length) {
+				sections.push(`**Output:**\n\`\`\`\n${cell.outputs.join('\n')}\n\`\`\``);
 			}
 			
-			// Include visual outputs if requested with enhanced descriptions
-			if (cell.visualOutputs && cell.visualOutputs.length > 0) {
-				const figures = cell.visualOutputs.filter(vo => vo.type === 'figure');
-				const tables = cell.visualOutputs.filter(vo => vo.type === 'table');
-				
-				if (options.includeFigures && figures.length > 0) {
-					context += `**ACTUAL FIGURES GENERATED (analyze and describe these specific visualizations):**\n`;
-					for (let idx = 0; idx < figures.length; idx++) {
-						const figure = figures[idx];
-						context += `\n### Figure ${idx + 1}: ${figure.description} (${figure.format})\n`;
-						context += `- **Generated by code execution**: This visualization was actually created during the analysis\n`;
-						
-						// If we have the actual image data, we can analyze it
-						if (figure.data && figure.format === 'png') {
-							const figureAnalysis = this.analyzeFigureContent(figure.data, cell.content);
-							if (figureAnalysis) {
-								context += `- **Visual Analysis**: ${figureAnalysis}\n`;
-							}
-						}
-						
-						// Extract any figure-related context from the code that generated it
-						const codeContext = this.extractFigureContext(cell.content);
-						if (codeContext) {
-							context += `- **Code Context**: ${codeContext}\n`;
-						}
-						
-						context += `- **Report Instruction**: Describe what this figure shows, interpret its findings, and reference specific visual elements\n`;
-					}
-					context += `\n`;
-				}
-				
-				if (options.includeTables && tables.length > 0) {
-					context += `**ACTUAL TABLES GENERATED (reference this real data):**\n`;
-					tables.forEach((table, idx) => {
-						context += `- Table ${idx + 1}: ${table.description} (${table.format})\n`;
-						if (table.format === 'text' && table.data) {
-							// Include more of the actual table data
-							const preview = table.data.substring(0, 500).replace(/\n/g, '\n  ');
-							context += `  ACTUAL DATA:\n  ${preview}${table.data.length > 500 ? '\n  ...(truncated)' : ''}\n`;
-						}
-					});
-					context += `\n`;
+			if (cell.visualOutputs?.length) {
+				const plots = cell.visualOutputs.filter(v => v.type === 'figure');
+				if (plots.length > 0) {
+					const plotInfo = this.extractPlotInsights(cell.content);
+					sections.push(`**Visualization:** ${plotInfo}`);
 				}
 			}
 		});
-
-		return context;
+		
+		return sections.join('\n');
 	}
 
 	/**
-	 * Generate AI summary using backend client with length validation
+	 * Generate AI summary - simplified
 	 */
-    private async generateAISummary(context: string, options: SummaryOptions, sessionId?: string): Promise<string> {
-		const prompt = this.buildSummaryPrompt(options.reportType, options.summaryLength);
-		const maxAttempts = 2;
-
-		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-			try {
-				console.log(`Generating summary attempt ${attempt}/${maxAttempts} for ${options.summaryLength} length...`);
+    private async generateAISummary(context: string, options: SummaryOptions, sessionId?: string, onStream?: (chunk: string) => void): Promise<string> {
+		try {
+			const prompt = this.buildPrompt(options.reportType, options.summaryLength);
+			
+			if (onStream) {
+				// Use streaming version
+				let fullResponse = '';
+				console.log('Starting streaming summary generation...');
 				
-				// Use the backend client's askQuestion method for AI generation
+				try {
+					await this.backendClient.askQuestionStream(
+						{
+							question: prompt,
+							context: context,
+							sessionId,
+						},
+						(event: any) => {
+							console.log('Streaming event:', event);
+							if (event.type === 'answer' && typeof event.delta === 'string') {
+								fullResponse += event.delta;
+								onStream(event.delta);
+							}
+							// Handle potential error events
+							if (event.type === 'error') {
+								console.error('Streaming error:', event);
+							}
+						}
+					);
+					
+					console.log('Streaming completed, response length:', fullResponse.length);
+					return fullResponse || this.getFallbackSummary(options);
+				} catch (streamingError) {
+					console.warn('Streaming failed, falling back to non-streaming:', streamingError);
+					// Fall back to non-streaming if streaming fails
+					const response = await this.backendClient.askQuestion({
+						question: prompt,
+						context: context,
+						sessionId,
+					});
+					return response || this.getFallbackSummary(options);
+				}
+			} else {
+				// Use non-streaming version
 				const response = await this.backendClient.askQuestion({
-					question: attempt === 1 ? prompt : this.buildRetryPrompt(prompt, options.summaryLength),
+					question: prompt,
 					context: context,
 					sessionId,
 				});
-
-				if (response) {
-					// Validate length
-					const wordCount = this.countWords(response);
-					const { min, max, target } = this.getWordCountLimits(options.summaryLength);
-					
-					console.log(`Generated summary: ${wordCount} words (target: ${min}-${max})`);
-					
-					// If within acceptable range or last attempt, return it
-					if (wordCount >= min && wordCount <= max) {
-						console.log(`✅ Summary length acceptable: ${wordCount} words`);
-						return response;
-					} else if (attempt === maxAttempts) {
-						console.log(`⚠️ Final attempt: ${wordCount} words (outside ${min}-${max} range)`);
-						return response;
-					} else {
-						console.log(`❌ Length out of range: ${wordCount} words, retrying...`);
-						// Continue to next attempt
-					}
-				}
-			} catch (error) {
-				console.error(`Error generating AI summary (attempt ${attempt}):`, error);
-				if (attempt === maxAttempts) {
-					return this.generateFallbackSummary(context, options);
-				}
+				
+				return response || this.getFallbackSummary(options);
 			}
-		}
-
-		return this.generateFallbackSummary(context, options);
-	}
-
-	/**
-	 * Count words in text
-	 */
-	private countWords(text: string): number {
-		return text.trim().split(/\s+/).filter(word => word.length > 0).length;
-	}
-
-	/**
-	 * Get word count limits for different summary lengths
-	 */
-	private getWordCountLimits(summaryLength: SummaryOptions['summaryLength']): { min: number; max: number; target: number } {
-		switch (summaryLength) {
-			case 'brief':
-				return { min: 120, max: 300, target: 200 };
-			case 'medium':
-				return { min: 350, max: 650, target: 500 };
-			case 'detailed':
-				return { min: 700, max: 1300, target: 1000 };
-			case 'comprehensive':
-				return { min: 1200, max: 2800, target: 2000 };
-			default:
-				return { min: 350, max: 650, target: 500 };
+		} catch (error) {
+			console.error('Error generating AI summary:', error);
+			return this.getFallbackSummary(options);
 		}
 	}
 
-	/**
-	 * Build retry prompt for length adjustment
-	 */
-	private buildRetryPrompt(originalPrompt: string, summaryLength: SummaryOptions['summaryLength']): string {
-		const { min, max, target } = this.getWordCountLimits(summaryLength);
-		
-		return `🚨 CRITICAL LENGTH REQUIREMENT 🚨
-
-Your previous response was TOO SHORT. You MUST write EXACTLY ${min}-${max} words (target: ${target} words).
-
-STRICT INSTRUCTIONS:
-1. COUNT your words as you write
-2. DO NOT stop until you reach AT LEAST ${min} words
-3. DO NOT exceed ${max} words
-4. Add more technical details, specific results, code explanations, and figure descriptions to reach the target
-5. Include more analysis of the actual data, methods used, and interpretation of results
-
-` + originalPrompt + `
-
-🎯 FINAL REMINDER: Write ${min}-${max} words. Your response will be rejected if it's outside this range.`;
-	}
 
 
 	/**
-	 * Build report-specific prompts for AI generation
+	 * Build prompt for AI generation - simplified
 	 */
-	private buildSummaryPrompt(reportType: SummaryOptions['reportType'], summaryLength: SummaryOptions['summaryLength']): string {
-		const basePrompt = "You are an expert data scientist and technical writer. ";
+	private buildPrompt(reportType: SummaryOptions['reportType'], summaryLength: SummaryOptions['summaryLength']): string {
+		const lengthGuide = {
+			'brief': 'Write a concise 150-250 word summary.',
+			'medium': 'Write a detailed 400-600 word analysis.',
+			'detailed': 'Write a comprehensive 800-1200 word report.',
+			'comprehensive': 'Write an extensive 1500-2500 word analysis.'
+		}[summaryLength] || 'Write a well-structured summary.';
 		
-		// Get length-specific instructions
-		const lengthInstruction = this.getLengthInstruction(summaryLength);
+		const typePrompts = {
+			'quick-summary': 'Create a bullet-point summary focusing on data, methods, results, and key figures.',
+			'research-report': 'Create a research report with Introduction, Methods, Results, Discussion, and Conclusion.',
+			'technical-doc': 'Create technical documentation covering implementation details and methodology.'
+		};
 		
-		// Emphasize using actual results including figures
-		const resultsEmphasis = "CRITICAL: Base your report ENTIRELY on the actual code, outputs, figures, and results provided in the context. " +
-			"Do NOT make generic assumptions. Reference specific numerical results, actual code functions used, " +
-			"real figures/tables generated, and concrete findings from the execution outputs. " +
-			"IMPORTANT FOR FIGURES: When figures are provided, you MUST describe what they show, interpret their findings, " +
-			"and explain their significance. Reference the plot types, data variables, groupings, and visual patterns. " +
-			"Treat figures as PRIMARY EVIDENCE and integrate their insights into your analysis. " +
-			"If specific results are shown in the outputs, cite them directly. ";
+		const baseInstruction = 'Base your analysis entirely on the provided code, outputs, and results. Reference specific findings and figures by name.';
 		
-		switch (reportType) {
-			case 'quick-summary':
-				return basePrompt + resultsEmphasis +
-					"Create a concise, bullet-point summary of this Jupyter notebook based on the ACTUAL analysis performed. " +
-					"Focus on: (1) What specific data was analyzed, (2) Which exact methods/libraries were used in the code, " +
-					"(3) The actual numerical results and findings from the outputs, (4) DETAILED descriptions of figures/visualizations generated, " +
-					"explaining what each plot shows and what insights can be drawn from it. For every figure mentioned, describe the plot type, " +
-					"data being visualized, and key visual findings. Reference specific values, metrics, and visual patterns. " + lengthInstruction;
-			
-			case 'research-report':
-				return basePrompt + resultsEmphasis +
-					"Create a comprehensive research report based on this ACTUAL Jupyter notebook analysis. " +
-					"Structure it with: Introduction (based on actual data loaded), Methods (citing specific code and libraries used), " +
-					"Results (using exact numerical outputs AND detailed figure analysis), Discussion (interpreting actual findings including visual evidence), " +
-					"and Conclusion (based on real results). CRITICAL: Dedicate significant space to describing and interpreting each figure. " +
-					"For each visualization, explain: what type of plot it is, what data is shown, what patterns are visible, and what this means for the analysis. " +
-					"Integrate figure insights throughout the Results and Discussion sections. " + lengthInstruction;
-			
-			case 'technical-doc':
-				return basePrompt + resultsEmphasis +
-					"Create detailed technical documentation for this Jupyter notebook based on the ACTUAL code executed. " +
-					"Document: (1) Exact libraries and functions used, (2) Specific parameters and configurations from the code, " +
-					"(3) Step-by-step methodology as actually implemented, (4) Real outputs and their interpretations, " +
-					"(5) COMPREHENSIVE figure documentation - for each visualization, document the plotting code used, data variables, " +
-					"plot parameters, and interpretation of what the figure reveals. Include technical details about figure creation " +
-					"and data visualization choices. Focus on what was ACTUALLY done, not what could be done. " + lengthInstruction;
-			
-			default:
-				return basePrompt + resultsEmphasis + 
-					"Summarize this Jupyter notebook based on the ACTUAL code, outputs, and results provided. " +
-					"Focus on what was actually accomplished, not generic possibilities. " + lengthInstruction;
-		}
+		return `${typePrompts[reportType] || 'Summarize the notebook analysis.'} ${lengthGuide} ${baseInstruction}`;
 	}
 
-	/**
-	 * Get length-specific instruction for AI prompts with enforced word counts
-	 */
-	private getLengthInstruction(summaryLength: SummaryOptions['summaryLength']): string {
-		switch (summaryLength) {
-			case 'brief':
-				return "STRICT LENGTH REQUIREMENT: Write EXACTLY 150-250 words. Count your words and stop precisely within this range. " +
-					"Focus only on the most critical findings and methods. Be extremely concise and direct.";
-			case 'medium':
-				return "STRICT LENGTH REQUIREMENT: Write EXACTLY 400-600 words. Count your words carefully. " +
-					"Include key methodology, main findings, and important details. Provide sufficient depth while staying within the word limit.";
-			case 'detailed':
-				return "STRICT LENGTH REQUIREMENT: Write EXACTLY 800-1200 words. This must be a comprehensive analysis. " +
-					"Include detailed methodology, all significant findings, statistical results, interpretations, and conclusions. " +
-					"Expand on each section thoroughly while maintaining the exact word count range.";
-			case 'comprehensive':
-				return "STRICT LENGTH REQUIREMENT: Write EXACTLY 1500-2500 words. This is a full research report. " +
-					"Include extensive methodology details, complete statistical analysis, all findings with interpretations, " +
-					"discussion of implications, limitations, and detailed conclusions. Write as if for academic publication. " +
-					"Use multiple paragraphs and detailed explanations to reach the required word count.";
-			default:
-				return "Create a well-structured summary with appropriate level of detail, targeting approximately 500 words.";
-		}
-	}
 
 	/**
 	 * Format the generated summary based on output preferences
@@ -1049,27 +793,10 @@ STRICT INSTRUCTIONS:
 	}
 
 	/**
-	 * Generate fallback summary when AI fails
+	 * Simple fallback when AI generation fails
 	 */
-	private generateFallbackSummary(context: string, options: SummaryOptions): string {
-		return `# Summary Generation Failed
-
-Unfortunately, we couldn't generate an AI-powered summary at this time. Here's a basic analysis:
-
-## Selected Content
-${options.selectedCells.length} cells were selected for analysis.
-
-## Report Type
-${this.getReportTypeLabel(options.reportType)}
-
-## Content Options
-- Include code: ${options.includeCode ? 'Yes' : 'No'}
-- Include outputs: ${options.includeOutputs ? 'Yes' : 'No'}
-- Include figures: ${options.includeFigures ? 'Yes' : 'No'}
-- Include tables: ${options.includeTables ? 'Yes' : 'No'}
-- Summary length: ${this.getSummaryLengthLabel(options.summaryLength)}
-
-Please try again later or contact support if this issue persists.`;
+	private getFallbackSummary(options: SummaryOptions): string {
+		return `# Summary Generation Failed\n\nCouldn't generate AI summary. Selected ${options.selectedCells.length} cells for ${this.getReportTypeLabel(options.reportType).toLowerCase()}.`;
 	}
 
 	/**
@@ -1089,38 +816,16 @@ Please try again later or contact support if this issue persists.`;
 	}
 
 	/**
-	 * Get human-readable summary length labels with actual word counts
+	 * Get readable length label
 	 */
 	private getSummaryLengthLabel(summaryLength: SummaryOptions['summaryLength']): string {
-		const limits = this.getWordCountLimits(summaryLength);
-		switch (summaryLength) {
-			case 'brief':
-				return `Brief (${limits.min}-${limits.max} words)`;
-			case 'medium':
-				return `Medium (${limits.min}-${limits.max} words)`;
-			case 'detailed':
-				return `Detailed (${limits.min}-${limits.max} words)`;
-			case 'comprehensive':
-				return `Comprehensive (${limits.min}-${limits.max} words)`;
-			default:
-				return 'Medium (350-650 words)';
-		}
-	}
-
-	/**
-	 * Get appropriate token limits for different report types
-	 */
-	private getMaxTokensForReportType(reportType: SummaryOptions['reportType']): number {
-		switch (reportType) {
-			case 'quick-summary':
-				return 500;
-			case 'research-report':
-				return 2000;
-			case 'technical-doc':
-				return 3000;
-			default:
-				return 1000;
-		}
+		const labels = {
+			'brief': 'Brief',
+			'medium': 'Medium',
+			'detailed': 'Detailed',
+			'comprehensive': 'Comprehensive'
+		};
+		return labels[summaryLength] || 'Medium';
 	}
 
 	/**

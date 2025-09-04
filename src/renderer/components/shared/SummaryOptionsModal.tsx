@@ -199,7 +199,42 @@ const ModalFooter = styled.div`
 	justify-content: flex-end;
 `;
 
-const Button = styled.button<{ variant?: "primary" | "secondary" }>`
+const StreamingPreview = styled.div`
+	background: #1e1e1e;
+	border: 1px solid #404040;
+	border-radius: 6px;
+	padding: 16px;
+	margin: 16px 20px;
+	max-height: 200px;
+	overflow-y: auto;
+	font-family: 'SF Mono', 'Monaco', 'Cascadia Code', monospace;
+	font-size: 12px;
+	line-height: 1.4;
+	color: #d4d4d4;
+	white-space: pre-wrap;
+	word-break: break-word;
+	
+	&::-webkit-scrollbar {
+		width: 6px;
+	}
+	
+	&::-webkit-scrollbar-thumb {
+		background: #404040;
+		border-radius: 3px;
+	}
+`;
+
+const StreamingTitle = styled.div`
+	color: #ffffff;
+	font-size: ${typography.sm};
+	font-weight: 600;
+	margin: 16px 20px 8px 20px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+`;
+
+const Button = styled.button<{ $variant?: "primary" | "secondary" }>`
 	padding: 8px 16px;
 	border-radius: 4px;
 	font-size: ${typography.sm};
@@ -211,7 +246,7 @@ const Button = styled.button<{ variant?: "primary" | "secondary" }>`
 	transition: all 0.2s ease;
 
 	${(props) =>
-		props.variant === "primary"
+		props.$variant === "primary"
 			? `
 		background: #6366f1;
 		border: 1px solid #6366f1;
@@ -267,6 +302,7 @@ interface SummaryOptionsModalProps {
 	onGenerate: (options: SummaryOptions) => void;
 	cells: NotebookCell[];
 	isGenerating?: boolean;
+	streamContent?: string;
 }
 
 export const SummaryOptionsModal: React.FC<SummaryOptionsModalProps> = ({
@@ -275,6 +311,7 @@ export const SummaryOptionsModal: React.FC<SummaryOptionsModalProps> = ({
 	onGenerate,
 	cells = [],
 	isGenerating = false,
+	streamContent = '',
 }) => {
 	const [selectedCells, setSelectedCells] = useState<number[]>([]);
 	const [reportType, setReportType] =
@@ -298,6 +335,7 @@ export const SummaryOptionsModal: React.FC<SummaryOptionsModalProps> = ({
 					const content = Array.isArray(cell.source) ? cell.source.join('') : cell.source || '';
 					// Skip if it's just a title or simple header
 					if (content.trim().match(/^#[^#]/) || content.trim().length < 100) {
+						console.log(`Skipping markdown header cell ${index}`);
 						return false;
 					}
 				}
@@ -305,32 +343,51 @@ export const SummaryOptionsModal: React.FC<SummaryOptionsModalProps> = ({
 				// Skip package installation cells
 				if (cell.cell_type === 'code') {
 					const content = Array.isArray(cell.source) ? cell.source.join('') : cell.source || '';
-					// Skip cells that are primarily package installation
+					console.log(`Cell ${index} content:`, content.substring(0, 100) + '...');
+					
+					// Skip cells that contain package installation commands
 					const installPatterns = [
 						/pip\s+install/,
 						/!pip\s+install/,
 						/conda\s+install/,
 						/import\s+subprocess[\s\S]*pip\s+install/,
 						/required_packages\s*=/,
-						/# Install required packages/
+						/# Install required packages/,
+						/%pip\s+install/,  // Jupyter magic command
+						/import\s+sys[\s\S]*subprocess.*install/,  // subprocess pip install
+						/os\.system.*pip\s+install/  // os.system pip install
 					];
 					
-					if (installPatterns.some(pattern => pattern.test(content))) {
-						// Only skip if the cell is PRIMARILY about installation (>70% of content)
+					const hasInstallPattern = installPatterns.some(pattern => pattern.test(content));
+					console.log(`Cell ${index} has install pattern:`, hasInstallPattern);
+					
+					// More aggressive filtering - skip if ANY installation pattern is found
+					// and the cell has fewer than 5 non-installation lines of actual analysis
+					if (hasInstallPattern) {
 						const lines = content.split('\n').filter(line => line.trim());
-						const installLines = lines.filter(line => 
-							installPatterns.some(pattern => pattern.test(line)) ||
-							line.includes('Installing') ||
-							line.includes('Collecting') ||
-							line.includes('Requirement already satisfied')
-						);
+						const nonInstallLines = lines.filter(line => {
+							const lineContent = line.trim();
+							return lineContent && 
+								!installPatterns.some(pattern => pattern.test(lineContent)) &&
+								!lineContent.includes('Installing') &&
+								!lineContent.includes('Collecting') &&
+								!lineContent.includes('Requirement already satisfied') &&
+								!lineContent.startsWith('#') &&  // Skip comments
+								!lineContent.startsWith('import ') &&  // Skip simple imports
+								lineContent.length > 10;  // Skip very short lines
+						});
 						
-						if (installLines.length / lines.length > 0.7) {
+						console.log(`Cell ${index} non-install lines:`, nonInstallLines.length, nonInstallLines);
+						
+						// Skip if there are fewer than 5 substantial non-installation lines
+						if (nonInstallLines.length < 5) {
+							console.log(`Skipping installation cell ${index}`);
 							return false;
 						}
 					}
 				}
 				
+				console.log(`Including cell ${index}`);
 				return true;
 			})
 			.map(({ index }) => index);
@@ -400,10 +457,10 @@ export const SummaryOptionsModal: React.FC<SummaryOptionsModalProps> = ({
 					<Section>
 						<SectionTitle>Select Cells to Include</SectionTitle>
 						<div style={{ marginBottom: "12px", display: "flex", gap: "12px" }}>
-							<Button variant="secondary" onClick={handleSelectAll}>
+							<Button $variant="secondary" onClick={handleSelectAll}>
 								<FiCheck size={14} /> Select All
 							</Button>
-							<Button variant="secondary" onClick={handleSelectNone}>
+							<Button $variant="secondary" onClick={handleSelectNone}>
 								<FiX size={14} /> Select None
 							</Button>
 						</div>
@@ -540,12 +597,25 @@ export const SummaryOptionsModal: React.FC<SummaryOptionsModalProps> = ({
 					</Section>
 				</ModalBody>
 
+				{/* Streaming Preview */}
+				{isGenerating && (
+					<>
+						<StreamingTitle>
+							<FiZap size={14} />
+							Live Generation Preview
+						</StreamingTitle>
+						<StreamingPreview>
+							{streamContent || 'Starting generation...'}
+						</StreamingPreview>
+					</>
+				)}
+
 				<ModalFooter>
-					<Button variant="secondary" onClick={onClose}>
+					<Button $variant="secondary" onClick={onClose}>
 						Cancel
 					</Button>
 					<Button
-						variant="primary"
+						$variant="primary"
 						onClick={handleGenerate}
 						disabled={selectedCells.length === 0 || isGenerating}
 					>

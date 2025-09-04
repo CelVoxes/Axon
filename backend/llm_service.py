@@ -48,6 +48,18 @@ class OpenAIProvider(LLMProvider):
             
         return prepared_kwargs
     
+    def _prepare_responses_kwargs(self, kwargs: dict) -> dict:
+        """Prepare kwargs specifically for Responses API, which has different parameter support."""
+        prepared_kwargs = kwargs.copy()
+        
+        # The Responses API doesn't support max_tokens parameter
+        prepared_kwargs.pop("max_tokens", None)
+        
+        # Filter out other parameters that Responses API might not support
+        prepared_kwargs.pop("messages", None)  # Already handled separately
+        
+        return prepared_kwargs
+    
     def _is_gpt5_mini(self) -> bool:
         """Check if the model is gpt-5-mini."""
         return "gpt-5-mini" in self.model.lower()
@@ -66,10 +78,11 @@ class OpenAIProvider(LLMProvider):
             responses_api = getattr(self.client, "responses", None)
             if responses_api is not None and hasattr(responses_api, "create"):
                 # The Responses API can accept message-style input
+                responses_kwargs = self._prepare_responses_kwargs(kwargs)
                 resp = await responses_api.create(
                     model=self.model,
                     input=list(messages),
-                    **{k: v for k, v in prepared_kwargs.items() if k not in ("messages",)}
+                    **responses_kwargs
                 )
                 try:
                     self.last_response_id = getattr(resp, "id", None)
@@ -152,10 +165,11 @@ class OpenAIProvider(LLMProvider):
                 # Prefer the streaming helper if available
                 if hasattr(responses_api, "stream"):
                     try:
+                        responses_kwargs = self._prepare_responses_kwargs(kwargs)
                         stream_ctx = responses_api.stream(
                             model=self.model,
                             input=list(messages),
-                            **{k: v for k, v in prepared_kwargs.items() if k not in ("messages",)}
+                            **responses_kwargs
                         )
                         # The SDK streaming is an async context manager in recent versions
                         async with stream_ctx as stream:
@@ -191,11 +205,12 @@ class OpenAIProvider(LLMProvider):
                         print(f"Responses API .stream failed, trying create(stream=True): {e}")
 
                 if hasattr(responses_api, "create"):
+                    responses_kwargs = self._prepare_responses_kwargs(kwargs)
                     resp_stream = await responses_api.create(
                         model=self.model,
                         input=list(messages),
                         stream=True,
-                        **{k: v for k, v in prepared_kwargs.items() if k not in ("messages",)}
+                        **responses_kwargs
                     )
                     total_text = ""
                     async for event in resp_stream:
