@@ -525,84 +525,26 @@ print("Step completed successfully!")
 	 */
 	private buildDataAccessContext(datasets: Dataset[]): string {
 		const lines: string[] = [];
-		
-		// Check for remote datasets (downloaded to data_dir)
-		const remoteDatasets = datasets.filter((d: any) => 
-			Boolean((d as any).url) && !Boolean((d as any).localPath)
-		);
-		
-		// Check for local datasets (referenced via localPath)
-		const localDatasets = datasets.filter((d: any) => 
-			Boolean((d as any).localPath)
-		);
+		const hasRemote = datasets.some((d: any) => Boolean((d as any).url) && !Boolean((d as any).localPath));
+		const hasLocal = datasets.some((d: any) => Boolean((d as any).localPath));
 
 		lines.push("Use data_dir as your base path. Decide loaders dynamically from extensions or 10x markers.");
+		if (hasRemote) {
+			lines.push("- Downloaded data is under data_dir = Path('data').");
+		}
+		if (hasLocal) {
+			lines.push("- Local data: set data_dir = Path('<MENTIONED_PATH>') and choose the appropriate loader.");
+		}
 		lines.push("");
-
-		if (remoteDatasets.length > 0) {
-			lines.push("## DOWNLOADED DATA (from URLs):");
-			lines.push("- Location: data_dir = Path('data')");
-			lines.push("- Access pattern:");
-			lines.push("  ```python");
-			lines.push("  from pathlib import Path");
-			lines.push("  data_dir = Path('data')");
-			lines.push("  ");
-			
-			remoteDatasets.forEach(dataset => {
-				const datasetId = dataset.id;
-				const url = (dataset as any).url || "";
-				const format = this.detectDataFormat(url);
-				const filename = this.generateFilename(url, datasetId);
-				
-				lines.push(`  # ${dataset.title || datasetId}`);
-				lines.push(`  path = data_dir / '${filename}'`);
-				lines.push(`  # if path.suffix == '.h5ad': import anndata as ad; data = ad.read_h5ad(path)`);
-				lines.push(`  # elif path.suffix == '.csv': import pandas as pd; data = pd.read_csv(path)`);
-				lines.push(`  # elif path.suffix == '.tsv': import pandas as pd; data = pd.read_csv(path, sep='\\t')`);
-				lines.push("  ");
-			});
-			
-			lines.push("  ```");
-			lines.push("");
-		}
-
-		if (localDatasets.length > 0) {
-				lines.push("## LOCAL DATA (mentioned folder):");
-				lines.push("- Access pattern (set data_dir and choose loader):");
-			lines.push("");
-				lines.push("  ```python");
-				lines.push("  from pathlib import Path");
-				lines.push("  # data_dir = Path('<MENTIONED_PATH>')");
-				lines.push("  # if (data_dir / 'matrix.mtx').exists(): import scanpy as sc; data = sc.read_10x_mtx(data_dir)");
-				lines.push("  # elif any(data_dir.glob('*.h5ad')): import anndata as ad; data = ad.read_h5ad(next(data_dir.glob('*.h5ad')))");
-				lines.push("  # elif any(data_dir.glob('*.csv')): import pandas as pd; data = pd.read_csv(next(data_dir.glob('*.csv')))");
-			
-			// Load data yourself using data_dir (do not assume preloaded variables)
-
-			
-			lines.push("  ```");
-			lines.push("");
-				lines.push("");
-				lines.push("");
-				lines.push("");
-				lines.push("");
-				lines.push("");
-			lines.push("");
-		}
-
-		if (datasets.length > 0) {
-			const hasLocal = localDatasets.length > 0;
-			const hasRemote = remoteDatasets.length > 0;
-				lines.push("CRITICAL REQUIREMENTS:");
-				lines.push("1. Use data_dir consistently for all file access");
-				if (hasRemote) {
-					lines.push("2. REMOTE DATA: Use ONLY data_dir / filename pattern for downloaded data (do not re-download)");
-					lines.push("   If a file is missing, print a clear warning and continue.");
-				}
-				if (hasLocal) {
-					lines.push("3. LOCAL DATA: Do not overwrite data_dir; it is set to your folder by setup cells");
-				}
-				lines.push("4. Avoid hardcoded absolute paths; always build paths from data_dir");
+		lines.push("CRITICAL REQUIREMENTS:");
+		lines.push("1. Use data_dir consistently for all file access.");
+		if (hasRemote) {
+			lines.push("2. Do not re-download; warn and continue if files are missing.");
+			lines.push("3. Load once into a variable (e.g., data) and reuse in later cells.");
+			lines.push("4. Avoid absolute paths; always build from data_dir.");
+		} else {
+			lines.push("2. Load once into a variable (e.g., data) and reuse in later cells.");
+			lines.push("3. Avoid absolute paths; always build from data_dir.");
 		}
 
 		return lines.join("\n");

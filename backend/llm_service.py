@@ -346,6 +346,17 @@ class LLMService:
         self.session_meta: Dict[str, Dict[str, Any]] = {}
         # Default heuristic for model context budget (tokens)
         self.default_context_tokens = 128000
+        # Debug flags (opt-in via env)
+        self._debug_enabled = str(os.getenv("AXON_LLM_DEBUG", "")).lower() in ("1", "true", "yes", "on")
+        self._stats_debug_enabled = str(os.getenv("AXON_LLM_STATS_DEBUG", "")).lower() in ("1", "true", "yes", "on")
+
+    def _debug(self, msg: str):
+        if self._debug_enabled:
+            print(msg)
+
+    def _debug_stats(self, msg: str):
+        if self._stats_debug_enabled:
+            print(msg)
 
     def _get_or_init_session(self, session_id: Optional[str], system_prompt: str) -> Optional[List[ChatCompletionMessageParam]]:
         if not session_id:
@@ -412,15 +423,15 @@ class LLMService:
         return approx_tokens > int(self.default_context_tokens * threshold)
 
     def get_session_stats(self, session_id: str) -> Dict[str, Any]:
-        # Debug: Print what we're looking for and what we have
-        print(f"📊 LLM Service: get_session_stats - Looking for: {session_id}")
-        print(f"📊 LLM Service: Available sessions: {list(self.session_meta.keys())}")
+        # Optional debug: Print what we're looking for and what we have
+        self._debug_stats(f"📊 LLM Service: get_session_stats - Looking for: {session_id}")
+        self._debug_stats(f"📊 LLM Service: Available sessions: {list(self.session_meta.keys())}")
         
         # First try exact match
         meta = self.session_meta.get(session_id)
         if meta is not None:
             tokens = int(meta.get('approx_tokens', 0) or 0)
-            print(f"📊 LLM Service: Found exact match with {tokens} tokens")
+            self._debug_stats(f"📊 LLM Service: Found exact match with {tokens} tokens")
             return {
                 "session_id": session_id,
                 "last_response_id": meta.get('last_response_id'),
@@ -433,22 +444,22 @@ class LLMService:
         # If no exact match, find the session with the most tokens that contains the chat ID suffix
         if ':' in session_id:
             chat_id_suffix = session_id.split(':')[-1]
-            print(f"📊 LLM Service: Looking for sessions ending with: {chat_id_suffix}")
+            self._debug_stats(f"📊 LLM Service: Looking for sessions ending with: {chat_id_suffix}")
             best_match = None
             max_tokens = 0
             
             for existing_session_id, session_meta in self.session_meta.items():
                 tokens = int(session_meta.get('approx_tokens', 0) or 0)
-                print(f"📊 LLM Service: Checking session: {existing_session_id} (tokens: {tokens})")
+                self._debug_stats(f"📊 LLM Service: Checking session: {existing_session_id} (tokens: {tokens})")
                 
                 if existing_session_id.endswith(chat_id_suffix):
-                    print(f"📊 LLM Service: Found suffix match: {existing_session_id} with {tokens} tokens")
+                    self._debug_stats(f"📊 LLM Service: Found suffix match: {existing_session_id} with {tokens} tokens")
                     if tokens > max_tokens:
                         max_tokens = tokens
                         best_match = (existing_session_id, session_meta)
                 # Also try if the existing session is contained within the requested session
                 elif chat_id_suffix in existing_session_id:
-                    print(f"📊 LLM Service: Found partial match: {existing_session_id} with {tokens} tokens")
+                    self._debug_stats(f"📊 LLM Service: Found partial match: {existing_session_id} with {tokens} tokens")
                     if tokens > max_tokens:
                         max_tokens = tokens
                         best_match = (existing_session_id, session_meta)
@@ -456,7 +467,7 @@ class LLMService:
             if best_match:
                 best_session_id, best_meta = best_match
                 tokens = int(best_meta.get('approx_tokens', 0) or 0)
-                print(f"📊 LLM Service: Using best match: {best_session_id} with {tokens} tokens")
+                self._debug_stats(f"📊 LLM Service: Using best match: {best_session_id} with {tokens} tokens")
                 return {
                     "session_id": best_session_id,
                     "last_response_id": best_meta.get('last_response_id'),
@@ -466,7 +477,7 @@ class LLMService:
                     "near_limit": self._is_near_context_limit(best_session_id),
                 }
         
-        print(f"📊 LLM Service: No match found, returning empty stats")
+        self._debug_stats(f"📊 LLM Service: No match found, returning empty stats")
         # No match found, return empty stats for the requested session
         return {
             "session_id": session_id,

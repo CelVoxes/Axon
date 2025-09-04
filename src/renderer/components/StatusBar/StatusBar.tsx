@@ -44,19 +44,27 @@ const StatusItem = styled.div`
 `;
 
 export const StatusBar: React.FC = () => {
-	const { state } = useWorkspaceContext();
-	const { state: analysisState } = useAnalysisContext();
+    const { state } = useWorkspaceContext();
+    const { state: analysisState } = useAnalysisContext();
 
-	const [tokenStats, setTokenStats] = React.useState<{
-		approx: number;
-		limit: number;
-		near: boolean;
-	} | null>(null);
+    // Feature flag: disable status bar token updates entirely
+    const SHOW_TOKEN_STATS = false;
 
-	React.useEffect(() => {
-		let mounted = true;
-		const client = new BackendClient();
-		const intervalMs = 10000;
+    const [tokenStats, setTokenStats] = React.useState<{
+        approx: number;
+        limit: number;
+        near: boolean;
+    } | null>(null);
+
+    React.useEffect(() => {
+        if (!SHOW_TOKEN_STATS) {
+            // Ensure stats are cleared and skip polling when disabled
+            setTokenStats(null);
+            return;
+        }
+        let mounted = true;
+        const client = new BackendClient();
+        const intervalMs = 10000;
 
 		async function poll() {
 			try {
@@ -68,32 +76,27 @@ export const StatusBar: React.FC = () => {
 				}
 				// Backend now handles fuzzy matching, so try the most specific session ID first
 				const sessionId = `session:${ws}:${chatId}`;
-				console.log(`📊 StatusBar: ws="${ws}", chatId="${chatId}", sessionId="${sessionId}"`);
-				console.log(`📊 StatusBar: activeChatSessionId:`, (analysisState as any).activeChatSessionId);
-				
-				const stats = await client.getSessionStats(sessionId);
-				console.log(`📊 StatusBar: Received stats:`, stats);
-				console.log(`📊 StatusBar: Token count: ${stats.approx_tokens}`);
-				if (!mounted) return;
-				setTokenStats({
+            		const stats = await client.getSessionStats(sessionId);
+            		if (!mounted) return;
+            		setTokenStats({
 					approx: stats.approx_tokens || 0,
 					limit: stats.limit_tokens || 0,
 					near: !!stats.near_limit,
 				});
 			} catch (e) {
-				console.warn(`📊 StatusBar: Failed to get token stats:`, e);
+            		// Silently ignore token stats errors when polling
 				if (mounted) setTokenStats(null);
 			}
 		}
 
 		// initial and interval
-		poll();
-		const t = setInterval(poll, intervalMs);
-		return () => {
-			mounted = false;
-			clearInterval(t);
-		};
-	}, [state.currentWorkspace, (analysisState as any).activeChatSessionId]);
+        poll();
+        const t = setInterval(poll, intervalMs);
+        return () => {
+            mounted = false;
+            clearInterval(t);
+        };
+    }, [state.currentWorkspace, (analysisState as any).activeChatSessionId]);
 
 	return (
 		<StatusBarContainer>
@@ -106,17 +109,17 @@ export const StatusBar: React.FC = () => {
 			</StatusLeft>
 
 			<StatusRight>
-				{tokenStats && tokenStats.limit > 0 && (
-					<StatusItem title={`LLM session tokens used`}>
-						<span style={{ color: tokenStats.near ? "#ff5555" : "#9aa0a6" }}>
-							Tokens:
-						</span>
-						<span style={{ fontWeight: 600 }}>
-							{Math.round(tokenStats.approx / 100) / 10}k /{" "}
-							{Math.round(tokenStats.limit / 1000)}k
-						</span>
-					</StatusItem>
-				)}
+            {SHOW_TOKEN_STATS && tokenStats && tokenStats.limit > 0 && (
+                <StatusItem title={`LLM session tokens used`}>
+                    <span style={{ color: tokenStats.near ? "#ff5555" : "#9aa0a6" }}>
+                        Tokens:
+                    </span>
+                    <span style={{ fontWeight: 600 }}>
+                        {Math.round(tokenStats.approx / 100) / 10}k /{" "}
+                        {Math.round(tokenStats.limit / 1000)}k
+                    </span>
+                </StatusItem>
+            )}
 				<StatusItem>
 					<span
 						className={analysisState.isStreaming ? "pulse-dot" : ""}

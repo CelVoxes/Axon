@@ -115,8 +115,10 @@ export const buildUnifiedDiff = (
     // Myers' O(ND) diff for scalability on large inputs
     const ops: Array<{ t: ' ' | '+' | '-'; s: string }> = myersDiff(oldLines, newLines);
 
-    const headerA = `--- a/${file}:${oldStart}-${oldStart + m - 1}`;
-    const headerB = `+++ b/${file}:${oldStart}-${oldStart + n - 1}`;
+    const oldEnd = Math.max(oldStart, oldStart + m - 1);
+    const newEnd = Math.max(oldStart, oldStart + n - 1);
+    const headerA = `--- a/${file}:${oldStart}-${oldEnd}`;
+    const headerB = `+++ b/${file}:${oldStart}-${newEnd}`;
     const hunk = `@@ -${oldStart},${m} +${oldStart},${n} @@`;
 
     const hasChanges = ops.some((o) => o.t !== ' ');
@@ -124,11 +126,30 @@ export const buildUnifiedDiff = (
         return `${headerA}\n${headerB}\n${hunk}\n# No changes`;
     }
 
+    // Line number rendering: show old|new line numbers per line
+    let oLine = oldStart;
+    let nLine = oldStart;
+    const oWidth = String(oldEnd).length;
+    const nWidth = String(newEnd).length;
+
     const body = ops
         .map((o) => {
             const content = o.s ?? '';
-            if (o.t === ' ') return `  ${content}`; // unchanged
-            return `${o.t} ${content}`; // + or -
+            if (o.t === ' ') {
+                const line = `  ${String(oLine).padStart(oWidth)}|${String(nLine).padStart(nWidth)}  ${content}`;
+                oLine += 1;
+                nLine += 1;
+                return line;
+            }
+            if (o.t === '-') {
+                const line = `- ${String(oLine).padStart(oWidth)}|${' '.repeat(nWidth)}  ${content}`;
+                oLine += 1;
+                return line;
+            }
+            // '+'
+            const line = `+ ${' '.repeat(oWidth)}|${String(nLine).padStart(nWidth)}  ${content}`;
+            nLine += 1;
+            return line;
         })
         .join('\n');
 
