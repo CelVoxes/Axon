@@ -914,27 +914,6 @@ STRICT INSTRUCTIONS:
 🎯 FINAL REMINDER: Write ${min}-${max} words. Your response will be rejected if it's outside this range.`;
 	}
 
-	/**
-	 * Get length-specific instruction for AI prompts with enforced word counts
-	 */
-	private getLengthInstruction(summaryLength: SummaryOptions['summaryLength']): string {
-		switch (summaryLength) {
-			case 'brief':
-				return "\n\nSTRICT LENGTH REQUIREMENT: Write EXACTLY 150-250 words. Count your words and stop precisely within this range. " +
-					"Focus only on the most critical findings and methods. Be extremely concise and direct.";
-			case 'medium':
-				return "\n\nSTRICT LENGTH REQUIREMENT: Write EXACTLY 400-600 words. Count your words carefully and STOP when you reach this range. " +
-					"Include key methodology, main findings, and important details. Do NOT exceed 600 words.";
-			case 'detailed':
-				return "\n\nSTRICT LENGTH REQUIREMENT: Write EXACTLY 800-1200 words. Count your words as you write. " +
-					"Provide comprehensive analysis with detailed methodology, results, and interpretation. Stay within the word limit.";
-			case 'comprehensive':
-				return "\n\nSTRICT LENGTH REQUIREMENT: Write EXACTLY 1800-2500 words for a comprehensive analysis. Count your words carefully and " +
-					"include extensive detail, but do not exceed the upper limit.";
-			default:
-				return "\n\nWrite a focused summary with appropriate length for the content.";
-		}
-	}
 
 	/**
 	 * Build report-specific prompts for AI generation
