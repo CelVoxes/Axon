@@ -545,7 +545,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				}
 				// Build lightweight context from recent messages
 				const recent = (analysisState.messages || []).slice(-10);
-				const context = recent
+				let context = recent
 					.map((m: any) => {
 						const text = typeof m.content === "string" ? m.content : "";
 						const codeStr =
@@ -556,6 +556,23 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					})
 					.filter(Boolean)
 					.join("\n\n");
+
+				// Attach notebook cell context (code + output) when available (e.g., Ask Chat from output)
+				try {
+					const ctx = codeEditContextRef.current;
+					if (ctx && ctx.filePath && typeof ctx.cellIndex === "number") {
+						const fileName = ctx.filePath.split("/").pop() || ctx.filePath;
+						const cellNum = (ctx.cellIndex as number) + 1;
+						const langForBlock = (ctx.language || "python") as string;
+						const codeBlock = ctx.fullCode || ctx.selectedText || "";
+						const outputBlock = ctx.outputText || "";
+						const truncate = (s: string, max = 4000) =>
+							s ? (s.length > max ? s.slice(0, max) + "\n... [truncated]" : s) : s;
+						context += `\n\nNOTEBOOK CELL CONTEXT: ${fileName}#${cellNum}\n\nCODE:\n\`\`\`${langForBlock}\n${codeBlock}\n\`\`\`\nOUTPUT:\n\`\`\`text\n${truncate(outputBlock)}\n\`\`\``;
+					}
+				} catch (_) {
+					// ignore context attachment failures
+				}
 
 				// Prepare a streaming assistant message
 				const streamingMessageId = `ask-${Date.now()}`;
@@ -625,6 +642,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				if (isMounted) {
 					resetLoadingState();
 				}
+				// Clear any transient cell context after Ask flow completes
+				try {
+					setCodeEditContext(null);
+					(codeEditContextRef as any).current = null;
+				} catch (_) {}
 			}
 			return;
 		}

@@ -175,7 +175,7 @@ export class CodeGenerationService implements ICodeGenerator {
 		// Build data access context for the analysis step
 		const dataAccessContext = this.buildDataAccessContext(request.datasets);
 
-		let context = `Original question: ${request.originalQuestion}
+        let context = `Original question: ${request.originalQuestion}
 Working directory: ${request.workingDir}
 Step index: ${request.stepIndex}
 
@@ -191,13 +191,19 @@ Dataset handling constraints:
 - For missing data, print clear messages and continue with available datasets
 - Add robust error handling with try-except blocks
 
-General requirements:
+ General requirements:
 - Use proper error handling with try-except blocks
 - Add progress print statements
 - Save outputs to appropriate directories (results/, figures/)
 - Handle missing or corrupted data gracefully
 - Use robust data validation
 - Follow Python best practices`;
+
+        // Global scaling/normalization detection guidance for numeric datasets
+        context += `\n\nGLOBAL SCALING/TRANSFORM DETECTION (apply broadly to numeric matrices):\n- Before any normalization, detect whether values are already transformed/scaled to avoid double-transforming.\n- Sources of truth: file/column metadata (headers, FCS keywords), sidecar matrices (spill/unmix), and value distributions.\n- Heuristics per feature set (vote across markers/genes):\n  • Standardized-like: mean≈0 and std≈1 for most columns → skip re-standardization.\n  • Log/arcsinh/logicle-like: compressed range (e.g., 95th pct < ~20), negatives allowed in a small fraction → likely already transformed; do not re-apply log/arcsinh.\n  • Raw-like: large non-negative range (e.g., 99th pct ≥ 1e3–1e4), near-zero negatives → treat as raw; normalize then transform.\n- Cytometry: respect prior compensation/unmixing (FCS $SPILLOVER or sidecar CSV); apply before any scaling.\n- scRNA-seq: if counts are raw, normalize (library-size) then log1p; if already log-transformed, do not re-log.\n- Expression matrices: detect units (TPM/CPM/FPKM), existing log transforms, and z-scoring; avoid double transforms.\n- Record decisions (e.g., in adata.uns['scale_status'] or a dict) and reference in later steps.`;
+
+        // Runtime budget guidance to prevent timeouts on large datasets
+        context += `\n\nRUNTIME AND CHUNKING (prevent timeouts on large data):\n- Keep each cell under ~60–90 seconds of runtime; if work exceeds this, split into additional cells.\n- Process large folders/files in CHUNKS/BATCHES (e.g., per-file loops with intermediate CSV/parquet outputs under results/tmp/).\n- For CSV bundles: sample first to profile; then batch-process files (e.g., 2–4 at a time), writing partial outputs and a manifest to resume.\n- For UMAP: fit on a subset (50k–200k), then transform the rest in batches; persist embeddings to disk.\n- Always save intermediate artifacts (results/) so subsequent cells resume instead of redoing heavy work.`;
 
 		// Add global code context from entire conversation if available
 		if (request.globalCodeContext && request.globalCodeContext.trim()) {
@@ -232,6 +238,8 @@ General requirements:
                 if (snapshot && snapshot.trim()) {
                     context += `\n\nFolder snapshot (for local mentions; use data_dir):\n${snapshot}`;
                     context += `\n\nGuidance: Decide how to load based on snapshot and file extensions/markers (e.g., 10x matrix.mtx -> scanpy.read_10x_mtx(data_dir), *.h5ad -> anndata.read_h5ad, *.csv/*.tsv -> pandas.read_csv). Do not assume pre-defined helpers.`;
+                    context += `\n\nIf a directory contains multiple CSV/TSV files: iterate them (use glob), load with pandas, align columns, add a 'sample' column from filename, and concatenate into one DataFrame.`;
+                    context += `\nFor flow/spectral cytometry-like data: First detect existing scaling and compensation.\n- Detect arcsinh/logicle/z-scored data by inspecting column names (e.g., 'arcsinh', 'asinh', 'logicle', 'normalized') and value distributions.\n  Heuristics: if many values are negative and 95th percentile < ~20 per marker, likely already arcsinh/logicle; if 99th percentile >> 1e4 and non-negative, likely raw.\n- Only apply arcsinh (cofactor≈5) if raw intensities; otherwise skip.\n- Respect existing compensation/unmixing; if absent and sidecar matrix present (spill/unmix CSV or FCS $SPILLOVER keyword), apply it before scaling.\n- Then standardize (skip if already standardized), compute neighbors + UMAP (umap-learn), cluster (e.g., DBSCAN/HDBSCAN/KMeans), and plot UMAP colored by cluster and sample.`;
                 }
             }
         } catch (_) {
@@ -519,6 +527,7 @@ print("Step completed successfully!")
 
 		return code;
 	}
+
 
 	/**
 	 * Build context about how to access previously loaded data

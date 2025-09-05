@@ -75,14 +75,17 @@ export class NotebookEditingService {
 			false
 		);
 
-		const task =
-			`Edit the following ${lang} code according to the user's instruction. ` +
-			`CRITICAL RULES:\n` +
-			`1. Return ONLY the exact replacement for lines ${startLine}-${endLine}\n` +
-			`2. Do NOT include explanations or markdown formatting\n` +
-			`3. Do NOT add imports, package installs, magic commands, shebangs, or globals\n` +
-			`4. Preserve the number of lines unless removing content; match indentation and style\n` +
-			`5. Output ONLY the modified code as plain text`;
+        const task =
+            `Edit the following ${lang} code according to the user's instruction. ` +
+            `CRITICAL RULES:\n` +
+            `1. Return ONLY the exact replacement for lines ${startLine}-${endLine}\n` +
+            `2. Do NOT include explanations or markdown formatting\n` +
+            // Allow a single minimal import if it's strictly required to resolve a NameError for symbols already used
+            // in the snippet (e.g., "import pandas as pd" when 'pd' is undefined). If you add such an import, keep the
+            // total line count unchanged by replacing an existing blank/comment line within the edited range.
+            `3. Avoid adding imports, package installs, magic commands, shebangs, or globals.\n` +
+            `4. Preserve the number of lines unless removing content; match indentation and style\n` +
+            `5. Output ONLY the modified code as plain text`;
 
 		let streamedResponse = "";
 		const streamingMessageId = `edit-${Date.now()}`;
@@ -164,22 +167,25 @@ export class NotebookEditingService {
 			? applyLineEdits(withinSelection, jsonFallback)
 			: cleanedFinal;
 
-		// Guardrail: strip newly introduced imports not present in original selection
-		try {
-			const importRe = /^(?:\s*from\s+\S+\s+import\s+|\s*import\s+\S+)/;
-			const originalLines = withinSelection.split(/\r?\n/);
-			const originalImportSet = new Set(
-				originalLines.filter((l) => importRe.test(l)).map((l) => l.trim())
-			);
-			const newLines = newSelection.split(/\r?\n/);
-			const filtered = newLines.filter((l) => {
-				if (!importRe.test(l)) return true;
-				return originalImportSet.has(l.trim());
-			});
-			if (filtered.length !== newLines.length) {
-				newSelection = filtered.join("\n");
-			}
-		} catch (_) {}
+        // Guardrail: strip newly introduced imports unless fixing a NameError (from output context)
+        try {
+            const hasNameError = Boolean((outputText || '').toLowerCase().includes('name ') && (outputText || '').toLowerCase().includes(' not defined'));
+            if (!hasNameError) {
+                const importRe = /^(?:\s*from\s+\S+\s+import\s+|\s*import\s+\S+)/;
+                const originalLines = withinSelection.split(/\r?\n/);
+                const originalImportSet = new Set(
+                    originalLines.filter((l) => importRe.test(l)).map((l) => l.trim())
+                );
+                const newLines = newSelection.split(/\r?\n/);
+                const filtered = newLines.filter((l) => {
+                    if (!importRe.test(l)) return true;
+                    return originalImportSet.has(l.trim());
+                });
+                if (filtered.length !== newLines.length) {
+                    newSelection = filtered.join("\n");
+                }
+            }
+        } catch (_) {}
 
 		const newCode =
 			base.substring(0, start) + newSelection + base.substring(end);

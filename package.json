@@ -13,7 +13,9 @@
     "build:watch": "concurrently \"tsc --watch\" \"webpack --mode development --watch\"",
     "build:analyze": "tsc && webpack --mode production --env analyze=true",
     "package": "electron-builder",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "author": "Celvox Team",
   "license": "PROPRIETARY",
@@ -34,6 +36,7 @@
     "style-loader": "^3.3.0",
     "ts-loader": "^9.4.0",
     "typescript": "^5.0.0",
+    "vitest": "^3.2.4",
     "wait-on": "^7.0.0",
     "webpack": "^5.88.0",
     "webpack-bundle-analyzer": "^4.10.2",
@@ -86,7 +89,10 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ]
     },

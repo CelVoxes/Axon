@@ -69,7 +69,7 @@ export const AutoPeekTool: ChatTool = {
                 ok: true,
                 message: `Peek directory > ${rel}`,
                 code: snapshot,
-                codeLanguage: "text",
+                codeLanguage: "yaml",
                 title: rel,
             };
         }

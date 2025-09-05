@@ -197,8 +197,15 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	// Use a ref to track the current notebook data to avoid closure issues in event handlers
 	const notebookDataRef = useRef<NotebookData | null>(null);
 	const isReadyRef = useRef<boolean>(false);
-	// Debounce save handling
-	const saveDebounceMs = 600;
+	// Debounce save handling (configurable via localStorage)
+	const getAutoSaveDebounceMs = () => {
+		try {
+			const raw = (window.localStorage && window.localStorage.getItem('axon.autoSaveDebounceMs')) || '';
+			const n = parseInt(raw as string, 10);
+			if (!Number.isNaN(n) && n > 0) return n;
+		} catch (_) {}
+		return 600;
+	};
 	const pendingSaveRef = useRef<NotebookData | null>(null);
 	const saveTimerRef = useRef<number | null>(null);
 
@@ -244,6 +251,10 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		if (pendingEvents.length > 0) {
 		}
 		setPendingEvents([]);
+		// Reset unsaved indicator baseline on load
+		try {
+			workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: false } });
+		} catch (_) {}
 	}, [filePath]);
 
 	// Ensure the current file is tracked in openFiles even if opened via events
@@ -343,20 +354,34 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			if (!writeRes.success) {
 				throw new Error(writeRes.error || "Failed to write file");
 			}
+			// Mark as saved
+			setHasChanges(false);
+			try { workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: false } }); } catch (_) {}
 		} catch (error) {
 			console.error("FileEditor: Error saving notebook:", error);
 		}
 	};
 
 	// Debounced queue for notebook saves to reduce disk churn
+	const isAutoSaveEnabled = () => {
+		try {
+			const v = (window.localStorage && window.localStorage.getItem('axon.autoSaveNotebooks')) || '';
+			return String(v).toLowerCase() !== 'false';
+		} catch (_) { return true; }
+	};
+
 	const queueNotebookSave = (
 		notebook: NotebookData,
 		skipVersionDetection = true
 	) => {
+		if (!isAutoSaveEnabled()) {
+			return; // Auto-save disabled; user will save manually (Cmd/Ctrl+S)
+		}
 		pendingSaveRef.current = notebook;
 		if (saveTimerRef.current) {
 			clearTimeout(saveTimerRef.current);
 		}
+		const debounceMs = getAutoSaveDebounceMs();
 		saveTimerRef.current = window.setTimeout(() => {
 			const nb = pendingSaveRef.current;
 			pendingSaveRef.current = null;
@@ -364,7 +389,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			if (nb) {
 				void saveNotebookToFile(nb, skipVersionDetection);
 			}
-		}, saveDebounceMs);
+		}, debounceMs);
 	};
 
 	// Add event listeners for notebook cell events
@@ -411,14 +436,18 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 						// Check if this is a package installation cell - if so, save immediately
 						const isPackageInstallCell = /(^|\n)\s*(%pip|%conda|pip\s+install|conda\s+install)\b/i.test(cellContent);
 						
-						if (isPackageInstallCell) {
-							console.log('📦 FileEditor: Package installation cell detected - saving immediately');
-							// Save immediately without debouncing for package installation cells
-							await saveNotebookToFile(updatedNotebook, true);
-						} else {
-							// Regular debounced save for other cells
-							queueNotebookSave(updatedNotebook);
-						}
+					const allowImmediate = (() => {
+						try {
+							const raw = (window.localStorage && window.localStorage.getItem('axon.autoSaveInstallCells')) || '';
+							return String(raw).toLowerCase() !== 'false';
+						} catch (_) { return true; }
+					})();
+					if (isPackageInstallCell && allowImmediate) {
+						console.log('📦 FileEditor: Package installation cell detected - saving immediately');
+						await saveNotebookToFile(updatedNotebook, true);
+					} else {
+						queueNotebookSave(updatedNotebook);
+					}
 						
 						EventManager.dispatchEvent("notebook-cell-added", {
 							filePath: eventFilePath,
@@ -695,6 +724,13 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		return () => window.removeEventListener("keydown", handleKeyDown);
 	}, [hasChanges]); // Re-run when hasChanges state updates
 
+	// Keep global unsaved indicator in sync with local editor state
+	useEffect(() => {
+		try {
+			workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: hasChanges } });
+		} catch (_) {}
+	}, [hasChanges, filePath]);
+
 	const isImageFile = (p: string) => {
 		const ext = p.split(".").pop()?.toLowerCase();
 		return ext
@@ -919,6 +955,9 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 				if (!wr.success) throw new Error(wr.error || "Failed to write file");
 			}
 			setHasChanges(false);
+			try {
+				workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: false } });
+			} catch (_) {}
 		} catch (error) {
 			console.error("Error saving file:", error);
 		}
@@ -980,6 +1019,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 		setNotebookData(updatedNotebook);
 		setHasChanges(true);
+		try { workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: true } }); } catch (_) {}
 		queueNotebookSave(updatedNotebook);
 		// Maintain stable ids in parallel
 		setCellIds((prev) => {
@@ -1014,6 +1054,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			return next;
 		});
 		setHasChanges(true);
+		try { workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: true } }); } catch (_) {}
 
 		// Auto-save the notebook (debounced)
 		queueNotebookSave(updatedNotebook);
@@ -1030,6 +1071,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			return next;
 		});
 		setHasChanges(true);
+		try { workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: true } }); } catch (_) {}
 
 		// Auto-save the notebook when cell code is updated (debounced)
 		if (notebookData) {
@@ -1059,6 +1101,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			return next;
 		});
 		setHasChanges(true);
+		try { workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: true } }); } catch (_) {}
 
 		// Auto-save the notebook when cell output is updated (debounced)
 		if (notebookData) {
@@ -1090,6 +1133,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		if (value !== undefined) {
 			setContent(value);
 			setHasChanges(true);
+			try { workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: true } }); } catch (_) {}
 		}
 	};
 	

@@ -126,6 +126,14 @@ const Tab = styled.div<{ $isActive: boolean }>`
 		line-height: 1.2;
 	}
 
+	.unsaved-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background-color: #e0a800; /* amber for unsaved */
+		flex: 0 0 auto;
+	}
+
 	.close {
 		flex: 0 0 auto;
 		opacity: 0.5;
@@ -491,25 +499,27 @@ export const MainContent: React.FC<{ "data-layout-role"?: string }> = (
 		files.forEach((filePath: string) => {
 			const fileName = filePath.split("/").pop() || filePath;
 			const isActive = workspaceState.activeFile === filePath;
+            const isUnsaved = workspaceState.unsavedFiles?.has?.(filePath);
 
 
-			tabs.push(
-				<Tab
-					key={filePath}
-					$isActive={isActive}
-					onClick={() =>
-						workspaceDispatch({ type: "SET_ACTIVE_FILE", payload: filePath })
-					}
-					onMouseDown={(e) => handleTabMouseDown(e, filePath)}
-					title={filePath}
-				>
-					<span className="tab-title">{fileName}</span>
-					<span className="close" onClick={(e) => handleTabClose(e, filePath)}>
-						×
-					</span>
-				</Tab>
-			);
-		});
+				tabs.push(
+					<Tab
+						key={filePath}
+						$isActive={isActive}
+						onClick={() =>
+							workspaceDispatch({ type: "SET_ACTIVE_FILE", payload: filePath })
+						}
+						onMouseDown={(e) => handleTabMouseDown(e, filePath)}
+						title={filePath}
+					>
+						{isUnsaved && <span className="unsaved-dot" title="Unsaved changes"></span>}
+						<span className="tab-title">{fileName}</span>
+						<span className="close" onClick={(e) => handleTabClose(e, filePath)}>
+							×
+						</span>
+					</Tab>
+				);
+			});
 
 		return tabs;
 	};

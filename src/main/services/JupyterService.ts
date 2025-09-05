@@ -371,7 +371,7 @@ export class JupyterService {
 	static getDefaultConfig(port: number): JupyterConfig {
 		return {
 			port,
-			executionTimeoutMs: 120000, // 2 minutes for complex biological analysis
+			executionTimeoutMs: 600000, // 10 minutes for complex biological analysis
 			connectionTimeoutMs: 30000, // 30 seconds
 			maxRetryAttempts: 3,
 			retryBackoffMs: 2000, // 2 seconds

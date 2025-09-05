@@ -3,6 +3,8 @@ import { WorkspaceLsTool } from "./WorkspaceLsTool";
 import { FileHeadTool } from "./FileHeadTool";
 import { PythonProbeTool } from "./PythonProbeTool";
 import { AutoPeekTool } from "./AutoPeekTool";
+import { ScaleDetectionTool } from "./ScaleDetectionTool";
+import { DataProfileTool } from "./DataProfileTool";
 
 // Initialize registry with built-in tools
 const registry = ToolRegistry.getInstance();
@@ -10,6 +12,8 @@ registry.register(WorkspaceLsTool);
 registry.register(FileHeadTool);
 registry.register(PythonProbeTool);
 registry.register(AutoPeekTool);
+registry.register(ScaleDetectionTool);
+registry.register(DataProfileTool);
 
 export class ChatToolService {
 	static isToolCommand(text: string): boolean {

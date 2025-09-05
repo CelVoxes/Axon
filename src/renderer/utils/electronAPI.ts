@@ -104,7 +104,22 @@ export const electronAPI = {
 		filePath: string,
 		content: string
 	): Promise<{ success: boolean; error?: string }> {
-		return safeElectronAPICall<boolean>("writeFile", filePath, content);
+		// The main process returns an object { success, error? } for writes.
+		// safeElectronAPICall wraps returns as { success: true/false, data?: any }.
+		// Unwrap and normalize so callers reliably see the write result.
+		const res = await safeElectronAPICall<any>("writeFile", filePath, content);
+		if (!res.success) {
+			return { success: false, error: res.error };
+		}
+		const inner = res.data;
+		if (inner && typeof inner === "object" && "success" in inner) {
+			return inner as { success: boolean; error?: string };
+		}
+		if (typeof inner === "boolean") {
+			return { success: inner };
+		}
+		// Fallback: assume success if call succeeded and no structured result provided
+		return { success: true };
 	},
 
 	/**

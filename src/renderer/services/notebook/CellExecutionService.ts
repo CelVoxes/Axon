@@ -186,13 +186,39 @@ export class CellExecutionService implements ICodeExecutor {
 				this.workspacePath
 			);
 
-			// Create a race between execution and abort signal
+			// Soft timeout: limit how long a single cell can run
+			const defaultTimeoutMs = 600_000; // 10 minutes
+			let timeoutMs = defaultTimeoutMs;
+			try {
+				const stored =
+					(window.localStorage &&
+						window.localStorage.getItem("axon.cellTimeoutMs")) ||
+					"";
+				const parsed = parseInt(stored as string, 10);
+				if (!Number.isNaN(parsed) && parsed > 0) timeoutMs = parsed;
+			} catch (_) {}
+
+			// Create a race between execution, abort signal, and timeout
 			await Promise.race([
 				executionPromise,
 				new Promise<void>((_, reject) => {
 					abortController.signal.addEventListener("abort", () => {
 						reject(new Error("Execution was cancelled"));
 					});
+				}),
+				new Promise<void>((_, reject) => {
+					const timer = setTimeout(() => {
+						try {
+							abortController.abort();
+						} catch (_) {}
+						reject(
+							new Error(
+								`Execution timed out after ${Math.round(timeoutMs / 1000)}s`
+							)
+						);
+					}, timeoutMs);
+					// Clear timer when executionPromise settles
+					executionPromise.finally(() => clearTimeout(timer));
 				}),
 			]);
 

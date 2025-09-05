@@ -181,10 +181,10 @@ export class EnvironmentManager {
 	/**
 	 * Install required packages based on datasets and analysis requirements
 	 */
-	async installRequiredPackages(
-		datasets: Dataset[],
-		workingDir: string
-	): Promise<PackageInstallationResult> {
+    async installRequiredPackages(
+        datasets: Dataset[],
+        workingDir: string
+    ): Promise<PackageInstallationResult> {
 		const result: PackageInstallationResult = {
 			success: false,
 			installedPackages: [],
@@ -212,15 +212,37 @@ export class EnvironmentManager {
 
 			this.updateStatus("Analyzing required packages...");
 
-			// Use DatasetManager to determine required tools
-			const dataAnalysis =
-				await this.datasetManager.analyzeDataTypesAndSelectTools(
-					datasets,
-					workingDir
-				);
+            // If no datasets provided, peek into workspace to infer data
+            let datasetsForAnalysis = datasets;
+            if (!datasetsForAnalysis || datasetsForAnalysis.length === 0) {
+                this.updateStatus("🔎 Inspecting workspace to detect data types...");
+                try {
+                    datasetsForAnalysis = await this.datasetManager.scanWorkspaceForData(
+                        workingDir
+                    );
+                    if (datasetsForAnalysis.length === 0) {
+                        this.updateStatus(
+                            "ℹ️ No recognizable data files found; using minimal environment"
+                        );
+                    } else {
+                        this.updateStatus(
+                            `✅ Detected ${datasetsForAnalysis.length} data item(s) in workspace`
+                        );
+                    }
+                } catch (e) {
+                    console.warn("Workspace scan failed:", e);
+                }
+            }
+
+            // Use DatasetManager to determine required tools
+            const dataAnalysis =
+                await this.datasetManager.analyzeDataTypesAndSelectTools(
+                    datasetsForAnalysis,
+                    workingDir
+                );
 
 			// Get the list of required packages
-			const requiredPackages = dataAnalysis.recommendedTools;
+            const requiredPackages = dataAnalysis.recommendedTools;
 
 			if (requiredPackages.length === 0) {
 				this.updateStatus("No additional packages required.");

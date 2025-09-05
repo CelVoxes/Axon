@@ -4,6 +4,7 @@ import os
 import asyncio
 import json
 from typing import List, Optional, Dict, Any, Union, Sequence, cast
+import re
 from abc import ABC, abstractmethod
 import openai
 from openai import AsyncOpenAI
@@ -28,8 +29,19 @@ class LLMProvider(ABC):
 class OpenAIProvider(LLMProvider):
     """OpenAI provider implementation."""
     
-    def __init__(self, api_key: str, model: Optional[str] = None):
-        self.client = AsyncOpenAI(api_key=api_key)
+    def __init__(
+        self,
+        api_key: str,
+        model: Optional[str] = None,
+        organization: Optional[str] = None,
+        project: Optional[str] = None,
+    ):
+        # Initialize OpenAI client with optional organization/project for project-scoped keys
+        self.client = AsyncOpenAI(
+            api_key=api_key,
+            organization=organization if organization else None,
+            project=project if project else None,
+        )
         default_model = SearchConfig.get_default_llm_model()
         self.model = model if isinstance(model, str) and model else (default_model if isinstance(default_model, str) and default_model else "gpt-4o-mini")
         self.last_usage = None
@@ -121,7 +133,9 @@ class OpenAIProvider(LLMProvider):
                 if text:
                     return text.strip()
         except Exception as e:
-            print(f"Responses API (non-stream) error, falling back to chat: {e}")
+            print(
+                f"Responses API (non-stream) error, falling back to chat: {self._redact_api_keys(str(e))}"
+            )
 
         # Fallback to Chat Completions
         cc_kwargs = {k: v for k, v in prepared_kwargs.items() if k not in ("store", "previous_response_id")}
@@ -202,7 +216,9 @@ class OpenAIProvider(LLMProvider):
                                 self.last_usage = None
                         return
                     except Exception as e:
-                        print(f"Responses API .stream failed, trying create(stream=True): {e}")
+                        print(
+                            f"Responses API .stream failed, trying create(stream=True): {self._redact_api_keys(str(e))}"
+                        )
 
                 if hasattr(responses_api, "create"):
                     responses_kwargs = self._prepare_responses_kwargs(kwargs)
@@ -240,7 +256,9 @@ class OpenAIProvider(LLMProvider):
                         self.last_usage = None
                     return
         except Exception as e:
-            print(f"Responses API (stream) error, falling back to chat: {e}")
+            print(
+                f"Responses API (stream) error, falling back to chat: {self._redact_api_keys(str(e))}"
+            )
 
         # Fallback to Chat Completions streaming
         try:
@@ -280,9 +298,20 @@ class OpenAIProvider(LLMProvider):
                 }
                 
         except Exception as e:
-            print(f"OpenAI streaming error (chat fallback): {e}")
-            # Return a simple fallback message
-            yield f"# Error: Could not generate code due to: {e}\nprint('Code generation failed')"
+            print(f"OpenAI streaming error (chat fallback): {self._redact_api_keys(str(e))}")
+            # Return a simple fallback message (with sanitized error)
+            safe_err = self._redact_api_keys(str(e))
+            yield f"# Error: Could not generate code due to: {safe_err}\nprint('Code generation failed')"
+
+    @staticmethod
+    def _redact_api_keys(message: str) -> str:
+        """Redact any api-like tokens (sk-*) from error/log messages."""
+        if not isinstance(message, str):
+            return message
+        try:
+            return re.sub(r"sk-[A-Za-z0-9_\-]{10,}", "sk-****redacted****", message)
+        except Exception:
+            return message
 
 
 class AnthropicProvider(LLMProvider):
@@ -509,11 +538,38 @@ class LLMService:
         
         if provider == "openai":
             api_key = kwargs.get("api_key") or os.getenv("OPENAI_API_KEY")
+            # Normalize common formatting issues (quotes/newlines/spaces/zero-width chars)
+            if isinstance(api_key, str):
+                api_key = api_key.strip()
+                # Remove surrounding quotes if present
+                if (api_key.startswith('"') and api_key.endswith('"')) or (
+                    api_key.startswith("'") and api_key.endswith("'")
+                ):
+                    api_key = api_key[1:-1].strip()
+                # Strip any embedded newlines or carriage returns
+                api_key = api_key.replace("\n", "").replace("\r", "")
+                # Remove zero-width and BOM characters that sometimes sneak in from copy/paste
+                try:
+                    import re as _re
+                    api_key = _re.sub(r"[\u200B-\u200D\uFEFF]", "", api_key)
+                except Exception:
+                    pass
             model = kwargs.get("model", SearchConfig.get_default_llm_model())
             print(f"OpenAI API key found: {bool(api_key)}")
             if api_key:
+                # Optional organization/project support for project-scoped keys
+                organization = (
+                    kwargs.get("organization")
+                    or os.getenv("OPENAI_ORG")
+                    or os.getenv("OPENAI_ORGANIZATION")
+                )
+                project = kwargs.get("project") or os.getenv("OPENAI_PROJECT")
+                if organization:
+                    print("Using OpenAI organization from env/config")
+                if project:
+                    print("Using OpenAI project from env/config")
                 print(f"Creating OpenAI provider with model: {model}")
-                return OpenAIProvider(api_key, model)
+                return OpenAIProvider(api_key, model, organization=organization, project=project)
             else:
                 print("No OpenAI API key found")
         elif provider == "anthropic":
@@ -528,6 +584,17 @@ class LLMService:
         
         print("No provider created, returning None")
         return None
+
+    @staticmethod
+    def _redact_api_keys(message: str) -> str:
+        """Redact any api-like tokens (sk-*) from error/log messages."""
+        if not isinstance(message, str):
+            return message
+        try:
+            # Replace long sk- tokens with a safe placeholder
+            return re.sub(r"sk-[A-Za-z0-9_\-]{10,}", "sk-****redacted****", message)
+        except Exception:
+            return message
 
     async def ask(self, question: str, context: str = "", session_id: Optional[str] = None, **kwargs) -> str:
         """General Q&A. Uses provider if available, otherwise a simple fallback."""

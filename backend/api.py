@@ -15,10 +15,12 @@ from dotenv import load_dotenv
 from .config import SearchConfig, DEFAULT_ORGANISM
 
 # Load environment variables from .env file
+# Important: override=True so the repo's .env reliably wins over any shell/env
+# variables that might be set (prevents stale OPENAI_API_KEY issues).
 env_path = Path(__file__).parent.parent / '.env'
 if env_path.exists():
-    load_dotenv(env_path)
-    print(f"Loaded environment variables from {env_path}")
+    load_dotenv(env_path, override=True)
+    print(f"Loaded environment variables from {env_path} (override=True)")
 else:
     print(f"No .env file found at {env_path}")
 
@@ -86,6 +88,12 @@ async def get_current_user(authorization: Optional[str] = Header(default=None)) 
 async def ensure_db_connected():
     """Connect Prisma on first request if available."""
     global db
+    # Allow disabling DB entirely via env
+    if str(os.getenv("AXON_DISABLE_DB", "")).lower() in ("1", "true", "yes", "on"):
+        return None
+    # If no DATABASE_URL is configured, skip attempting to connect
+    if not os.getenv("DATABASE_URL"):
+        return None
     if db is None:
         try:
             from prisma import Prisma  # type: ignore

@@ -47,6 +47,8 @@ interface AppState {
 	fileTree: FileItem[];
 	openFiles: string[];
 	activeFile: string | null;
+	/** Files with unsaved changes (by absolute path) */
+	unsavedFiles: Set<string>;
 
 	// Analysis state
 	bioragConnected: boolean;
@@ -76,6 +78,7 @@ type AppAction =
 	| { type: "CLOSE_FILE"; payload: string }
 	| { type: "FORCE_CLOSE_FILE"; payload: string }
 	| { type: "SET_ACTIVE_FILE"; payload: string | null }
+	| { type: "SET_FILE_DIRTY"; payload: { filePath: string; dirty: boolean } }
 
 	// Analysis actions
 	| { type: "SET_BIORAG_CONNECTED"; payload: boolean }
@@ -110,6 +113,7 @@ const initialState: AppState = {
 	fileTree: [],
 	openFiles: [],
 	activeFile: null,
+	unsavedFiles: new Set<string>(),
 
 	// Analysis state
 	bioragConnected: false,
@@ -140,6 +144,7 @@ function appReducer(state: AppState, action: AppAction): AppState {
 				openFiles: [],
 				activeFile: null,
 				fileTree: [],
+				unsavedFiles: new Set<string>(),
 				// Clear chat-related state immediately on workspace switch; it will be
 				// restored (or stay empty) by the loader effect below.
 				messages: [],
@@ -163,9 +168,13 @@ function appReducer(state: AppState, action: AppAction): AppState {
 
 		case "CLOSE_FILE":
 			const newOpenFiles = state.openFiles.filter((f) => f !== action.payload);
+			// Remove from unsaved set when closing
+			const nextUnsaved = new Set(state.unsavedFiles);
+			nextUnsaved.delete(action.payload);
 			return {
 				...state,
 				openFiles: newOpenFiles,
+				unsavedFiles: nextUnsaved,
 				activeFile:
 					state.activeFile === action.payload
 						? newOpenFiles.length > 0
@@ -178,9 +187,12 @@ function appReducer(state: AppState, action: AppAction): AppState {
 			const forceClosedFiles = state.openFiles.filter(
 				(f) => f !== action.payload
 			);
+			const unsavedAfterForce = new Set(state.unsavedFiles);
+			unsavedAfterForce.delete(action.payload);
 			return {
 				...state,
 				openFiles: forceClosedFiles,
+				unsavedFiles: unsavedAfterForce,
 				activeFile:
 					state.activeFile === action.payload
 						? forceClosedFiles.length > 0
@@ -198,6 +210,16 @@ function appReducer(state: AppState, action: AppAction): AppState {
 				activeFile: newActiveFile,
 				openFiles: shouldAddToOpenFiles ? [...state.openFiles, newActiveFile] : state.openFiles
 			};
+
+		case "SET_FILE_DIRTY": {
+			const { filePath, dirty } = action.payload;
+			const next = new Set(state.unsavedFiles);
+			if (dirty) next.add(filePath); else next.delete(filePath);
+			// Avoid unnecessary state churn
+			const same = next.size === state.unsavedFiles.size && [...next].every(s => state.unsavedFiles.has(s));
+			if (same) return state;
+			return { ...state, unsavedFiles: next };
+		}
 
 		// Analysis actions
 		case "SET_BIORAG_CONNECTED":
@@ -291,11 +313,11 @@ const AppContext = createContext<{
 
 // Fine-grained slice contexts to reduce unnecessary re-renders
 const WorkspaceContext = createContext<{
-	state: Pick<
-		AppState,
-		"currentWorkspace" | "fileTree" | "openFiles" | "activeFile"
-	>;
-	dispatch: React.Dispatch<AppAction>;
+    state: Pick<
+        AppState,
+        "currentWorkspace" | "fileTree" | "openFiles" | "activeFile" | "unsavedFiles"
+    >;
+    dispatch: React.Dispatch<AppAction>;
 } | null>(null);
 
 const AnalysisContext = createContext<{
@@ -328,15 +350,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 	const lastPersistedSessionRef = useRef<string | null>(null);
 
 	// Memoize slice states so provider values only change when relevant fields change
-	const workspaceSlice = useMemo(
-		() => ({
-			currentWorkspace: state.currentWorkspace,
-			fileTree: state.fileTree,
-			openFiles: state.openFiles,
-			activeFile: state.activeFile,
-		}),
-		[state.currentWorkspace, state.fileTree, state.openFiles, state.activeFile]
-	);
+    const workspaceSlice = useMemo(
+        () => ({
+            currentWorkspace: state.currentWorkspace,
+            fileTree: state.fileTree,
+            openFiles: state.openFiles,
+            activeFile: state.activeFile,
+            unsavedFiles: state.unsavedFiles,
+        }),
+        [state.currentWorkspace, state.fileTree, state.openFiles, state.activeFile, state.unsavedFiles]
+    );
 
 	const analysisSlice = useMemo(
 		() => ({

@@ -85,7 +85,14 @@ export function useChatEvents({
 			}
 		);
 		return cleanup;
-	}, [uiDispatch, uiState.showChatPanel, uiState.chatCollapsed, composerRef, setCodeEditContext, codeEditContextRef]);
+	}, [
+		uiDispatch,
+		uiState.showChatPanel,
+		uiState.chatCollapsed,
+		composerRef,
+		setCodeEditContext,
+		codeEditContextRef,
+	]);
 
 	useEffect(() => {
 		const onAddOutput = (e: Event) => {
@@ -95,7 +102,7 @@ export function useChatEvents({
 			const code: string = String(d.code || "");
 			const out: string = String(d.output || "");
 
-			// Build a cell mention like @relative/path#N
+			// Build a concise cell mention. Prefer #N to keep composer clean.
 			let alias = "";
 			try {
 				const wsRoot =
@@ -111,45 +118,56 @@ export function useChatEvents({
 						: String(d.filePath || "");
 				const cellNum =
 					typeof d.cellIndex === "number" ? d.cellIndex + 1 : undefined;
-				alias = rel ? `@${rel}${cellNum ? `#${cellNum}` : ""}` : "";
+				alias = cellNum ? `#${cellNum}` : rel ? `@${rel}` : "";
 			} catch (_) {
 				/* ignore */
 			}
 
-			// Add the mention and the actual output/error content for user visibility
-			if (alias) {
-				// Clear any existing input and start fresh with the mention
-				const mentionText = alias;
+            // Add the mention and prompt; include a trimmed output snippet so the LLM sees context
+            if (alias) {
+                // Clear any existing input and start fresh with the mention
+                const mentionText = alias;
+                const outputType = Boolean(d.hasError) ? "error" : "output";
+                // Truncate output for composer to avoid huge messages
+                const raw = (out || '').toString();
+                const getLimit = (key: string, fallback: number) => {
+                    try { const v = (window.localStorage && window.localStorage.getItem(key)) || ''; const n = parseInt(v as string, 10); return !Number.isNaN(n) && n > 0 ? n : fallback; } catch { return fallback; }
+                };
+                const maxChars = getLimit('axon.askChatOutputChars', 2000);
+                const maxLines = getLimit('axon.askChatOutputLines', 60);
+                const lines = raw.split(/\r?\n/);
+                const clippedLines = lines.slice(0, maxLines);
+                let clipped = clippedLines.join('\n');
+                if (clipped.length > maxChars) clipped = clipped.slice(0, maxChars);
+                const snipNotice = (raw.length > clipped.length || lines.length > clippedLines.length) ? `\n... [truncated]` : '';
+                const snippet = clipped ? `\n\n\`\`\`text\n${clipped}${snipNotice}\n\`\`\`` : '';
+                const final = `${mentionText} Please fix if there is an error in the ${outputType}.${snippet}`;
+                setInputValue(final);
+                inputValueRef.current = final;
+            } else {
+                // Fallback to old behavior if no alias
+                const prefix = `Please review the ${lang} cell output and fix any issues.`;
+                const body = `\n\nCell: (referenced cell)\n`;
+                const prefill = prefix + body;
+                setInputValue(prefill);
+                inputValueRef.current = prefill;
+            }
 
-				// Add the prompt and the actual output/error content
-				const outputType = Boolean(d.hasError) ? "Error" : "Output";
-				const outputPrompt = `\n\nPlease explain this ${outputType.toLowerCase()} from the ${lang} cell and suggest how to fix any issues:`;
-
-				// Include the actual output/error content so user can see what they're asking about
-				const outputContent = out.trim()
-					? `\n\n\`\`\`\n${out.trim()}\n\`\`\``
-					: "";
-
-				const final = mentionText + " " + outputPrompt + outputContent;
-				setInputValue(final);
-				inputValueRef.current = final;
-			} else {
-				// Fallback to old behavior if no alias
-				const prefix = `Please review the ${lang} cell output and fix any issues.`;
-				const body = `\n\nCell: (referenced cell)\n`;
-				const prefill = prefix + body;
-				setInputValue(prefill);
-				inputValueRef.current = prefill;
-			}
-
-			// For "Ask Chat" on output, don't auto-trigger edit mode
-			// Instead, let the user have a conversation about the error/output
-			// They can explicitly ask for code changes if needed
-
-			// IMPORTANT: Clear any existing codeEditContext to prevent it from
-			// getting stuck on a previous cell when user asks about a different cell
-			setCodeEditContext(null);
-			codeEditContextRef.current = null;
+			// Stash cell context (code + output) so Ask mode can include it for the LLM.
+			// This does NOT force an edit; it only provides additional context.
+			const ctx: CodeEditContext = {
+				filePath: d.filePath,
+				cellIndex: d.cellIndex,
+				language: lang,
+				selectedText: code,
+				fullCode: code,
+				selectionStart: 0,
+				selectionEnd: code.length,
+				outputText: out,
+				hasErrorOutput: Boolean(d.hasError),
+			};
+			setCodeEditContext(ctx);
+			codeEditContextRef.current = ctx;
 
 			if (!uiState.showChatPanel || uiState.chatCollapsed) {
 				uiDispatch({ type: "SET_SHOW_CHAT_PANEL", payload: true });
@@ -185,7 +203,7 @@ export function useChatEvents({
 						: String(d.filePath || "");
 				const cellNum =
 					typeof d.cellIndex === "number" ? d.cellIndex + 1 : undefined;
-				alias = rel ? `@${rel}${cellNum ? `#${cellNum}` : ""}` : "";
+				alias = cellNum ? `#${cellNum}` : rel ? `@${rel}` : "";
 			} catch (_) {
 				/* ignore */
 			}
