@@ -104,7 +104,6 @@ textarea:focus {
 	border-color: #0e639c;
 }
 
-
 /* Chat Panel Styles - Resizable Layout Version */
 .chat-panel {
 	display: flex;
@@ -251,7 +250,6 @@ textarea:focus {
 	color: #ffffff;
 }
 
-
 .message-content h1,
 .message-content h2,
 .message-content h3,
@@ -277,7 +275,6 @@ textarea:focus {
 .message-content strong {
 	font-weight: 600;
 }
-
 
 .message-status {
 	font-size: var(--font-size-xs);
@@ -470,12 +467,12 @@ textarea:focus {
 
 .loading-dots {
 	display: flex;
-	gap: 2px;
-	animation: pulse 1.5s infinite;
+	gap: 1px; /* closer dots */
 }
 
 .loading-dots span {
-	animation: pulse 1.5s infinite;
+	/* override any prior pulse animation with faster dot animation */
+	animation: loadingDots 1s infinite ease-in-out; /* faster */
 }
 
 /* Generic pulsing dot for status/streaming indicators */
@@ -487,7 +484,6 @@ textarea:focus {
 	border-radius: 50%;
 	animation: pulse 1.5s infinite;
 }
-
 
 /* Progress message */
 .progress-message {
@@ -597,7 +593,6 @@ textarea:focus {
 		opacity: 0.7;
 	}
 }
-
 
 /* Status Display Styles */
 .status-display {
@@ -816,22 +811,22 @@ textarea:focus {
 
 .loading-dots {
 	display: flex;
-	gap: 2px;
+	gap: 1px; /* closer spacing */
 }
 
 .loading-dots span {
 	color: #888;
 	font-size: var(--font-size-3xl);
 	font-weight: bold;
-	animation: loadingDots 1.4s infinite ease-in-out;
+	animation: loadingDots 1s infinite ease-in-out; /* faster */
 }
 
 .loading-dots span:nth-child(1) {
-	animation-delay: -0.32s;
+	animation-delay: -0.16s; /* adjusted for faster cycle */
 }
 
 .loading-dots span:nth-child(2) {
-	animation-delay: -0.16s;
+	animation-delay: -0.08s;
 }
 
 .loading-dots span:nth-child(3) {
@@ -1051,31 +1046,31 @@ textarea:focus {
 
 /* Validation Errors Indicator */
 .validation-errors-indicator {
-    background: transparent;
-    border: none;
-    border-radius: 8px;
-    margin: 8px 16px;
-    overflow: hidden;
-    animation: fadeIn 0.3s ease-in;
+	background: transparent;
+	border: none;
+	border-radius: 8px;
+	margin: 8px 16px;
+	overflow: hidden;
+	animation: fadeIn 0.3s ease-in;
 }
 
 /* Validation Success Indicator */
 .validation-success-indicator {
-    background: transparent;
-    border: none; /* remove green outline */
-    border-radius: 8px;
-    margin: 8px 16px;
-    overflow: hidden;
-    animation: fadeIn 0.3s ease-in;
+	background: transparent;
+	border: none; /* remove green outline */
+	border-radius: 8px;
+	margin: 8px 16px;
+	overflow: hidden;
+	animation: fadeIn 0.3s ease-in;
 }
 
 .validation-success-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 16px;
-    background: transparent;
-    border-bottom: none; /* remove thin green line */
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 12px 16px;
+	background: transparent;
+	border-bottom: none; /* remove thin green line */
 }
 
 .validation-success-title {
@@ -1096,12 +1091,12 @@ textarea:focus {
 }
 
 .validation-errors-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 16px;
-    background: transparent;
-    border-bottom: none; /* remove thin red line */
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 12px 16px;
+	background: transparent;
+	border-bottom: none; /* remove thin red line */
 }
 
 .validation-errors-title {
@@ -1150,7 +1145,6 @@ textarea:focus {
 	line-height: 1.4;
 }
 
-
 @keyframes pulse {
 	0%,
 	100% {
@@ -1160,10 +1154,6 @@ textarea:focus {
 		opacity: 0.5;
 	}
 }
-
-
-
-
 
 /* Examples Component Styles */
 .examples-container {
