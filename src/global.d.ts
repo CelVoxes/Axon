@@ -31,7 +31,8 @@ export interface ElectronAPI {
 	checkJupyterStatus: () => Promise<boolean>;
 	executeJupyterCode: (
 		code: string,
-		workspacePath?: string
+		workspacePath?: string,
+		executionId?: string
 	) => Promise<{ success: boolean; output?: string; error?: string }>;
 	interruptJupyter: (
 		workspacePath?: string
@@ -71,6 +72,7 @@ export interface ElectronAPI {
 	onJupyterError: (callback: (data: string) => void) => void;
 	onVirtualEnvStatus: (callback: (data: any) => void) => void;
 	onJupyterCodeWriting: (callback: (data: any) => void) => void;
+	offJupyterCodeWriting: (callback: (data: any) => void) => void;
 	onJupyterNetworkError: (callback: (data: any) => void) => void;
 
 	// SSH

@@ -1,6 +1,7 @@
 import React from "react";
 import styled from "styled-components";
 import ReactMarkdown from "react-markdown";
+import { ensureDisplayNewlines } from "../../utils/CodeTextUtils";
 import { sanitizeMarkdown } from "../../utils/MarkdownUtils";
 import { FiChevronRight } from "react-icons/fi";
 import { typography } from "../../styles/design-system";
@@ -93,8 +94,11 @@ const MessageText = styled.div<{ $messageType: string }>`
 					font-size: ${typography.base};
 					line-height: 1.5;
 				`;
-		}
+	}
 	}}
+
+	/* Preserve authored line breaks in plain text to avoid smushed lines */
+	white-space: pre-wrap;
 
 	strong {
 		font-weight: 600;
@@ -188,21 +192,23 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 	const messageType = getMessageType();
 
 	// Hide empty system placeholders (which otherwise render as a blue bar)
-	const trimmed = (message.content || "").trim();
-	if (!trimmed) {
-		return null;
-	}
+    const trimmed = (message.content || "").trim();
+    if (!trimmed) {
+        return null;
+    }
 
-	return (
-		<MessageContainer $messageType={messageType}>
-			<MessageContent $messageType={messageType}>
-				<MessageText $messageType={messageType}>
-					<ReactMarkdown
-						components={{
-							code: ({ node, inline, className, children, ...props }) => {
-								const match = /language-(\w+)/.exec(className || "");
-								const language = match ? match[1] : "text";
-								if (inline) {
+    return (
+        <MessageContainer $messageType={messageType}>
+            <MessageContent $messageType={messageType}>
+                <MessageText $messageType={messageType}>
+                    <ReactMarkdown
+                        // Pre-normalize newlines and sanitize, then render
+                        children={sanitizeMarkdown(ensureDisplayNewlines(message.content || ""))}
+                        components={{
+                            code: ({ node, inline, className, children, ...props }) => {
+                                const match = /language-(\w+)/.exec(className || "");
+                                const language = match ? match[1] : "text";
+                                if (inline) {
 									return (
 										<CodeBlock variant="inline" code={String(children || "")} />
 									);
@@ -252,7 +258,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 							pre: ({ children }) => {
 								return <>{children}</>;
 							},
-							a: ({ href, children, ...props }) => {
+                        a: ({ href, children, ...props }) => {
 								if (href && href.startsWith("analyze:")) {
 									const analysisType = href.replace("analyze:", "");
 									return (
@@ -301,10 +307,8 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 									);
 								}
 							},
-						}}
-					>
-						{sanitizeMarkdown(message.content)}
-					</ReactMarkdown>
+                        }}
+                    />
 				</MessageText>
 				<MessageTimestamp>
 					{formatTimestamp(message.timestamp)}

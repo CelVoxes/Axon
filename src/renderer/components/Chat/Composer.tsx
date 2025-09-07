@@ -40,6 +40,8 @@ interface ComposerProps {
 	onModeChange?: (mode: "Agent" | "Ask") => void;
 	suggestedMentions?: Array<{ label: string; alias: string }>;
 	onInsertAlias?: (alias: string) => void;
+	// LLM session id used to show context window usage
+	sessionId?: string;
 }
 
 export interface ComposerRef {
@@ -61,6 +63,7 @@ export const Composer = React.forwardRef<ComposerRef, ComposerProps>(
 			onModeChange,
 			suggestedMentions = [],
 			onInsertAlias,
+			sessionId,
 		},
 		ref
 	) => {
@@ -280,6 +283,71 @@ export const Composer = React.forwardRef<ComposerRef, ComposerProps>(
 				}
 			};
 		}, [value]);
+
+		// Context window usage indicator state
+		const [ctxUsage, setCtxUsage] = React.useState<{
+			approxTokens: number;
+			limitTokens: number;
+			nearLimit: boolean;
+		} | null>(null);
+
+		// Lazy-load BackendClient to query session stats
+		const backendRef = React.useRef<any>(null);
+		React.useEffect(() => {
+			let interval: any;
+			(async () => {
+				try {
+					const { BackendClient } = await import(
+						"../../services/backend/BackendClient"
+					);
+					backendRef.current = new BackendClient();
+				} catch (e) {
+					backendRef.current = null;
+				}
+				const fetchStats = async () => {
+					if (!sessionId || !backendRef.current) {
+						setCtxUsage(null);
+						return;
+					}
+					try {
+						const s = await backendRef.current.getSessionStats(sessionId);
+						setCtxUsage({
+							approxTokens: Number(s?.approx_tokens || 0),
+							limitTokens: Number(s?.limit_tokens || 128000),
+							nearLimit: Boolean(s?.near_limit),
+						});
+					} catch (_) {
+						// ignore errors
+					}
+				};
+				// Initial fetch and polling
+				fetchStats();
+				interval = setInterval(fetchStats, 3000);
+			})();
+
+			return () => {
+				if (interval) clearInterval(interval);
+			};
+		}, [sessionId]);
+
+		const usagePercent = React.useMemo(() => {
+			if (!ctxUsage) return 0;
+			const pct =
+				ctxUsage.limitTokens > 0
+					? Math.min(
+							100,
+							Math.max(0, (ctxUsage.approxTokens / ctxUsage.limitTokens) * 100)
+					  )
+					: 0;
+			return pct;
+		}, [ctxUsage]);
+
+		const usageColor = React.useMemo(() => {
+			const pct = usagePercent;
+			if (pct >= 85) return "#ef4444"; // red
+			if (pct >= 60) return "#f59e0b"; // amber
+			return "#10b981"; // green
+		}, [usagePercent]);
 
 		return (
 			<div className="chat-input-container">
@@ -535,33 +603,67 @@ export const Composer = React.forwardRef<ComposerRef, ComposerProps>(
 						</Tooltip>
 					</div>
 
-					<button
-						onClick={isProcessing ? onStop : onSend}
-						disabled={
-							!isProcessing && (!value.trim() || isLoading || !!disabled)
-						}
-						className={`send-button ${isProcessing ? "stop-mode" : ""}`}
-					>
-						{isProcessing ? (
-							<FiSquare size={16} />
-						) : isLoading ? (
-							<div className="loading-dots">
-								<span>•</span>
-								<span>•</span>
-								<span>•</span>
-							</div>
-						) : (
-							<span
-								style={{
-									fontSize: "10px",
-									fontWeight: "900",
-									color: "#2d2d30",
-								}}
+					{/* Right-side cluster: context usage + send/stop button */}
+					<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+						{sessionId && ctxUsage ? (
+							<Tooltip
+								content={`${ctxUsage.approxTokens.toLocaleString()} / ${ctxUsage.limitTokens.toLocaleString()} tokens`}
+								placement="top"
 							>
-								▶
-							</span>
-						)}
-					</button>
+								<div
+									aria-label="Context usage"
+									role="img"
+									title="Context window usage"
+									style={{
+										width: 22,
+										height: 22,
+										borderRadius: "50%",
+										// Grayish ring
+										background: `conic-gradient(#888 ${usagePercent}%,rgb(65, 65, 65) ${usagePercent}%)`,
+										display: "inline-flex",
+										alignItems: "center",
+										justifyContent: "center",
+										color: "#777777",
+										fontSize: 10,
+										fontWeight: 700,
+										boxShadow: "none",
+									}}
+								>
+									<span style={{ transform: "scale(0.9)" }}>
+										{Math.round(usagePercent)}%
+									</span>
+								</div>
+							</Tooltip>
+						) : null}
+
+						<button
+							onClick={isProcessing ? onStop : onSend}
+							disabled={
+								!isProcessing && (!value.trim() || isLoading || !!disabled)
+							}
+							className={`send-button ${isProcessing ? "stop-mode" : ""}`}
+						>
+							{isProcessing ? (
+								<FiSquare size={16} />
+							) : isLoading ? (
+								<div className="loading-dots">
+									<span>•</span>
+									<span>•</span>
+									<span>•</span>
+								</div>
+							) : (
+								<span
+									style={{
+										fontSize: "10px",
+										fontWeight: 900,
+										color: "#2d2d30",
+									}}
+								>
+									▶
+								</span>
+							)}
+						</button>
+					</div>
 				</div>
 			</div>
 		);

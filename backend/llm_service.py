@@ -84,6 +84,9 @@ class OpenAIProvider(LLMProvider):
     async def generate(self, messages: Sequence[ChatCompletionMessageParam], **kwargs) -> str:
         """Generate with Responses API when available, else fall back to Chat Completions."""
         prepared_kwargs = self._prepare_kwargs(kwargs)
+        # Support per-call model override without mutating provider default
+        model_override = prepared_kwargs.pop("model", None)
+        chosen_model = model_override or self.model
 
         # Try Responses API first
         try:
@@ -92,7 +95,7 @@ class OpenAIProvider(LLMProvider):
                 # The Responses API can accept message-style input
                 responses_kwargs = self._prepare_responses_kwargs(kwargs)
                 resp = await responses_api.create(
-                    model=self.model,
+                    model=chosen_model,
                     input=list(messages),
                     **responses_kwargs
                 )
@@ -140,7 +143,7 @@ class OpenAIProvider(LLMProvider):
         # Fallback to Chat Completions
         cc_kwargs = {k: v for k, v in prepared_kwargs.items() if k not in ("store", "previous_response_id")}
         response = await self.client.chat.completions.create(
-            model=self.model,
+            model=chosen_model,
             messages=list(messages),
             **cc_kwargs
         )
@@ -171,6 +174,9 @@ class OpenAIProvider(LLMProvider):
     async def generate_stream(self, messages: Sequence[ChatCompletionMessageParam], **kwargs):
         """Generate streaming response using Responses API when available, else Chat Completions."""
         prepared_kwargs = self._prepare_kwargs(kwargs)
+        # Support per-call model override without mutating provider default
+        model_override = prepared_kwargs.pop("model", None)
+        chosen_model = model_override or self.model
 
         # Try Responses streaming first
         try:
@@ -181,7 +187,7 @@ class OpenAIProvider(LLMProvider):
                     try:
                         responses_kwargs = self._prepare_responses_kwargs(kwargs)
                         stream_ctx = responses_api.stream(
-                            model=self.model,
+                            model=chosen_model,
                             input=list(messages),
                             **responses_kwargs
                         )
@@ -193,9 +199,24 @@ class OpenAIProvider(LLMProvider):
                                 # Emit text deltas
                                 delta = getattr(event, "delta", None)
                                 if delta and ("output_text" in etype or etype.endswith(".delta")):
-                                    s = str(delta)
-                                    total_text += s
-                                    yield s
+                                    # Robustly extract text from delta across SDK shapes
+                                    s = None
+                                    try:
+                                        s = getattr(delta, "text", None)
+                                    except Exception:
+                                        s = None
+                                    if s is None:
+                                        try:
+                                            # Some SDKs represent delta as dict-like
+                                            s = delta.get("text") if hasattr(delta, "get") else None
+                                        except Exception:
+                                            s = None
+                                    if s is None and isinstance(delta, str):
+                                        s = delta
+                                    if s:
+                                        s = str(s)
+                                        total_text += s
+                                        yield s
                                 # Capture response id if available
                                 try:
                                     resp_obj = getattr(event, "response", None)
@@ -223,7 +244,7 @@ class OpenAIProvider(LLMProvider):
                 if hasattr(responses_api, "create"):
                     responses_kwargs = self._prepare_responses_kwargs(kwargs)
                     resp_stream = await responses_api.create(
-                        model=self.model,
+                        model=chosen_model,
                         input=list(messages),
                         stream=True,
                         **responses_kwargs
@@ -233,9 +254,22 @@ class OpenAIProvider(LLMProvider):
                         etype = getattr(event, "type", "")
                         delta = getattr(event, "delta", None)
                         if delta and ("output_text" in etype or etype.endswith(".delta")):
-                            s = str(delta)
-                            total_text += s
-                            yield s
+                            s = None
+                            try:
+                                s = getattr(delta, "text", None)
+                            except Exception:
+                                s = None
+                            if s is None:
+                                try:
+                                    s = delta.get("text") if hasattr(delta, "get") else None
+                                except Exception:
+                                    s = None
+                            if s is None and isinstance(delta, str):
+                                s = delta
+                            if s:
+                                s = str(s)
+                                total_text += s
+                                yield s
                         # Capture id from streaming events when present
                         try:
                             resp_obj = getattr(event, "response", None)
@@ -264,7 +298,7 @@ class OpenAIProvider(LLMProvider):
         try:
             cc_kwargs = {k: v for k, v in prepared_kwargs.items() if k not in ("store", "previous_response_id")}
             stream = await self.client.chat.completions.create(
-                model=self.model,
+                model=chosen_model,
                 messages=list(messages),
                 stream=True,
                 **cc_kwargs
@@ -531,6 +565,30 @@ class LLMService:
             "limit_tokens": int(self.default_context_tokens),
             "near_limit": False,
         }
+
+    def _resolve_model(self, session_id: Optional[str], requested_model: Optional[str]) -> Optional[str]:
+        """Choose a model for this call, tracking per-session model preference.
+
+        - If a session_id is provided and a requested_model is given, store it for the session and use it.
+        - If a session_id is provided and no model is given, reuse the stored session model if present.
+        - Otherwise, return the requested_model (which may be None) and let the provider default apply.
+        """
+        if not session_id:
+            return requested_model
+        meta = self.session_meta.get(session_id)
+        if meta is None:
+            # Initialize a minimal meta entry if needed
+            self.session_meta[session_id] = {
+                'last_response_id': None,
+                'approx_chars': 0,
+                'approx_tokens': 0,
+            }
+            meta = self.session_meta[session_id]
+        if requested_model:
+            meta['model'] = requested_model
+            return requested_model
+        stored = meta.get('model')
+        return stored if isinstance(stored, str) else requested_model
     
     def _create_provider(self, provider: str, **kwargs) -> Optional[LLMProvider]:
         """Create LLM provider instance."""
@@ -596,7 +654,7 @@ class LLMService:
         except Exception:
             return message
 
-    async def ask(self, question: str, context: str = "", session_id: Optional[str] = None, **kwargs) -> str:
+    async def ask(self, question: str, context: str = "", session_id: Optional[str] = None, model: Optional[str] = None, **kwargs) -> str:
         """General Q&A. Uses provider if available, otherwise a simple fallback."""
         system_prompt = (
             "You are Axon, an expert assistant for answering questions about code, "
@@ -617,6 +675,7 @@ class LLMService:
 
         try:
             session_msgs = self._get_or_init_session(session_id, system_prompt)
+            resolved_model = self._resolve_model(session_id, model)
             if session_msgs is not None:
                 self._append_and_prune(session_id, "user", user_content)
                 response = await self.provider.generate(
@@ -625,6 +684,7 @@ class LLMService:
                     temperature=0.2,
                     store=True,
                     previous_response_id=self._get_previous_response_id(session_id),
+                    model=resolved_model,
                 )
                 self._update_session_usage(session_id)
                 self._append_and_prune(session_id, "assistant", response)
@@ -638,13 +698,14 @@ class LLMService:
                     max_tokens=3000,  # Increased for detailed summaries (was 800)
                     temperature=0.2,
                     store=True,
+                    model=resolved_model,
                 )
                 return response
         except Exception as e:
             print(f"LLMService.ask error: {e}")
             return "Sorry, I couldn't generate an answer right now. Please try again."
 
-    async def ask_stream(self, question: str, context: str = "", session_id: Optional[str] = None, **kwargs):
+    async def ask_stream(self, question: str, context: str = "", session_id: Optional[str] = None, model: Optional[str] = None, **kwargs):
         """Streaming Q&A. Yields text chunks from the provider.
 
         We hint the model to separate internal reasoning using <thinking> tags
@@ -667,6 +728,7 @@ class LLMService:
 
         try:
             session_msgs = self._get_or_init_session(session_id, system_prompt)
+            resolved_model = self._resolve_model(session_id, model)
             total = ""
             if session_msgs is not None:
                 self._append_and_prune(session_id, "user", user_content)
@@ -676,6 +738,7 @@ class LLMService:
                     temperature=0.2,
                     store=True,
                     previous_response_id=self._get_previous_response_id(session_id),
+                    model=resolved_model,
                 ):
                     if chunk:
                         total += chunk
@@ -691,6 +754,7 @@ class LLMService:
                     max_tokens=3000,  # Increased for detailed summaries (was 900)
                     temperature=0.2,
                     store=True,
+                    model=resolved_model,
                 ):
                     if chunk:
                         yield chunk
@@ -767,7 +831,8 @@ Simplified query:"""
         task_description: str, 
         language: str = "python",
         context: Optional[str] = None,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        model: Optional[str] = None
     ) -> str:
         """Generate code for a given task description."""
         if not self.provider:
@@ -784,13 +849,14 @@ Language: {language}
 
 Requirements:
 - Write only the code, no explanations
-- Include only necessary imports actually used by the code
+- Include only imports actually used by the code
 - Do NOT re-import packages already imported in the Context above
-- Add comments for clarity
-- Handle errors gracefully
+- Be concise: use minimal comments only when truly helpful
+- Avoid broad try/except; only guard truly optional I/O (e.g., existence checks)
+- Keep logging minimal (at most 1–2 print statements)
 - Follow Python best practices
 - Respect any dataset access instructions found in CONTEXT. If CONTEXT specifies that data was
-  already downloaded to a local folder (e.g., data_dir = Path('data')) or that dataset variables
+  already downloaded to a local folder (e.g., a specific data_dir) or that dataset variables
   were preloaded, do not attempt to download files again. Load data exactly as instructed by CONTEXT.
 
 Code:
@@ -799,6 +865,7 @@ Code:
         try:
             system_prompt = "You are an expert Python programmer. Generate only code, no explanations."
             session_msgs = self._get_or_init_session(session_id, system_prompt)
+            resolved_model = self._resolve_model(session_id, model)
             if session_msgs is not None:
                 self._append_and_prune(session_id, "user", prompt)
                 response = await self.provider.generate(
@@ -807,6 +874,7 @@ Code:
                     temperature=0.1,
                     store=True,
                     previous_response_id=self._get_previous_response_id(session_id),
+                    model=resolved_model,
                 )
                 self._update_session_usage(session_id)
                 self._append_and_prune(session_id, "assistant", response)
@@ -814,7 +882,7 @@ Code:
                 response = await self.provider.generate([
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
-                ], max_tokens=2000, temperature=0.1, store=True)
+                ], max_tokens=2000, temperature=0.1, store=True, model=resolved_model)
             return self.extract_python_code(response) or self._generate_fallback_code(task_description, language)
             
         except Exception as e:
@@ -827,7 +895,8 @@ Code:
         language: str = "python",
         context: Optional[str] = None,
         notebook_edit: bool = False,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        model: Optional[str] = None
     ):
         """Generate code with streaming for a given task description."""
         
@@ -859,44 +928,38 @@ CRITICAL RULES FOR NOTEBOOK EDITING:
 Generate the replacement code now:
 """
         else:
-            # Enhanced prompt with better structure and examples for full code generation
+            # Enhanced prompt with better structure for full code generation (concise style)
             prompt = f"""
 You are an expert Python programmer specializing in data analysis and bioinformatics.
-Generate clean, well-documented, EXECUTABLE code for the following task.
+Generate concise, executable code for the following task.
 
 TASK: {task_description}
 LANGUAGE: {language}
 
 {f"CONTEXT: {context}" if context else ""}
 
-CRITICAL REQUIREMENTS:
-1. Write ONLY executable Python code — NO explanations, markdown, or non-code text
-2. Include only the imports actually used in your code
-3. Do NOT re-import packages that are already imported in the CONTEXT
-4. Add clear comments explaining each step
-5. Handle errors gracefully with try-except blocks
-6. Follow Python best practices
-7. Make the code production-ready and biologically meaningful
-8. Include print statements to show progress
-9. Save outputs to appropriate directories (results/, figures/, etc.)
-10. Use simple print formatting: print("Value:", value)
-11. Ensure all strings are properly closed and escaped
+CRITICAL REQUIREMENTS (concise):
+1. Return ONLY Python code — no markdown or prose
+2. Include only used imports; do NOT re-import items already in CONTEXT
+3. Be terse: a few short comments only when necessary
+4. Avoid broad try/except; let exceptions surface unless handling specific, likely cases (e.g., missing file)
+5. Limit prints to at most 1–2 lines total
+6. Save outputs to appropriate directories (results/, figures/) without extra wrappers
+7. Ensure valid syntax; no trailing prose or fences
 
 DATASET ACCESS RULES (DEFER TO CONTEXT):
 - If CONTEXT specifies how to access data (e.g., a 'DATA ACCESS CONTEXT' section, preloaded dataset
   variables, or 'data_dir = Path("data")' with specific filenames), you MUST follow that pattern.
 - Do NOT download data again if previous steps already handled downloading or loading.
-- For remote datasets: assume files are present under 'data/' as instructed by CONTEXT; verify file
-  existence before reading; if missing, print a clear warning and continue without downloading.
+- For remote datasets: assume files are present under the specified data_dir in CONTEXT; if missing, raise a clear FileNotFoundError (do not re-download).
 - For local datasets: assume variables are already loaded when CONTEXT indicates so; do not rebuild
   paths or reload unless the TASK explicitly requests it.
 - Only perform network downloads if the TASK explicitly states to download and CONTEXT does not
   already include download/setup code for the same data.
 
-ERROR HANDLING:
-- Wrap I/O in try-except blocks; print meaningful error messages
-- Validate file existence and format before processing
-- Continue execution when possible and report missing inputs clearly
+ERROR HANDLING (minimal):
+- Avoid wrapping whole cells in try/except
+- If you must guard, check file existence explicitly, or catch the specific expected exception only
 
 CODE STRUCTURE:
 1. Imports actually used (avoid duplicates w.r.t. CONTEXT)
@@ -933,6 +996,7 @@ Generate the code now:
             # Session-aware: build/extend the conversation
             system_prompt = "You are an expert Python programmer specializing in bioinformatics and data analysis. Generate ONLY executable Python code, importing only modules actually used. Do not re-import packages already present in the provided CONTEXT. Never include explanations, markdown, or non-code text. Avoid complex f-strings and ensure all syntax is correct. Always include error handling and proper directory structure."
             session_msgs = self._get_or_init_session(session_id, system_prompt)
+            resolved_model = self._resolve_model(session_id, model)
             total = ""
             if session_msgs is not None:
                 self._append_and_prune(session_id, "user", prompt)
@@ -942,6 +1006,7 @@ Generate the code now:
                     temperature=0.1,
                     store=True,
                     previous_response_id=self._get_previous_response_id(session_id),
+                    model=resolved_model,
                 ):
                     if chunk:
                         total += chunk
@@ -952,7 +1017,7 @@ Generate the code now:
                 async for chunk in self.provider.generate_stream([
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
-                ], max_tokens=3000, temperature=0.1, store=True):
+                ], max_tokens=3000, temperature=0.1, store=True, model=resolved_model):
                     yield chunk
                 
         except Exception as e:

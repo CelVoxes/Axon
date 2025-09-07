@@ -97,11 +97,11 @@ export class DatasetResolutionService {
 
 		// Resolve only @-style tokens and explicit notebook path references here.
 		// Avoid re-processing #N/#all hash tokens which were already handled above.
-		if (tokens.length > 0) {
-			const registry = this.localRegistry;
-			for (const token of tokens) {
-				// Heuristic: consider anything with a slash or starting with / as a path
-				const looksLikePath = token.startsWith("/") || token.includes("/");
+        if (tokens.length > 0) {
+            const registry = this.localRegistry;
+            for (const token of tokens) {
+                // Heuristic: consider anything with a slash or starting with / as a path
+                const looksLikePath = token.startsWith("/") || token.includes("/");
 				// Handle notebook cell reference like path.ipynb#3
 				const cellRefMatch = token.match(/^(.*\.ipynb)#(\d+)$/i);
 				if (cellRefMatch) {
@@ -145,12 +145,41 @@ export class DatasetResolutionService {
 					// skip normal path handling for cell references
 					continue;
 				}
-				if (!looksLikePath) continue;
+                if (!looksLikePath) {
+                    // Fallback: try to resolve bare aliases to real paths in workspace or its parent
+                    try {
+                        const candidates: string[] = [];
+                        if (currentWorkspace) {
+                            candidates.push(`${currentWorkspace}/${token}`);
+                            // Also try parent directory of the workspace (common layout: data lives next to analysis)
+                            const parts = currentWorkspace.split("/").filter(Boolean);
+                            if (parts.length > 0) {
+                                const parent = "/" + parts.slice(0, parts.length - 1).join("/");
+                                if (parent && parent !== currentWorkspace) {
+                                    candidates.push(`${parent}/${token}`);
+                                }
+                            }
+                        }
+                        for (const cand of candidates) {
+                            try {
+                                const info = await electronAPI.getFileInfo(cand);
+                                if (info?.success && info.data) {
+                                    if (registry) {
+                                        const entry = await registry.addFromPath(cand, token);
+                                        if (entry) workspaceResolved.push(entry);
+                                        break; // stop after first resolution
+                                    }
+                                }
+                            } catch (_) {}
+                        }
+                    } catch (_) {}
+                    continue;
+                }
 
-				const candidatePath = token.startsWith("/")
-					? token
-					: currentWorkspace
-					? `${currentWorkspace}/${token}`
+                const candidatePath = token.startsWith("/")
+                    ? token
+                    : currentWorkspace
+                    ? `${currentWorkspace}/${token}`
 					: "";
 				if (!candidatePath) continue;
 

@@ -262,9 +262,15 @@ export const electronAPI = {
 	 */
 	async executeJupyterCode(
 		code: string,
-		workspacePath?: string
+		workspacePath?: string,
+		executionId?: string
 	): Promise<{ success: boolean; data?: any; error?: string }> {
-		return safeElectronAPICall<any>("executeJupyterCode", code, workspacePath);
+		return safeElectronAPICall<any>(
+			"executeJupyterCode",
+			code,
+			workspacePath,
+			executionId
+		);
 	},
 
 	/**

@@ -358,17 +358,18 @@ export class EnvironmentManager {
 					mentionsSingleCell(plat)
 				);
 			});
-		if (needsScanpy) {
-			requiredPackages.add("scanpy");
-			requiredPackages.add("anndata");
-			requiredPackages.add("scipy");
-			// Common extras used in single-cell workflows
-			requiredPackages.add("leidenalg");
-			requiredPackages.add("umap-learn");
-			requiredPackages.add("scikit-learn");
-			requiredPackages.add("seaborn");
-			requiredPackages.add("plotly");
-		}
+        if (needsScanpy) {
+            requiredPackages.add("scanpy");
+            requiredPackages.add("anndata");
+            requiredPackages.add("scipy");
+            // Common extras used in single-cell workflows
+            // Avoid heavyweight/compiled dependencies prone to install failures (e.g., leidenalg/igraph)
+            // Prefer scikit-learn clustering instead of sc.tl.leiden/louvain
+            requiredPackages.add("umap-learn");
+            requiredPackages.add("scikit-learn");
+            requiredPackages.add("seaborn");
+            requiredPackages.add("plotly");
+        }
 
 		console.log(
 			"📦 Packages for notebook cell installation:",

@@ -265,8 +265,9 @@ export const CodeBlockCode = styled.code<{ $wrap?: boolean }>`
 	font-size: inherit; /* Inherit from container to ensure consistency */
 	line-height: 1.4;
 	background: transparent;
-	white-space: inherit;
-	word-break: inherit;
+	/* Ensure line breaks are preserved regardless of upstream styles */
+	white-space: ${({ $wrap = true }) => ($wrap ? "pre-wrap" : "pre")};
+	word-break: ${({ $wrap = true }) => ($wrap ? "break-word" : "normal")};
 
 	/* Ensure hljs styles take precedence */
 	&.hljs {

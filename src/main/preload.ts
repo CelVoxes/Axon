@@ -1,5 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron";
 
+// Keep track of specific IPC handlers so we can remove them precisely
+const jupyterCodeWritingHandlers = new WeakMap<
+    (data: any) => void,
+    (_: Electron.IpcRendererEvent, data: any) => void
+>();
+
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld("electronAPI", {
@@ -54,8 +60,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		ipcRenderer.invoke("jupyter-start", workingDir),
 	stopJupyter: () => ipcRenderer.invoke("jupyter-stop"),
 	checkJupyterStatus: () => ipcRenderer.invoke("jupyter-status"),
-	executeJupyterCode: (code: string, workspacePath?: string) =>
-		ipcRenderer.invoke("jupyter-execute", code, workspacePath),
+	executeJupyterCode: (code: string, workspacePath?: string, executionId?: string) =>
+		ipcRenderer.invoke("jupyter-execute", code, workspacePath, executionId),
 	interruptJupyter: (workspacePath?: string) =>
 		ipcRenderer.invoke("jupyter-interrupt", workspacePath),
 	createVirtualEnv: (workspacePath: string) =>
@@ -110,7 +116,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		ipcRenderer.on("virtual-env-status", (_, data) => callback(data));
 	},
 	onJupyterCodeWriting: (callback: (data: any) => void) => {
-		ipcRenderer.on("jupyter-code-writing", (_, data) => callback(data));
+		const handler = (_: Electron.IpcRendererEvent, data: any) => callback(data);
+		jupyterCodeWritingHandlers.set(callback, handler);
+		ipcRenderer.on("jupyter-code-writing", handler);
+	},
+	offJupyterCodeWriting: (callback: (data: any) => void) => {
+		const handler = jupyterCodeWritingHandlers.get(callback);
+		if (handler) {
+			ipcRenderer.removeListener("jupyter-code-writing", handler);
+			jupyterCodeWritingHandlers.delete(callback);
+		}
 	},
 
 	// SSH operations

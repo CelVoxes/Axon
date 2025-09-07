@@ -1,9 +1,10 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useMemo } from "react";
 import { FiCopy, FiChevronDown, FiChevronUp } from "react-icons/fi";
 import "highlight.js/styles/github-dark.css";
 
 import type { CodeBlockProps } from "./CodeBlockTypes";
 import { useCodeHighlight } from "./hooks/useCodeHighlight";
+import { ensureDisplayNewlines } from "../../../utils/CodeTextUtils";
 import { useCodeStreaming } from "./hooks/useCodeStreaming";
 import { parseDiffContent, getDiffStats } from "./utils/diffRenderer";
 import {
@@ -39,19 +40,21 @@ const InlineCodeBlock: React.FC<
 
 // Chat message code block variant
 const ChatCodeBlock: React.FC<Extract<CodeBlockProps, { variant: "chat" }>> = ({
-	code,
-	language = "text",
-	title,
-	isStreaming = false,
-	className,
+    code,
+    language = "text",
+    title,
+    isStreaming = false,
+    className,
 }) => {
-	const [isExpanded, setIsExpanded] = useState(false);
-	const [copied, setCopied] = useState(false);
-	const { codeRef } = useCodeHighlight({ code, language, isStreaming });
+    // Defensive normalization: convert any escaped newlines ("\\n") into real newlines
+    const displayCode = useMemo(() => ensureDisplayNewlines(String(code || "")), [code]);
+    const [isExpanded, setIsExpanded] = useState(false);
+    const [copied, setCopied] = useState(false);
+    const { codeRef } = useCodeHighlight({ code: displayCode, language, isStreaming });
 
 	const copyToClipboard = useCallback(async () => {
 		try {
-			await navigator.clipboard.writeText(code);
+            await navigator.clipboard.writeText(displayCode);
 			setCopied(true);
 			setTimeout(() => setCopied(false), 2000);
 		} catch (error) {
@@ -60,10 +63,10 @@ const ChatCodeBlock: React.FC<Extract<CodeBlockProps, { variant: "chat" }>> = ({
 	}, [code]);
 
 	// Special handling for lint blocks
-	if (language === "lint") {
-		const lines = code.split(/\r?\n/);
-		const summaryLine = lines[0];
-		const content = lines.slice(1).join("\n");
+    if (language === "lint") {
+        const lines = code.split(/\r?\n/);
+        const summaryLine = lines[0];
+        const content = lines.slice(1).join("\n");
 
 		const headerTitle = summaryLine.replace(/^LINT_SUMMARY:\s*/i, "").trim();
 
@@ -150,31 +153,32 @@ const ChatCodeBlock: React.FC<Extract<CodeBlockProps, { variant: "chat" }>> = ({
 			<CodeBlockContent $variant="chat">
 				<CodeBlockPre>
 					<CodeBlockCode ref={codeRef} className={`hljs language-${language}`}>
-						{code}
-					</CodeBlockCode>
-				</CodeBlockPre>
-			</CodeBlockContent>
-		</CodeBlockContainer>
-	);
+                    {displayCode}
+                </CodeBlockCode>
+            </CodeBlockPre>
+        </CodeBlockContent>
+    </CodeBlockContainer>
+);
 };
 
 // Full expandable code block variant
 const ExpandableCodeBlock: React.FC<
-	Extract<CodeBlockProps, { variant: "expandable" }>
+    Extract<CodeBlockProps, { variant: "expandable" }>
 > = ({
-	code,
-	language = "python",
-	title,
-	isStreaming = false,
-	showCopyButton = true,
-	maxHeight = 400,
-	className,
+    code,
+    language = "python",
+    title,
+    isStreaming = false,
+    showCopyButton = true,
+    maxHeight = 400,
+    className,
 }) => {
-	const [isExpanded, setIsExpanded] = useState(isStreaming);
-	const [copied, setCopied] = useState(false);
-	const [wrap, setWrap] = useState(true);
+    const displayCode = useMemo(() => ensureDisplayNewlines(String(code || "")), [code]);
+    const [isExpanded, setIsExpanded] = useState(isStreaming);
+    const [copied, setCopied] = useState(false);
+    const [wrap, setWrap] = useState(true);
 
-	const { codeRef } = useCodeHighlight({ code, language, isStreaming });
+    const { codeRef } = useCodeHighlight({ code: displayCode, language, isStreaming });
 	const { scrollContainerRef, isScrollPaused } = useCodeStreaming({
 		isStreaming,
 		code,
@@ -183,7 +187,7 @@ const ExpandableCodeBlock: React.FC<
 
 	const copyToClipboard = useCallback(async () => {
 		try {
-			await navigator.clipboard.writeText(code);
+            await navigator.clipboard.writeText(displayCode);
 			setCopied(true);
 			setTimeout(() => setCopied(false), 2000);
 		} catch (error) {
@@ -233,13 +237,13 @@ const ExpandableCodeBlock: React.FC<
 						$hasContent={Boolean(code)}
 					>
 						<CodeBlockPre $wrap={wrap}>
-							<CodeBlockCode
-								ref={codeRef}
-								className={`hljs language-${language}`}
-								$wrap={wrap}
-							>
-								{code}
-							</CodeBlockCode>
+                        <CodeBlockCode
+                            ref={codeRef}
+                            className={`hljs language-${language}`}
+                            $wrap={wrap}
+                        >
+                            {displayCode}
+                        </CodeBlockCode>
 						</CodeBlockPre>
 					</CodeBlockContent>
 
@@ -258,15 +262,16 @@ const ExpandableCodeBlock: React.FC<
 
 // Streaming code block variant
 const StreamingCodeBlock: React.FC<
-	Extract<CodeBlockProps, { variant: "streaming" }>
+    Extract<CodeBlockProps, { variant: "streaming" }>
 > = ({
-	code,
-	language = "python",
-	autoScroll = true,
-	onStreamingComplete,
-	className,
+    code,
+    language = "python",
+    autoScroll = true,
+    onStreamingComplete,
+    className,
 }) => {
-	const { codeRef } = useCodeHighlight({ code, language, isStreaming: true });
+    const displayCode = useMemo(() => ensureDisplayNewlines(String(code || "")), [code]);
+    const { codeRef } = useCodeHighlight({ code: displayCode, language, isStreaming: true });
 	const { scrollContainerRef } = useCodeStreaming({
 		isStreaming: true,
 		code,
@@ -283,9 +288,9 @@ const StreamingCodeBlock: React.FC<
 				$hasContent={Boolean(code)}
 			>
 				<CodeBlockPre>
-					<CodeBlockCode ref={codeRef} className={`hljs language-${language}`}>
-						{code}
-					</CodeBlockCode>
+                <CodeBlockCode ref={codeRef} className={`hljs language-${language}`}>
+                    {displayCode}
+                </CodeBlockCode>
 				</CodeBlockPre>
 			</CodeBlockContent>
 		</CodeBlockContainer>

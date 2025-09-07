@@ -33,7 +33,8 @@ export class JupyterService {
 	 */
 	async executeCode(
 		code: string,
-		workspacePath: string
+		workspacePath: string,
+		executionId?: string
 	): Promise<JupyterExecutionResult> {
 		try {
 			console.log(`🎯 Executing code in workspace: ${workspacePath}`);
@@ -43,13 +44,14 @@ export class JupyterService {
 				code: code,
 				timestamp: new Date().toISOString(),
 				type: "full_code",
+				executionId,
 			});
 
 			// Create or get existing kernel
 			const kernelId = await this.getOrCreateKernel(workspacePath);
 
 			// Execute code via WebSocket
-			const result = await this.executeCodeInKernel(code, kernelId);
+			const result = await this.executeCodeInKernel(code, kernelId, executionId);
 
 			return result;
 		} catch (error) {
@@ -160,7 +162,8 @@ export class JupyterService {
 	 */
 	private async executeCodeInKernel(
 		code: string,
-		kernelId: string
+		kernelId: string,
+		executionId?: string
 	): Promise<JupyterExecutionResult> {
 		const WebSocket = require("ws");
 		const { v4: uuidv4 } = require("uuid");
@@ -183,6 +186,9 @@ export class JupyterService {
 					`🔄 WebSocket connection attempt ${attempt}/${this.config.maxRetryAttempts}`
 				);
 				const ws = new WebSocket(wsUrl);
+
+				// Track the msg_id for this execute_request so we filter messages correctly
+				let currentMsgId: string | null = null;
 
 				// Reset execution timeout on activity
 				const resetExecutionTimeout = () => {
@@ -219,6 +225,7 @@ export class JupyterService {
 
 					// Send execute request
 					const msgId = uuidv4();
+					currentMsgId = msgId;
 					const executeRequest = {
 						header: {
 							msg_id: msgId,
@@ -281,6 +288,10 @@ export class JupyterService {
 				ws.on("message", (data: any) => {
 					try {
 						const msg = JSON.parse(data.toString());
+						const parentId = msg?.parent_header?.msg_id;
+						if (!parentId || (currentMsgId && parentId !== currentMsgId)) {
+							return; // ignore unrelated messages from other executions
+						}
 
 						// Handle different message types
 						if (msg.parent_header && msg.header?.msg_type === "stream") {
@@ -291,6 +302,7 @@ export class JupyterService {
 								code: output,
 								timestamp: new Date().toISOString(),
 								type: "stream",
+								executionId,
 							});
 							resetExecutionTimeout();
 						} else if (
@@ -308,6 +320,7 @@ export class JupyterService {
 										code: output,
 										timestamp: new Date().toISOString(),
 										type: "stream",
+										executionId,
 									});
 								}
 								resetExecutionTimeout();

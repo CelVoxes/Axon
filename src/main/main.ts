@@ -2046,7 +2046,12 @@ export class AxonApp {
 
 		ipcMain.handle(
 			"jupyter-execute",
-			async (_, code: string, workspacePath?: string) => {
+			async (
+				_,
+				code: string,
+				workspacePath?: string,
+				executionId?: string
+			) => {
 				try {
 					console.log(`🎯 jupyter-execute called with workspacePath: ${workspacePath}`);
 					
@@ -2062,7 +2067,11 @@ export class AxonApp {
 					}
 
 					// Delegate to centralized service
-					return await this.executeCodeUsingCentralizedService(code, workspacePath);
+					return await this.executeCodeUsingCentralizedService(
+						code,
+						workspacePath,
+						executionId
+					);
 				} catch (error) {
 					console.error("Jupyter execution error:", error);
 					return {
@@ -2192,7 +2201,8 @@ export class AxonApp {
 	 */
 	private async executeCodeUsingCentralizedService(
 		code: string,
-		workspacePath?: string
+		workspacePath?: string,
+		executionId?: string
 	): Promise<{ success: boolean; output?: string; error?: string }> {
 		try {
 			// Use simplified kernel approach with dynamic kernel discovery
@@ -2201,7 +2211,8 @@ export class AxonApp {
 			// Use centralized JupyterService for execution
 			return await this.jupyterService.executeCode(
 				code,
-				workspacePath || process.cwd()
+				workspacePath || process.cwd(),
+				executionId
 			);
 		} catch (error) {
 			console.error("Centralized service execution error:", error);

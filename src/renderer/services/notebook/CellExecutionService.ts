@@ -26,7 +26,12 @@ async function runNotebookStep(
 		let accumulatedOutput = "";
 		const streamHandler = (data: any) => {
 			try {
-				if (data && data.type === "stream" && typeof data.code === "string") {
+				if (
+					data &&
+					data.type === "stream" &&
+					typeof data.code === "string" &&
+					data.executionId === stepId
+				) {
 					accumulatedOutput = data.code;
 					update({ output: accumulatedOutput, error: null, isStream: true });
 				}
@@ -43,9 +48,11 @@ async function runNotebookStep(
 				try {
 					// Prefer precise cleanup when supported
 					// @ts-ignore
-					if (window.electronAPI?.removeAllListeners) {
-						// Remove only our handler by clearing and re-attaching would require channel-level api;
-						// fall back to removeAllListeners only when no other consumer is expected.
+					if (typeof window.electronAPI?.offJupyterCodeWriting === "function") {
+						// @ts-ignore
+						window.electronAPI.offJupyterCodeWriting(streamHandler);
+					} else if (window.electronAPI?.removeAllListeners) {
+						// Fallback: remove all if precise removal not available
 						window.electronAPI.removeAllListeners("jupyter-code-writing");
 					}
 				} catch (_) {}
@@ -56,7 +63,8 @@ async function runNotebookStep(
 		// @ts-ignore
 		const result = await window.electronAPI.executeJupyterCode(
 			code,
-			workspacePath
+			workspacePath,
+			stepId
 		);
 
 		console.log(`Jupyter execution result:`, result);

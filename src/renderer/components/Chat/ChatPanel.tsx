@@ -28,6 +28,7 @@ import { SearchProgress as SearchProgressView } from "./Status/SearchProgress";
 import { EnvironmentStatus } from "./Status/EnvironmentStatus";
 import { AutonomousAgent } from "../../services/analysis/AutonomousAgent";
 import { NotebookCodeGenerationService } from "../../services/notebook/NotebookCodeGenerationService";
+import { ensureDisplayNewlines } from "../../utils/CodeTextUtils";
 import {
 	LocalDatasetRegistry,
 	LocalDatasetEntry,
@@ -113,6 +114,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		cancelProcessingStop,
 		resetLoadingState,
 	} = useChatUIState();
+
+	// Track the latest progress message to guard against out-of-order status updates
+	const progressMsgRef = useRef<string>("");
+	useEffect(() => {
+		progressMsgRef.current = progressMessage || "";
+	}, [progressMessage]);
 
 	const inputValueRef = React.useRef<string>("");
 	const localRegistryRef = useRef<LocalDatasetRegistry | null>(null);
@@ -221,37 +228,39 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		});
 	}, [analysisDispatch]);
 
-	const enqueueStreamingUpdate = useCallback(
-		(stepId: string, content: string) => {
-			const state = rafStateRef.current;
-			if (!state.isMounted) return;
+    const enqueueStreamingUpdate = useCallback(
+        (stepId: string, content: string) => {
+            // Normalize any escaped newlines to real newlines before diffing/updating
+            const normalized = ensureDisplayNewlines(String(content));
+            const state = rafStateRef.current;
+            if (!state.isMounted) return;
 
 			// Only update if content has actually changed to prevent flickering
-			const currentPending = state.pending[stepId];
-			if (currentPending === content) return;
+            const currentPending = state.pending[stepId];
+            if (currentPending === normalized) return;
 
 			// Also check if the content is already in the current message
 			const stream = activeStreams.get(stepId);
-			if (stream) {
-				const currentMessage = analysisState.messages.find(
-					(m) => m.id === stream.messageId
-				);
-				if (currentMessage && currentMessage.code === content) return;
-				
-				// Only update if there's substantial content change (reduces micro-updates)
-				if (currentMessage && currentMessage.code) {
-					const lengthDiff = Math.abs(content.length - currentMessage.code.length);
-					if (lengthDiff < 50 && content.length > 100) {
-						return;
-					}
-				}
-			}
+            if (stream) {
+                const currentMessage = analysisState.messages.find(
+                    (m) => m.id === stream.messageId
+                );
+                if (currentMessage && currentMessage.code === normalized) return;
+                
+                // Only update if there's substantial content change (reduces micro-updates)
+                if (currentMessage && currentMessage.code) {
+                    const lengthDiff = Math.abs(normalized.length - currentMessage.code.length);
+                    if (lengthDiff < 50 && content.length > 100) {
+                        return;
+                    }
+                }
+            }
 
-			state.pending[stepId] = content;
-			scheduleRafUpdate();
-		},
-		[scheduleRafUpdate, analysisState.messages]
-	);
+            state.pending[stepId] = normalized;
+            scheduleRafUpdate();
+        },
+        [scheduleRafUpdate, analysisState.messages]
+    );
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const chatContainerRef = useRef<HTMLDivElement>(null);
 	const chatAutoScrollRef = useRef<boolean>(true);
@@ -589,8 +598,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				setProgressMessage("Thinking...");
 
 				let accumulated = "";
+				const chatId = (analysisState as any).activeChatSessionId || 'global';
+				const wsDir = workspaceState.currentWorkspace || '';
+				const sessionId = `session:${wsDir}:${chatId}`;
 				await backendClient!.askQuestionStream(
-					{ question: userMessage, context },
+					{ question: userMessage, context, sessionId },
 					(evt: any) => {
 						if (!isMounted) return;
 						try {
@@ -1425,6 +1437,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
                     sessionId
                 );
 				agent.setStatusCallback((status) => {
+					// Guard against stale "... cell added" messages overwriting a fresh "Generating:" status
+					const prev = progressMsgRef.current || "";
+					const isGenerating = /^Generating:/i.test(prev);
+					const isCellAdded = /cell added$/i.test(status) || /Added analysis step/i.test(status);
+					if (isGenerating && isCellAdded) {
+						return; // Ignore stale completion status while a new generation is in progress
+					}
+
 					setProgressMessage(status);
 					analysisDispatch({ type: "SET_ANALYSIS_STATUS", payload: status });
 					// Only add important status updates to chat, not every minor update
@@ -2179,7 +2199,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				{isProcessing && (
 					<ProcessingIndicator
 						text={
-							analysisState.analysisStatus || progressMessage || "Processing"
+							progressMessage || analysisState.analysisStatus || "Processing"
 						}
 					/>
 				)}
@@ -2700,7 +2720,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 			{MessagesView}
 
-			<Composer
+			{/* Compute session id for consistent LLM context usage */}
+			{(() => {
+				const chatId = (analysisState as any).activeChatSessionId || "global";
+				const wsDir = workspaceState.currentWorkspace || "";
+				const sessionId = `session:${wsDir}:${chatId}`;
+				return (
+					<Composer
 				ref={composerRef}
 				value={inputValue}
 				onChange={handleComposerChange}
@@ -2721,7 +2747,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					setMentionOpen(false);
 					setMentionQuery("");
 				}}
+				sessionId={sessionId}
 			/>
+				);
+			})()}
 
 			{/* @ mention suggestions menu */}
 			<MentionSuggestions

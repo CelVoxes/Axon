@@ -690,16 +690,9 @@ async def simplify_query(request: QuerySimplificationRequest, user=Depends(get_c
 async def generate_code(request: dict, user=Depends(get_current_user)):
     """Generate code for a given task."""
     try:
-        # Support per-request model override
+        # Support per-request model override, but keep a shared service instance
+        llm_service = get_llm_service()
         model = request.get("model")
-        if model:
-            llm_service = get_llm_service()
-            # Recreate provider with the selected model if possible
-            # Note: For simplicity, we create a new service instance when model is provided
-            from .llm_service import LLMService
-            llm_service = LLMService(provider="openai", model=model)
-        else:
-            llm_service = get_llm_service()
         task_description = request.get("task_description", "")
         language = request.get("language", "python")
         context = request.get("context", "")
@@ -711,7 +704,8 @@ async def generate_code(request: dict, user=Depends(get_current_user)):
             task_description=task_description,
             language=language,
             context=context,
-            session_id=request.get("session_id") if isinstance(request, dict) else getattr(request, "session_id", None)
+            session_id=request.get("session_id") if isinstance(request, dict) else getattr(request, "session_id", None),
+            model=model,
         )
         
         # Log usage
@@ -753,13 +747,9 @@ async def generate_code(request: dict, user=Depends(get_current_user)):
 async def generate_code_stream(request: dict, user=Depends(get_current_user)):
     """Generate code with streaming for a given task."""
     try:
-        # Support per-request model override
+        # Support per-request model override but reuse shared service instance
+        llm_service = get_llm_service()
         model = request.get("model")
-        if model:
-            from .llm_service import LLMService
-            llm_service = LLMService(provider="openai", model=model)
-        else:
-            llm_service = get_llm_service()
         task_description = request.get("task_description", "")
         language = request.get("language", "python")
         context = request.get("context", "")
@@ -778,7 +768,8 @@ async def generate_code_stream(request: dict, user=Depends(get_current_user)):
                     task_description=task_description,
                     language=language,
                     context=context,
-                    session_id=request.get("session_id") if isinstance(request, dict) else getattr(request, "session_id", None)
+                    session_id=request.get("session_id") if isinstance(request, dict) else getattr(request, "session_id", None),
+                    model=model,
                 ):
                     if chunk:  # Only yield non-empty chunks
                         yield f"data: {json.dumps({'chunk': chunk})}\n\n"

@@ -18,7 +18,10 @@ import {
 } from "../../utils/ImportUtils";
 import { Logger } from "../../utils/Logger";
 import { ScanpyDocsService } from "../backend/ScanpyDocsService";
-import { extractPythonCode as extractPythonCodeUtil } from "../../utils/CodeTextUtils";
+import {
+	extractPythonCode as extractPythonCodeUtil,
+	stripCodeFences,
+} from "../../utils/CodeTextUtils";
 import { buildDatasetSnapshot } from "../tools/DataSnapshotService";
 
 export class CodeGenerationService implements ICodeGenerator {
@@ -42,10 +45,90 @@ export class CodeGenerationService implements ICodeGenerator {
 	}
 
 	private buildSessionId(request: CodeGenerationRequest): string {
-		const sessionId = this.sessionOverride && this.sessionOverride.trim() ? this.sessionOverride : 
-			(request.workingDir || "").trim() ? `session:${request.workingDir}` : `session:default`;
+		const sessionId =
+			this.sessionOverride && this.sessionOverride.trim()
+				? this.sessionOverride
+				: (request.workingDir || "").trim()
+				? `session:${request.workingDir}`
+				: `session:default`;
 		console.log(`🔧 CodeGenerationService: Using session ID: ${sessionId}`);
 		return sessionId;
+	}
+
+	// --- Path utilities for robust data_dir resolution ---
+	private normalizePath(p?: string | null): string {
+		if (!p) return "";
+		let s = String(p);
+		// Normalize slashes and trim
+		s = s.replace(/\\/g, "/");
+		s = s.replace(/\/+$/g, "");
+		return s;
+	}
+
+	private dirname(p: string): string {
+		const s = this.normalizePath(p);
+		const idx = s.lastIndexOf("/");
+		return idx > 0 ? s.slice(0, idx) : s;
+	}
+
+	private commonAncestor(paths: string[]): string | null {
+		if (!paths || paths.length === 0) return null;
+		const parts = paths
+			.map((p) => this.normalizePath(p).split("/").filter(Boolean))
+			.filter((arr) => arr.length > 0);
+		if (parts.length === 0) return null;
+		let i = 0;
+		while (true) {
+			const token = parts[0][i];
+			if (!token) break;
+			if (!parts.every((arr) => arr[i] === token)) break;
+			i++;
+		}
+		if (i === 0) return "/"; // no common prefix beyond root
+		return parts[0].slice(0, i).join("/") || "/";
+	}
+
+	private relativePath(from: string, to: string): string {
+		const fromParts = this.normalizePath(from).split("/").filter(Boolean);
+		const toParts = this.normalizePath(to).split("/").filter(Boolean);
+		let i = 0;
+		while (
+			i < fromParts.length &&
+			i < toParts.length &&
+			fromParts[i] === toParts[i]
+		) {
+			i++;
+		}
+		const up = fromParts.slice(i).map(() => "..");
+		const down = toParts.slice(i);
+		const rel = [...up, ...down].join("/") || ".";
+		return rel.startsWith(".") ? rel : `./${rel}`;
+	}
+
+	private computeRecommendedDataDir(
+		datasets: any[],
+		workingDir?: string
+	): { path?: string; isRelative?: boolean } {
+		try {
+			const dirs: string[] = [];
+			for (const d of datasets || []) {
+				const lp: string | undefined = (d as any)?.localPath;
+				if (!lp) continue;
+				const norm = this.normalizePath(lp);
+				// If it's a file, use its parent directory; else assume directory
+				const dir = /\.[A-Za-z0-9]+$/.test(norm) ? this.dirname(norm) : norm;
+				dirs.push(dir);
+			}
+			if (dirs.length === 0) return {};
+			const common = this.commonAncestor(dirs) || dirs[0];
+			if (workingDir) {
+				const rel = this.relativePath(workingDir, common);
+				return { path: rel, isRelative: true };
+			}
+			return { path: common, isRelative: false };
+		} catch (_) {
+			return {};
+		}
 	}
 
 	setModel(model: string) {
@@ -129,7 +212,8 @@ export class CodeGenerationService implements ICodeGenerator {
 				return this.generateDataAwareBasicStepCode(
 					request.stepDescription,
 					request.datasets,
-					request.stepIndex
+					request.stepIndex,
+					request.workingDir
 				);
 		}
 	}
@@ -175,35 +259,32 @@ export class CodeGenerationService implements ICodeGenerator {
 		// Build data access context for the analysis step
 		const dataAccessContext = this.buildDataAccessContext(request.datasets);
 
-        let context = `Original question: ${request.originalQuestion}
+		let context = `Original question: ${request.originalQuestion}
 Working directory: ${request.workingDir}
 Step index: ${request.stepIndex}
 
 Available datasets (use ONLY these, do NOT invent links):
 ${datasetInfo}
 
-DATA ACCESS CONTEXT - IMPORTANT:
+DATA ACCESS CONTEXT - IMPORTANT (concise):
 ${dataAccessContext}
 
 Dataset handling constraints:
 - Data files should already exist from previous loading steps
-- Use the data loading helpers provided below to access datasets consistently
-- For missing data, print clear messages and continue with available datasets
-- Add robust error handling with try-except blocks
+- Use data_dir consistently; do not re-download
+- If a needed file is missing, raise FileNotFoundError with a short message (do not add broad try/except)
 
- General requirements:
-- Use proper error handling with try-except blocks
-- Add progress print statements
-- Save outputs to appropriate directories (results/, figures/)
-- Handle missing or corrupted data gracefully
-- Use robust data validation
+General requirements (concise):
+- Keep code short and readable; minimal comments
+- Limit prints to at most 1–2 lines
+- Save outputs to results/ and figures/
+- Avoid boilerplate and unnecessary wrappers
 - Follow Python best practices`;
 
-        // Global scaling/normalization detection guidance for numeric datasets
-        context += `\n\nGLOBAL SCALING/TRANSFORM DETECTION (apply broadly to numeric matrices):\n- Before any normalization, detect whether values are already transformed/scaled to avoid double-transforming.\n- Sources of truth: file/column metadata (headers, FCS keywords), sidecar matrices (spill/unmix), and value distributions.\n- Heuristics per feature set (vote across markers/genes):\n  • Standardized-like: mean≈0 and std≈1 for most columns → skip re-standardization.\n  • Log/arcsinh/logicle-like: compressed range (e.g., 95th pct < ~20), negatives allowed in a small fraction → likely already transformed; do not re-apply log/arcsinh.\n  • Raw-like: large non-negative range (e.g., 99th pct ≥ 1e3–1e4), near-zero negatives → treat as raw; normalize then transform.\n- Cytometry: respect prior compensation/unmixing (FCS $SPILLOVER or sidecar CSV); apply before any scaling.\n- scRNA-seq: if counts are raw, normalize (library-size) then log1p; if already log-transformed, do not re-log.\n- Expression matrices: detect units (TPM/CPM/FPKM), existing log transforms, and z-scoring; avoid double transforms.\n- Record decisions (e.g., in adata.uns['scale_status'] or a dict) and reference in later steps.`;
+		// Will optionally add global scaling guidance later for non single-cell tasks
 
-        // Runtime budget guidance to prevent timeouts on large datasets
-        context += `\n\nRUNTIME AND CHUNKING (prevent timeouts on large data):\n- Keep each cell under ~60–90 seconds of runtime; if work exceeds this, split into additional cells.\n- Process large folders/files in CHUNKS/BATCHES (e.g., per-file loops with intermediate CSV/parquet outputs under results/tmp/).\n- For CSV bundles: sample first to profile; then batch-process files (e.g., 2–4 at a time), writing partial outputs and a manifest to resume.\n- For UMAP: fit on a subset (50k–200k), then transform the rest in batches; persist embeddings to disk.\n- Always save intermediate artifacts (results/) so subsequent cells resume instead of redoing heavy work.`;
+		// Runtime budget guidance to prevent timeouts on large datasets
+		context += `\n\nRUNTIME AND CHUNKING (prevent timeouts on large data):\n- Keep each cell under ~60–90 seconds of runtime; if work exceeds this, split into additional cells.\n- Process large folders/files in CHUNKS/BATCHES (e.g., per-file loops with intermediate CSV/parquet outputs under results/tmp/).\n- For CSV bundles: sample first to profile; then batch-process files (e.g., 2–4 at a time), writing partial outputs and a manifest to resume.\n- For UMAP: fit on a subset (50k–200k), then transform the rest in batches; persist embeddings to disk.\n- Always save intermediate artifacts (results/) so subsequent cells resume instead of redoing heavy work.`;
 
 		// Add global code context from entire conversation if available
 		if (request.globalCodeContext && request.globalCodeContext.trim()) {
@@ -220,46 +301,94 @@ Dataset handling constraints:
 	/**
 	 * Build enhanced context and augment with Scanpy RAG snippets (version-aware docstrings)
 	 */
-    private async buildEnhancedContextWithDocs(
-        request: CodeGenerationRequest
-    ): Promise<string> {
-        let context = this.buildEnhancedContext(request);
+	private async buildEnhancedContextWithDocs(
+		request: CodeGenerationRequest
+	): Promise<string> {
+		let context = this.buildEnhancedContext(request);
 
-        // Append a concise snapshot of local datasets (data_dir) to inform loader choice
-        try {
-            const localDatasets = (request.datasets || []).filter(
-                (d: any) => Boolean((d as any).localPath)
-            );
-            if (localDatasets.length > 0) {
-                const snapshot = await buildDatasetSnapshot(
-                    localDatasets as any,
-                    request.workingDir
-                );
-                if (snapshot && snapshot.trim()) {
-                    context += `\n\nFolder snapshot (for local mentions; use data_dir):\n${snapshot}`;
-                    context += `\n\nGuidance: Decide how to load based on snapshot and file extensions/markers (e.g., 10x matrix.mtx -> scanpy.read_10x_mtx(data_dir), *.h5ad -> anndata.read_h5ad, *.csv/*.tsv -> pandas.read_csv). Do not assume pre-defined helpers.`;
-                    context += `\n\nIf a directory contains multiple CSV/TSV files: iterate them (use glob), load with pandas, align columns, add a 'sample' column from filename, and concatenate into one DataFrame.`;
-                    context += `\nFor flow/spectral cytometry-like data: First detect existing scaling and compensation.\n- Detect arcsinh/logicle/z-scored data by inspecting column names (e.g., 'arcsinh', 'asinh', 'logicle', 'normalized') and value distributions.\n  Heuristics: if many values are negative and 95th percentile < ~20 per marker, likely already arcsinh/logicle; if 99th percentile >> 1e4 and non-negative, likely raw.\n- Only apply arcsinh (cofactor≈5) if raw intensities; otherwise skip.\n- Respect existing compensation/unmixing; if absent and sidecar matrix present (spill/unmix CSV or FCS $SPILLOVER keyword), apply it before scaling.\n- Then standardize (skip if already standardized), compute neighbors + UMAP (umap-learn), cluster (e.g., DBSCAN/HDBSCAN/KMeans), and plot UMAP colored by cluster and sample.`;
-                }
-            }
-        } catch (_) {
-            // Best-effort; snapshot is optional
-        }
-        try {
-            const rag =
-                await ScanpyDocsService.getInstance().buildRagContextForRequest(
-                    request.stepDescription,
-                    request.originalQuestion,
-                    request.workingDir
-                );
-            if (rag && rag.trim()) {
-                context += `\n\nAuthoritative Scanpy references (from installed environment):\n${rag}\n\nStrict rules:\n- Prefer APIs present above; do not invent parameters.\n- If an API is not present, adapt to available alternatives.\n- Cite the function names you used.`;
-            }
-        } catch (e) {
-            // Best-effort; silently continue without RAG if unavailable
-        }
-        return context;
-    }
+		// Append a concise snapshot of local datasets (data_dir) to inform loader choice
+		try {
+			const localDatasets = (request.datasets || []).filter((d: any) =>
+				Boolean((d as any).localPath)
+			);
+			if (localDatasets.length > 0) {
+				const snapshot = await buildDatasetSnapshot(
+					localDatasets as any,
+					request.workingDir
+				);
+				if (snapshot && snapshot.trim()) {
+					context += `\n\nFolder snapshot (for local mentions; use data_dir):\n${snapshot}`;
+					context += `\n\nGuidance: Decide how to load based on snapshot and file extensions/markers (e.g., 10x matrix.mtx -> scanpy.read_10x_mtx(data_dir), *.h5ad -> anndata.read_h5ad, *.csv/*.tsv -> pandas.read_csv). Do not assume pre-defined helpers.`;
+					context += `\n\nIf a directory contains multiple CSV/TSV files: iterate them (use glob), load with pandas, align columns, add a 'sample' column from filename, and concatenate into one DataFrame.`;
+					context += `\nFor flow/spectral cytometry-like data: First detect existing scaling and compensation.\n- Detect arcsinh/logicle/z-scored data by inspecting column names (e.g., 'arcsinh', 'asinh', 'logicle', 'normalized') and value distributions.\n  Heuristics: if many values are negative and 95th percentile < ~20 per marker, likely already arcsinh/logicle; if 99th percentile >> 1e4 and non-negative, likely raw.\n- Only apply arcsinh (cofactor≈5) if raw intensities; otherwise skip.\n- Respect existing compensation/unmixing; if absent and sidecar matrix present (spill/unmix CSV or FCS $SPILLOVER keyword), apply it before scaling.\n- Then standardize (skip if already standardized), compute neighbors + UMAP (umap-learn), cluster (e.g., DBSCAN/HDBSCAN/KMeans), and plot UMAP colored by cluster and sample.`;
+				}
+			}
+		} catch (_) {
+			// Best-effort; snapshot is optional
+		}
+		try {
+			const rag =
+				await ScanpyDocsService.getInstance().buildRagContextForRequest(
+					request.stepDescription,
+					request.originalQuestion,
+					request.workingDir
+				);
+			if (rag && rag.trim()) {
+				context += `\n\nAuthoritative Scanpy references (from installed environment):\n${rag}\n\nStrict rules:\n- Prefer APIs present above; do not invent parameters.\n- If an API is not present, adapt to available alternatives.\n- Cite the function names you used.`;
+			}
+		} catch (e) {
+			// Best-effort; silently continue without RAG if unavailable
+		}
+
+		// Recommend exact data_dir based on detected local dataset roots vs analysis working directory
+		try {
+			const rec = this.computeRecommendedDataDir(
+				request.datasets || [],
+				request.workingDir
+			);
+			if (rec && rec.path) {
+				const wd = String(request.workingDir || "");
+				context += `\n\nDATA_DIR RESOLUTION:\n- Analysis working directory: ${wd}\n- Local dataset root resolved to: ${
+					rec.path
+				} ${
+					rec.isRelative ? "(relative to working directory)" : "(absolute)"
+				}\nCRITICAL:\n- Set data_dir = Path('${
+					rec.path
+				}') exactly. Do NOT set Path('data') unless you explicitly created a 'data' folder here.\n- All file access must be under data_dir.\n- Do not move or copy raw data; read in-place.\n- Write outputs to results/ and figures/ under the working directory, not in data_dir.`;
+			}
+		} catch (_) {}
+
+		// Domain-specific constraints to reduce brittle code paths (concise style)
+		try {
+			const text = `${request.stepDescription || ""}\n${
+				request.originalQuestion || ""
+			}`.toLowerCase();
+			const isSingleCell =
+				/\b(single\s*-?cell|scrna|scanpy|anndata|h5ad|cellxgene|census|10x|matrix\.mtx)\b/.test(
+					text
+				);
+			const isFlow = /\b(flow|cytometry|fcs|spillover|unmix|compensat)\b/.test(
+				text
+			);
+
+			if (isSingleCell) {
+				// For scRNA-seq, instruct the model to use the standard Scanpy pipeline without extra normalization/transform checks
+				context += `\n\nSTANDARD SCANPY PIPELINE (single-cell RNA-seq):\n- Imports: import scanpy as sc; import anndata as ad; (plus numpy/pandas/matplotlib as needed)\n- Load: prefer ad.read_h5ad(<file>) when *.h5ad under data_dir; else use sc.read_10x_mtx for 10x directories (matrix.mtx + barcodes.tsv + features.tsv)\n- Basic QC: sc.pp.calculate_qc_metrics (optional short summary), optionally filter low-count genes/cells (keep this minimal)\n- Normalize: sc.pp.normalize_total(adata)\n- Log: sc.pp.log1p(adata)\n- HVGs: sc.pp.highly_variable_genes(adata, n_top_genes=2000, flavor='seurat')\n- (Optional) adata.raw = adata before scaling\n- Scale: sc.pp.scale(adata, max_value=10)\n- PCA: sc.tl.pca(adata, svd_solver='arpack')\n- Neighbors: sc.pp.neighbors(adata)\n- UMAP: sc.tl.umap(adata)\n- Clusters: sc.tl.leiden(adata, key_added='leiden')\n- Markers: sc.tl.rank_genes_groups(adata, 'leiden', method='t-test')\n- Plots: sc.pl.umap(adata, color=['leiden'], save=False)\nCRITICAL:\n- Do NOT add heuristics to detect pre-normalization/log transforms; just run the pipeline above.\n- Prefer the exact function names above (no custom clustering substitutes).\n\n10X DIRECTORY HANDLING:\n- If data_dir contains a 'filtered_feature_bc_matrix' folder, read with: sc.read_10x_mtx(data_dir / 'filtered_feature_bc_matrix', var_names='gene_symbols', make_unique=True)\n- If data_dir is itself a 10x matrix folder (contains matrix.mtx(.gz), features.tsv(.gz), barcodes.tsv(.gz)), call sc.read_10x_mtx(data_dir, var_names='gene_symbols', make_unique=True)\n\nDATA TYPE DETECTION & PIPELINE SELECTION:\n- If adata.var contains 'feature_types':\n  • If it includes 'Gene Expression' only → run the RNA pipeline above.\n  • If it includes both 'Gene Expression' and 'Antibody Capture' (CITE-seq):\n    - Create gex = adata[:, adata.var['feature_types'] == 'Gene Expression'].copy() and adt = adata[:, adata.var['feature_types'] == 'Antibody Capture'].copy()\n    - Run the RNA pipeline on gex as above.\n    - For ADT: apply sc.pp.normalize_total(adt), sc.pp.log1p(adt), (optional) sc.pp.scale(adt), then PCA/UMAP/neighbors; store results as adt.obsm and plot UMAP colored by top proteins.\n    - Save both gex and adt AnnData objects to results/.\n  • If it includes ATAC/Chromatin ('Peaks' or 'Chromatin Accessibility'):\n    - Run the RNA pipeline on the RNA subset as above.\n    - For ATAC, add a short note that dedicated ATAC processing is out of scope here (no extra libraries); proceed with RNA-only outputs.\n- If dataset metadata indicates 'CITE-seq' or '10x Multiome', apply the same selection rules above.\n`;
+
+				// Skip global scaling/transform detection for scRNA-seq to avoid non-standard logic
+			} else {
+				// Global scaling/normalization detection guidance for other numeric datasets
+				context += `\n\nGLOBAL SCALING/TRANSFORM DETECTION (apply broadly to numeric matrices):\n- Before any normalization, detect whether values are already transformed/scaled to avoid double-transforming.\n- Sources of truth: file/column metadata (headers, FCS keywords), sidecar matrices (spill/unmix), and value distributions.\n- Heuristics per feature set (vote across markers/genes):\n  • Standardized-like: mean≈0 and std≈1 for most columns → skip re-standardization.\n  • Log/arcsinh/logicle-like: compressed range (e.g., 95th pct < ~20), negatives allowed in a small fraction → likely already transformed; do not re-apply log/arcsinh.\n  • Raw-like: large non-negative range (e.g., 99th pct ≥ 1e3–1e4), near-zero negatives → treat as raw; normalize then transform.\n- Cytometry: respect prior compensation/unmixing (FCS $SPILLOVER or sidecar CSV); apply before any scaling.\n- Expression matrices: detect units (TPM/CPM/FPKM), existing log transforms, and z-scoring; avoid double transforms.\n- Record decisions (e.g., in adata.uns['scale_status'] or a dict) and reference in later steps.`;
+			}
+
+			if (isFlow) {
+				context += `\n\nLIBRARY CONSTRAINTS (flow/cytometry):\n- Use pandas/numpy/matplotlib/seaborn only; avoid flow-specific libs (FlowCytometryTools, fcsparser, FlowKit) unless explicitly installed.\n- If *.fcs files are present, print a clear message to convert to CSV first (no FCS parser guaranteed).\n\nROBUST LOADING/PREPROCESSING (flow/cytometry):\n- Treat folders of CSVs as sample bundles; read per-file with pandas, add a 'sample' column, and concatenate.\n- Detect existing scaling (arcsinh/log/z-score) before transforming; if scale_detection.py is present, import and use it.\n- Only apply arcsinh (cofactor≈5) if data appears raw; otherwise skip scaling.\n- Process large files in batches and write intermediate outputs under results/tmp/.`;
+			}
+		} catch {
+			/* noop */
+		}
+		return context;
+	}
 
 	// Note: Code cleaning and validation is now handled by CodeQualityService
 
@@ -316,6 +445,16 @@ Dataset handling constraints:
 
 				// Update accumulated code without aggressive deduplication during streaming
 				generation.accumulatedCode += chunk;
+				// Sanitize code fences so streamed display and final code are plain Python
+				try {
+					const cleaned = stripCodeFences(
+						generation.accumulatedCode,
+						/* preserveWhitespace */ true
+					);
+					if (cleaned && cleaned !== generation.accumulatedCode) {
+						generation.accumulatedCode = cleaned;
+					}
+				} catch (_) {}
 
 				// Emit chunk event (include cleaned accumulatedCode)
 				EventManager.dispatchEvent("code-generation-chunk", {
@@ -359,7 +498,8 @@ Dataset handling constraints:
 				this.generateDataAwareBasicStepCode(
 					request.stepDescription,
 					request.datasets,
-					request.stepIndex
+					request.stepIndex,
+					request.workingDir
 				);
 
 			this.log.debug("final code length after cleaning=%d", finalCode.length);
@@ -447,7 +587,8 @@ Dataset handling constraints:
 			const fallbackCode = this.generateDataAwareBasicStepCode(
 				request.stepDescription,
 				request.datasets,
-				request.stepIndex
+				request.stepIndex,
+				request.workingDir
 			);
 
 			// Emit completion event for fallback (still successful, but with fallback code)
@@ -471,19 +612,13 @@ Dataset handling constraints:
 		stepDescription: string,
 		stepIndex: number
 	): string {
-		// Fallback code generation when LLM is not available
+		// Minimal fallback code when LLM is not available
 		let code = `# Step ${stepIndex + 1}: ${stepDescription}
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 
-print(f"Executing step ${stepIndex + 1}: ${stepDescription}")
-
-# TODO: Implement ${stepDescription}
-# This is a placeholder implementation
-
-print("Step completed successfully!")
+print(f"Step ${stepIndex + 1}: ${stepDescription}")
 `;
 
 		// Let CodeQualityService handle import deduplication
@@ -494,16 +629,23 @@ print("Step completed successfully!")
 	private generateDataAwareBasicStepCode(
 		stepDescription: string,
 		datasets: any[],
-		stepIndex: number
+		stepIndex: number,
+		workingDir?: string
 	): string {
 		const datasetIds = datasets.map((d) => d.id).join(", ");
 
-		// Respect constraint: do NOT download in this step; use data_dir set by setup cells
+		// Prefer a recommended data_dir pointing to local dataset roots
+		const rec = this.computeRecommendedDataDir(datasets || [], workingDir);
+		const recommendedPath = rec && rec.path ? rec.path : "data";
+		// Respect constraint: do NOT download in this step; use resolved data_dir
 		let datasetLoadingCode = [
 			"from pathlib import Path",
-			"try:\n    data_dir\nexcept NameError:\n    data_dir = Path('data')",
-			"# Ensure default data_dir exists if we created it here",
-			"try:\n    data_dir.mkdir(exist_ok=True)\nexcept Exception:\n    pass",
+			"try:\n    data_dir\nexcept NameError:\n    data_dir = Path('" +
+				recommendedPath.replace(/'/g, "\\'") +
+				"')",
+			"# Only create a directory if using a local 'data' folder",
+			"try:\n    if data_dir.name == 'data' and not data_dir.exists():\n        data_dir.mkdir(parents=True, exist_ok=True)\nexcept Exception:\n    pass",
+			"print('Using data_dir:', str(data_dir))",
 		].join("\n");
 
 		let code = `# Step ${stepIndex + 1}: ${stepDescription}
@@ -511,16 +653,8 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-
-print(f"Executing step ${stepIndex + 1}: ${stepDescription}")
-print(f"Working with datasets: ${datasetIds}")
-
 ${datasetLoadingCode}
 
-# TODO: Implement ${stepDescription} with loaded datasets
-# This is a placeholder implementation
-
-print("Step completed successfully!")
 `;
 
 		// Let CodeQualityService handle import deduplication
@@ -528,31 +662,42 @@ print("Step completed successfully!")
 		return code;
 	}
 
-
 	/**
 	 * Build context about how to access previously loaded data
 	 */
 	private buildDataAccessContext(datasets: Dataset[]): string {
 		const lines: string[] = [];
-		const hasRemote = datasets.some((d: any) => Boolean((d as any).url) && !Boolean((d as any).localPath));
+		const hasRemote = datasets.some(
+			(d: any) => Boolean((d as any).url) && !Boolean((d as any).localPath)
+		);
 		const hasLocal = datasets.some((d: any) => Boolean((d as any).localPath));
 
-		lines.push("Use data_dir as your base path. Decide loaders dynamically from extensions or 10x markers.");
+		lines.push(
+			"Use data_dir as your base path. Decide loaders dynamically from extensions or 10x markers."
+		);
 		if (hasRemote) {
 			lines.push("- Downloaded data is under data_dir = Path('data').");
 		}
 		if (hasLocal) {
-			lines.push("- Local data: set data_dir = Path('<MENTIONED_PATH>') and choose the appropriate loader.");
+			lines.push(
+				"- Local data: set data_dir = Path('<MENTIONED_PATH>') and choose the appropriate loader."
+			);
 		}
 		lines.push("");
 		lines.push("CRITICAL REQUIREMENTS:");
 		lines.push("1. Use data_dir consistently for all file access.");
 		if (hasRemote) {
-			lines.push("2. Do not re-download; warn and continue if files are missing.");
-			lines.push("3. Load once into a variable (e.g., data) and reuse in later cells.");
+			lines.push(
+				"2. Do not re-download; warn and continue if files are missing."
+			);
+			lines.push(
+				"3. Load once into a variable (e.g., data) and reuse in later cells."
+			);
 			lines.push("4. Avoid absolute paths; always build from data_dir.");
 		} else {
-			lines.push("2. Load once into a variable (e.g., data) and reuse in later cells.");
+			lines.push(
+				"2. Load once into a variable (e.g., data) and reuse in later cells."
+			);
 			lines.push("3. Avoid absolute paths; always build from data_dir.");
 		}
 
@@ -614,7 +759,6 @@ print("Step completed successfully!")
 			timestamp: Date.now(),
 		});
 	}
-
 
 	extractPythonCode(response: string): string | null {
 		// Delegate to shared util to avoid duplication
