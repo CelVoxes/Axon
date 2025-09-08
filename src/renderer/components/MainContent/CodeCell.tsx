@@ -179,6 +179,8 @@ const CellHeader = styled.div`
 	top: 0; /* stick to the very top of the notebook scroller */
 	transform: translateY(-1px); /* overlap container top border without reflow */
 	z-index: 2;
+	cursor: grab; /* allow dragging from the header */
+	user-select: none; /* avoid accidental text selection during drag */
 `;
 
 const CellType = styled.div`
@@ -210,6 +212,8 @@ const CellIndexBadge = styled.button`
 
 // Left badge now sits inline inside header to avoid overlap
 
+// Former drag handle removed; drag is handled by the header area now.
+
 const ExecutionIndicator = styled.div<{
 	$hasOutput: boolean;
 	$hasError: boolean;
@@ -225,6 +229,11 @@ const CellActions = styled.div`
 	display: flex;
 	gap: 8px;
 	align-items: center;
+
+	/* Keep pointer cursor for controls inside draggable header */
+	button, [role="button"], a {
+		cursor: pointer;
+	}
 `;
 
 // Using shared ActionButton component
@@ -614,6 +623,9 @@ interface CodeCellProps {
 	cellIndex?: number;
 	/** Optional: timestamp when chat last edited this cell */
 	editedByChatAt?: string;
+	/** Optional: drag events to support reordering */
+	onDragStart?: (index: number, e: React.DragEvent) => void;
+	onDragEnd?: () => void;
 }
 
 export const CodeCell: React.FC<CodeCellProps> = ({
@@ -627,6 +639,8 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 	filePath,
 	cellIndex,
 	editedByChatAt,
+	onDragStart,
+	onDragEnd,
 }) => {
 	const [code, setCode] = useState(initialCode);
 	const [output, setOutput] = useState<string>(initialOutput);
@@ -924,8 +938,30 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 	}, [initialCode]);
 	return (
 		<CellContainer $accentColor={accentColor}>
-			<CellHeader>
+			<CellHeader
+				{...(typeof cellIndex === "number"
+					? {
+						draggable: true,
+						onDragStart: (e: React.DragEvent) => {
+							if (!onDragStart || typeof cellIndex !== "number") return;
+							const target = e.target as HTMLElement | null;
+							// Block drag when starting from interactive controls or editors
+							if (
+								target?.closest(
+									'button, [role="button"], a, input, textarea, select, .monaco-editor'
+								)
+							) {
+								e.preventDefault();
+								return;
+							}
+							onDragStart(cellIndex, e);
+						},
+						onDragEnd: () => onDragEnd && onDragEnd(),
+					}
+					: {})}
+			>
 				<CellType>
+					{/* Drag can be initiated from anywhere on the header now */}
 					{typeof cellIndex === "number" && (
 						<CellIndexBadge
 							onClick={insertCellMentionIntoChat}

@@ -177,6 +177,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	// Auto-updater operations
 	checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
 	installUpdate: () => ipcRenderer.invoke("install-update"),
+	getAppVersion: () => ipcRenderer.invoke("get-app-version"),
 	onUpdateStatus: (callback: (data: any) => void) => {
 		ipcRenderer.on("update-status", (_, data) => callback(data));
 	},

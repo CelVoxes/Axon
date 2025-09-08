@@ -95,7 +95,7 @@ export class AxonApp {
 		);
 		
 		this.initializeApp();
-		this.setupAutoUpdater();
+        this.setupAutoUpdater();
 	}
 
 	private initializeApp() {
@@ -2121,14 +2121,23 @@ export class AxonApp {
 			return { success: false, error: "BioRAG service not implemented yet" };
 		});
 
-		// Auto-updater operations
-		ipcMain.handle("check-for-updates", () => {
-			this.checkForUpdates();
-		});
+        // Auto-updater operations
+        ipcMain.handle("check-for-updates", () => {
+            this.checkForUpdates();
+        });
 
-		ipcMain.handle("install-update", () => {
-			this.installUpdate();
-		});
+        ipcMain.handle("install-update", () => {
+            this.installUpdate();
+        });
+
+        // App metadata
+        ipcMain.handle("get-app-version", () => {
+            try {
+                return { success: true, version: app.getVersion() };
+            } catch (e) {
+                return { success: false, error: e instanceof Error ? e.message : String(e) };
+            }
+        });
 
 		// PDF generation handler
 		ipcMain.handle("generate-pdf", async (_, options: {
@@ -2263,9 +2272,15 @@ export class AxonApp {
 		}
 	}
 
-	private setupAutoUpdater() {
-		// Configure auto-updater
-		autoUpdater.checkForUpdatesAndNotify();
+    private setupAutoUpdater() {
+        // Only enable auto-updater in packaged builds
+        if (!app.isPackaged) {
+            console.log("Auto-updater disabled in development (unpackaged) mode");
+            return;
+        }
+
+        // Configure auto-updater
+        autoUpdater.checkForUpdatesAndNotify();
 		
 		// Auto-updater event handlers
 		autoUpdater.on('checking-for-update', () => {
@@ -2312,24 +2327,31 @@ export class AxonApp {
 			});
 		});
 
-		autoUpdater.on('update-downloaded', () => {
-			console.log('Update downloaded');
-			this.mainWindow?.webContents.send('update-status', {
-				status: 'downloaded',
-				message: 'Update downloaded - restart to apply'
-			});
-		});
-	}
+        autoUpdater.on('update-downloaded', (info) => {
+            console.log('Update downloaded', info?.version ? `→ ${info.version}` : "");
+            this.mainWindow?.webContents.send('update-status', {
+                status: 'downloaded',
+                message: 'Update downloaded - restart to apply',
+                version: (info as any)?.version || undefined,
+            });
+        });
+    }
 
-	private checkForUpdates() {
-		if (app.isPackaged) {
-			autoUpdater.checkForUpdatesAndNotify();
-		}
-	}
+    private checkForUpdates() {
+        if (!app.isPackaged) return;
+        autoUpdater.checkForUpdatesAndNotify();
+    }
 
-	private installUpdate() {
-		autoUpdater.quitAndInstall();
-	}
+    private installUpdate() {
+        // Use setImmediate to avoid quitting before message pumps drain
+        setImmediate(() => {
+            try {
+                autoUpdater.quitAndInstall();
+            } catch (e) {
+                console.error("quitAndInstall failed:", e);
+            }
+        });
+    }
 }
 
 // Initialize the app

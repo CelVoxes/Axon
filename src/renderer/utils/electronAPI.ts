@@ -317,6 +317,10 @@ export const electronAPI = {
 		return safeElectronAPICall<any>("installUpdate");
 	},
 
+	async getAppVersion(): Promise<{ success: boolean; version?: string; error?: string }> {
+		return safeElectronAPICall<any>("getAppVersion");
+	},
+
 	// Update status listener
 	onUpdateStatus(callback: (status: any) => void) {
 		try {

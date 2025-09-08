@@ -147,6 +147,28 @@ const InsertCellButton = styled.button`
 	}
 `;
 
+// Lightweight DnD wrapper to show insertion indicator while dragging
+const CellDndWrapper = styled.div<{
+  $isDragOver?: boolean;
+  $position?: "above" | "below" | null;
+}>`
+  position: relative;
+
+  &::before {
+    content: "";
+    position: absolute;
+    left: -8px;
+    right: -8px;
+    height: 2px;
+    background: ${(p) => (p.$isDragOver ? "#007acc" : "transparent")};
+    top: ${(p) => (p.$position === "above" ? "-9px" : "auto")};
+    bottom: ${(p) => (p.$position === "below" ? "-9px" : "auto")};
+    border-radius: 2px;
+    pointer-events: none;
+    transition: background 0.08s ease;
+  }
+`;
+
 interface FileEditorProps {
 	filePath: string;
 }
@@ -185,6 +207,12 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		Array<{ code: string; output: string }>
 	>([]);
 	const [cellIds, setCellIds] = useState<string[]>([]);
+
+	// Drag-and-drop state for reordering cells
+	const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
+	const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+	const [dragOverPosition, setDragOverPosition] = useState<"above" | "below" | null>(null);
+	const draggingIndexRef = useRef<number | null>(null);
 	
 	// Summary modal state
 	const [showSummaryModal, setShowSummaryModal] = useState<boolean>(false);
@@ -963,6 +991,91 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		}
 	};
 
+	// Reorder helper for arrays
+	const reorderList = <T,>(arr: T[], from: number, to: number): T[] => {
+		const next = [...arr];
+		const [moved] = next.splice(from, 1);
+		next.splice(to, 0, moved);
+		return next;
+	};
+
+	const reorderCells = (from: number, to: number) => {
+		if (!notebookData) return;
+		if (from === to) return;
+		if (from < 0 || to < 0) return;
+		if (from >= notebookData.cells.length || to > notebookData.cells.length) return;
+
+		const updatedCells = reorderList(notebookData.cells, from, to);
+		const updatedNotebook = { ...notebookData, cells: updatedCells };
+
+		// Keep in-memory state arrays aligned
+		setCellStates((prev) => (Array.isArray(prev) ? reorderList(prev, from, to) : prev));
+		setCellIds((prev) => reorderList(prev, from, to));
+		setNotebookData(updatedNotebook);
+		setHasChanges(true);
+		try { workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: true } }); } catch (_) {}
+		queueNotebookSave(updatedNotebook);
+	};
+
+	const handleCellDragStart = (index: number, e: React.DragEvent) => {
+		try {
+			e.dataTransfer?.setData("text/plain", String(index));
+			e.dataTransfer.effectAllowed = "move";
+		} catch (_) {}
+		setDraggingIndex(index);
+		draggingIndexRef.current = index;
+		// While dragging, avoid text selection glitches
+		(e.target as HTMLElement)?.classList?.add?.("dragging");
+	};
+
+	const handleCellDragEnd = () => {
+		setDraggingIndex(null);
+		draggingIndexRef.current = null;
+		setDragOverIndex(null);
+		setDragOverPosition(null);
+	};
+
+	const handleDragOverOnCell = (
+		e: React.DragEvent<HTMLDivElement>,
+		index: number
+	) => {
+		// Allow drop
+		e.preventDefault();
+		try { e.dataTransfer.dropEffect = "move"; } catch (_) {}
+		const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+		const offsetY = e.clientY - rect.top;
+		const pos: "above" | "below" = offsetY < rect.height / 2 ? "above" : "below";
+		setDragOverIndex(index);
+		setDragOverPosition(pos);
+	};
+
+	const handleDropOnCell = (
+		e: React.DragEvent<HTMLDivElement>,
+		index: number
+	) => {
+		e.preventDefault();
+		let from = draggingIndexRef.current;
+		if (from == null) {
+			try {
+				const raw = e.dataTransfer?.getData("text/plain");
+				const parsed = raw != null ? parseInt(raw, 10) : NaN;
+				if (!Number.isNaN(parsed)) from = parsed;
+			} catch (_) {}
+		}
+		if (from == null || !notebookData) {
+			handleCellDragEnd();
+			return;
+		}
+		const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+		const offsetY = e.clientY - rect.top;
+		const pos: "above" | "below" = offsetY < rect.height / 2 ? "above" : "below";
+		let to = pos === "above" ? index : index + 1;
+		// Adjust target if removing earlier element shrinks indices
+		if (from < to) to = to - 1;
+		if (from !== to) reorderCells(from, to);
+		handleCellDragEnd();
+	};
+
 	const addCell = (cellType: "code" | "markdown" = "code") => {
 		if (!notebookData) return;
 
@@ -1308,7 +1421,19 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 					return (
 						<React.Fragment key={cellIds[index] || `cell-${index}`}>
-							<CodeCell
+							<CellDndWrapper
+								$isDragOver={dragOverIndex === index}
+								$position={dragOverIndex === index ? dragOverPosition : null}
+								onDragOver={(e) => handleDragOverOnCell(e, index)}
+								onDrop={(e) => handleDropOnCell(e, index)}
+								onDragLeave={() => {
+									if (dragOverIndex === index) {
+										setDragOverIndex(null);
+										setDragOverPosition(null);
+									}
+								}}
+							>
+								<CodeCell
 								initialCode={currentCellState.code}
 								initialOutput={currentCellState.output}
 								language={cell.cell_type === "markdown" ? "markdown" : "python"}
@@ -1325,7 +1450,10 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 								}}
 								// Ensure Markdown edits are persisted
 								onDelete={() => deleteCell(index)}
+								onDragStart={(i, e) => handleCellDragStart(i, e)}
+								onDragEnd={handleCellDragEnd}
 							/>
+							</CellDndWrapper>
 
 							{/* Insert controls between cells (after current index) */}
 							<InsertButtonsRow>

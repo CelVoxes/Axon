@@ -108,19 +108,34 @@ const Button = styled.button<{ variant?: 'primary' | 'secondary' }>`
 `;
 
 export const UpdateNotification: React.FC = () => {
-	const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
-	const [show, setShow] = useState(false);
+    const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+    const [show, setShow] = useState(false);
+    const [appVersion, setAppVersion] = useState<string | null>(null);
 
-	useEffect(() => {
-		const handleUpdateStatus = (status: UpdateStatus) => {
-			setUpdateStatus(status);
-			setShow(true);
+    useEffect(() => {
+        // Fetch current app version to compare with available/downloaded version
+        (async () => {
+            try {
+                const res = await electronAPI.getAppVersion();
+                if (res && (res as any).success && (res as any).version) {
+                    setAppVersion((res as any).version);
+                }
+            } catch (e) {
+                // noop
+            }
+        })();
 
-			// Auto-hide for certain statuses
-			if (status.status === 'not-available' || status.status === 'error') {
-				setTimeout(() => setShow(false), 5000);
-			}
-		};
+        const handleUpdateStatus = (status: UpdateStatus) => {
+            setUpdateStatus(status);
+            // If we already run the same version as the downloaded one, suppress UI
+            const sameVersion = status.version && appVersion && status.version === appVersion;
+            setShow(!sameVersion);
+
+            // Auto-hide for certain statuses
+            if (status.status === 'not-available' || status.status === 'error') {
+                setTimeout(() => setShow(false), 5000);
+            }
+        };
 
 		// Listen for update status from main process
 		try {
@@ -129,10 +144,10 @@ export const UpdateNotification: React.FC = () => {
 			console.error('Failed to set up update listener:', error);
 		}
 
-		return () => {
-			// Cleanup listener if possible
-		};
-	}, []);
+        return () => {
+            // Cleanup listener if possible
+        };
+    }, [appVersion]);
 
 	const handleClose = () => {
 		setShow(false);
@@ -167,21 +182,29 @@ export const UpdateNotification: React.FC = () => {
 		}
 	};
 
-	return (
-		<NotificationContainer show={show}>
-			<NotificationHeader>
-				<Title style={{ color: getStatusColor() }}>
-					{updateStatus.status === 'checking' && 'Checking for Updates'}
-					{updateStatus.status === 'available' && 'Update Available'}
-					{updateStatus.status === 'not-available' && 'Up to Date'}
-					{updateStatus.status === 'downloading' && 'Downloading Update'}
-					{updateStatus.status === 'downloaded' && 'Update Ready'}
-					{updateStatus.status === 'error' && 'Update Error'}
-				</Title>
-				<CloseButton onClick={handleClose}>×</CloseButton>
-			</NotificationHeader>
+    return (
+        <NotificationContainer show={show}>
+            <NotificationHeader>
+                <Title style={{ color: getStatusColor() }}>
+                    {updateStatus.status === 'checking' && 'Checking for Updates'}
+                    {updateStatus.status === 'available' && 'Update Available'}
+                    {updateStatus.status === 'not-available' && 'Up to Date'}
+                    {updateStatus.status === 'downloading' && 'Downloading Update'}
+                    {updateStatus.status === 'downloaded' && 'Update Ready'}
+                    {updateStatus.status === 'error' && 'Update Error'}
+                </Title>
+                <CloseButton onClick={handleClose}>×</CloseButton>
+            </NotificationHeader>
 
-			<Message>{updateStatus.message}</Message>
+            <Message>
+                {updateStatus.message}
+                {appVersion && updateStatus.version && (
+                    <>
+                        <br />
+                        Installed: v{appVersion} • Available: v{updateStatus.version}
+                    </>
+                )}
+            </Message>
 
 			{updateStatus.status === 'downloading' && updateStatus.percent && (
 				<ProgressBar percent={updateStatus.percent} />
