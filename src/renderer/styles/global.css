@@ -23,13 +23,12 @@
 }
 
 body {
-	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",
-		sans-serif;
-	font-size: var(--font-size-base);
-	line-height: 1.4;
-	background-color: #1e1e1e;
-	color: #d4d4d4;
-	overflow: hidden;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Helvetica Neue", Arial, sans-serif;
+    font-size: var(--font-size-base);
+    line-height: 1.4;
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+    overflow: hidden;
 }
 
 /* xterm tweaks */

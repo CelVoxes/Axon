@@ -26,8 +26,7 @@ const LayoutContainer = styled.div`
 	height: 100vh;
 	background: #0f0f0f;
 	color: #ffffff;
-	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
-		Ubuntu, Cantarell, sans-serif;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif;
 `;
 
 const LayoutHeader = styled.div`

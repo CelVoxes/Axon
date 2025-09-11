@@ -60,8 +60,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		ipcRenderer.invoke("jupyter-start", workingDir),
 	stopJupyter: () => ipcRenderer.invoke("jupyter-stop"),
 	checkJupyterStatus: () => ipcRenderer.invoke("jupyter-status"),
-	executeJupyterCode: (code: string, workspacePath?: string, executionId?: string) =>
-		ipcRenderer.invoke("jupyter-execute", code, workspacePath, executionId),
+    executeJupyterCode: (
+        code: string,
+        workspacePath?: string,
+        executionId?: string,
+        language?: "python" | "r"
+    ) => ipcRenderer.invoke("jupyter-execute", code, workspacePath, executionId, language),
 	interruptJupyter: (workspacePath?: string) =>
 		ipcRenderer.invoke("jupyter-interrupt", workspacePath),
 	createVirtualEnv: (workspacePath: string) =>

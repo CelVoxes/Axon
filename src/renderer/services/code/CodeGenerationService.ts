@@ -306,6 +306,12 @@ General requirements (concise):
 	): Promise<string> {
 		let context = this.buildEnhancedContext(request);
 
+		// Detect spectral flow cytometry datasets
+		const isSpectralFlow = Array.isArray(request.datasets)
+			&& request.datasets.some((d: any) =>
+				String((d?.dataType || "")).toLowerCase() === "spectral_flow_cytometry"
+			);
+
 		// Append a concise snapshot of local datasets (data_dir) to inform loader choice
 		try {
 			const localDatasets = (request.datasets || []).filter((d: any) =>
@@ -318,26 +324,34 @@ General requirements (concise):
 				);
 				if (snapshot && snapshot.trim()) {
 					context += `\n\nFolder snapshot (for local mentions; use data_dir):\n${snapshot}`;
-					context += `\n\nGuidance: Decide how to load based on snapshot and file extensions/markers (e.g., 10x matrix.mtx -> scanpy.read_10x_mtx(data_dir), *.h5ad -> anndata.read_h5ad, *.csv/*.tsv -> pandas.read_csv). Do not assume pre-defined helpers.`;
-					context += `\n\nIf a directory contains multiple CSV/TSV files: iterate them (use glob), load with pandas, align columns, add a 'sample' column from filename, and concatenate into one DataFrame.`;
-					context += `\nFor flow/spectral cytometry-like data: First detect existing scaling and compensation.\n- Detect arcsinh/logicle/z-scored data by inspecting column names (e.g., 'arcsinh', 'asinh', 'logicle', 'normalized') and value distributions.\n  Heuristics: if many values are negative and 95th percentile < ~20 per marker, likely already arcsinh/logicle; if 99th percentile >> 1e4 and non-negative, likely raw.\n- Only apply arcsinh (cofactor≈5) if raw intensities; otherwise skip.\n- Respect existing compensation/unmixing; if absent and sidecar matrix present (spill/unmix CSV or FCS $SPILLOVER keyword), apply it before scaling.\n- Then standardize (skip if already standardized), compute neighbors + UMAP (umap-learn), cluster (e.g., DBSCAN/HDBSCAN/KMeans), and plot UMAP colored by cluster and sample.`;
+					context += `\n\nGuidance: Decide how to load based on snapshot and file extensions/markers. For *.csv/*.tsv bundles, iterate files via a glob, add a 'sample' column and concatenate into one table. Do not assume pre-defined helpers.`;
+					context += `\n\nIf a directory contains multiple CSV/TSV files: iterate them (use glob), load appropriately (R: readr::read_csv/read_tsv; Python: pandas.read_csv), align columns, add a 'sample' column from filename, and concatenate into one table.`;
+					if (!isSpectralFlow) {
+						context += `\nFor flow/spectral cytometry-like data: First detect existing scaling and compensation.\n- Detect arcsinh/logicle/z-scored data by inspecting column names (e.g., 'arcsinh', 'asinh', 'logicle', 'normalized') and value distributions.\n  Heuristics: if many values are negative and 95th percentile < ~20 per marker, likely already arcsinh/logicle; if 99th percentile >> 1e4 and non-negative, likely raw.\n- Only apply arcsinh (cofactor≈5) if raw intensities; otherwise skip.\n- Respect existing compensation/unmixing; if absent and sidecar matrix present (spill/unmix CSV or FCS $SPILLOVER keyword), apply it before scaling.\n- Then standardize (skip if already standardized), compute neighbors + UMAP (umap-learn), cluster (e.g., DBSCAN/HDBSCAN/KMeans), and plot UMAP colored by cluster and sample.`;
+					}
 				}
 			}
 		} catch (_) {
 			// Best-effort; snapshot is optional
 		}
-		try {
-			const rag =
-				await ScanpyDocsService.getInstance().buildRagContextForRequest(
+		// Append tool-specific guidance
+		if (isSpectralFlow) {
+			// Spectral flow cytometry + Seurat v5 sketch guidance (R)
+			context += `\n\nTARGET LANGUAGE: R\n\nSeurat v5 sketch guidance (spectral flow):\n- Use library(Seurat) and assume data are CSV/TSV files under data_dir (rows=cells/events, cols=markers).\n- Build a Seurat object from the numeric matrix (ensure features=markers/columns).\n- If compensation/unmixing sidecar exists (spill/unmix CSV), apply it before scaling.\n- Detect whether values look raw vs arcsinh/logicle; only apply arcsinh (cofactor≈5) when clearly raw.\n- Use Seurat v5's sketch-based workflow: compute PCA/Neighbors/UMAP on a representative sketch (e.g., tens of thousands of cells) and map remaining cells to the learned embedding (projection).\n- Cluster cells on the embedding and save labels and UMAP coordinates.\n- Save intermediate and final outputs (e.g., embeddings, cluster labels) under results/.\nCRITICAL:\n- Return ONLY R code; no markdown or prose.\n- Do not rely on external GUIs; write clean, scriptable code.\n- Avoid network downloads; use data_dir only.`;
+		} else {
+			// Scanpy RAG guidance for Python single-cell workflows
+			try {
+				const rag = await ScanpyDocsService.getInstance().buildRagContextForRequest(
 					request.stepDescription,
 					request.originalQuestion,
 					request.workingDir
 				);
-			if (rag && rag.trim()) {
-				context += `\n\nAuthoritative Scanpy references (from installed environment):\n${rag}\n\nStrict rules:\n- Prefer APIs present above; do not invent parameters.\n- If an API is not present, adapt to available alternatives.\n- Cite the function names you used.`;
+				if (rag && rag.trim()) {
+					context += `\n\nAuthoritative Scanpy references (from installed environment):\n${rag}\n\nStrict rules:\n- Prefer APIs present above; do not invent parameters.\n- If an API is not present, adapt to available alternatives.\n- Cite the function names you used.`;
+				}
+			} catch (e) {
+				// Best-effort; silently continue without RAG if unavailable
 			}
-		} catch (e) {
-			// Best-effort; silently continue without RAG if unavailable
 		}
 
 		// Recommend exact data_dir based on detected local dataset roots vs analysis working directory
@@ -370,6 +384,8 @@ General requirements (concise):
 			const isFlow = /\b(flow|cytometry|fcs|spillover|unmix|compensat)\b/.test(
 				text
 			);
+			const isSpectralFlow = Array.isArray(request.datasets)
+				&& request.datasets.some((d: any) => String((d?.dataType || "")).toLowerCase() === "spectral_flow_cytometry");
 
 			if (isSingleCell) {
 				// For scRNA-seq, instruct the model to use the standard Scanpy pipeline without extra normalization/transform checks
@@ -382,7 +398,12 @@ General requirements (concise):
 			}
 
 			if (isFlow) {
-				context += `\n\nLIBRARY CONSTRAINTS (flow/cytometry):\n- Use pandas/numpy/matplotlib/seaborn only; avoid flow-specific libs (FlowCytometryTools, fcsparser, FlowKit) unless explicitly installed.\n- If *.fcs files are present, print a clear message to convert to CSV first (no FCS parser guaranteed).\n\nROBUST LOADING/PREPROCESSING (flow/cytometry):\n- Treat folders of CSVs as sample bundles; read per-file with pandas, add a 'sample' column, and concatenate.\n- Detect existing scaling (arcsinh/log/z-score) before transforming; if scale_detection.py is present, import and use it.\n- Only apply arcsinh (cofactor≈5) if data appears raw; otherwise skip scaling.\n- Process large files in batches and write intermediate outputs under results/tmp/.`;
+				if (isSpectralFlow) {
+					// For spectral flow, prefer R/Seurat v5 sketch; add a brief steering note
+					context += `\n\nSpectral flow detected in datasets → prefer Seurat v5 (R) sketch-based workflow for scalable neighbors/UMAP and clustering.`;
+				} else {
+					context += `\n\nLIBRARY CONSTRAINTS (flow/cytometry):\n- Use pandas/numpy/matplotlib/seaborn only; avoid flow-specific libs (FlowCytometryTools, fcsparser, FlowKit) unless explicitly installed.\n- If *.fcs files are present, print a clear message to convert to CSV first (no FCS parser guaranteed).\n\nROBUST LOADING/PREPROCESSING (flow/cytometry):\n- Treat folders of CSVs as sample bundles; read per-file with pandas, add a 'sample' column, and concatenate.\n- Detect existing scaling (arcsinh/log/z-score) before transforming; if scale_detection.py is present, import and use it.\n- Only apply arcsinh (cofactor≈5) if data appears raw; otherwise skip scaling.\n- Process large files in batches and write intermediate outputs under results/tmp/.`;
+				}
 			}
 		} catch {
 			/* noop */
@@ -466,10 +487,15 @@ General requirements (concise):
 				} as CodeGenerationChunkEvent);
 			};
 
+			// Decide target language (R for spectral flow cytometry; Python otherwise)
+			const targetLanguage: "python" | "r" = (Array.isArray(request.datasets) && request.datasets.some((d: any) => String((d?.dataType || "")).toLowerCase() === "spectral_flow_cytometry"))
+				? "r"
+				: (request.language || "python");
+
 			const result = await this.backendClient.generateCodeStream(
 				{
 					task_description: request.stepDescription,
-					language: "python",
+					language: targetLanguage,
 					context: enhancedContext,
 					model: ConfigManager.getInstance().getDefaultModel(),
 					session_id: this.buildSessionId(request),
@@ -559,12 +585,14 @@ General requirements (concise):
 		stepId: string
 	): Promise<CodeGenerationResult> {
 		try {
+			const isSpectralFlow = Array.isArray(request.datasets) && request.datasets.some((d: any) => String((d?.dataType || "")).toLowerCase() === "spectral_flow_cytometry");
 			const result = await this.backendClient.generateCodeFix({
 				prompt: request.stepDescription,
 				model: this.selectedModel,
 				max_tokens: 2000,
 				temperature: 0.1,
 				session_id: this.buildSessionId(request),
+				...(isSpectralFlow ? { language: "r" } : {}),
 			});
 
 			const code = result.code || result.response || "";

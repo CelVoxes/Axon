@@ -32,7 +32,8 @@ export interface ElectronAPI {
 	executeJupyterCode: (
 		code: string,
 		workspacePath?: string,
-		executionId?: string
+		executionId?: string,
+		language?: "python" | "r"
 	) => Promise<{ success: boolean; output?: string; error?: string }>;
 	interruptJupyter: (
 		workspacePath?: string

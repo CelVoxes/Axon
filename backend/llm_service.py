@@ -838,32 +838,29 @@ Simplified query:"""
         if not self.provider:
             return self._generate_fallback_code(task_description, language)
         
+        lang = (language or "python").strip()
         prompt = f"""
-You are an expert Python programmer specializing in data analysis and bioinformatics.
-Generate clean, well-documented code for the following task.
+You are an expert programmer specializing in data analysis and bioinformatics.
+Generate clean, executable {lang} code for the following task.
 
 Task: {task_description}
-Language: {language}
+Language: {lang}
 
 {f"Context: {context}" if context else ""}
 
 Requirements:
-- Write only the code, no explanations
-- Include only imports actually used by the code
-- Do NOT re-import packages already imported in the Context above
-- Be concise: use minimal comments only when truly helpful
+- Return ONLY {lang} code, no markdown or prose
+- Keep it concise; include only imports/libraries actually used
+- Do NOT duplicate setup already present in CONTEXT
 - Avoid broad try/except; only guard truly optional I/O (e.g., existence checks)
-- Keep logging minimal (at most 1–2 print statements)
-- Follow Python best practices
-- Respect any dataset access instructions found in CONTEXT. If CONTEXT specifies that data was
-  already downloaded to a local folder (e.g., a specific data_dir) or that dataset variables
-  were preloaded, do not attempt to download files again. Load data exactly as instructed by CONTEXT.
+- Keep prints/messages minimal
+- Respect any dataset access instructions in CONTEXT (do not re-download or re-load duplicates)
 
 Code:
 """
         
         try:
-            system_prompt = "You are an expert Python programmer. Generate only code, no explanations."
+            system_prompt = f"You are an expert programmer. Generate only {lang} code, no explanations."
             session_msgs = self._get_or_init_session(session_id, system_prompt)
             resolved_model = self._resolve_model(session_id, model)
             if session_msgs is not None:
@@ -883,7 +880,11 @@ Code:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
                 ], max_tokens=2000, temperature=0.1, store=True, model=resolved_model)
-            return self.extract_python_code(response) or self._generate_fallback_code(task_description, language)
+            if (lang or "").lower() == "python":
+                return self.extract_python_code(response) or self._generate_fallback_code(task_description, language)
+            else:
+                code = self.extract_code_generic(response)
+                return code or self._generate_fallback_code(task_description, language)
             
         except Exception as e:
             print(f"Error generating code: {e}")
@@ -907,12 +908,13 @@ Code:
             return
         
         # Use different prompts for notebook edits vs full code generation
+        lang = (language or "python").strip()
         if notebook_edit:
             prompt = f"""
 You are editing a specific section of code in a Jupyter notebook. 
 
 TASK: {task_description}
-LANGUAGE: {language}
+LANGUAGE: {lang}
 
 {f"CONTEXT: {context}" if context else ""}
 
@@ -930,17 +932,17 @@ Generate the replacement code now:
         else:
             # Enhanced prompt with better structure for full code generation (concise style)
             prompt = f"""
-You are an expert Python programmer specializing in data analysis and bioinformatics.
-Generate concise, executable code for the following task.
+You are an expert programmer specializing in data analysis and bioinformatics.
+Generate concise, executable {lang} code for the following task.
 
 TASK: {task_description}
-LANGUAGE: {language}
+LANGUAGE: {lang}
 
 {f"CONTEXT: {context}" if context else ""}
 
 CRITICAL REQUIREMENTS (concise):
-1. Return ONLY Python code — no markdown or prose
-2. Include only used imports; do NOT re-import items already in CONTEXT
+1. Return ONLY {lang} code — no markdown or prose
+2. Include only used libraries; do NOT re-import items already in CONTEXT
 3. Be terse: a few short comments only when necessary
 4. Avoid broad try/except; let exceptions surface unless handling specific, likely cases (e.g., missing file)
 5. Limit prints to at most 1–2 lines total
@@ -994,7 +996,7 @@ Generate the code now:
         
         try:
             # Session-aware: build/extend the conversation
-            system_prompt = "You are an expert Python programmer specializing in bioinformatics and data analysis. Generate ONLY executable Python code, importing only modules actually used. Do not re-import packages already present in the provided CONTEXT. Never include explanations, markdown, or non-code text. Avoid complex f-strings and ensure all syntax is correct. Always include error handling and proper directory structure."
+            system_prompt = f"You are an expert programmer specializing in bioinformatics and data analysis. Generate ONLY executable {lang} code, using only libraries actually used. Do not repeat setup already present in CONTEXT. Never include explanations, markdown, or non-code text. Ensure valid syntax and proper directory structure."
             session_msgs = self._get_or_init_session(session_id, system_prompt)
             resolved_model = self._resolve_model(session_id, model)
             total = ""
@@ -1087,6 +1089,15 @@ Generate the code now:
                 return None
         
         return code
+
+    def extract_code_generic(self, response: str) -> Optional[str]:
+        """Extract any code block from LLM response, language-agnostic."""
+        import re
+        m = re.search(r"```[a-zA-Z0-9_+-]*\s*\n(.*?)\n```", response, re.DOTALL)
+        if m:
+            return m.group(1).strip()
+        # If no fenced code, fall back to returning the whole response as-is
+        return response.strip() if response and response.strip() else None
     
     def _fix_common_code_issues(self, code: str) -> str:
         """Attempt to fix common code issues."""

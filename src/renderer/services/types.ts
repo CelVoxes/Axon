@@ -113,16 +113,18 @@ export interface SearchProgress {
  */
 
 export interface CodeGenerationRequest {
-	stepDescription: string;
-	originalQuestion: string;
-	datasets: Dataset[];
-	workingDir: string;
-	stepIndex: number;
-	previousCode?: string;
-	globalCodeContext?: string; // Add global code context from entire conversation
-	fallbackMode?: "basic" | "timeout-safe" | "data-aware";
-	withTesting?: boolean;
-	stepId?: string;
+    stepDescription: string;
+    originalQuestion: string;
+    datasets: Dataset[];
+    workingDir: string;
+    stepIndex: number;
+    previousCode?: string;
+    globalCodeContext?: string; // Add global code context from entire conversation
+    // Optional target language hint for generation (default: 'python')
+    language?: "python" | "r";
+    fallbackMode?: "basic" | "timeout-safe" | "data-aware";
+    withTesting?: boolean;
+    stepId?: string;
 }
 
 export interface CodeGenerationResult {
@@ -179,11 +181,12 @@ export interface ICodeGenerator {
 }
 
 export interface ICodeExecutor {
-	executeCell(
-		cellId: string,
-		code: string,
-		onProgress?: (updates: Partial<Cell>) => void
-	): Promise<ExecutionResult>;
+    executeCell(
+        cellId: string,
+        code: string,
+        onProgress?: (updates: Partial<Cell>) => void,
+        language?: "python" | "r"
+    ): Promise<ExecutionResult>;
 
 	executeCellWithAnalysis(
 		cell: Cell,

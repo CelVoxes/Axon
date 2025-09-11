@@ -849,6 +849,7 @@ export class BackendClient implements IBackendClient {
 		max_tokens?: number;
 		temperature?: number;
 		session_id?: string;
+		language?: "python" | "r";
 	}): Promise<any> {
 		try {
 			const response = await fetch(`${this.baseUrl}/llm/code`, {

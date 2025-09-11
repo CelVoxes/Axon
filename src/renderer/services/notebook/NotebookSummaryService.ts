@@ -1211,7 +1211,7 @@ export class NotebookSummaryService {
 		}
 		
 		body {
-			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
 			line-height: 1.6;
 			color: #333;
 			max-width: none;
@@ -1253,7 +1253,7 @@ export class NotebookSummaryService {
 			background: #f7fafc;
 			padding: 2px 4px;
 			border-radius: 3px;
-			font-family: 'SF Mono', 'Monaco', 'Cascadia Code', monospace;
+            font-family: 'SF Mono', 'Monaco', 'Cascadia Code', monospace;
 			font-size: 0.9em;
 			color: #e53e3e;
 		}
@@ -1424,7 +1424,7 @@ ${htmlContent}
 <head>
 	<title>Notebook Summary</title>
 	<style>
-		body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }
+        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }
 		code { background: #f4f4f4; padding: 2px 4px; border-radius: 3px; }
 		pre { background: #f4f4f4; padding: 10px; border-radius: 5px; overflow-x: auto; }
 		hr { border: none; border-top: 1px solid #ddd; margin: 20px 0; }

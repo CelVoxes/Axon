@@ -172,6 +172,68 @@ export class NotebookCodeGenerationService {
     ].join("\n");
   }
 
+  private buildRSetupCellCode(): string {
+    return [
+      "# R setup: install required packages for Seurat v5 workflow",
+      "# This cell installs missing packages and attempts to register IRkernel",
+      "req <- c('Seurat','SeuratObject','Matrix','uwot','RANN','data.table','readr')",
+      "missing <- req[!sapply(req, requireNamespace, quietly = TRUE)]",
+      "if (length(missing) > 0) {",
+      "  if (is.null(getOption('repos')) || is.na(getOption('repos')['CRAN']) || getOption('repos')['CRAN'] == '') {",
+      "    options(repos = c(CRAN = 'https://cloud.r-project.org'))",
+      "  }",
+      "  message('Installing missing packages: ', paste(missing, collapse=', '))",
+      "  try(install.packages(missing, Ncpus = max(1L, parallel::detectCores() - 1L)), silent = FALSE)",
+      "}",
+      "# Try to ensure IRkernel is available for Jupyter",
+      "if (!requireNamespace('IRkernel', quietly = TRUE)) {",
+      "  message('IRkernel not installed. To enable R in Jupyter, run: install.packages(\"IRkernel\"); IRkernel::installspec(user=TRUE) then restart Jupyter.')",
+      "} else {",
+      "  try(IRkernel::installspec(user = TRUE), silent = TRUE)",
+      "}",
+      "invisible(lapply(req, function(p) try(library(p, character.only = TRUE), silent = TRUE)))",
+    ].join("\n");
+  }
+
+  private async ensureRSetupCell(
+    notebookPath: string,
+    datasets: Dataset[]
+  ): Promise<void> {
+    try {
+      // Only for spectral flow datasets
+      const isSpectralFlow = Array.isArray(datasets) && datasets.some((d: any) => String((d?.dataType || '')).toLowerCase() === 'spectral_flow_cytometry');
+      if (!isSpectralFlow) return;
+
+      const notebookContent = await this.notebookService.readNotebook(notebookPath);
+      const existingCode = notebookContent.cells
+        .filter(cell => cell.cell_type === 'code')
+        .map(cell => Array.isArray(cell.source) ? cell.source.join('') : String(cell.source || ''))
+        .join('\n');
+
+      const hasRSetup = /(install\.packages\(|library\(Seurat\)|Seurat::)/i.test(existingCode);
+      if (hasRSetup) return;
+
+      // Add a short markdown guidance cell
+      const md = [
+        '### R kernel and Seurat setup',
+        '',
+        "This notebook includes R code for spectral flow using Seurat v5 (sketch).",
+        "If you see an error like 'Failed to create R kernel', install IRkernel in R:",
+        '1. Open an R session',
+        "2. Run: `install.packages('IRkernel')`",
+        "3. Run: `IRkernel::installspec(user=TRUE)`",
+        '4. Restart Jupyter from Axon',
+      ].join('\n');
+      await this.notebookService.addMarkdownCell(notebookPath, md);
+
+      // Add R setup cell (install packages, attempt IRkernel registration)
+      const rSetup = this.buildRSetupCellCode();
+      await this.notebookService.addCodeCell(notebookPath, rSetup);
+    } catch (error) {
+      console.warn('ensureRSetupCell failed:', error);
+    }
+  }
+
   /**
    * Generate and validate code, then add as a new notebook cell.
    * Emits validation events after the cell is successfully added.
@@ -196,11 +258,27 @@ export class NotebookCodeGenerationService {
       stepId,
     };
 
+    // If datasets indicate spectral flow cytometry, steer generation to R/Seurat
+    const isSpectralFlow = Array.isArray(datasets) && datasets.some((d: any) => String((d?.dataType || "")).toLowerCase() === "spectral_flow_cytometry");
+    if (isSpectralFlow) {
+      (request as any).language = "r";
+    }
+
     const genResult = await this.codeGenerator.generateCode(request);
     const generatedCode = genResult.code;
     this.addCodeToContext(stepId, generatedCode);
 
-    // Validate and test (skip execution), collect result but do not emit events yet
+    if (isSpectralFlow) {
+      // For R/Seurat cells, ensure an R setup cell exists, then add generated code directly
+      await this.ensureRSetupCell(notebookPath, datasets);
+      await this.notebookService.addCodeCell(notebookPath, generatedCode);
+      if (typeof (this.codeGenerator as any).emitValidationSuccess === "function") {
+        (this.codeGenerator as any).emitValidationSuccess(stepId, "Generated R (Seurat) code added without Python linting", generatedCode);
+      }
+      return;
+    }
+
+    // Validate and test (skip execution), collect result but do not emit events yet (Python path)
     let validation;
     try {
       validation = await this.codeQualityService.validateAndTest(generatedCode, stepId, {
@@ -229,7 +307,7 @@ export class NotebookCodeGenerationService {
     // Extract any package hints from the generated code
     const llmSuggestedPkgs = this.extractPackagesFromCode(generatedCode);
 
-    // Check if we need to add package installation cell first
+    // Check if we need to add package installation cell first (Python path only)
     await this.ensurePackageInstallationCell(notebookPath, datasets, llmSuggestedPkgs);
 
     // Add validated code as notebook cell

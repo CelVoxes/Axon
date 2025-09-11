@@ -3,14 +3,15 @@ import { ErrorUtils } from "../../utils/ErrorUtils";
 import { normalizePythonCode } from "../../utils/CodeTextUtils";
 import { Cell, ExecutionResult, ICodeExecutor } from "../types";
 async function runNotebookStep(
-	stepId: string,
-	code: string,
-	update: (payload: {
-		output: string | null;
-		error: string | null;
-		isStream?: boolean;
-	}) => void,
-	workspacePath?: string
+    stepId: string,
+    code: string,
+    update: (payload: {
+        output: string | null;
+        error: string | null;
+        isStream?: boolean;
+    }) => void,
+    workspacePath?: string,
+    language: "python" | "r" = "python"
 ) {
 	let unsubscribe: (() => void) | undefined;
 	try {
@@ -61,11 +62,12 @@ async function runNotebookStep(
 
 		// Execute the code (final result will be handled below)
 		// @ts-ignore
-		const result = await window.electronAPI.executeJupyterCode(
-			code,
-			workspacePath,
-			stepId
-		);
+        const result = await window.electronAPI.executeJupyterCode(
+            code,
+            workspacePath,
+            stepId,
+            language
+        );
 
 		console.log(`Jupyter execution result:`, result);
 
@@ -133,10 +135,10 @@ export class CellExecutionService implements ICodeExecutor {
 		this.activeExecutions.clear();
 	}
 
-	async executeCellWithAnalysis(
-		cell: Cell,
-		onProgress?: (updates: Partial<Cell>) => void
-	): Promise<ExecutionResult> {
+    async executeCellWithAnalysis(
+        cell: Cell,
+        onProgress?: (updates: Partial<Cell>) => void
+    ): Promise<ExecutionResult> {
 		console.log(
 			`CellExecutionService: Executing cell with analysis: ${cell.title}`
 		);
@@ -158,15 +160,18 @@ export class CellExecutionService implements ICodeExecutor {
 			let errorMessage = "";
 
 			// Add timeout wrapper for execution
-			const preparedCode = normalizePythonCode(cell.code);
-			const executionPromise = runNotebookStep(
-				cell.id,
-				preparedCode,
-				(payload: {
-					output: string | null;
-					error: string | null;
-					isStream?: boolean;
-				}) => {
+            const preparedCode =
+                (cell.language === "python")
+                    ? normalizePythonCode(cell.code)
+                    : cell.code;
+            const executionPromise = runNotebookStep(
+                cell.id,
+                preparedCode,
+                (payload: {
+                    output: string | null;
+                    error: string | null;
+                    isStream?: boolean;
+                }) => {
 					// Check if execution was aborted
 					if (abortController.signal.aborted) {
 						return;
@@ -190,9 +195,10 @@ export class CellExecutionService implements ICodeExecutor {
 						hasError = true;
 						errorMessage = payload.error;
 					}
-				},
-				this.workspacePath
-			);
+                },
+                this.workspacePath,
+                cell.language === "r" ? "r" : "python"
+            );
 
 			// Soft timeout: limit how long a single cell can run
 			const defaultTimeoutMs = 600_000; // 10 minutes
@@ -363,20 +369,21 @@ export class CellExecutionService implements ICodeExecutor {
 		return analysis;
 	}
 
-	async executeCell(
-		cellId: string,
-		code: string,
-		onProgress?: (updates: Partial<Cell>) => void
-	): Promise<ExecutionResult> {
-		const cell: Cell = {
-			id: cellId,
-			code,
-			language: "python",
-			output: "",
-			hasError: false,
-			status: "pending",
-		};
+    async executeCell(
+        cellId: string,
+        code: string,
+        onProgress?: (updates: Partial<Cell>) => void,
+        language: "python" | "r" = "python"
+    ): Promise<ExecutionResult> {
+        const cell: Cell = {
+            id: cellId,
+            code,
+            language,
+            output: "",
+            hasError: false,
+            status: "pending",
+        };
 
-		return this.executeCellWithAnalysis(cell, onProgress);
-	}
+        return this.executeCellWithAnalysis(cell, onProgress);
+    }
 }

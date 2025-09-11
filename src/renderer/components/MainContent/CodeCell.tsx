@@ -263,8 +263,7 @@ const MarkdownInput = styled.textarea`
 	background: #1a1b1e;
 	border: 1px solid #30363d;
 	color: #e6e6e6;
-	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu,
-		"Helvetica Neue", Arial, sans-serif;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, "Helvetica Neue", Arial, sans-serif;
 	font-size: ${typography.base};
 	line-height: 1.6;
 	padding: 14px 16px;
@@ -475,8 +474,7 @@ const ExpandButton = styled.button`
 const RichTextOutput = styled.div`
 	color: #e6e6e6;
 	line-height: 1.7;
-	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu,
-		"Helvetica Neue", Arial, sans-serif;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, "Helvetica Neue", Arial, sans-serif;
 
 	/* Headings */
 	h1,
@@ -696,19 +694,20 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 
 		try {
 			// Use CellExecutionService instead of direct API call
-			const result = await cellExecutionService.executeCell(
-				executionId,
-				code,
-				(updates) => {
-					// Handle real-time updates if needed
-					if (updates.output !== undefined) {
-						setOutput(updates.output || "");
-					}
-					if (updates.hasError !== undefined) {
-						setHasError(updates.hasError);
-					}
-				}
-			);
+        const result = await cellExecutionService.executeCell(
+            executionId,
+            code,
+            (updates) => {
+                // Handle real-time updates if needed
+                if (updates.output !== undefined) {
+                    setOutput(updates.output || "");
+                }
+                if (updates.hasError !== undefined) {
+                    setHasError(updates.hasError);
+                }
+            },
+            (language as any) // pass through current cell language ('python' | 'r')
+        );
 
 			// Set final result
 			if (result.status === "completed") {

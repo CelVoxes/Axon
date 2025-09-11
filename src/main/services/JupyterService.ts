@@ -34,7 +34,8 @@ export class JupyterService {
 	async executeCode(
 		code: string,
 		workspacePath: string,
-		executionId?: string
+		executionId?: string,
+		language: "python" | "r" = "python"
 	): Promise<JupyterExecutionResult> {
 		try {
 			console.log(`🎯 Executing code in workspace: ${workspacePath}`);
@@ -47,8 +48,8 @@ export class JupyterService {
 				executionId,
 			});
 
-			// Create or get existing kernel
-			const kernelId = await this.getOrCreateKernel(workspacePath);
+			// Create or get existing kernel of the requested language
+			const kernelId = await this.getOrCreateKernel(workspacePath, language);
 
 			// Execute code via WebSocket
 			const result = await this.executeCodeInKernel(code, kernelId, executionId);
@@ -66,7 +67,10 @@ export class JupyterService {
 	/**
 	 * Get an existing running kernel or start a new one with minimal setup
 	 */
-	private async getOrCreateKernel(workspacePath: string): Promise<string> {
+	private async getOrCreateKernel(
+		workspacePath: string,
+		language: "python" | "r" = "python"
+	): Promise<string> {
 		try {
 			// First, check for existing running kernels
 			console.log(`🔍 Checking for existing running kernels...`);
@@ -78,33 +82,46 @@ export class JupyterService {
 				const runningKernels = await kernelsResp.json();
 				console.log(`📋 Found ${runningKernels.length} running kernels`);
 
-				if (runningKernels.length > 0) {
-					// Use the first available running kernel
+				// Try to find a kernel matching requested language
+				const desired = (language === "r") ? "ir" : "python";
+				const match = (runningKernels as any[]).find((k) =>
+					String(k?.name || "").toLowerCase().includes(desired)
+				);
+				if (match) {
+					console.log(
+						`✅ Using existing ${language} kernel: ${match.name} (${match.id})`
+					);
+					return String(match.id);
+				}
+
+				// Fall back to any kernel if available and language is python
+				if (language === "python" && runningKernels.length > 0) {
 					const kernel = runningKernels[0];
 					console.log(
-						`✅ Using existing kernel: ${kernel.name} with id: ${kernel.id}`
+						`ℹ️ No explicit python kernel found; using first available: ${kernel.name} (${kernel.id})`
 					);
-					return kernel.id as string;
+					return String(kernel.id);
 				}
 			}
 
 			// If no running kernels, create one with workspace Python
 			console.log(
-				`🔧 No running kernels found, creating kernel with workspace Python...`
+				`🔧 No matching kernels found, creating a new ${language.toUpperCase()} kernel...`
 			);
 
 			// Since Jupyter server is running from workspace venv, create kernel without name
 			// This will use the same Python that's running the Jupyter server
 			const headers: any = { "Content-Type": "application/json" };
 
-			// Prefer explicit python3 kernel; fall back to server default if needed
+			// Prefer explicit kernel by name; fall back to server default if needed
 			let createResp: Response;
 			try {
+				const kernelName = language === "r" ? "ir" : "python3";
 				createResp = await Promise.race([
 					fetch(`http://127.0.0.1:${this.config.port}/api/kernels`, {
 						method: "POST",
 						headers,
-						body: JSON.stringify({ name: "python3" }),
+						body: JSON.stringify({ name: kernelName }),
 					}),
 					new Promise<Response>((_, reject) => {
 						setTimeout(
@@ -116,7 +133,7 @@ export class JupyterService {
 				if (!createResp.ok) {
 					// Some servers may require empty body to use default kernel
 					console.warn(
-						`Kernel create with name=python3 returned ${createResp.status}, retrying with default...`
+						`Kernel create with name=${language === "r" ? "ir" : "python3"} returned ${createResp.status}, retrying with default...`
 					);
 					createResp = await Promise.race([
 						fetch(`http://127.0.0.1:${this.config.port}/api/kernels`, {
@@ -138,12 +155,16 @@ export class JupyterService {
 
 			if (!createResp.ok) {
 				const errText = await createResp.text().catch(() => "");
-				console.error(`❌ Failed to create default kernel:`);
+				console.error(`❌ Failed to create ${language.toUpperCase()} kernel:`);
 				console.error(
 					`   Status: ${createResp.status} ${createResp.statusText}`
 				);
 				console.error(`   Response: ${errText}`);
-				throw new Error(`Failed to create default kernel: ${errText}`);
+				throw new Error(
+					language === "r"
+						? `Failed to create R kernel. Ensure IRkernel is installed. ${errText}`
+						: `Failed to create Python kernel: ${errText}`
+				);
 			}
 
 			const newKernel = await createResp.json();
