@@ -9,13 +9,13 @@ import type { CodeBlockStyleProps, CodeBlockVariant } from "./CodeBlockTypes";
 
 // Inline code element to avoid invalid <div> inside <p>
 export const InlineCode = styled.code`
-  display: inline;
-  background: #2d2d2d;
-  color: #e5e7eb;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: ${typography.sm};
-  border: 1px solid #444;
+	display: inline;
+	background: #2d2d2d;
+	color: #e5e7eb;
+	padding: 2px 6px;
+	border-radius: 4px;
+	font-size: ${typography.sm};
+	border: 1px solid #444;
 `;
 
 // Base container for all code block variants
@@ -29,7 +29,6 @@ export const CodeBlockContainer = styled.div<CodeBlockStyleProps>`
 			case "chat":
 				return `
           font-size: ${typography.sm};
-          margin: 12px 0;
           border: 1px solid #333;
           border-radius: 8px;
           overflow: hidden;
@@ -42,7 +41,6 @@ export const CodeBlockContainer = styled.div<CodeBlockStyleProps>`
 				return `
           border: 1px solid ${colors.gray[700]};
           border-radius: ${borderRadius.lg};
-          margin: 12px 0;
           overflow: hidden;
           background: #1e1e1e;
           font-size: ${typography.sm}; /* Match chat variant font size */
@@ -284,7 +282,7 @@ export const CodeBlockCode = styled.code<{ $wrap?: boolean }>`
 
 // Lint container styles for chat variant
 export const LintContainer = styled.div`
-	margin: 8px 0;
+	/* margin: 8px 0; */
 `;
 
 export const LintHeader = styled.div`
@@ -304,7 +302,7 @@ export const LintHeader = styled.div`
 export const LintDetails = styled.div`
 	color: #9ca3af;
 	font-size: ${typography.sm};
-	padding-left: 14px;
+	padding-left: 0; /* remove left indent so content aligns flush */
 
 	ul {
 		margin: 6px 0 0 0;

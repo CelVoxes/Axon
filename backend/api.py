@@ -292,10 +292,13 @@ class AskRequest(BaseModel):
     question: str
     context: Optional[str] = ""
     session_id: Optional[str] = None
+    model: Optional[str] = None
+    stream_raw: Optional[bool] = None
 
 
 class AskResponse(BaseModel):
     answer: str
+    reasoning_summary: Optional[str] = None
 class IntentRequest(BaseModel):
     text: str
     context: Optional[Dict[str, Any]] = None
@@ -304,6 +307,12 @@ class IntentResponse(BaseModel):
     intent: str  # "ADD_CELL" | "SEARCH_DATA" | "START_ANALYSIS"
     confidence: float
     reason: str
+
+
+class LLMConfigResponse(BaseModel):
+    default_model: str
+    available_models: List[str]
+    service_tier: str | None = None
 class GoogleAuthRequest(BaseModel):
     id_token: str
 
@@ -337,6 +346,30 @@ async def root():
             "intent": "/llm/intent",
         }
     }
+
+
+@app.get("/llm/config", response_model=LLMConfigResponse)
+async def get_llm_config():
+    """Return LLM configuration for the UI (single source of truth).
+
+    Includes default model, available models list, and current service tier (e.g., 'flex' if enabled).
+    """
+    try:
+        default_model = SearchConfig.get_default_llm_model()
+        available_models = SearchConfig.get_available_llm_models()
+        # Best-effort service tier discovery
+        try:
+            svc = get_llm_service()
+            tier = getattr(getattr(svc, 'provider', None), 'service_tier', None)
+        except Exception:
+            tier = None
+        return LLMConfigResponse(
+            default_model=default_model,
+            available_models=available_models,
+            service_tier=tier or (SearchConfig.get_openai_service_tier() or None),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load LLM config: {e}")
 
 
 @app.post("/auth/google", response_model=GoogleAuthResponse)
@@ -753,6 +786,7 @@ async def generate_code_stream(request: dict, user=Depends(get_current_user)):
         task_description = request.get("task_description", "")
         language = request.get("language", "python")
         context = request.get("context", "")
+        reasoning = request.get("reasoning") if isinstance(request, dict) else None
         
         print(f"Code generation request: task='{task_description}', language='{language}'")
         print(f"Context: {context[:200]}..." if len(context) > 200 else f"Context: {context}")
@@ -768,16 +802,56 @@ async def generate_code_stream(request: dict, user=Depends(get_current_user)):
                     task_description=task_description,
                     language=language,
                     context=context,
+                    reasoning=reasoning,
                     session_id=request.get("session_id") if isinstance(request, dict) else getattr(request, "session_id", None),
                     model=model,
                 ):
-                    if chunk:  # Only yield non-empty chunks
-                        yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+                    if not chunk:
+                        continue
+                    # Reasoning sentinel handling
+                    if isinstance(chunk, str) and chunk.startswith("\x00REASONING:"):
+                        try:
+                            reasoning_delta = chunk[len("\x00REASONING:"):]
+                            if reasoning_delta:
+                                try:
+                                    # Debug: show a compact reasoning delta sample
+                                    _sample = (reasoning_delta[:120]).replace("\n", " ")
+                                    _ell = "…" if len(reasoning_delta) > 120 else ""
+                                    print(f"[API] reasoning delta ({len(reasoning_delta)} chars): {_sample}{_ell}")
+                                except Exception:
+                                    pass
+                                yield f"data: {json.dumps({'type': 'reasoning', 'delta': reasoning_delta})}\n\n"
+                            continue
+                        except Exception:
+                            # fall through to raw chunk if parsing fails
+                            pass
+                    if isinstance(chunk, str) and chunk.startswith("\x00SUMMARY:"):
+                        try:
+                            summary_text = chunk[len("\x00SUMMARY:"):]
+                            if summary_text:
+                                print(f"[API] summary received ({len(summary_text)} chars)")
+                                yield f"data: {json.dumps({'type': 'summary', 'text': summary_text})}\n\n"
+                            continue
+                        except Exception:
+                            pass
+                    # Normal code chunk
+                    try:
+                        print(f"[API] code chunk ({len(str(chunk))} chars)")
+                    except Exception:
+                        pass
+                    yield f"data: {json.dumps({'chunk': chunk})}\n\n"
             except Exception as e:
                 print(f"Error in streaming generation: {e}")
                 # Yield error message as a chunk
                 error_msg = f"# Error generating code: {str(e)}\nprint('Code generation failed due to error')"
                 yield f"data: {json.dumps({'chunk': error_msg})}\n\n"
+            # After streaming completes, emit reasoning summary if available
+            try:
+                summary = llm_service.get_last_reasoning_summary()
+                if summary:
+                    yield f"data: {json.dumps({'type': 'summary', 'text': summary})}\n\n"
+            except Exception:
+                pass
         
         # Note: Streaming usage logging cannot capture token counts easily; log metadata only
         try:
@@ -974,8 +1048,18 @@ async def ask_question(request: AskRequest, user=Depends(get_current_user)):
     """General Q&A endpoint. No environment creation or editing, just answers."""
     try:
         llm_service = get_llm_service()
-        answer = await llm_service.ask(request.question, request.context or "", session_id=request.session_id)
-        return AskResponse(answer=answer)
+        answer = await llm_service.ask(
+            request.question,
+            request.context or "",
+            session_id=request.session_id,
+            model=request.model,
+        )
+        # Optionally include model-provided reasoning summary (for GPT-5 family)
+        try:
+            summary = llm_service.get_last_reasoning_summary()
+        except Exception:
+            summary = None
+        return AskResponse(answer=answer, reasoning_summary=summary)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ask failed: {str(e)}")
 
@@ -1002,8 +1086,15 @@ async def ask_question_stream(request: AskRequest, user=Depends(get_current_user
             async for chunk in llm_service.ask_stream(
                 question=request.question,
                 context=request.context or "",
-                session_id=request.session_id
+                session_id=request.session_id,
+                model=request.model,
             ):
+                if request.stream_raw:
+                    # Stream every chunk directly as answer
+                    if chunk:
+                        yield f"data: {json.dumps({'type': 'answer', 'delta': chunk})}\n\n"
+                    continue
+
                 # Accumulate and check for explicit final markers
                 buffer += chunk
 
@@ -1042,6 +1133,14 @@ async def ask_question_stream(request: AskRequest, user=Depends(get_current_user
             # If we never detected a final marker, stream whatever we collected
             if not in_answer and buffer.strip():
                 yield f"data: {json.dumps({'type': 'answer', 'delta': buffer})}\n\n"
+
+            # Emit reasoning summary if available
+            try:
+                summary = llm_service.get_last_reasoning_summary()
+                if summary:
+                    yield f"data: {json.dumps({'type': 'summary', 'text': summary})}\n\n"
+            except Exception:
+                pass
 
             # Done
             yield f"data: {json.dumps({'type': 'done'})}\n\n"

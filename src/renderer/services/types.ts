@@ -233,4 +233,10 @@ export interface IBackendClient {
 	}): Promise<any>;
 
 	askQuestion(params: { question: string; context?: string; sessionId?: string }): Promise<string>;
+
+	getLLMConfig(): Promise<{
+		default_model: string;
+		available_models: string[];
+		service_tier?: string | null;
+	} | null>;
 }

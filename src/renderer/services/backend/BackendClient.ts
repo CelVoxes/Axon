@@ -95,6 +95,31 @@ export class BackendClient implements IBackendClient {
 		return this.baseUrl;
 	}
 
+	async getLLMConfig(): Promise<{
+		default_model: string;
+		available_models: string[];
+		service_tier?: string | null;
+	} | null> {
+		try {
+			const res = await this.axiosInstance.get(`${this.baseUrl}/llm/config`);
+			const data = res.data || {};
+			return {
+				default_model: String(data.default_model || ""),
+				available_models: Array.isArray(data.available_models)
+					? data.available_models.map((x: any) => String(x))
+					: [],
+				service_tier:
+					typeof data.service_tier === "string" ? data.service_tier : null,
+			};
+		} catch (e) {
+			log.warn(
+				"BackendClient: Failed to fetch LLM config, using local defaults.",
+				e
+			);
+			return null;
+		}
+	}
+
 	// Direct API methods - no business logic
 	async searchDatasets(query: {
 		query: string;
@@ -612,6 +637,7 @@ export class BackendClient implements IBackendClient {
 					question: params.question,
 					context: params.context || "",
 					session_id: params.sessionId,
+					model: ConfigManager.getInstance().getDefaultModel(),
 				}),
 				signal: controller.signal,
 			});
@@ -622,7 +648,14 @@ export class BackendClient implements IBackendClient {
 				);
 			}
 			const data = await response.json();
-			return String(data?.answer || "");
+			// If backend includes a reasoning_summary, append it to the answer for non-streaming calls
+			const base = String(data?.answer || "");
+			const summary =
+				typeof data?.reasoning_summary === "string" &&
+				data.reasoning_summary.trim().length > 0
+					? `\n\n🧠 Summary: ${data.reasoning_summary}`
+					: "";
+			return base + summary;
 		} catch (error) {
 			console.error("BackendClient: Error asking question:", error);
 			throw error;
@@ -668,23 +701,25 @@ export class BackendClient implements IBackendClient {
 	 * Stream Ask (Q&A) with reasoning-aware events.
 	 * onEvent receives objects: { type: 'status'|'answer'|'done', ... }
 	 */
-	async askQuestionStream(
-		params: { question: string; context?: string; sessionId?: string },
-		onEvent: (evt: any) => void
-	): Promise<void> {
+    async askQuestionStream(
+        params: { question: string; context?: string; sessionId?: string; streamRaw?: boolean },
+        onEvent: (evt: any) => void
+    ): Promise<void> {
 		const controller = new AbortController();
 		this.abortControllers.add(controller);
 		try {
-			const response = await fetch(`${this.baseUrl}/llm/ask/stream`, {
-				method: "POST",
-				headers: this.buildHeaders(),
-				body: JSON.stringify({
-					question: params.question,
-					context: params.context || "",
-					session_id: params.sessionId,
-				}),
-				signal: controller.signal,
-			});
+            const response = await fetch(`${this.baseUrl}/llm/ask/stream`, {
+                method: "POST",
+                headers: this.buildHeaders(),
+                body: JSON.stringify({
+                    question: params.question,
+                    context: params.context || "",
+                    session_id: params.sessionId,
+                    model: ConfigManager.getInstance().getDefaultModel(),
+                    stream_raw: params.streamRaw === true,
+                }),
+                signal: controller.signal,
+            });
 
 			await readNdjsonStream(response, {
 				onLine: (json: any) => onEvent(json),
@@ -790,43 +825,72 @@ export class BackendClient implements IBackendClient {
 	/**
 	 * Stream code generation using LLM
 	 */
-	async generateCodeStream(
-		request: any,
-		onChunk: (chunk: string) => void
-	): Promise<any> {
-		log.info("🚀 BackendClient.generateCodeStream: Starting stream request");
-		log.debug("🚀 Streaming endpoint: %s", `${this.baseUrl}/llm/code/stream`);
+    async generateCodeStream(
+        request: any,
+        onChunk: (chunk: string) => void,
+        onReasoningDelta?: (delta: string) => void,
+        onSummary?: (summary: string) => void
+    ): Promise<any> {
+        log.info("🚀 BackendClient.generateCodeStream: Starting stream request");
+        log.debug("🚀 Streaming endpoint: %s", `${this.baseUrl}/llm/code/stream`);
 
-		const controller = new AbortController();
-		this.abortControllers.add(controller);
-		try {
-			const response = await fetch(`${this.baseUrl}/llm/code/stream`, {
-				method: "POST",
-				headers: this.buildHeaders(),
-				body: JSON.stringify(request),
-				signal: controller.signal,
-			});
+        const controller = new AbortController();
+        this.abortControllers.add(controller);
+        try {
+            const response = await fetch(`${this.baseUrl}/llm/code/stream`, {
+                method: "POST",
+                headers: this.buildHeaders(),
+                body: JSON.stringify(request),
+                signal: controller.signal,
+            });
 
-			const code = await readDataStream(response, onChunk);
-			if (code.length === 0) {
-				log.warn("🚀 WARNING: No content received from stream!");
-			}
-			return { code, success: true };
-		} catch (error) {
-			log.error(
-				"🚀 BackendClient: Error streaming code generation:",
-				error as any
-			);
-			log.error("🚀 Error details:", {
-				message: error instanceof Error ? error.message : String(error),
-				stack: error instanceof Error ? error.stack : undefined,
-				request: request,
-			});
-			throw error;
-		} finally {
-			this.abortControllers.delete(controller);
-		}
-	}
+            let code = "";
+            await readNdjsonStream(response, {
+                onLine: (obj: any) => {
+                    try {
+                        if (typeof obj?.chunk === "string" && obj.chunk.length > 0) {
+                            try {
+                                log.info("FE stream: code chunk (%d chars)", obj.chunk.length);
+                            } catch (_) {}
+                            onChunk(obj.chunk);
+                            code += obj.chunk;
+                            return;
+                        }
+                        if (obj?.type === "reasoning" && typeof obj?.delta === "string") {
+                            try {
+                                log.info("FE stream: reasoning delta (%d chars): %s", obj.delta.length, obj.delta.slice(0, 80));
+                            } catch (_) {}
+                            if (onReasoningDelta) onReasoningDelta(obj.delta);
+                            return;
+                        }
+                        if (obj?.type === "summary" && typeof obj?.text === "string") {
+                            if (onSummary) onSummary(obj.text);
+                            return;
+                        }
+                    } catch (_) {}
+                },
+                onError: (m) => log.warn("readNdjsonStream parse error:", m),
+            });
+
+            if (code.length === 0) {
+                log.warn("🚀 WARNING: No content received from stream!");
+            }
+            return { code, success: true };
+        } catch (error) {
+            log.error(
+                "🚀 BackendClient: Error streaming code generation:",
+                error as any
+            );
+            log.error("🚀 Error details:", {
+                message: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : undefined,
+                request: request,
+            });
+            throw error;
+        } finally {
+            this.abortControllers.delete(controller);
+        }
+    }
 
 	abortAllRequests(): void {
 		try {

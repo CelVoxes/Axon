@@ -106,12 +106,16 @@ async function runNotebookStep(
 export { Cell, ExecutionResult } from "../types";
 
 export class CellExecutionService implements ICodeExecutor {
-	private workspacePath: string;
+    private workspacePath: string;
 	private activeExecutions: Map<string, AbortController> = new Map();
 
-	constructor(workspacePath: string) {
-		this.workspacePath = workspacePath;
-	}
+    constructor(workspacePath: string) {
+        this.workspacePath = workspacePath;
+    }
+
+    getWorkspacePath(): string {
+        return this.workspacePath;
+    }
 
 	updateWorkspacePath(newWorkspacePath: string) {
 		console.log(

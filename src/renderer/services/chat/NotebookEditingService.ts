@@ -2,6 +2,7 @@ import { BackendClient } from "../backend/BackendClient";
 import { NotebookService } from "../notebook/NotebookService";
 import { EventManager } from "../../utils/EventManager";
 import { autoFixWithRuffAndLLM } from "./LintAutoFixService";
+import { ConfigManager } from "../backend/ConfigManager";
 import { findWorkspacePath } from "../../utils/WorkspaceUtils";
 import {
 	stripCodeFences,
@@ -108,27 +109,29 @@ export class NotebookEditingService {
 			const end = selEnd;
 			let lastCellUpdate = 0;
 
-			await this.backendClient.generateCodeStream(
-				{
-					task_description:
-						`${task}\n\nUser instruction: ${userMessage}\n\n` +
-						(outputText && outputText.trim().length > 0
-							? `${
-									hasErrorOutput ? "Error" : "Execution"
-							  } output for context:\n\n\`\`\`text\n${outputText}\n\`\`\`\n\n`
-							: "") +
-						`Original code (lines ${startLine}-${endLine}):\n${withinSelection}\n\nIMPORTANT: The original has ${
-							withinSelection.split("\n").length
-						} lines. Return EXACTLY ${
-							withinSelection.split("\n").length
-						} modified lines (no imports, no extra lines). Example format:\nline1\nline2\n\nYour response:`,
-					language: lang,
-					context: "Notebook code edit-in-place",
-					notebook_edit: true,
-				},
-				(chunk: string) => {
-					streamedResponse += chunk;
-					const cleanedSnippet = stripCodeFences(streamedResponse);
+            await this.backendClient.generateCodeStream(
+                {
+                    task_description:
+                        `${task}\n\nUser instruction: ${userMessage}\n\n` +
+                        (outputText && outputText.trim().length > 0
+                            ? `${
+                                  hasErrorOutput ? "Error" : "Execution"
+                              } output for context:\n\n\`\`\`text\n${outputText}\n\`\`\`\n\n`
+                            : "") +
+                        `Original code (lines ${startLine}-${endLine}):\n${withinSelection}\n\nIMPORTANT: The original has ${
+                            withinSelection.split("\n").length
+                        } lines. Return EXACTLY ${
+                            withinSelection.split("\n").length
+                        } modified lines (no imports, no extra lines). Example format:\nline1\nline2\n\nYour response:`,
+                    language: lang,
+                    context: "Notebook code edit-in-place",
+                    notebook_edit: true,
+                    session_id: wsPath ? `session:${wsPath}` : undefined,
+                    model: ConfigManager.getInstance().getDefaultModel(),
+                },
+                (chunk: string) => {
+                    streamedResponse += chunk;
+                    const cleanedSnippet = stripCodeFences(streamedResponse);
 
 					// Update chat message with the edited snippet so far
 					analysisDispatch({
@@ -214,14 +217,15 @@ export class NotebookEditingService {
 				} catch (_) {}
 			} else {
 				// Use LintAutoFixService for validation
-				const validationResult = await autoFixWithRuffAndLLM(
-					this.backendClient,
-					newCode,
-					{
-						filename: `cell_${cellIndex + 1}_edit.py`,
-						stepTitle: `Code edit for cell ${cellIndex + 1}`,
-					}
-				);
+                const validationResult = await autoFixWithRuffAndLLM(
+                    this.backendClient,
+                    newCode,
+                    {
+                        filename: `cell_${cellIndex + 1}_edit.py`,
+                        stepTitle: `Code edit for cell ${cellIndex + 1}`,
+                    },
+                    wsPath ? `session:${wsPath}` : undefined
+                );
 
 				finalValidatedCode = validationResult.fixedCode;
 				didAutoFix = validationResult.wasFixed;

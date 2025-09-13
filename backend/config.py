@@ -1,6 +1,7 @@
 """Centralized configuration for search settings."""
 
 from typing import Optional
+import os
 
 # Search Limits
 DEFAULT_SEARCH_LIMIT = 20
@@ -26,7 +27,22 @@ MAX_SEARCH_ATTEMPTS = 2
 DEFAULT_ORGANISM = "Homo sapiens"
 
 # LLM Configuration
-DEFAULT_LLM_MODEL = "gpt-4.1-mini"  # Uses Chain-of-Thought reasoning internally
+DEFAULT_LLM_MODEL = "gpt-5-mini"  # Uses Chain-of-Thought reasoning internally
+_DEFAULT_AVAILABLE_LLM_MODELS = [
+    "gpt-5-mini",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4o",
+    "gpt-4o-mini",
+]
+_AVAILABLE_MODELS_ENV = os.getenv("AXON_AVAILABLE_MODELS") or os.getenv("OPENAI_AVAILABLE_MODELS") or ""
+AVAILABLE_LLM_MODELS = (
+    [m.strip() for m in _AVAILABLE_MODELS_ENV.split(",") if m.strip()] if _AVAILABLE_MODELS_ENV else _DEFAULT_AVAILABLE_LLM_MODELS
+)
+DEFAULT_OPENAI_TIMEOUT_SECONDS = int(os.getenv("AXON_OPENAI_TIMEOUT_SECONDS", "900"))
+# Preferred: set AXON_OPENAI_SERVICE_TIER to "flex" to enable Flex processing globally
+# Fallback: respect OPENAI_SERVICE_TIER if provided
+DEFAULT_OPENAI_SERVICE_TIER = os.getenv("AXON_OPENAI_SERVICE_TIER") or os.getenv("OPENAI_SERVICE_TIER") or ""
 
 # Caching
 CACHE_SEARCH_TTL_SECONDS = 15 * 60  # 15 minutes
@@ -64,6 +80,28 @@ class SearchConfig:
     def get_default_llm_model() -> str:
         """Get the default LLM model."""
         return DEFAULT_LLM_MODEL 
+
+    @staticmethod
+    def get_available_llm_models() -> list[str]:
+        """Get the list of available LLM models for UI selection."""
+        # Ensure default is present at least once and first
+        unique = []
+        seen = set()
+        for m in [DEFAULT_LLM_MODEL] + AVAILABLE_LLM_MODELS:
+            if m and m not in seen:
+                unique.append(m)
+                seen.add(m)
+        return unique
+
+    @staticmethod
+    def get_openai_timeout_seconds() -> int:
+        """Default OpenAI client timeout in seconds (defaults to 900s)."""
+        return DEFAULT_OPENAI_TIMEOUT_SECONDS
+
+    @staticmethod
+    def get_openai_service_tier() -> str:
+        """Return configured OpenAI service tier ("flex" to enable Flex processing)."""
+        return DEFAULT_OPENAI_SERVICE_TIER
 
     # Caching helpers
     @staticmethod

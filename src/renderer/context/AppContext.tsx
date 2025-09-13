@@ -30,6 +30,9 @@ export interface Message {
 	codeLanguage?: string;
 	codeTitle?: string;
 	suggestions?: any; // DataTypeSuggestions from AnalysisSuggestionsService
+    // Finalized duration for reasoning/"Thought" messages (in seconds). Used to keep
+    // the displayed timer stable across reloads once streaming is complete.
+    reasoningSeconds?: number;
 }
 
 export interface ChatSessionMeta {

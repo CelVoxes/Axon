@@ -12,10 +12,9 @@ export function sanitizeMarkdown(input: string): string {
   // This prevents rendering a lone blue quotation bar with no content.
   s = s.replace(/^[ \t]*>\s*$/gm, "");
 
-  // Collapse 3+ newlines into a maximum of 2 to keep spacing tidy
-  s = s.replace(/\n{3,}/g, "\n\n");
+  // Collapse 2+ consecutive newlines to exactly 2, ensuring a single blank line between paragraphs
+  s = s.replace(/\n{2,}/g, "\n\n");
 
   // Avoid trailing whitespace-only lines
   return s.replace(/[ \t]+$/gm, "");
 }
-

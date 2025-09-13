@@ -1,11 +1,13 @@
 import { Tooltip } from "@components/shared/Tooltip";
 import React, { useState, useRef, useEffect, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
 import {
 	useAnalysisContext,
 	useUIContext,
 	useWorkspaceContext,
 } from "../../context/AppContext";
 import { BackendClient } from "../../services/backend/BackendClient";
+import type { Message } from "../../context/AppContext";
 import { useDatasetSearch } from "./hooks/useDatasetSearch";
 import { findWorkspacePath } from "../../utils/WorkspaceUtils";
 import { DatasetSelectionModal } from "./DatasetSelectionModal";
@@ -17,6 +19,7 @@ import {
 	FiClock,
 	FiX,
 	FiTrash2,
+	FiChevronRight,
 } from "react-icons/fi";
 import { CodeBlock } from "../shared/CodeBlock";
 import { Composer, ComposerRef } from "./Composer";
@@ -29,6 +32,7 @@ import { EnvironmentStatus } from "./Status/EnvironmentStatus";
 import { AutonomousAgent } from "../../services/analysis/AutonomousAgent";
 import { NotebookCodeGenerationService } from "../../services/notebook/NotebookCodeGenerationService";
 import { ensureDisplayNewlines } from "../../utils/CodeTextUtils";
+import { sanitizeMarkdown } from "../../utils/MarkdownUtils";
 import {
 	LocalDatasetRegistry,
 	LocalDatasetEntry,
@@ -49,7 +53,11 @@ import { useNotebookDetection } from "./hooks/useNotebookDetection";
 import { NotebookEditingService } from "../../services/chat/NotebookEditingService";
 import { DatasetResolutionService } from "../../services/chat/DatasetResolutionService";
 import { ChatCommunicationService } from "../../services/chat/ChatCommunicationService";
-import { withBackendValidation, safeAsyncOperation, validateDependencies } from "./utils/backendValidation";
+import {
+	withBackendValidation,
+	safeAsyncOperation,
+	validateDependencies,
+} from "./utils/backendValidation";
 
 // Removed duplicated local code rendering. Use shared CodeBlock instead.
 
@@ -64,16 +72,99 @@ const notebookPathCache = new Map<string, string>();
 // Cache for parsed notebook content to avoid repeated file reads
 const notebookContentCache = new Map<string, any>();
 
+// Compact reasoning block with dynamic "Thought for Xs" title
+const ReasoningBlock: React.FC<{ message: Message }> = ({ message }) => {
+	const initialSeconds =
+		typeof (message as any).reasoningSeconds === "number"
+			? ((message as any).reasoningSeconds as number)
+			: (() => {
+					const t =
+						message.timestamp instanceof Date
+							? message.timestamp.getTime()
+							: new Date(message.timestamp as any).getTime();
+					return Math.max(0, Math.floor((Date.now() - t) / 1000));
+			  })();
+	const [seconds, setSeconds] = useState<number>(initialSeconds);
+	const [isExpanded, setIsExpanded] = useState<boolean>(
+		message.status === "pending" || !!message.isStreaming
+	);
+
+	useEffect(() => {
+		const isActive = message.status === "pending" || !!message.isStreaming;
+		if (!isActive) return;
+		const startMs =
+			message.timestamp instanceof Date
+				? message.timestamp.getTime()
+				: new Date(message.timestamp as any).getTime();
+		const id = setInterval(() => {
+			setSeconds(Math.max(0, Math.floor((Date.now() - startMs) / 1000)));
+		}, 1000);
+		return () => clearInterval(id);
+	}, [message.timestamp, message.status, message.isStreaming]);
+
+	// Auto-expand while streaming; keep user's choice otherwise
+	useEffect(() => {
+		if (message.status === "pending" || !!message.isStreaming) {
+			setIsExpanded(true);
+		}
+	}, [message.status, message.isStreaming]);
+
+	const title = `Thought for ${seconds}s`;
+	const raw = ensureDisplayNewlines(String(message.code || ""));
+	// Remove Markdown list markers at line starts so thought doesn't render as a list
+	const text = raw
+		.split(/\r?\n/)
+		.map((line) => line.replace(/^\s*[-*]\s+/, ""))
+		.join("\n");
+
+	return (
+		<div style={{ margin: "6px 0" }}>
+			<div
+				onClick={() => setIsExpanded((v) => !v)}
+				style={{
+					fontSize: "12px",
+					color: "#9ca3af",
+					cursor: "pointer",
+					userSelect: "none",
+					display: "inline-flex",
+					alignItems: "center",
+					gap: "6px",
+				}}
+			>
+				{title}
+				<FiChevronRight
+					size={12}
+					style={{
+						marginTop: 1,
+						color: "#9ca3af",
+						transform: isExpanded ? "rotate(90deg)" : undefined,
+					}}
+				/>
+			</div>
+				{isExpanded && (
+					<div className="thought-markdown" style={{ fontSize: "12px", color: "#9ca3af" }}>
+						<ReactMarkdown children={sanitizeMarkdown(text)} />
+					</div>
+				)}
+		</div>
+	);
+};
+
+// Render thinking/planning as a compact header outside of code blocks
+
 export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const { state: analysisState, dispatch: analysisDispatch } =
 		useAnalysisContext();
 	const { state: uiState, dispatch: uiDispatch } = useUIContext();
 	const { state: workspaceState } = useWorkspaceContext();
-	
+
 	// Reliable notebook detection without race conditions
-	const { notebookFile, isNotebookOpen, isDetecting: isDetectingNotebook } = 
-		useNotebookDetection(workspaceState);
-		
+	const {
+		notebookFile,
+		isNotebookOpen,
+		isDetecting: isDetectingNotebook,
+	} = useNotebookDetection(workspaceState);
+
 	// UI State Management with custom hook
 	const {
 		inputValue,
@@ -142,13 +233,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		timeoutRef: NodeJS.Timeout | null;
 		rafRef: number | null;
 		isMounted: boolean;
-	}>({ 
-		pending: {}, 
-		scheduled: false, 
-		lastUpdate: 0, 
-		timeoutRef: null, 
-		rafRef: null, 
-		isMounted: true 
+	}>({
+		pending: {},
+		scheduled: false,
+		lastUpdate: 0,
+		timeoutRef: null,
+		rafRef: null,
+		isMounted: true,
 	});
 
 	// Cleanup function to prevent memory leaks
@@ -222,45 +313,51 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						},
 					});
 				} catch (error) {
-					console.warn('Failed to update streaming message:', stream.messageId, error);
+					console.warn(
+						"Failed to update streaming message:",
+						stream.messageId,
+						error
+					);
 				}
 			}
 		});
 	}, [analysisDispatch]);
 
-    const enqueueStreamingUpdate = useCallback(
-        (stepId: string, content: string) => {
-            // Normalize any escaped newlines to real newlines before diffing/updating
-            const normalized = ensureDisplayNewlines(String(content));
-            const state = rafStateRef.current;
-            if (!state.isMounted) return;
+	const enqueueStreamingUpdate = useCallback(
+		(stepId: string, content: string) => {
+			// Normalize any escaped newlines to real newlines before diffing/updating
+			const normalized = ensureDisplayNewlines(String(content));
+			const state = rafStateRef.current;
+			if (!state.isMounted) return;
 
 			// Only update if content has actually changed to prevent flickering
-            const currentPending = state.pending[stepId];
-            if (currentPending === normalized) return;
+			const currentPending = state.pending[stepId];
+			if (currentPending === normalized) return;
 
 			// Also check if the content is already in the current message
 			const stream = activeStreams.get(stepId);
-            if (stream) {
-                const currentMessage = analysisState.messages.find(
-                    (m) => m.id === stream.messageId
-                );
-                if (currentMessage && currentMessage.code === normalized) return;
-                
-                // Only update if there's substantial content change (reduces micro-updates)
-                if (currentMessage && currentMessage.code) {
-                    const lengthDiff = Math.abs(normalized.length - currentMessage.code.length);
-                    if (lengthDiff < 50 && content.length > 100) {
-                        return;
-                    }
-                }
-            }
+			if (stream) {
+				const currentMessage = analysisState.messages.find(
+					(m) => m.id === stream.messageId
+				);
+				if (currentMessage && currentMessage.code === normalized) return;
 
-            state.pending[stepId] = normalized;
-            scheduleRafUpdate();
-        },
-        [scheduleRafUpdate, analysisState.messages]
-    );
+				// Only update if there's substantial content change (reduces micro-updates)
+				if (currentMessage && currentMessage.code) {
+					const lengthDiff = Math.abs(
+						normalized.length - currentMessage.code.length
+					);
+					if (lengthDiff < 50 && content.length > 100) {
+						return;
+					}
+				}
+			}
+
+			state.pending[stepId] = normalized;
+			scheduleRafUpdate();
+		},
+		[scheduleRafUpdate, analysisState.messages]
+	);
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const chatContainerRef = useRef<HTMLDivElement>(null);
 	const chatAutoScrollRef = useRef<boolean>(true);
@@ -296,37 +393,37 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const codeEditContextRef = useRef<CodeEditContext | null>(null);
 
 	// Use custom hooks for event handling
-    const { activeStreams } = useCodeGenerationEvents({
-        analysisDispatch,
-        setIsProcessing,
-        setProgressMessage,
-        setValidationErrors,
-        setValidationSuccessMessage,
-        scheduleProcessingStop,
-        cancelProcessingStop,
-        enqueueStreamingUpdate,
-        // Forward full arguments so diff/code payloads aren't dropped
-        addMessage: (
-            content: string,
-            isUser: boolean,
-            code?: string,
-            codeLanguage?: string,
-            codeTitle?: string,
-            suggestions?: any,
-            status?: "pending" | "completed" | "failed",
-            isStreaming?: boolean
-        ) =>
-            addMessage(
-                content,
-                isUser,
-                code,
-                codeLanguage,
-                codeTitle,
-                suggestions,
-                status,
-                isStreaming
-            ),
-    });
+	const { activeStreams } = useCodeGenerationEvents({
+		analysisDispatch,
+		setIsProcessing,
+		setProgressMessage,
+		setValidationErrors,
+		setValidationSuccessMessage,
+		scheduleProcessingStop,
+		cancelProcessingStop,
+		enqueueStreamingUpdate,
+		// Forward full arguments so diff/code payloads aren't dropped
+		addMessage: (
+			content: string,
+			isUser: boolean,
+			code?: string,
+			codeLanguage?: string,
+			codeTitle?: string,
+			suggestions?: any,
+			status?: "pending" | "completed" | "failed",
+			isStreaming?: boolean
+		) =>
+			addMessage(
+				content,
+				isUser,
+				code,
+				codeLanguage,
+				codeTitle,
+				suggestions,
+				status,
+				isStreaming
+			),
+	});
 
 	useVirtualEnvEvents({
 		setVirtualEnvStatus,
@@ -576,8 +673,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						const codeBlock = ctx.fullCode || ctx.selectedText || "";
 						const outputBlock = ctx.outputText || "";
 						const truncate = (s: string, max = 4000) =>
-							s ? (s.length > max ? s.slice(0, max) + "\n... [truncated]" : s) : s;
-						context += `\n\nNOTEBOOK CELL CONTEXT: ${fileName}#${cellNum}\n\nCODE:\n\`\`\`${langForBlock}\n${codeBlock}\n\`\`\`\nOUTPUT:\n\`\`\`text\n${truncate(outputBlock)}\n\`\`\``;
+							s
+								? s.length > max
+									? s.slice(0, max) + "\n... [truncated]"
+									: s
+								: s;
+						context += `\n\nNOTEBOOK CELL CONTEXT: ${fileName}#${cellNum}\n\nCODE:\n\`\`\`${langForBlock}\n${codeBlock}\n\`\`\`\nOUTPUT:\n\`\`\`text\n${truncate(
+							outputBlock
+						)}\n\`\`\``;
 					}
 				} catch (_) {
 					// ignore context attachment failures
@@ -598,8 +701,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				setProgressMessage("Thinking...");
 
 				let accumulated = "";
-				const chatId = (analysisState as any).activeChatSessionId || 'global';
-				const wsDir = workspaceState.currentWorkspace || '';
+				const chatId = (analysisState as any).activeChatSessionId || "global";
+				const wsDir = workspaceState.currentWorkspace || "";
 				const sessionId = `session:${wsDir}:${chatId}`;
 				await backendClient!.askQuestionStream(
 					{ question: userMessage, context, sessionId },
@@ -628,6 +731,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								});
 								return;
 							}
+							// if (evt?.type === "summary" && typeof evt.text === "string" && evt.text.trim().length > 0) {
+							//     // Add a separate assistant message for reasoning summary
+							//     analysisDispatch({
+							//         type: "ADD_MESSAGE",
+							//         payload: {
+							//             id: `summary-${Date.now()}`,
+							//             content: `🧠 Summary: ${evt.text}`,
+							//             isUser: false,
+							//             isStreaming: false,
+							//             status: "completed" as any,
+							//         },
+							//     });
+							//     return;
+							// }
 							if (evt?.type === "done") {
 								analysisDispatch({
 									type: "UPDATE_MESSAGE",
@@ -662,30 +779,38 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 			return;
 		}
-		
+
 		// Add user message FIRST to avoid duplicates
 		addMessage(userMessage, true);
 		setInputValue("");
 		setIsLoading(true);
 		setIsProcessing(true);
-		
+
 		// THEN: Autonomous inspection of mentioned files/folders
 		let inspectedLocalData = false;
 		let inspectionContext = "";
-		let inspectedItems: Array<{path: string; success: boolean; content?: string; language?: string; title?: string}> = []; // Store the actual inspected items
-		
+		let inspectedItems: Array<{
+			path: string;
+			success: boolean;
+			content?: string;
+			language?: string;
+			title?: string;
+		}> = []; // Store the actual inspected items
+
 		try {
-			const { AutonomousInspectionService } = await import("../../services/tools/AutonomousInspectionService");
+			const { AutonomousInspectionService } = await import(
+				"../../services/tools/AutonomousInspectionService"
+			);
 			const inspectionService = new AutonomousInspectionService(
 				workspaceState.currentWorkspace || undefined
 			);
 
 			if (inspectionService.shouldInspect(userMessage)) {
 				addMessage("🔍 Auto-inspecting mentioned files/folders...", false);
-				
+
 				// Add delay to make inspection visible
-				await new Promise(resolve => setTimeout(resolve, 800));
-				
+				await new Promise((resolve) => setTimeout(resolve, 800));
+
 				const results = await inspectionService.inspectMentionedItems(
 					userMessage,
 					async (result) => {
@@ -704,18 +829,21 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							);
 						}
 						// Delay between each inspection
-						await new Promise(resolve => setTimeout(resolve, 600));
+						await new Promise((resolve) => setTimeout(resolve, 600));
 					}
 				);
 
-				const successCount = results.filter(r => r.success).length;
+				const successCount = results.filter((r) => r.success).length;
 				if (successCount > 0) {
 					inspectedLocalData = true;
-					inspectedItems = results.filter(r => r.success); // Store successful inspections
+					inspectedItems = results.filter((r) => r.success); // Store successful inspections
 					inspectionContext = inspectionService.buildInspectionContext(results);
-					addMessage(`✅ Inspected ${successCount} item(s). Proceeding with analysis...`, false);
+					addMessage(
+						`✅ Inspected ${successCount} item(s). Proceeding with analysis...`,
+						false
+					);
 					// Pause before continuing
-					await new Promise(resolve => setTimeout(resolve, 1000));
+					await new Promise((resolve) => setTimeout(resolve, 1000));
 				}
 			}
 		} catch (error) {
@@ -957,32 +1085,38 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				return;
 			}
 			// If we inspected local data, prepare datasets and proceed directly with analysis
-			if (inspectedLocalData && selectedDatasets.length === 0 && inspectedItems.length > 0) {
+			if (
+				inspectedLocalData &&
+				selectedDatasets.length === 0 &&
+				inspectedItems.length > 0
+			) {
 				// Convert inspected local data to selected datasets
 				const localDatasets = inspectedItems.map((item, index) => ({
 					id: `local_inspected_${index}`,
 					title: `Local Data: ${item.path}`,
 					source: "Local Workspace",
-					localPath: workspaceState.currentWorkspace ? `${workspaceState.currentWorkspace}/${item.path}` : item.path,
+					localPath: workspaceState.currentWorkspace
+						? `${workspaceState.currentWorkspace}/${item.path}`
+						: item.path,
 					isLocalDirectory: true,
 					alias: item.path,
 					description: `Locally inspected data from workspace: ${item.path}`,
-					organism: "Unknown"
+					organism: "Unknown",
 				}));
-				
+
 				selectDatasets(localDatasets);
-				const aliases = localDatasets.map(d => d.alias).join(", ");
+				const aliases = localDatasets.map((d) => d.alias).join(", ");
 				addMessage(`Using inspected local data: ${aliases}`, false);
-				
+
 				// Proceed directly with analysis using the localDatasets we just created
 				console.log("✅ Using inspected local data, proceeding with analysis");
-				const enhancedAnalysisRequest = inspectionContext 
-					? `${userMessage}\n\nINSPECTION CONTEXT:\n${inspectionContext}` 
+				const enhancedAnalysisRequest = inspectionContext
+					? `${userMessage}\n\nINSPECTION CONTEXT:\n${inspectionContext}`
 					: userMessage;
 				await handleAnalysisRequest(enhancedAnalysisRequest, localDatasets);
 				return; // handled
 			}
-			
+
 			// Use backend LLM to classify intent instead of local pattern matching FIRST
 			if (!validateBackendClient()) {
 				return;
@@ -990,13 +1124,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 			// Get intent classification from backend
 			const intentResult = await backendClient!.classifyIntent(userMessage);
-			
+
 			// Debug intent classification
 			console.log("🎯 Intent Classification Result:", {
 				userMessage,
 				intent: intentResult.intent,
 				confidence: intentResult.confidence,
-				reason: intentResult.reason
+				reason: intentResult.reason,
 			});
 
 			// If confidence is too low (< 0.7), treat as general question instead of forcing into specific intent
@@ -1004,7 +1138,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			console.log("🎯 Intent Analysis:", {
 				isLowConfidence,
 				threshold: 0.7,
-				actualConfidence: intentResult.confidence
+				actualConfidence: intentResult.confidence,
 			});
 
 			// Handle dataset search based on backend intent
@@ -1048,11 +1182,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			// Handle START_ANALYSIS intent - start/trigger analysis pipeline on existing data
 			else if (intentResult.intent === "START_ANALYSIS" && !isLowConfidence) {
 				console.log("🚀 START_ANALYSIS intent detected");
-				
+
 				if (selectedDatasets.length > 0) {
 					console.log("✅ Selected datasets found, starting analysis pipeline");
-					addMessage("🚀 Starting analysis pipeline on selected datasets...", false);
-					
+					addMessage(
+						"🚀 Starting analysis pipeline on selected datasets...",
+						false
+					);
+
 					const enhancedAnalysisRequest = inspectionContext
 						? `${userMessage}\n\nINSPECTION CONTEXT:\n${inspectionContext}`
 						: userMessage;
@@ -1072,10 +1209,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				(intentResult.intent === "ADD_CELL" && !isLowConfidence) ||
 				// Local heuristic: if a notebook is open and the user clearly asks to add/insert a cell,
 				// honor it even if LLM confidence is low.
-				(isNotebookOpen && /\b(add|insert|new)\s+(markdown\s+)?cell\b/i.test(userMessage))
+				(isNotebookOpen &&
+					/\b(add|insert|new)\s+(markdown\s+)?cell\b/i.test(userMessage))
 			) {
-				console.log("🔬 ADD_CELL intent detected, checking for open notebooks...");
-				
+				console.log(
+					"🔬 ADD_CELL intent detected, checking for open notebooks..."
+				);
+
 				// Use reliable notebook detection hook (no race conditions)
 				console.log("🔬 Notebook detection result:", {
 					notebookFile,
@@ -1084,12 +1224,31 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					workspaceState: {
 						currentWorkspace: workspaceState.currentWorkspace,
 						activeFile: workspaceState.activeFile,
-						openFilesCount: workspaceState.openFiles?.length || 0
-					}
+						openFilesCount: workspaceState.openFiles?.length || 0,
+					},
 				});
 
-				if (isNotebookOpen && notebookFile) {
-					console.log("✅ Notebook is open, adding cell to existing notebook:", notebookFile);
+				// Fallback detection to avoid first-message race: check workspaceState directly
+				let detectedNotebook = notebookFile as string | null;
+				try {
+					if (!detectedNotebook) {
+						const active = workspaceState.activeFile as string | undefined;
+						if (active && active.endsWith(".ipynb")) detectedNotebook = active;
+					}
+					if (!detectedNotebook && Array.isArray(workspaceState.openFiles)) {
+						const found = (workspaceState.openFiles as any[]).find(
+							(f) => typeof f === "string" && f.endsWith(".ipynb")
+						);
+						detectedNotebook = (found as string) || null;
+					}
+				} catch (_) {}
+
+				if ((isNotebookOpen && notebookFile) || detectedNotebook) {
+					const nbFilePath = (notebookFile || detectedNotebook)!;
+					console.log(
+						"✅ Notebook is open, adding cell to existing notebook:",
+						nbFilePath
+					);
 					// Append new analysis step to the current notebook (skip dataset search)
 					addMessage(
 						`Detected analysis request for the current notebook. Starting background code generation for: ${userMessage}`,
@@ -1100,29 +1259,30 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						try {
 							const wsDir =
 								findWorkspacePath({
-									filePath: notebookFile,
+									filePath: nbFilePath,
 									currentWorkspace: workspaceState.currentWorkspace,
 								}) ||
 								workspaceState.currentWorkspace ||
 								"";
 							if (!backendClient || !wsDir)
 								throw new Error("Backend not ready");
-                            const chatId = (analysisState as any).activeChatSessionId || 'global';
-                            const sessionId = `session:${wsDir}:${chatId}`;
-                            const nbCodeService = new NotebookCodeGenerationService(
-                                backendClient,
-                                wsDir,
-                                sessionId
-                            );
+							const chatId =
+								(analysisState as any).activeChatSessionId || "global";
+							const sessionId = `session:${wsDir}:${chatId}`;
+							const nbCodeService = new NotebookCodeGenerationService(
+								backendClient,
+								wsDir,
+								sessionId
+							);
 
-                            await nbCodeService.generateAndAddValidatedCode({
-                                stepDescription: userMessage,
-                                originalQuestion: userMessage,
-                                datasets: selectedDatasets, // Pass selected datasets for package installation detection
-                                workingDir: wsDir,
-                                notebookPath: notebookFile,
-                            });
-                            addMessage("✅ Added analysis step to the open notebook.", false);
+							await nbCodeService.generateAndAddValidatedCode({
+								stepDescription: userMessage,
+								originalQuestion: userMessage,
+								datasets: selectedDatasets, // Pass selected datasets for package installation detection
+								workingDir: wsDir,
+								notebookPath: nbFilePath,
+							});
+							addMessage("✅ Added analysis step to the open notebook.", false);
 						} catch (e) {
 							addMessage(
 								`Failed to append analysis step: ${
@@ -1141,7 +1301,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					// No active notebook but intent is ADD_CELL - inform user
 					addMessage(
 						"To add a cell, please first open a Jupyter notebook (.ipynb file) in the editor. " +
-						"You can create a new notebook or open an existing one from the file explorer.",
+							"You can create a new notebook or open an existing one from the file explorer.",
 						false
 					);
 					return;
@@ -1149,7 +1309,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 			// Check for previously selected datasets AFTER ADD_CELL handling to avoid misrouting add-cell requests
 			else if (selectedDatasets.length > 0) {
-				console.log("✅ Previously selected datasets found, proceeding with analysis");
+				console.log(
+					"✅ Previously selected datasets found, proceeding with analysis"
+				);
 				const enhancedAnalysisRequest = inspectionContext
 					? `${userMessage}\n\nINSPECTION CONTEXT:\n${inspectionContext}`
 					: userMessage;
@@ -1158,22 +1320,27 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			}
 			// Handle low confidence intents or unrecognized intents as general questions
 			else {
-				console.log("🤷 Intent not ADD_CELL or low confidence, falling back to general question handling", {
-					intent: intentResult.intent,
-					isLowConfidence,
-					confidence: intentResult.confidence,
-					hasSelectedDatasets: selectedDatasets.length > 0
-				});
+				console.log(
+					"🤷 Intent not ADD_CELL or low confidence, falling back to general question handling",
+					{
+						intent: intentResult.intent,
+						isLowConfidence,
+						confidence: intentResult.confidence,
+						hasSelectedDatasets: selectedDatasets.length > 0,
+					}
+				);
 				// General question handling - use autonomous tool integration
 				try {
 					// Validate backend before proceeding
 					if (!validateBackendClient()) {
 						return;
 					}
-					
+
 					// Import and use ChatToolAgent for autonomous tool usage
-					const { ChatToolAgent } = await import("../../services/tools/ChatToolAgent");
-					
+					const { ChatToolAgent } = await import(
+						"../../services/tools/ChatToolAgent"
+					);
+
 					// Build lightweight context from recent messages
 					const recent = (analysisState.messages || []).slice(-10);
 					const context = recent
@@ -1190,18 +1357,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						.filter(Boolean)
 						.join("\n\n");
 
-                        const chatId = (analysisState as any).activeChatSessionId || 'global';
-                        const sessionId = `session:${workspaceState.currentWorkspace || 'global'}:${chatId}`;
-                        const answer = await ChatToolAgent.askWithTools(
-                            backendClient!,
-                            userMessage,
-                            context,
-                            {
-                                workspaceDir: workspaceState.currentWorkspace || undefined,
-                                sessionId,
-                                addMessage, // Tools will show their output in chat
-                            }
-                        );
+					const chatId = (analysisState as any).activeChatSessionId || "global";
+					const sessionId = `session:${
+						workspaceState.currentWorkspace || "global"
+					}:${chatId}`;
+					const answer = await ChatToolAgent.askWithTools(
+						backendClient!,
+						userMessage,
+						context,
+						{
+							workspaceDir: workspaceState.currentWorkspace || undefined,
+							sessionId,
+							addMessage, // Tools will show their output in chat
+						}
+					);
 
 					if (isMounted) {
 						addMessage(answer || "(No answer received)", false);
@@ -1406,10 +1575,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				// Get the original query from the last user message
 				// Use the most recent user message as the original query
 				const originalQuery =
-					[...analysisState.messages]
-						.reverse()
-						.find((m: any) => m.isUser)?.content ||
-					"Analysis of selected datasets";
+					[...analysisState.messages].reverse().find((m: any) => m.isUser)
+						?.content || "Analysis of selected datasets";
 
 				// Use the current workspace directory
 				if (!workspaceState.currentWorkspace) {
@@ -1427,20 +1594,21 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				}
 
 				// Create AutonomousAgent instance (kernel name will be set after workspace is created)
-                const chatId = (analysisState as any).activeChatSessionId || 'global';
-                const sessionId = `session:${workspaceDir}:${chatId}`;
-                const agent = new AutonomousAgent(
-                    backendClient!,
-                    workspaceDir,
-                    undefined,
-                    undefined,
-                    sessionId
-                );
+				const chatId = (analysisState as any).activeChatSessionId || "global";
+				const sessionId = `session:${workspaceDir}:${chatId}`;
+				const agent = new AutonomousAgent(
+					backendClient!,
+					workspaceDir,
+					undefined,
+					undefined,
+					sessionId
+				);
 				agent.setStatusCallback((status) => {
 					// Guard against stale "... cell added" messages overwriting a fresh "Generating:" status
 					const prev = progressMsgRef.current || "";
 					const isGenerating = /^Generating:/i.test(prev);
-					const isCellAdded = /cell added$/i.test(status) || /Added analysis step/i.test(status);
+					const isCellAdded =
+						/cell added$/i.test(status) || /Added analysis step/i.test(status);
 					if (isGenerating && isCellAdded) {
 						return; // Ignore stale completion status while a new generation is in progress
 					}
@@ -2142,28 +2310,32 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							message={message}
 							onAnalysisClick={handleAnalysisClick}
 						/>
-                        {(message.isStreaming || typeof message.code === "string") && (
-                            <div style={{ marginTop: "8px" }}>
-                                {message.codeLanguage === 'diff' ? (
-                                    <CodeBlock
-                                        variant="diff"
-                                        code={message.code || ''}
-                                        title={message.codeTitle || ''}
-                                        showStats={true}
-                                    />
-                                ) : (
-                                    <CodeBlock
-                                        variant="expandable"
-                                        code={message.code || ""}
-                                        language={message.codeLanguage || "python"}
-                                        title={message.codeTitle || ""}
-                                        isStreaming={
-                                            message.status === "pending" || !!message.isStreaming
-                                        }
-                                    />
-                                )}
-                            </div>
-                        )}
+						{(message.isStreaming || typeof message.code === "string") && (
+							<div style={{ marginTop: "8px" }}>
+								{message.codeLanguage === "diff" ? (
+									<CodeBlock
+										variant="diff"
+										code={message.code || ""}
+										title={message.codeTitle || ""}
+										showStats={true}
+									/>
+								) : // Render planning/thinking outside of code blocks with a compact header
+								message.codeLanguage === "reasoning" ||
+								  (message.codeTitle && message.codeTitle.startsWith("🧠")) ? (
+									<ReasoningBlock message={message as any} />
+								) : (
+									<CodeBlock
+										variant="expandable"
+										code={message.code || ""}
+										language={message.codeLanguage || "python"}
+										title={message.codeTitle || ""}
+										isStreaming={
+											message.status === "pending" || !!message.isStreaming
+										}
+									/>
+								)}
+							</div>
+						)}
 					</div>
 				))}
 
@@ -2727,28 +2899,28 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				const sessionId = `session:${wsDir}:${chatId}`;
 				return (
 					<Composer
-				ref={composerRef}
-				value={inputValue}
-				onChange={handleComposerChange}
-				onSend={handleSendMessage}
-				onStop={handleStopProcessing}
-				isProcessing={isProcessing}
-				isLoading={isLoading}
-				onKeyDown={handleComposerKeyDown}
-				mode={chatMode}
-				onModeChange={(m) => setChatMode(m)}
-				suggestedMentions={[]}
-				onInsertAlias={(alias: string) => {
-					const prev = inputValueRef.current || "";
-					const needsSpace = prev.length > 0 && !prev.endsWith(" ");
-					const next = `${prev}${needsSpace ? " " : ""}${alias} `;
-					setInputValue(next);
-					inputValueRef.current = next;
-					setMentionOpen(false);
-					setMentionQuery("");
-				}}
-				sessionId={sessionId}
-			/>
+						ref={composerRef}
+						value={inputValue}
+						onChange={handleComposerChange}
+						onSend={handleSendMessage}
+						onStop={handleStopProcessing}
+						isProcessing={isProcessing}
+						isLoading={isLoading}
+						onKeyDown={handleComposerKeyDown}
+						mode={chatMode}
+						onModeChange={(m) => setChatMode(m)}
+						suggestedMentions={[]}
+						onInsertAlias={(alias: string) => {
+							const prev = inputValueRef.current || "";
+							const needsSpace = prev.length > 0 && !prev.endsWith(" ");
+							const next = `${prev}${needsSpace ? " " : ""}${alias} `;
+							setInputValue(next);
+							inputValueRef.current = next;
+							setMentionOpen(false);
+							setMentionQuery("");
+						}}
+						sessionId={sessionId}
+					/>
 				);
 			})()}
 

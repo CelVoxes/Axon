@@ -44,6 +44,12 @@ export class CodeGenerationService implements ICodeGenerator {
 		this.sessionOverride = sessionOverride;
 	}
 
+	public getSessionIdForPath(workingDir?: string): string {
+		if (this.sessionOverride && this.sessionOverride.trim()) return this.sessionOverride;
+		const wd = (workingDir || "").trim();
+		return wd ? `session:${wd}` : "session:default";
+	}
+
 	private buildSessionId(request: CodeGenerationRequest): string {
 		const sessionId =
 			this.sessionOverride && this.sessionOverride.trim()
@@ -425,14 +431,7 @@ General requirements (concise):
 			startTime: timestamp,
 		});
 
-		// Emit generation started event
-		EventManager.dispatchEvent("code-generation-started", {
-			stepId,
-			stepDescription: request.stepDescription,
-			timestamp,
-		} as CodeGenerationStartedEvent);
-
-		return await this.generateDataDrivenStepCodeStream(request, stepId);
+        return await this.generateDataDrivenStepCodeStream(request, stepId);
 	}
 
 	private async generateDataDrivenStepCodeStream(
@@ -449,12 +448,12 @@ General requirements (concise):
 				"stream: enhanced context length=%d",
 				enhancedContext.length
 			);
-			this.log.debug(
-				"stream: POST %s",
-				`${this.backendClient.getBaseUrl()}/llm/code/stream`
-			);
+            this.log.debug(
+                "stream: POST %s",
+                `${this.backendClient.getBaseUrl()}/llm/code/stream`
+            );
 
-			let chunkCount = 0;
+            let chunkCount = 0;
 			const generation = this.activeGenerations.get(stepId);
 			if (!generation) {
 				throw new Error(`Generation tracking not found for stepId: ${stepId}`);
@@ -487,21 +486,48 @@ General requirements (concise):
 				} as CodeGenerationChunkEvent);
 			};
 
-			// Decide target language (R for spectral flow cytometry; Python otherwise)
-			const targetLanguage: "python" | "r" = (Array.isArray(request.datasets) && request.datasets.some((d: any) => String((d?.dataType || "")).toLowerCase() === "spectral_flow_cytometry"))
-				? "r"
-				: (request.language || "python");
+            // Emit generation started event and begin streaming code (reasoning may interleave via code stream)
+            EventManager.dispatchEvent("code-generation-started", {
+                stepId,
+                stepDescription: request.stepDescription,
+                timestamp: Date.now(),
+            } as CodeGenerationStartedEvent);
 
-			const result = await this.backendClient.generateCodeStream(
-				{
-					task_description: request.stepDescription,
-					language: targetLanguage,
-					context: enhancedContext,
-					model: ConfigManager.getInstance().getDefaultModel(),
-					session_id: this.buildSessionId(request),
-				},
-				chunkCallback
-			);
+            // Removed fallback planning stream: rely solely on model-emitted reasoning
+
+            // Decide target language (R for spectral flow cytometry; Python otherwise)
+            const targetLanguage: "python" | "r" = (Array.isArray(request.datasets) && request.datasets.some((d: any) => String((d?.dataType || "")).toLowerCase() === "spectral_flow_cytometry"))
+                ? "r"
+                : (request.language || "python");
+
+            const result = await this.backendClient.generateCodeStream(
+                {
+                    task_description: request.stepDescription,
+                    language: targetLanguage,
+                    context: enhancedContext,
+                    model: ConfigManager.getInstance().getDefaultModel(),
+                    session_id: this.buildSessionId(request),
+                },
+                chunkCallback,
+                (reasoningDelta: string) => {
+                    try {
+                        EventManager.dispatchEvent("code-generation-reasoning", {
+                            stepId,
+                            delta: reasoningDelta,
+                            timestamp: Date.now(),
+                        } as any);
+                    } catch (_) {}
+                },
+                (summaryText: string) => {
+                    try {
+                        EventManager.dispatchEvent("code-generation-summary", {
+                            stepId,
+                            summary: summaryText,
+                            timestamp: Date.now(),
+                        } as any);
+                    } catch (_) {}
+                }
+            );
 
 			this.log.debug(
 				"stream: completed, chunks=%d codeLen=%d",

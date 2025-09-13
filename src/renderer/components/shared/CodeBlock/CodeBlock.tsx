@@ -91,50 +91,90 @@ const ChatCodeBlock: React.FC<Extract<CodeBlockProps, { variant: "chat" }>> = ({
 			}
 		});
 
-		return (
-			<LintContainer className={className}>
-				<LintHeader onClick={() => setIsExpanded(!isExpanded)}>
-					{headerTitle || "Lint results"}
-					<FiChevronRight
-						size={12}
-						style={{
-							marginLeft: 4,
-							marginTop: 2,
-							color: "#9ca3af",
-							transform: isExpanded ? "rotate(90deg)" : undefined,
-						}}
-					/>
-				</LintHeader>
-				{isExpanded && (
-					<LintDetails>
-						{errorsList.length > 0 && (
-							<LintSection>
-								<strong style={{ color: "#d1d5db" }}>Errors</strong>
-								<ul>
-									{errorsList.map((error, i) => (
-										<li key={`error-${i}`}>{error}</li>
-									))}
-								</ul>
-							</LintSection>
-						)}
-						{warningsList.length > 0 && (
-							<LintSection>
-								<strong style={{ color: "#d1d5db" }}>Warnings</strong>
-								<ul>
-									{warningsList.map((warning, i) => (
-										<li key={`warning-${i}`}>{warning}</li>
-									))}
-								</ul>
-							</LintSection>
-						)}
-						{errorsList.length === 0 && warningsList.length === 0 && (
-							<LintSection>No issues listed.</LintSection>
-						)}
-					</LintDetails>
-				)}
-			</LintContainer>
-		);
-	}
+        return (
+            <LintContainer className={className}>
+                <LintHeader onClick={() => setIsExpanded(!isExpanded)}>
+                    {headerTitle || "Lint results"}
+                    <FiChevronRight
+                        size={12}
+                        style={{
+                            marginTop: 2,
+                            color: "#9ca3af",
+                            transform: isExpanded ? "rotate(90deg)" : undefined,
+                        }}
+                    />
+                </LintHeader>
+                {isExpanded && (
+                    <LintDetails>
+                        {errorsList.length > 0 && (
+                            <LintSection>
+                                <strong style={{ color: "#d1d5db" }}>Errors</strong>
+                                <ul>
+                                    {errorsList.map((error, i) => (
+                                        <li key={`error-${i}`}>{error}</li>
+                                    ))}
+                                </ul>
+                            </LintSection>
+                        )}
+                        {warningsList.length > 0 && (
+                            <LintSection>
+                                <strong style={{ color: "#d1d5db" }}>Warnings</strong>
+                                <ul>
+                                    {warningsList.map((warning, i) => (
+                                        <li key={`warning-${i}`}>{warning}</li>
+                                    ))}
+                                </ul>
+                            </LintSection>
+                        )}
+                        {errorsList.length === 0 && warningsList.length === 0 && (
+                            <LintSection>No issues listed.</LintSection>
+                        )}
+                    </LintDetails>
+                )}
+            </LintContainer>
+        );
+    }
+
+    // Special handling for reasoning/planning blocks (compact header like lint)
+    if (language === "reasoning" || language === "planning") {
+        const raw = String(code || "");
+        const lines = raw
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .filter((l) => l.length > 0);
+        // Use provided title as-is (e.g., "Thought for Xs"); fallback to a neutral label
+        const headerTitle = title && title.trim().length > 0 ? title : "Thoughts";
+
+        return (
+            <LintContainer className={className}>
+                <LintHeader onClick={() => setIsExpanded(!isExpanded)}>
+                    {headerTitle}
+                    <FiChevronRight
+                        size={12}
+                        style={{
+                            marginTop: 2,
+                            color: "#9ca3af",
+                            transform: isExpanded ? "rotate(90deg)" : undefined,
+                        }}
+                    />
+                </LintHeader>
+                {isExpanded && (
+                    <LintDetails>
+                        <LintSection>
+                            <div style={{ whiteSpace: 'pre-wrap' }}>
+                                {lines.map((l, i) => (
+                                    <React.Fragment key={`plan-${i}`}>
+                                        {l.replace(/^[-*]\s*/, "")}
+                                        {i < lines.length - 1 ? "\n" : ""}
+                                    </React.Fragment>
+                                ))}
+                            </div>
+                        </LintSection>
+                    </LintDetails>
+                )}
+            </LintContainer>
+        );
+    }
 
 	return (
 		<CodeBlockContainer $variant="chat" className={className}>

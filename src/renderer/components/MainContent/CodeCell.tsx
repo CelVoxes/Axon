@@ -231,7 +231,9 @@ const CellActions = styled.div`
 	align-items: center;
 
 	/* Keep pointer cursor for controls inside draggable header */
-	button, [role="button"], a {
+	button,
+	[role="button"],
+	a {
 		cursor: pointer;
 	}
 `;
@@ -263,7 +265,8 @@ const MarkdownInput = styled.textarea`
 	background: #1a1b1e;
 	border: 1px solid #30363d;
 	color: #e6e6e6;
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, "Helvetica Neue", Arial, sans-serif;
+	font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+		Ubuntu, "Helvetica Neue", Arial, sans-serif;
 	font-size: ${typography.base};
 	line-height: 1.6;
 	padding: 14px 16px;
@@ -463,7 +466,6 @@ const ExpandButton = styled.button`
 	display: flex;
 	align-items: center;
 	gap: 4px;
-	margin-top: 8px;
 
 	&:hover {
 		background: rgba(0, 122, 204, 0.1);
@@ -474,7 +476,8 @@ const ExpandButton = styled.button`
 const RichTextOutput = styled.div`
 	color: #e6e6e6;
 	line-height: 1.7;
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, "Helvetica Neue", Arial, sans-serif;
+	font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+		Ubuntu, "Helvetica Neue", Arial, sans-serif;
 
 	/* Headings */
 	h1,
@@ -694,20 +697,20 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 
 		try {
 			// Use CellExecutionService instead of direct API call
-        const result = await cellExecutionService.executeCell(
-            executionId,
-            code,
-            (updates) => {
-                // Handle real-time updates if needed
-                if (updates.output !== undefined) {
-                    setOutput(updates.output || "");
-                }
-                if (updates.hasError !== undefined) {
-                    setHasError(updates.hasError);
-                }
-            },
-            (language as any) // pass through current cell language ('python' | 'r')
-        );
+			const result = await cellExecutionService.executeCell(
+				executionId,
+				code,
+				(updates) => {
+					// Handle real-time updates if needed
+					if (updates.output !== undefined) {
+						setOutput(updates.output || "");
+					}
+					if (updates.hasError !== undefined) {
+						setHasError(updates.hasError);
+					}
+				},
+				language as any // pass through current cell language ('python' | 'r')
+			);
 
 			// Set final result
 			if (result.status === "completed") {
@@ -940,23 +943,23 @@ export const CodeCell: React.FC<CodeCellProps> = ({
 			<CellHeader
 				{...(typeof cellIndex === "number"
 					? {
-						draggable: true,
-						onDragStart: (e: React.DragEvent) => {
-							if (!onDragStart || typeof cellIndex !== "number") return;
-							const target = e.target as HTMLElement | null;
-							// Block drag when starting from interactive controls or editors
-							if (
-								target?.closest(
-									'button, [role="button"], a, input, textarea, select, .monaco-editor'
-								)
-							) {
-								e.preventDefault();
-								return;
-							}
-							onDragStart(cellIndex, e);
-						},
-						onDragEnd: () => onDragEnd && onDragEnd(),
-					}
+							draggable: true,
+							onDragStart: (e: React.DragEvent) => {
+								if (!onDragStart || typeof cellIndex !== "number") return;
+								const target = e.target as HTMLElement | null;
+								// Block drag when starting from interactive controls or editors
+								if (
+									target?.closest(
+										'button, [role="button"], a, input, textarea, select, .monaco-editor'
+									)
+								) {
+									e.preventDefault();
+									return;
+								}
+								onDragStart(cellIndex, e);
+							},
+							onDragEnd: () => onDragEnd && onDragEnd(),
+					  }
 					: {})}
 			>
 				<CellType>

@@ -199,6 +199,7 @@ export class ConfigManager {
 		}
 	}
 
+
 	/**
 	 * Save configuration to local storage
 	 */
@@ -234,8 +235,8 @@ export class ConfigManager {
 				retryAttempts: 3,
 			},
 			analysis: {
-				defaultModel: "gpt-4.1-mini",
-				availableModels: ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"],
+				defaultModel: "gpt-5-mini",
+				availableModels: ["gpt-5-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"],
 				maxSteps: 20,
 				timeout: 300000, // 5 minutes
 				enableProgress: true,

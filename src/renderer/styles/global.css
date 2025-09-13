@@ -23,12 +23,13 @@
 }
 
 body {
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Helvetica Neue", Arial, sans-serif;
-    font-size: var(--font-size-base);
-    line-height: 1.4;
-    background-color: #1e1e1e;
-    color: #d4d4d4;
-    overflow: hidden;
+	font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+		"Roboto", "Helvetica Neue", Arial, sans-serif;
+	font-size: var(--font-size-base);
+	line-height: 1.4;
+	background-color: #1e1e1e;
+	color: #d4d4d4;
+	overflow: hidden;
 }
 
 /* xterm tweaks */
@@ -183,6 +184,40 @@ textarea:focus {
 	min-height: 0; /* Important for flex child scrolling */
 	max-width: 100%;
 	padding-bottom: 120px; /* keep composer visible under mention menu */
+}
+
+/* Thought (reasoning) markdown spacing */
+
+.thought-markdown {
+	white-space: pre-wrap; /* preserve single newlines inside paragraphs */
+}
+.thought-markdown ul,
+.thought-markdown ol {
+	margin: 0.8em 0 0.8em 1.25em;
+	padding-left: 1.25em;
+}
+.thought-markdown li {
+	margin: 4px 0;
+}
+.thought-markdown h1,
+.thought-markdown h2,
+.thought-markdown h3,
+.thought-markdown h4,
+.thought-markdown h5,
+.thought-markdown h6 {
+	margin: 8px 0 4px 0;
+	line-height: 1.2;
+}
+.thought-markdown code {
+	background: #2d2d2d;
+	padding: 1px 4px;
+	border-radius: 3px;
+}
+.thought-markdown pre code {
+	display: block;
+	background: #1a1a1a;
+	padding: 8px;
+	border-radius: 4px;
 }
 
 .welcome-message {

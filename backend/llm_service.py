@@ -6,22 +6,27 @@ import json
 from typing import List, Optional, Dict, Any, Union, Sequence, cast
 import re
 from abc import ABC, abstractmethod
-import openai
 from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletionMessageParam
+from typing import TypedDict
+import random
 from .config import SearchConfig
+
+
+class Message(TypedDict, total=False):
+    role: str
+    content: str
 
 
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
     
     @abstractmethod
-    async def generate(self, messages: Sequence[ChatCompletionMessageParam], **kwargs) -> str:
+    async def generate(self, messages: Sequence[Message], **kwargs) -> str:
         """Generate response from messages."""
         pass
     
     @abstractmethod
-    async def generate_stream(self, messages: Sequence[ChatCompletionMessageParam], **kwargs):
+    async def generate_stream(self, messages: Sequence[Message], **kwargs):
         """Generate streaming response from messages."""
         yield ""
 
@@ -35,17 +40,24 @@ class OpenAIProvider(LLMProvider):
         model: Optional[str] = None,
         organization: Optional[str] = None,
         project: Optional[str] = None,
+        service_tier: Optional[str] = None,
+        timeout: Optional[float] = None,
     ):
         # Initialize OpenAI client with optional organization/project for project-scoped keys
+        client_timeout = float(timeout) if isinstance(timeout, (int, float)) else float(SearchConfig.get_openai_timeout_seconds())
         self.client = AsyncOpenAI(
             api_key=api_key,
             organization=organization if organization else None,
             project=project if project else None,
+            timeout=client_timeout,
         )
         default_model = SearchConfig.get_default_llm_model()
         self.model = model if isinstance(model, str) and model else (default_model if isinstance(default_model, str) and default_model else "gpt-4o-mini")
         self.last_usage = None
         self.last_response_id: Optional[str] = None
+        cfg_tier = SearchConfig.get_openai_service_tier()
+        self.service_tier = (service_tier or cfg_tier or "").strip()
+        self.last_reasoning_summary: Optional[str] = None
     
     def _prepare_kwargs(self, kwargs: dict) -> dict:
         """Prepare kwargs for OpenAI API, handling model-specific parameter differences."""
@@ -69,19 +81,39 @@ class OpenAIProvider(LLMProvider):
         
         # Filter out other parameters that Responses API might not support
         prepared_kwargs.pop("messages", None)  # Already handled separately
+        # Inject default service_tier if configured and not overridden
+        if not prepared_kwargs.get("service_tier") and getattr(self, "service_tier", ""):
+            tier = self.service_tier
+            if tier == "flex":
+                # Only set flex when model supports it
+                ml = (self.model or "").lower()
+                if ("gpt-5" in ml) or ("o3" in ml) or ("o4-mini" in ml):
+                    prepared_kwargs["service_tier"] = tier
+            else:
+                prepared_kwargs["service_tier"] = tier
+        # Encourage models with reasoning capability to emit lightweight reasoning deltas.
+        # Do NOT inject unsupported 'include' values. Only set a gentle default for reasoning effort/summary.
+        try:
+            ml = (self.model or "").lower()
+            if ("gpt-5" in ml) or ("o3" in ml):
+                if not prepared_kwargs.get("reasoning"):
+                    prepared_kwargs["reasoning"] = {"effort": "medium", "summary": "detailed"}
+                else:
+                    if isinstance(prepared_kwargs["reasoning"], dict):
+                        prepared_kwargs["reasoning"].setdefault("effort", "medium")
+                        prepared_kwargs["reasoning"].setdefault("summary", "detailed")
+        except Exception:
+            pass
+        # Do not inject include by default for other models.
         
         return prepared_kwargs
     
     def _is_gpt5_mini(self) -> bool:
         """Check if the model is gpt-5-mini."""
         return "gpt-5-mini" in self.model.lower()
+
     
-    def _is_new_model(self) -> bool:
-        """Check if the model is a newer model that uses max_completion_tokens."""
-        new_models = ["gpt-5-mini", "gpt-4o-2024-11-20", "gpt-4o-mini-2024-07-18", "chatgpt-4o-latest"]
-        return any(model in self.model for model in new_models)
-    
-    async def generate(self, messages: Sequence[ChatCompletionMessageParam], **kwargs) -> str:
+    async def generate(self, messages: Sequence[Message], **kwargs) -> str:
         """Generate with Responses API when available, else fall back to Chat Completions."""
         prepared_kwargs = self._prepare_kwargs(kwargs)
         # Support per-call model override without mutating provider default
@@ -93,12 +125,39 @@ class OpenAIProvider(LLMProvider):
             responses_api = getattr(self.client, "responses", None)
             if responses_api is not None and hasattr(responses_api, "create"):
                 # The Responses API can accept message-style input
-                responses_kwargs = self._prepare_responses_kwargs(kwargs)
-                resp = await responses_api.create(
-                    model=chosen_model,
-                    input=list(messages),
-                    **responses_kwargs
-                )
+                responses_kwargs = self._prepare_responses_kwargs(prepared_kwargs)
+
+                async def _do_request(override_tier: Optional[str] = None):
+                    kwargs_local = dict(responses_kwargs)
+                    if override_tier:
+                        kwargs_local["service_tier"] = override_tier
+                    return await responses_api.create(
+                        model=chosen_model,
+                        input=list(messages),
+                        **kwargs_local
+                    )
+
+                st = responses_kwargs.get("service_tier")
+                try:
+                    resp = await _do_request()
+                except Exception as e:
+                    status = getattr(e, "status_code", None)
+                    is_429 = (status == 429) or ("429" in str(getattr(e, "status", ""))) or ("429" in str(e))
+                    if is_429 and st == "flex":
+                        # Retry with exponential backoff on flex, then fall back to auto
+                        resp = None
+                        for i in range(3):
+                            await asyncio.sleep((2 ** i) + random.random() * 0.25)
+                            try:
+                                resp = await _do_request("flex")
+                                break
+                            except Exception:
+                                resp = None
+                        if resp is None:
+                            # Fallback to standard processing
+                            resp = await _do_request("auto")
+                    else:
+                        raise
                 try:
                     self.last_response_id = getattr(resp, "id", None)
                 except Exception:
@@ -109,6 +168,32 @@ class OpenAIProvider(LLMProvider):
                     text = getattr(resp, "output_text", None)
                 except Exception:
                     text = None
+                # Extract reasoning summary if present
+                try:
+                    self.last_reasoning_summary = None
+                    if hasattr(resp, "output"):
+                        for item in getattr(resp, "output", []) or []:
+                            if getattr(item, "type", None) == "reasoning":
+                                # summary may be a list of blocks with .text
+                                summary_list = getattr(item, "summary", None)
+                                if isinstance(summary_list, (list, tuple)):
+                                    parts: List[str] = []
+                                    for s in summary_list:
+                                        t = None
+                                        try:
+                                            t = getattr(s, "text", None)
+                                        except Exception:
+                                            t = None
+                                        if t is None and isinstance(s, dict):
+                                            t = s.get("text")
+                                        if isinstance(t, str) and t:
+                                            parts.append(t)
+                                    if parts:
+                                        self.last_reasoning_summary = "".join(parts).strip() or None
+                                # If no summary_list, ignore
+                except Exception:
+                    self.last_reasoning_summary = None
+
                 if not text and hasattr(resp, "output"):
                     parts = []
                     try:
@@ -137,41 +222,12 @@ class OpenAIProvider(LLMProvider):
                     return text.strip()
         except Exception as e:
             print(
-                f"Responses API (non-stream) error, falling back to chat: {self._redact_api_keys(str(e))}"
+                f"Responses API (non-stream) error: {self._redact_api_keys(str(e))}"
             )
-
-        # Fallback to Chat Completions
-        cc_kwargs = {k: v for k, v in prepared_kwargs.items() if k not in ("store", "previous_response_id")}
-        response = await self.client.chat.completions.create(
-            model=chosen_model,
-            messages=list(messages),
-            **cc_kwargs
-        )
-
-        # Check for COT usage and log it
-        if hasattr(response, 'usage') and hasattr(response.usage, 'completion_tokens_details'):
-            details = response.usage.completion_tokens_details
-            if hasattr(details, 'reasoning_tokens') and details.reasoning_tokens > 0:
-                total_completion = response.usage.completion_tokens
-                reasoning_pct = (details.reasoning_tokens / total_completion) * 100 if total_completion > 0 else 0
-                print(f"🧠 COT Reasoning detected: {details.reasoning_tokens}/{total_completion} tokens ({reasoning_pct:.1f}% reasoning)")
-        # Persist usage
-        try:
-            if hasattr(response, 'usage') and response.usage is not None:
-                self.last_usage = {
-                    'prompt_tokens': getattr(response.usage, 'prompt_tokens', None),
-                    'completion_tokens': getattr(response.usage, 'completion_tokens', None),
-                    'total_tokens': getattr(response.usage, 'total_tokens', None),
-                    'completion_tokens_details': getattr(response.usage, 'completion_tokens_details', None),
-                }
-            else:
-                self.last_usage = None
-        except Exception:
-            self.last_usage = None
-
-        return response.choices[0].message.content.strip()
+        # If Responses failed and we didn't return text, raise to caller
+        raise RuntimeError("OpenAI Responses API request failed; see logs for details")
     
-    async def generate_stream(self, messages: Sequence[ChatCompletionMessageParam], **kwargs):
+    async def generate_stream(self, messages: Sequence[Message], **kwargs):
         """Generate streaming response using Responses API when available, else Chat Completions."""
         prepared_kwargs = self._prepare_kwargs(kwargs)
         # Support per-call model override without mutating provider default
@@ -185,20 +241,29 @@ class OpenAIProvider(LLMProvider):
                 # Prefer the streaming helper if available
                 if hasattr(responses_api, "stream"):
                     try:
-                        responses_kwargs = self._prepare_responses_kwargs(kwargs)
-                        stream_ctx = responses_api.stream(
-                            model=chosen_model,
-                            input=list(messages),
-                            **responses_kwargs
-                        )
+                        responses_kwargs = self._prepare_responses_kwargs(prepared_kwargs)
+
+                        def _mk_stream_ctx(override_tier: Optional[str] = None):
+                            kwargs_local = dict(responses_kwargs)
+                            if override_tier:
+                                kwargs_local["service_tier"] = override_tier
+                            return responses_api.stream(
+                                model=chosen_model,
+                                input=list(messages),
+                                **kwargs_local
+                            )
+
+                        stream_ctx = _mk_stream_ctx()
                         # The SDK streaming is an async context manager in recent versions
                         async with stream_ctx as stream:
                             total_text = ""
+                            # reset last reasoning summary for this request
+                            self.last_reasoning_summary = None
                             async for event in stream:
                                 etype = getattr(event, "type", "")
-                                # Emit text deltas
+                                # Emit text (output) deltas only
                                 delta = getattr(event, "delta", None)
-                                if delta and ("output_text" in etype or etype.endswith(".delta")):
+                                if delta and (etype.endswith("output_text.delta") or "output_text" in etype):
                                     # Robustly extract text from delta across SDK shapes
                                     s = None
                                     try:
@@ -217,11 +282,57 @@ class OpenAIProvider(LLMProvider):
                                         s = str(s)
                                         total_text += s
                                         yield s
+                                # Emit reasoning deltas if present
+                                if delta and (etype.endswith("reasoning.delta") or "reasoning" in etype):
+                                    rs = None
+                                    # Some SDKs shape delta as { reasoning: { text: ... } }
+                                    try:
+                                        rs = getattr(delta, "text", None)
+                                    except Exception:
+                                        rs = None
+                                    if rs is None and hasattr(delta, "get"):
+                                        try:
+                                            # Attempt nested extraction
+                                            nested = delta.get("reasoning") if hasattr(delta, "get") else None
+                                            if nested is not None and hasattr(nested, "get"):
+                                                rs = nested.get("text")
+                                            if rs is None:
+                                                rs = delta.get("text")
+                                        except Exception:
+                                            rs = None
+                                    if rs is None and isinstance(delta, str):
+                                        rs = delta
+                                    if rs:
+                                        rs = str(rs)
+                                        # Use a sentinel prefix to mark reasoning events for the API layer
+                                        yield "\x00REASONING:" + rs
                                 # Capture response id if available
                                 try:
                                     resp_obj = getattr(event, "response", None)
                                     if resp_obj is not None and getattr(resp_obj, "id", None):
                                         self.last_response_id = getattr(resp_obj, "id", None)
+                                        # If this is a completion event with a response object, try to extract summary
+                                        try:
+                                            if hasattr(resp_obj, "output"):
+                                                for item in getattr(resp_obj, "output", []) or []:
+                                                    if getattr(item, "type", None) == "reasoning":
+                                                        summary_list = getattr(item, "summary", None)
+                                                        if isinstance(summary_list, (list, tuple)):
+                                                            parts: List[str] = []
+                                                            for s in summary_list:
+                                                                t = None
+                                                                try:
+                                                                    t = getattr(s, "text", None)
+                                                                except Exception:
+                                                                    t = None
+                                                                if t is None and isinstance(s, dict):
+                                                                    t = s.get("text")
+                                                                if isinstance(t, str) and t:
+                                                                    parts.append(t)
+                                                            if parts:
+                                                                self.last_reasoning_summary = "".join(parts).strip() or None
+                                        except Exception:
+                                            pass
                                 except Exception:
                                     pass
                             # Estimate usage after stream completes
@@ -237,23 +348,108 @@ class OpenAIProvider(LLMProvider):
                                 self.last_usage = None
                         return
                     except Exception as e:
+                        status = getattr(e, "status_code", None)
+                        is_429 = (status == 429) or ("429" in str(getattr(e, "status", ""))) or ("429" in str(e))
+                        st = prepared_kwargs.get("service_tier") or getattr(self, "service_tier", None)
+                        if is_429 and st == "flex":
+                            # retry with backoff on flex
+                            for i in range(3):
+                                await asyncio.sleep((2 ** i) + random.random() * 0.25)
+                                try:
+                                    async with _mk_stream_ctx("flex") as stream:
+                                        total_text = ""
+                                        async for event in stream:
+                                            etype = getattr(event, "type", "")
+                                            delta = getattr(event, "delta", None)
+                                            if delta and ("output_text" in etype or etype.endswith(".delta")):
+                                                s = getattr(delta, "text", None) if hasattr(delta, "text") else (delta.get("text") if hasattr(delta, "get") else (delta if isinstance(delta, str) else None))
+                                                if s:
+                                                    s = str(s)
+                                                    total_text += s
+                                                    yield s
+                                        try:
+                                            est_prompt_tokens = sum(len(str(m.get('content', ''))) for m in messages) // 4
+                                            est_completion_tokens = len(total_text) // 4
+                                            self.last_usage = {
+                                                'prompt_tokens': est_prompt_tokens,
+                                                'completion_tokens': est_completion_tokens,
+                                                'total_tokens': est_prompt_tokens + est_completion_tokens,
+                                            }
+                                        except Exception:
+                                            self.last_usage = None
+                                    return
+                                except Exception:
+                                    pass
+                            # fallback to standard processing
+                            try:
+                                async with _mk_stream_ctx("auto") as stream:
+                                    total_text = ""
+                                    async for event in stream:
+                                        etype = getattr(event, "type", "")
+                                        delta = getattr(event, "delta", None)
+                                        if delta and ("output_text" in etype or etype.endswith(".delta")):
+                                            s = getattr(delta, "text", None) if hasattr(delta, "text") else (delta.get("text") if hasattr(delta, "get") else (delta if isinstance(delta, str) else None))
+                                            if s:
+                                                s = str(s)
+                                                total_text += s
+                                                yield s
+                                    try:
+                                        est_prompt_tokens = sum(len(str(m.get('content', ''))) for m in messages) // 4
+                                        est_completion_tokens = len(total_text) // 4
+                                        self.last_usage = {
+                                            'prompt_tokens': est_prompt_tokens,
+                                            'completion_tokens': est_completion_tokens,
+                                            'total_tokens': est_prompt_tokens + est_completion_tokens,
+                                        }
+                                    except Exception:
+                                        self.last_usage = None
+                                return
+                            except Exception:
+                                pass
                         print(
                             f"Responses API .stream failed, trying create(stream=True): {self._redact_api_keys(str(e))}"
                         )
 
                 if hasattr(responses_api, "create"):
-                    responses_kwargs = self._prepare_responses_kwargs(kwargs)
-                    resp_stream = await responses_api.create(
-                        model=chosen_model,
-                        input=list(messages),
-                        stream=True,
-                        **responses_kwargs
-                    )
+                    responses_kwargs = self._prepare_responses_kwargs(prepared_kwargs)
+
+                    async def _do_stream_request(override_tier: Optional[str] = None):
+                        kwargs_local = dict(responses_kwargs)
+                        if override_tier:
+                            kwargs_local["service_tier"] = override_tier
+                        return await responses_api.create(
+                            model=chosen_model,
+                            input=list(messages),
+                            stream=True,
+                            **kwargs_local
+                        )
+
+                    try:
+                        resp_stream = await _do_stream_request()
+                    except Exception as e:
+                        status = getattr(e, "status_code", None)
+                        is_429 = (status == 429) or ("429" in str(getattr(e, "status", ""))) or ("429" in str(e))
+                        st = responses_kwargs.get("service_tier")
+                        if is_429 and st == "flex":
+                            resp_stream = None
+                            for i in range(3):
+                                await asyncio.sleep((2 ** i) + random.random() * 0.25)
+                                try:
+                                    resp_stream = await _do_stream_request("flex")
+                                    break
+                                except Exception:
+                                    resp_stream = None
+                            if resp_stream is None:
+                                resp_stream = await _do_stream_request("auto")
+                        else:
+                            raise
                     total_text = ""
+                    self.last_reasoning_summary = None
                     async for event in resp_stream:
                         etype = getattr(event, "type", "")
                         delta = getattr(event, "delta", None)
-                        if delta and ("output_text" in etype or etype.endswith(".delta")):
+                        # Output text deltas only
+                        if delta and (etype.endswith("output_text.delta") or "output_text" in etype):
                             s = None
                             try:
                                 s = getattr(delta, "text", None)
@@ -270,11 +466,54 @@ class OpenAIProvider(LLMProvider):
                                 s = str(s)
                                 total_text += s
                                 yield s
+                        # Emit reasoning deltas if present
+                        if delta and (etype.endswith("reasoning.delta") or "reasoning" in etype):
+                            rs = None
+                            try:
+                                rs = getattr(delta, "text", None)
+                            except Exception:
+                                rs = None
+                            if rs is None and hasattr(delta, "get"):
+                                try:
+                                    nested = delta.get("reasoning") if hasattr(delta, "get") else None
+                                    if nested is not None and hasattr(nested, "get"):
+                                        rs = nested.get("text")
+                                    if rs is None:
+                                        rs = delta.get("text")
+                                except Exception:
+                                    rs = None
+                            if rs is None and isinstance(delta, str):
+                                rs = delta
+                            if rs:
+                                rs = str(rs)
+                                yield "\x00REASONING:" + rs
                         # Capture id from streaming events when present
                         try:
                             resp_obj = getattr(event, "response", None)
                             if resp_obj is not None and getattr(resp_obj, "id", None):
                                 self.last_response_id = getattr(resp_obj, "id", None)
+                                # Try to extract summary on final response
+                                try:
+                                    if hasattr(resp_obj, "output"):
+                                        for item in getattr(resp_obj, "output", []) or []:
+                                            if getattr(item, "type", None) == "reasoning":
+                                                summary_list = getattr(item, "summary", None)
+                                                if isinstance(summary_list, (list, tuple)):
+                                                    parts: List[str] = []
+                                                    for s in summary_list:
+                                                        t = None
+                                                        try:
+                                                            t = getattr(s, "text", None)
+                                                        except Exception:
+                                                            t = None
+                                                        if t is None and isinstance(s, dict):
+                                                            t = s.get("text")
+                                                        if isinstance(t, str) and t:
+                                                            parts.append(t)
+                                                    if parts:
+                                                        self.last_reasoning_summary = "".join(parts).strip() or None
+                                except Exception:
+                                    pass
                         except Exception:
                             pass
                     # Estimate usage after stream completes
@@ -290,52 +529,10 @@ class OpenAIProvider(LLMProvider):
                         self.last_usage = None
                     return
         except Exception as e:
-            print(
-                f"Responses API (stream) error, falling back to chat: {self._redact_api_keys(str(e))}"
-            )
-
-        # Fallback to Chat Completions streaming
-        try:
-            cc_kwargs = {k: v for k, v in prepared_kwargs.items() if k not in ("store", "previous_response_id")}
-            stream = await self.client.chat.completions.create(
-                model=chosen_model,
-                messages=list(messages),
-                stream=True,
-                **cc_kwargs
-            )
-            
-            # Track usage for streaming responses
-            total_tokens = 0
-            async for chunk in stream:
-                if chunk.choices[0].delta.content is not None:
-                    content = chunk.choices[0].delta.content
-                    # Rough token estimation for streaming (4 chars ≈ 1 token)
-                    total_tokens += len(content) // 4
-                    yield content
-                    
-                # Capture final usage if available in the last chunk
-                if hasattr(chunk, 'usage') and chunk.usage is not None:
-                    self.last_usage = {
-                        'prompt_tokens': getattr(chunk.usage, 'prompt_tokens', None),
-                        'completion_tokens': getattr(chunk.usage, 'completion_tokens', None),
-                        'total_tokens': getattr(chunk.usage, 'total_tokens', None),
-                    }
-            
-            # If no usage in chunks, estimate from content length
-            if not hasattr(self, 'last_usage') or not self.last_usage:
-                # Rough estimation: assume prompt is similar size to messages
-                estimated_prompt_tokens = sum(len(str(m.get('content', ''))) for m in messages) // 4
-                self.last_usage = {
-                    'prompt_tokens': estimated_prompt_tokens,
-                    'completion_tokens': total_tokens,
-                    'total_tokens': estimated_prompt_tokens + total_tokens,
-                }
-                
-        except Exception as e:
-            print(f"OpenAI streaming error (chat fallback): {self._redact_api_keys(str(e))}")
+            print(f"OpenAI Responses streaming error: {self._redact_api_keys(str(e))}")
             # Return a simple fallback message (with sanitized error)
             safe_err = self._redact_api_keys(str(e))
-            yield f"# Error: Could not generate code due to: {safe_err}\nprint('Code generation failed')"
+            yield f"# Error: Could not stream response due to: {safe_err}"
 
     @staticmethod
     def _redact_api_keys(message: str) -> str:
@@ -418,7 +615,7 @@ class LLMService:
         self.provider_name = provider
         self.provider = self._create_provider(provider, **kwargs)
         # In-memory session conversations: session_id -> [messages]
-        self.sessions: Dict[str, List[ChatCompletionMessageParam]] = {}
+        self.sessions: Dict[str, List[Message]] = {}
         # Session metadata for Responses chaining and budget tracking
         # { session_id: { 'last_response_id': str|None, 'approx_chars': int, 'approx_tokens': int } }
         self.session_meta: Dict[str, Dict[str, Any]] = {}
@@ -436,12 +633,12 @@ class LLMService:
         if self._stats_debug_enabled:
             print(msg)
 
-    def _get_or_init_session(self, session_id: Optional[str], system_prompt: str) -> Optional[List[ChatCompletionMessageParam]]:
+    def _get_or_init_session(self, session_id: Optional[str], system_prompt: str) -> Optional[List[Message]]:
         if not session_id:
             return None
         messages = self.sessions.get(session_id)
         if messages is None:
-            messages = [cast(ChatCompletionMessageParam, {"role": "system", "content": system_prompt})]
+            messages = [cast(Message, {"role": "system", "content": system_prompt})]
             self.sessions[session_id] = messages
             self.session_meta[session_id] = {
                 'last_response_id': None,
@@ -456,7 +653,7 @@ class LLMService:
         messages = self.sessions.get(session_id)
         if messages is None:
             return
-        messages.append(cast(ChatCompletionMessageParam, {"role": role, "content": content}))
+        messages.append(cast(Message, {"role": role, "content": content}))
         def total_len() -> int:
             return sum(len(str(m.get("content", ""))) for m in messages)
         # Naive pruning: keep system message, drop oldest after it until under threshold
@@ -493,12 +690,39 @@ class LLMService:
         val = meta.get('last_response_id')
         return val if isinstance(val, str) else None
 
+    def _build_minimal_messages(
+        self,
+        session_id: Optional[str],
+        system_prompt: str,
+        user_content: str,
+    ) -> List[Message]:
+        """
+        Build a minimal input message list for the provider to reduce prompt bloat.
+
+        If we have a previous_response_id for this session, we only send the new
+        user message and rely on Responses API session-chaining. Otherwise, we seed
+        with a system+user pair.
+        """
+        prev_id = self._get_previous_response_id(session_id)
+        if prev_id:
+            return [cast(Message, {"role": "user", "content": user_content})]
+        return [
+            cast(Message, {"role": "system", "content": system_prompt}),
+            cast(Message, {"role": "user", "content": user_content}),
+        ]
+
     def _is_near_context_limit(self, session_id: Optional[str], threshold: float = 0.8) -> bool:
         if not session_id:
             return False
         meta = self.session_meta.get(session_id) or {}
         approx_tokens = int(meta.get('approx_tokens', 0) or 0)
         return approx_tokens > int(self.default_context_tokens * threshold)
+
+    def get_last_reasoning_summary(self) -> Optional[str]:
+        try:
+            return getattr(self.provider, 'last_reasoning_summary', None)
+        except Exception:
+            return None
 
     def get_session_stats(self, session_id: str) -> Dict[str, Any]:
         # Optional debug: Print what we're looking for and what we have
@@ -519,29 +743,32 @@ class LLMService:
                 "near_limit": self._is_near_context_limit(session_id),
             }
         
-        # If no exact match, find the session with the most tokens that contains the chat ID suffix
+        # If no exact match, attempt smart matching:
+        # 1) Match by chat ID suffix (session:wsdir:chatId)
+        # 2) Match by base workspace prefix (session:wsdir)
         if ':' in session_id:
-            chat_id_suffix = session_id.split(':')[-1]
-            self._debug_stats(f"📊 LLM Service: Looking for sessions ending with: {chat_id_suffix}")
+            parts = session_id.split(':')
+            chat_id_suffix = parts[-1]
+            base_prefix = ':'.join(parts[:-1]) if len(parts) > 1 else session_id
+            self._debug_stats(f"📊 LLM Service: Looking for sessions matching chat suffix: {chat_id_suffix} or base prefix: {base_prefix}")
             best_match = None
             max_tokens = 0
-            
+
             for existing_session_id, session_meta in self.session_meta.items():
                 tokens = int(session_meta.get('approx_tokens', 0) or 0)
                 self._debug_stats(f"📊 LLM Service: Checking session: {existing_session_id} (tokens: {tokens})")
-                
-                if existing_session_id.endswith(chat_id_suffix):
-                    self._debug_stats(f"📊 LLM Service: Found suffix match: {existing_session_id} with {tokens} tokens")
-                    if tokens > max_tokens:
-                        max_tokens = tokens
-                        best_match = (existing_session_id, session_meta)
-                # Also try if the existing session is contained within the requested session
-                elif chat_id_suffix in existing_session_id:
-                    self._debug_stats(f"📊 LLM Service: Found partial match: {existing_session_id} with {tokens} tokens")
-                    if tokens > max_tokens:
-                        max_tokens = tokens
-                        best_match = (existing_session_id, session_meta)
-            
+
+                if existing_session_id.endswith(chat_id_suffix) or chat_id_suffix in existing_session_id:
+                    self._debug_stats(f"📊 LLM Service: Found chat suffix match: {existing_session_id} with {tokens} tokens")
+                elif existing_session_id.startswith(base_prefix):
+                    self._debug_stats(f"📊 LLM Service: Found base prefix match: {existing_session_id} with {tokens} tokens")
+                else:
+                    continue
+
+                if tokens > max_tokens:
+                    max_tokens = tokens
+                    best_match = (existing_session_id, session_meta)
+
             if best_match:
                 best_session_id, best_meta = best_match
                 tokens = int(best_meta.get('approx_tokens', 0) or 0)
@@ -627,7 +854,14 @@ class LLMService:
                 if project:
                     print("Using OpenAI project from env/config")
                 print(f"Creating OpenAI provider with model: {model}")
-                return OpenAIProvider(api_key, model, organization=organization, project=project)
+                return OpenAIProvider(
+                    api_key,
+                    model,
+                    organization=organization,
+                    project=project,
+                    service_tier=SearchConfig.get_openai_service_tier(),
+                    timeout=float(SearchConfig.get_openai_timeout_seconds()),
+                )
             else:
                 print("No OpenAI API key found")
         elif provider == "anthropic":
@@ -678,8 +912,10 @@ class LLMService:
             resolved_model = self._resolve_model(session_id, model)
             if session_msgs is not None:
                 self._append_and_prune(session_id, "user", user_content)
+                # Send only minimal messages; rely on previous_response_id for context
+                minimal_msgs = self._build_minimal_messages(session_id, system_prompt, user_content)
                 response = await self.provider.generate(
-                    session_msgs,
+                    minimal_msgs,
                     max_tokens=3000,  # Increased for detailed summaries (was 800)
                     temperature=0.2,
                     store=True,
@@ -732,8 +968,10 @@ class LLMService:
             total = ""
             if session_msgs is not None:
                 self._append_and_prune(session_id, "user", user_content)
+                # Stream with minimal messages; rely on previous_response_id for context
+                minimal_msgs = self._build_minimal_messages(session_id, system_prompt, user_content)
                 async for chunk in self.provider.generate_stream(
-                    session_msgs,
+                    minimal_msgs,
                     max_tokens=3000,  # Increased for detailed summaries (was 900)
                     temperature=0.2,
                     store=True,
@@ -865,8 +1103,10 @@ Code:
             resolved_model = self._resolve_model(session_id, model)
             if session_msgs is not None:
                 self._append_and_prune(session_id, "user", prompt)
+                # Send minimal messages and rely on previous_response_id for context
+                minimal_msgs = self._build_minimal_messages(session_id, system_prompt, prompt)
                 response = await self.provider.generate(
-                    session_msgs,
+                    minimal_msgs,
                     max_tokens=2000,
                     temperature=0.1,
                     store=True,
@@ -897,7 +1137,8 @@ Code:
         context: Optional[str] = None,
         notebook_edit: bool = False,
         session_id: Optional[str] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        reasoning: Optional[Dict[str, Any]] = None,
     ):
         """Generate code with streaming for a given task description."""
         
@@ -1002,13 +1243,16 @@ Generate the code now:
             total = ""
             if session_msgs is not None:
                 self._append_and_prune(session_id, "user", prompt)
+                # Stream with minimal messages; rely on previous_response_id for context
+                minimal_msgs = self._build_minimal_messages(session_id, system_prompt, prompt)
                 async for chunk in self.provider.generate_stream(
-                    session_msgs,
+                    minimal_msgs,
                     max_tokens=3000,
                     temperature=0.1,
                     store=True,
                     previous_response_id=self._get_previous_response_id(session_id),
                     model=resolved_model,
+                    **({"reasoning": reasoning} if reasoning else {}),
                 ):
                     if chunk:
                         total += chunk
@@ -1019,7 +1263,7 @@ Generate the code now:
                 async for chunk in self.provider.generate_stream([
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
-                ], max_tokens=3000, temperature=0.1, store=True, model=resolved_model):
+                ], max_tokens=3000, temperature=0.1, store=True, model=resolved_model, **({"reasoning": reasoning} if reasoning else {})):
                     yield chunk
                 
         except Exception as e:

@@ -177,7 +177,13 @@ export function useCodeGenerationEvents({
 	const activeStreams = useRef<
 		Map<
 			string,
-			{ messageId: string; accumulatedCode: string; lastShownCode?: string }
+			{
+				messageId: string;
+				accumulatedCode: string;
+				lastShownCode?: string;
+				reasoningMessageId?: string;
+				reasoningAccum?: string;
+			}
 		>
 	>(new Map());
 
@@ -189,18 +195,47 @@ export function useCodeGenerationEvents({
 		});
 	}, [analysisDispatch]);
 
-	const handleCodeGenerationStarted = useCallback(
-		(event: Event) => {
-			const customEvent = event as CustomEvent<CodeGenerationStartedEvent>;
-			const { stepId, stepDescription } = customEvent.detail;
+    const handleCodeGenerationStarted = useCallback(
+        (event: Event) => {
+            const customEvent = event as CustomEvent<CodeGenerationStartedEvent>;
+            const { stepId, stepDescription } = customEvent.detail;
 
 			// Clear any lingering validation banners when a new generation starts
 			setValidationErrors([]);
 			setValidationSuccessMessage("");
 
-			// Create new streaming message
+			// Create new streaming message (merge with any prior placeholder)
 			const messageId = `streaming-${stepId}`;
-			activeStreams.current.set(stepId, { messageId, accumulatedCode: "" });
+			const prev = (activeStreams.current.get(stepId) as any) || {};
+            activeStreams.current.set(stepId, {
+                messageId,
+                accumulatedCode: prev.accumulatedCode || "",
+                reasoningMessageId: prev.reasoningMessageId,
+                reasoningAccum: prev.reasoningAccum,
+                reasoningStartMs: prev.reasoningStartMs || Date.now(),
+            } as any);
+
+            // Ensure a reasoning placeholder exists so the UI can show
+            // the compact "Thought for Xs >" header even before deltas arrive
+            let stream = activeStreams.current.get(stepId) as any;
+            if (!stream.reasoningMessageId) {
+                stream.reasoningMessageId = `reasoning-${stepId}`;
+                stream.reasoningAccum = '';
+                stream.reasoningStartMs = Date.now();
+                analysisDispatch({
+                    type: 'ADD_MESSAGE',
+                    payload: {
+                        id: stream.reasoningMessageId,
+                        content: '',
+                        code: '',
+                        codeLanguage: 'reasoning',
+                        codeTitle: 'Thought',
+                        isUser: false,
+                        isStreaming: true,
+                        status: 'pending' as any,
+                    },
+                });
+            }
 
 			analysisDispatch({
 				type: "ADD_MESSAGE",
@@ -272,6 +307,16 @@ export function useCodeGenerationEvents({
 
 			const stream = activeStreams.current.get(stepId);
 			if (stream) {
+				// Close reasoning stream message if present
+				if (stream.reasoningMessageId) {
+					analysisDispatch({
+						type: "UPDATE_MESSAGE",
+						payload: {
+							id: stream.reasoningMessageId,
+							updates: { isStreaming: false, status: "completed" as any },
+						},
+					});
+				}
 				// Close the streaming message
 				analysisDispatch({
 					type: "UPDATE_MESSAGE",
@@ -331,6 +376,15 @@ export function useCodeGenerationEvents({
 
 			const stream = activeStreams.current.get(stepId);
 			if (stream) {
+				if (stream.reasoningMessageId) {
+					analysisDispatch({
+						type: "UPDATE_MESSAGE",
+						payload: {
+							id: stream.reasoningMessageId,
+							updates: { isStreaming: false, status: "failed" as any },
+						},
+					});
+				}
 				// Clear validation timeout if it exists since generation failed
 				if ((stream as any).validationTimeoutId) {
 					clearTimeout((stream as any).validationTimeoutId);
@@ -414,11 +468,11 @@ export function useCodeGenerationEvents({
 					const stream = activeStreams.current.get(
 						customEvent.detail.stepId as any
 					);
-					if (stream) {
-						// Clear validation timeout if it exists
-						if ((stream as any).validationTimeoutId) {
-							clearTimeout((stream as any).validationTimeoutId);
-						}
+                    if (stream) {
+                        // Clear validation timeout if it exists
+                        if ((stream as any).validationTimeoutId) {
+                            clearTimeout((stream as any).validationTimeoutId);
+                        }
 
 						analysisDispatch({
 							type: "UPDATE_MESSAGE",
@@ -519,7 +573,22 @@ export function useCodeGenerationEvents({
 							},
 						});
 					}
-					activeStreams.current.delete(stepId);
+                        // Also finalize reasoning timer if present
+                        try {
+                            if (stream.reasoningMessageId) {
+                                const startMs = (stream as any).reasoningStartMs || Date.now();
+                                const secs = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+                                analysisDispatch({
+                                    type: 'UPDATE_MESSAGE',
+                                    payload: {
+                                        id: stream.reasoningMessageId,
+                                        updates: { isStreaming: false, status: 'completed' as any, reasoningSeconds: secs },
+                                    },
+                                });
+                            }
+                        } catch (_) {}
+
+                        activeStreams.current.delete(stepId);
 					updateGlobalStreamingFlag();
 					if (activeStreams.current.size === 0) {
 						scheduleProcessingStop(2500);
@@ -549,6 +618,83 @@ export function useCodeGenerationEvents({
 			handleCodeGenerationCompleted: (event: Event) => {
 				if (isMounted) handleCodeGenerationCompleted(event);
 			},
+			handleCodeGenerationReasoning: (event: Event) => {
+				if (!isMounted) return;
+				try {
+					const custom = event as CustomEvent<{
+						stepId: string;
+						delta: string;
+					}>;
+					const stepId = (custom.detail as any)?.stepId as string;
+					const delta = (custom.detail as any)?.delta as string;
+					if (!stepId || typeof delta !== "string" || delta.length === 0)
+						return;
+					let stream = activeStreams.current.get(stepId) as any;
+            if (!stream) {
+                // Create a placeholder so reasoning can appear before code starts
+                stream = { messageId: "", accumulatedCode: "", reasoningStartMs: Date.now() } as any;
+                activeStreams.current.set(stepId, stream);
+						// Mark as processing so the UI shows the three-dot animation
+						setIsProcessing(true);
+						setProgressMessage("Planning…");
+						updateGlobalStreamingFlag();
+					}
+					if (!stream.reasoningMessageId) {
+						stream.reasoningMessageId = `reasoning-${stepId}`;
+						stream.reasoningAccum = "";
+						(stream as any).reasoningStartMs = (stream as any).reasoningStartMs || Date.now();
+						analysisDispatch({
+							type: "ADD_MESSAGE",
+							payload: {
+								id: stream.reasoningMessageId,
+								content: "",
+								code: `${delta}`,
+								codeLanguage: "reasoning",
+								codeTitle: "Thought",
+								isUser: false,
+								isStreaming: true,
+								status: "pending" as any,
+							},
+						});
+					} else {
+						stream.reasoningAccum = (stream.reasoningAccum || "") + delta;
+						analysisDispatch({
+							type: "UPDATE_MESSAGE",
+							payload: {
+								id: stream.reasoningMessageId,
+								updates: {
+									code: (stream.reasoningAccum || ""),
+									codeLanguage: "reasoning",
+									isStreaming: true,
+									status: "pending" as any,
+								},
+							},
+						});
+					}
+				} catch (_) {}
+			},
+            handleCodeGenerationSummary: (event: Event) => {
+                if (!isMounted) return;
+                try {
+                    const custom = event as CustomEvent<{ stepId: string; summary: string }>;
+                    const stepId = (custom.detail as any)?.stepId as string;
+                    const text = (custom.detail as any)?.summary || "";
+                    // Do not add a separate summary message; only finalize the thought timer
+                    // Stop the reasoning timer by marking the reasoning message as completed and persist duration
+                    const stream = activeStreams.current.get(stepId) as any;
+                    if (stream && stream.reasoningMessageId) {
+                        const startMs = (stream as any).reasoningStartMs || Date.now();
+                        const secs = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+                        analysisDispatch({
+                            type: 'UPDATE_MESSAGE',
+                            payload: {
+                                id: stream.reasoningMessageId,
+                                updates: { isStreaming: false, status: 'completed' as any, reasoningSeconds: secs },
+                            },
+                        });
+                    }
+                } catch (_) {}
+            },
 			handleCodeGenerationFailed: (event: Event) => {
 				if (isMounted) handleCodeGenerationFailed(event);
 			},
@@ -572,6 +718,14 @@ export function useCodeGenerationEvents({
 		EventManager.addEventListener(
 			"code-generation-completed",
 			wrappedHandlers.handleCodeGenerationCompleted
+		);
+		EventManager.addEventListener(
+			"code-generation-reasoning",
+			wrappedHandlers.handleCodeGenerationReasoning
+		);
+		EventManager.addEventListener(
+			"code-generation-summary",
+			wrappedHandlers.handleCodeGenerationSummary
 		);
 		EventManager.addEventListener(
 			"code-generation-failed",
@@ -599,6 +753,14 @@ export function useCodeGenerationEvents({
 			EventManager.removeEventListener(
 				"code-generation-completed",
 				wrappedHandlers.handleCodeGenerationCompleted
+			);
+			EventManager.removeEventListener(
+				"code-generation-reasoning",
+				wrappedHandlers.handleCodeGenerationReasoning
+			);
+			EventManager.removeEventListener(
+				"code-generation-summary",
+				wrappedHandlers.handleCodeGenerationSummary
 			);
 			EventManager.removeEventListener(
 				"code-generation-failed",

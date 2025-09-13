@@ -23,9 +23,10 @@ function formatDiagnostics(diagnostics: RuffDiagnostic[]): string[] {
 }
 
 export async function autoFixWithRuffAndLLM(
-	backendClient: BackendClient,
-	code: string,
-	options: AutoFixOptions = {}
+    backendClient: BackendClient,
+    code: string,
+    options: AutoFixOptions = {},
+    sessionId?: string
 ): Promise<AutoFixResult> {
 	const filename = options.filename || `cell_${Date.now()}.py`;
 
@@ -39,10 +40,10 @@ export async function autoFixWithRuffAndLLM(
 	let initial: RuffResult;
 	try {
 		initial = await ruffLinter.lintCode(input, { enableFixes: true, filename });
-	} catch (e) {
+    } catch (e) {
 		// If Ruff fails entirely, use LLM as emergency fallback
-		return await fallbackToLLMOnly(backendClient, input, options);
-	}
+		return await fallbackToLLMOnly(backendClient, input, options, sessionId);
+    }
 
 	// Extract issues and warnings from Ruff results
 	const issues = formatDiagnostics(initial.diagnostics.filter(d => d.kind === 'error'));
@@ -63,19 +64,20 @@ export async function autoFixWithRuffAndLLM(
 	if (hasSyntaxErrors && !initial.formattedCode && !initial.fixedCode) {
 		try {
 			let llmFixed = "";
-			await backendClient.generateCodeStream(
-				{
-					task_description:
-						`Fix only syntax errors in Python code. Return ONLY corrected code with minimal changes.\n\n` +
-						`Syntax Errors:\n${issues.filter(i => i.includes('E999:') || i.includes('SyntaxError')).join("\n")}\n\n` +
-						`Code:\n${input}\n`,
-					language: "python",
-					context: options.stepTitle || "Syntax error fixing",
-				},
-				(chunk: string) => {
-					llmFixed += chunk;
-				}
-			);
+            await backendClient.generateCodeStream(
+                {
+                    task_description:
+                        `Fix only syntax errors in Python code. Return ONLY corrected code with minimal changes.\n\n` +
+                        `Syntax Errors:\n${issues.filter(i => i.includes('E999:') || i.includes('SyntaxError')).join("\n")}\n\n` +
+                        `Code:\n${input}\n`,
+                    language: "python",
+                    context: options.stepTitle || "Syntax error fixing",
+                    ...(sessionId ? { session_id: sessionId } : {}),
+                },
+                (chunk: string) => {
+                    llmFixed += chunk;
+                }
+            );
 			
 			const cleaned = stripCodeFences(llmFixed);
 			if (cleaned && cleaned.trim()) {
@@ -97,24 +99,26 @@ export async function autoFixWithRuffAndLLM(
 
 // Emergency fallback when Ruff WebAssembly completely fails
 async function fallbackToLLMOnly(
-	backendClient: BackendClient,
-	input: string,
-	options: AutoFixOptions
+    backendClient: BackendClient,
+    input: string,
+    options: AutoFixOptions,
+    sessionId?: string
 ): Promise<AutoFixResult> {
 	try {
 		let llmFixed = "";
-		await backendClient.generateCodeStream(
-			{
-				task_description:
-					`Fix and improve the following Python code. Focus on syntax errors, import issues, and basic best practices. Return ONLY the corrected code, no explanations.\n\n` +
-					`Code:\n${input}\n`,
-				language: "python",
-				context: options.stepTitle || "Emergency code fixing (Ruff unavailable)",
-			},
-			(chunk: string) => {
-				llmFixed += chunk;
-			}
-		);
+    await backendClient.generateCodeStream(
+        {
+            task_description:
+                `Fix and improve the following Python code. Focus on syntax errors, import issues, and basic best practices. Return ONLY the corrected code, no explanations.\n\n` +
+                `Code:\n${input}\n`,
+            language: "python",
+            context: options.stepTitle || "Emergency code fixing (Ruff unavailable)",
+            ...(sessionId ? { session_id: sessionId } : {}),
+        },
+        (chunk: string) => {
+            llmFixed += chunk;
+        }
+    );
 
 		const cleaned = stripCodeFences(llmFixed);
 		return { 

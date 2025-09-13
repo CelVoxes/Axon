@@ -177,13 +177,18 @@ export class CodeQualityService {
 			this.updateStatus(`Validating code for ${stepTitle}...`);
 
 			try {
+				const sessionId = this.codeGenerationService.getSessionIdForPath(
+					// Best-effort: use the execution service's workspace path when available
+					(this.cellExecutionService as any)?.getWorkspacePath?.() || undefined
+				);
 				const fixResult = await autoFixWithRuffAndLLM(
 					this.backendClient,
 					result.cleanedCode,
 					{
 						filename: `${stepTitle.replace(/\s+/g, "_").toLowerCase()}.py`,
 						stepTitle
-					}
+					},
+					sessionId
 				);
 
 				// Post-process undefined-name errors that are satisfied by prior cells' imports
@@ -604,6 +609,7 @@ ${code.replace(/while\s+(True|1):/g, (match) => {
 					task_description: `Refactor the following Python code to fix the execution error:\n\nError Output:\n${errorOutput}\n\nOriginal Code:\n${originalCode}\n\nCell Title: ${cellTitle}\nWorkspace: ${workspacePath}\n\nProvide only the corrected code, no explanations.`,
 					language: "python",
 					context: "Code refactoring based on error output",
+					session_id: this.codeGenerationService.getSessionIdForPath(workspacePath),
 				},
 				(chunk: string) => {
 					refactoredCode += chunk;
