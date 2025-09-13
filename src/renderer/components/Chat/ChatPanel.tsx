@@ -1179,7 +1179,92 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					}
 				}
 			}
-			// Handle START_ANALYSIS intent - start/trigger analysis pipeline on existing data
+			// Handle ADD_CELL intent for active notebooks (prioritize over dataset-based analysis)
+			else if (
+				(intentResult.intent === "ADD_CELL" && !isLowConfidence) ||
+				// Local heuristic: if a notebook is open and the user clearly asks to add/insert a cell,
+				// honor it even if LLM confidence is low.
+				(isNotebookOpen && /\b(add|insert|new)\s+(markdown\s+)?cell\b/i.test(userMessage))
+			) {
+				console.log(
+					"🔬 ADD_CELL intent detected, checking for open notebooks..."
+				);
+
+				// Use reliable notebook detection hook (no race conditions)
+				console.log("🔬 Notebook detection result:", {
+					notebookFile,
+					isNotebookOpen,
+					isDetecting: isDetectingNotebook,
+					workspaceState: {
+						currentWorkspace: workspaceState.currentWorkspace,
+					},
+				});
+
+				if (isNotebookOpen && notebookFile) {
+					const nbFilePath = notebookFile;
+					console.log(
+						"✅ Notebook is open, adding cell to existing notebook:",
+						nbFilePath
+					);
+					// Append new analysis step to the current notebook (skip dataset search)
+					addMessage(
+						`Detected analysis request for the current notebook. Starting background code generation for: ${userMessage}`,
+						false
+					);
+					// Run Agent in background (non-blocking)
+					(async () => {
+						try {
+							const wsDir =
+								findWorkspacePath({
+									filePath: nbFilePath,
+									currentWorkspace: workspaceState.currentWorkspace,
+								}) ||
+								workspaceState.currentWorkspace ||
+								"";
+							if (!backendClient || !wsDir)
+								throw new Error("Backend not ready");
+							const chatId =
+								(analysisState as any).activeChatSessionId || "global";
+							const sessionId = `session:${wsDir}:${chatId}`;
+							const nbCodeService = new NotebookCodeGenerationService(
+								backendClient,
+								wsDir,
+								sessionId
+							);
+
+							await nbCodeService.generateAndAddValidatedCode({
+								stepDescription: userMessage,
+								originalQuestion: userMessage,
+								datasets: selectedDatasets, // Pass selected datasets for package installation detection
+								workingDir: wsDir,
+								notebookPath: nbFilePath,
+							});
+							addMessage("✅ Added analysis step to the open notebook.", false);
+						} catch (e) {
+							addMessage(
+								`Failed to append analysis step: ${
+									e instanceof Error ? e.message : String(e)
+								}`,
+								false
+							);
+						}
+					})().finally(() => {
+						// Release chat UI after background operation completes
+						resetLoadingState();
+					});
+					return;
+				} else {
+					console.log("❌ No notebook open but ADD_CELL intent detected");
+					// No active notebook but intent is ADD_CELL - inform user
+					addMessage(
+						"To add a cell, please first open a Jupyter notebook (.ipynb file) in the editor. " +
+							"You can create a new notebook or open an existing one from the file explorer.",
+						false
+					);
+					return;
+				}
+			}
+			// Handle START_ANALYSIS intent - start/trigger analysis pipeline on existing data (after ADD_CELL)
 			else if (intentResult.intent === "START_ANALYSIS" && !isLowConfidence) {
 				console.log("🚀 START_ANALYSIS intent detected");
 

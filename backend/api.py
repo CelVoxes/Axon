@@ -787,6 +787,7 @@ async def generate_code_stream(request: dict, user=Depends(get_current_user)):
         language = request.get("language", "python")
         context = request.get("context", "")
         reasoning = request.get("reasoning") if isinstance(request, dict) else None
+        notebook_edit = bool(request.get("notebook_edit")) if isinstance(request, dict) else False
         
         print(f"Code generation request: task='{task_description}', language='{language}'")
         print(f"Context: {context[:200]}..." if len(context) > 200 else f"Context: {context}")
@@ -803,6 +804,7 @@ async def generate_code_stream(request: dict, user=Depends(get_current_user)):
                     language=language,
                     context=context,
                     reasoning=reasoning,
+                    notebook_edit=notebook_edit,
                     session_id=request.get("session_id") if isinstance(request, dict) else getattr(request, "session_id", None),
                     model=model,
                 ):
@@ -813,13 +815,7 @@ async def generate_code_stream(request: dict, user=Depends(get_current_user)):
                         try:
                             reasoning_delta = chunk[len("\x00REASONING:"):]
                             if reasoning_delta:
-                                try:
-                                    # Debug: show a compact reasoning delta sample
-                                    _sample = (reasoning_delta[:120]).replace("\n", " ")
-                                    _ell = "…" if len(reasoning_delta) > 120 else ""
-                                    print(f"[API] reasoning delta ({len(reasoning_delta)} chars): {_sample}{_ell}")
-                                except Exception:
-                                    pass
+                               
                                 yield f"data: {json.dumps({'type': 'reasoning', 'delta': reasoning_delta})}\n\n"
                             continue
                         except Exception:
@@ -834,11 +830,7 @@ async def generate_code_stream(request: dict, user=Depends(get_current_user)):
                             continue
                         except Exception:
                             pass
-                    # Normal code chunk
-                    try:
-                        print(f"[API] code chunk ({len(str(chunk))} chars)")
-                    except Exception:
-                        pass
+                    
                     yield f"data: {json.dumps({'chunk': chunk})}\n\n"
             except Exception as e:
                 print(f"Error in streaming generation: {e}")

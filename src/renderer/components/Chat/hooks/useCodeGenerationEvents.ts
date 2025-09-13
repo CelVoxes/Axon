@@ -199,6 +199,7 @@ export function useCodeGenerationEvents({
         (event: Event) => {
             const customEvent = event as CustomEvent<CodeGenerationStartedEvent>;
             const { stepId, stepDescription } = customEvent.detail;
+            const suppressCodePlaceholder = Boolean((customEvent.detail as any)?.suppressCodePlaceholder);
 
 			// Clear any lingering validation banners when a new generation starts
 			setValidationErrors([]);
@@ -237,17 +238,19 @@ export function useCodeGenerationEvents({
                 });
             }
 
-			analysisDispatch({
-				type: "ADD_MESSAGE",
-				payload: {
-					id: messageId,
-					content: "", // Start with empty content for streaming
-					code: "", // Ensure a CodeBlock mounts immediately
-					codeLanguage: "python",
-					isUser: false,
-					isStreaming: true,
-				},
-			});
+            if (!suppressCodePlaceholder) {
+                analysisDispatch({
+                    type: "ADD_MESSAGE",
+                    payload: {
+                        id: messageId,
+                        content: "", // Start with empty content for streaming
+                        code: "", // Ensure a CodeBlock mounts immediately
+                        codeLanguage: "python",
+                        isUser: false,
+                        isStreaming: true,
+                    },
+                });
+            }
 
 			// Update progress + mark global streaming as active
 			setIsProcessing(true);

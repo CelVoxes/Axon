@@ -150,21 +150,10 @@ export class AutonomousInspectionService {
    * Check if message suggests file/folder operations that would benefit from inspection
    */
   shouldInspect(userMessage: string): boolean {
-    const inspectionTriggers = [
-      // File/folder mentions
-      /@[^\s@]+/,
-      /\b\w+\.\w+\b/, // filename.ext
-      /\b\w+\//,      // directory/
-      
-      // Intent keywords
-      /\b(?:show|view|look|check|inspect|read|open|examine)\b/i,
-      /\b(?:file|folder|directory|content|structure)\b/i,
-      /\b(?:what'?s in|contents of|inside)\b/i,
-      
-      // Code-related keywords that might reference files
-      /\b(?:import|load|analyze|process|debug)\b/i,
-    ];
-
-    return inspectionTriggers.some(pattern => pattern.test(userMessage));
+    // Be conservative: only auto-inspect when there are explicit mentions
+    // (via @mention, clear filename.ext tokens, or paths ending with '/').
+    // Avoid triggering on generic verbs/nouns like "show", "folder", "analyze".
+    const mentions = this.extractMentions(userMessage);
+    return mentions.length > 0;
   }
 }
