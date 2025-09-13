@@ -28,14 +28,15 @@ module.exports = (env, argv) => {
 		entry: {
 			main: "./src/renderer/index.tsx",
 		},
-		output: {
-			path: path.resolve(__dirname, "dist"),
-			filename: isProduction ? "[name].[fullhash].js" : "[name].js",
-			publicPath: "./",
-			clean: {
-				keep: /main\//,
-			},
-		},
+    output: {
+      path: path.resolve(__dirname, "dist"),
+      filename: isProduction ? "[name].[fullhash].js" : "[name].js",
+      chunkFilename: isProduction ? "[name].[fullhash].js" : "[name].js",
+      publicPath: "./",
+      clean: {
+        keep: /main\//,
+      },
+    },
 		module: {
 			rules: [
 				{
@@ -151,44 +152,15 @@ module.exports = (env, argv) => {
 			}),
 		],
 		devtool: isProduction ? false : isFast ? "eval-cheap-module-source-map" : "source-map",
-		optimization: {
-			usedExports: true,
-			sideEffects: false,
-			providedExports: true,
-			innerGraph: true,
-			mangleExports: isProduction,
-			splitChunks: isFast ? false : {
-				chunks: "all",
-				minSize: 20000,
-				maxSize: 250000,
-				cacheGroups: {
-					vendor: {
-						test: /[\\/]node_modules[\\/]/,
-						name: "vendors",
-						chunks: "all",
-						priority: 1,
-					},
-					monaco: {
-						test: /[\\/]node_modules[\\/]@monaco-editor[\\/]/,
-						name: "monaco",
-						chunks: "all",
-						priority: 20,
-					},
-					react: {
-						test: /[\\/]node_modules[\\/](react|react-dom)[\\/]/,
-						name: "react",
-						chunks: "all",
-						priority: 15,
-					},
-					lodash: {
-						test: /[\\/]node_modules[\\/]lodash[\\/]/,
-						name: "lodash",
-						chunks: "all",
-						priority: 10,
-					},
-				},
-			},
-		},
+    optimization: {
+      usedExports: true,
+      sideEffects: false,
+      providedExports: true,
+      innerGraph: true,
+      mangleExports: isProduction,
+      // Disable code splitting in packaged builds to avoid missing chunk files under file:// protocol
+      splitChunks: false,
+    },
 		performance: {
 			hints: isProduction ? "warning" : false,
 			maxEntrypointSize: 5000000,

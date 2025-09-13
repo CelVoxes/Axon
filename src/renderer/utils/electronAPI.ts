@@ -140,14 +140,31 @@ export const electronAPI = {
 		return safeElectronAPICall<any[]>("listDirectory", dirPath);
 	},
 
-	/**
-	 * Safely create a directory
-	 */
-	async createDirectory(
-		dirPath: string
-	): Promise<{ success: boolean; error?: string }> {
-		return safeElectronAPICall<boolean>("createDirectory", dirPath);
-	},
+  /**
+   * Safely create a directory
+   */
+  async createDirectory(
+    dirPath: string
+  ): Promise<{ success: boolean; error?: string }> {
+    return safeElectronAPICall<boolean>("createDirectory", dirPath);
+  },
+
+  /**
+   * Safely move/rename a file or directory
+   */
+  async moveFile(
+    srcPath: string,
+    destPath: string
+  ): Promise<{ success: boolean; error?: string }> {
+    const res = await safeElectronAPICall<any>("moveFile", srcPath, destPath);
+    if (!res.success) return { success: false, error: res.error };
+    const inner = res.data;
+    if (inner && typeof inner === "object" && "success" in inner) {
+      return inner as { success: boolean; error?: string };
+    }
+    if (typeof inner === "boolean") return { success: inner };
+    return { success: true };
+  },
 
 	/**
 	 * Safely open a file dialog

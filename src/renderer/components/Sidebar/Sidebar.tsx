@@ -789,13 +789,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		const children = dirChildren[dirPath] || [];
 		return children.map((item) => {
 			const isExpanded = item.isDirectory && expandedDirs.has(item.path);
-			return (
-				<React.Fragment key={item.path}>
-					<FileItem
-						data-file-item
-						$isDirectory={item.isDirectory}
-						$level={level}
-						$isActive={state.activeFile === item.path}
+            return (
+                <React.Fragment key={item.path}>
+                    <FileItem
+                        data-file-item
+                        $isDirectory={item.isDirectory}
+                        $level={level}
+                        $isActive={state.activeFile === item.path}
 						$isSelected={
 							item.isDirectory
 								? selectedDirectory === item.path
@@ -803,8 +803,22 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 						}
 						$isDragOver={item.isDirectory && dragOverFolder === item.path}
 						$fileName={item.name}
-						onClick={() => handleItemClick(item)}
-						onContextMenu={(e) => handleItemRightClick(e, item)}
+                        onClick={() => handleItemClick(item)}
+                        draggable
+                        onDragStart={(e) => {
+                            try {
+                                e.stopPropagation();
+                                e.dataTransfer.effectAllowed = "move";
+                                // Mark internal drag source path
+                                e.dataTransfer.setData(
+                                    "text/axon-filepath",
+                                    item.path
+                                );
+                                // Optionally include a plain text fallback
+                                e.dataTransfer.setData("text/plain", item.path);
+                            } catch (_) {}
+                        }}
+                        onContextMenu={(e) => handleItemRightClick(e, item)}
 						{...(item.isDirectory && {
 							onDragOver: (e: React.DragEvent) =>
 								handleFolderDragOver(e, item.path),
@@ -1348,14 +1362,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 	};
 
 	// Drag and drop handlers
-	const handleDragOver = (e: React.DragEvent) => {
-		e.preventDefault();
-		e.stopPropagation();
-		// Only set general drag state if not over a specific folder
-		if (!dragOverFolder) {
-			setIsDragOver(true);
-		}
-	};
+    const handleDragOver = (e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // Only set general drag state if not over a specific folder
+        if (!dragOverFolder) {
+            try { e.dataTransfer.dropEffect = "copy"; } catch (_) {}
+            setIsDragOver(true);
+        }
+    };
 
 	const handleDragLeave = (e: React.DragEvent) => {
 		e.preventDefault();
@@ -1383,13 +1398,19 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		// Determine target directory (selected folder or workspace root)
 		const targetPath = selectedDirectory || state.currentWorkspace;
 
-		// Try to use DataTransfer items API for better directory support
-		if (items.length > 0 && typeof items[0].webkitGetAsEntry === "function") {
-			const entries = items
-				.map((item) => item.webkitGetAsEntry())
-				.filter(Boolean);
+        // Try to use DataTransfer items API for better directory support
+        if (items.length > 0 && typeof items[0].webkitGetAsEntry === "function") {
+            const entries = items
+                .map((item) => item.webkitGetAsEntry())
+                .filter(Boolean);
 
-			if (entries.length > 0) {
+            if (entries.length > 0) {
+                // Internal move case: do not show 'Add N files' prompt
+                const internalPath = e.dataTransfer.getData("text/axon-filepath");
+                if (internalPath) {
+                    // Let folderDrop handler deal with this
+                    return;
+                }
 				// Analyze what we're dropping using entries
 				const fileEntries = entries.filter((entry) => entry && entry.isFile);
 				const directoryEntries = entries.filter(
@@ -1588,12 +1609,17 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 	};
 
 	// Folder-specific drag handlers
-	const handleFolderDragOver = (e: React.DragEvent, folderPath: string) => {
-		e.preventDefault();
-		e.stopPropagation();
-		setDragOverFolder(folderPath);
-		setIsDragOver(false); // Clear general drag state
-	};
+    const handleFolderDragOver = (e: React.DragEvent, folderPath: string) => {
+        e.preventDefault();
+        e.stopPropagation();
+        try {
+            // Internal drags should be move; external files should be copy
+            const internal = e.dataTransfer.types?.includes?.("text/axon-filepath");
+            e.dataTransfer.dropEffect = internal ? "move" : "copy";
+        } catch (_) {}
+        setDragOverFolder(folderPath);
+        setIsDragOver(false); // Clear general drag state
+    };
 
 	const handleFolderDragLeave = (e: React.DragEvent, folderPath: string) => {
 		e.preventDefault();
@@ -1604,17 +1630,54 @@ export const Sidebar: React.FC<SidebarProps> = ({ onToggle, ...props }) => {
 		}
 	};
 
-	const handleFolderDrop = async (e: React.DragEvent, folderPath: string) => {
-		e.preventDefault();
-		e.stopPropagation();
-		setDragOverFolder(null);
-		setIsDragOver(false); // Clear general drag state
+    const handleFolderDrop = async (e: React.DragEvent, folderPath: string) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragOverFolder(null);
+        setIsDragOver(false); // Clear general drag state
 
-		// Check for DataTransferItems first (better for folder handling)
-		const items = Array.from(e.dataTransfer.items);
-		const files = Array.from(e.dataTransfer.files);
+        // Check for DataTransferItems first (better for folder handling)
+        const items = Array.from(e.dataTransfer.items);
+        const files = Array.from(e.dataTransfer.files);
 
-		if (files.length === 0 && items.length === 0) return;
+        // Handle internal move first
+        try {
+            let internalPath = e.dataTransfer.getData("text/axon-filepath");
+            if (!internalPath) {
+                const plain = e.dataTransfer.getData("text/plain");
+                if (plain && plain.startsWith("/")) internalPath = plain;
+            }
+            if (internalPath && typeof internalPath === "string") {
+                // Compute destination path (keep basename)
+                const base = internalPath.split("/").pop() || internalPath;
+                const dest = `${folderPath}/${base}`;
+                if (dest === internalPath) return; // no-op
+                // Prevent moving a folder into itself or its subfolder
+                if (internalPath.endsWith("/") || (await electronAPI.getFileInfo(internalPath)).data?.isDirectory) {
+                    if (folderPath === internalPath || folderPath.startsWith(internalPath + "/")) {
+                        alert("Cannot move a folder into itself or its subfolder.");
+                        return;
+                    }
+                }
+                // Check if destination exists
+                const existsRes = await electronAPI.getFileInfo(dest);
+                if (existsRes.success && existsRes.data && typeof existsRes.data.isDirectory === "boolean") {
+                    const proceed = window.confirm(
+                        `${dest} already exists. Replace it?`
+                    );
+                    if (!proceed) return;
+                }
+                const moveRes = await electronAPI.moveFile(internalPath, dest);
+                if (!moveRes.success) {
+                    alert(`Failed to move: ${moveRes.error || "Unknown error"}`);
+                } else {
+                    await refreshTree();
+                }
+                return;
+            }
+        } catch (_) {}
+
+        if (files.length === 0 && items.length === 0) return;
 
 		// Try to use DataTransfer items API for better directory support
 		if (items.length > 0 && typeof items[0].webkitGetAsEntry === "function") {

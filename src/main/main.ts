@@ -1508,6 +1508,48 @@ export class AxonApp {
 			}
 		});
 
+		// Move/Rename a file or directory
+		ipcMain.handle("fs-move", async (_evt, srcPath: string, destPath: string) => {
+			const ensureDestDir = async () => {
+				const destDir = path.dirname(destPath);
+				await fs.promises.mkdir(destDir, { recursive: true });
+			};
+			try {
+				await ensureDestDir();
+				await fs.promises.rename(srcPath, destPath);
+				return { success: true };
+			} catch (err: any) {
+				// Fallback for cross-device move (EXDEV): copy then delete
+				if (err && (err.code === "EXDEV" || /cross-device/i.test(String(err)))) {
+					try {
+						await ensureDestDir();
+						await new Promise<void>((resolve, reject) => {
+							const rd = fs.createReadStream(srcPath);
+							const wr = fs.createWriteStream(destPath);
+							rd.on("error", reject);
+							wr.on("error", reject);
+							wr.on("close", () => resolve());
+							rd.pipe(wr);
+						});
+						await fs.promises.unlink(srcPath);
+						return { success: true };
+					} catch (copyErr: any) {
+						return {
+							success: false,
+							error:
+								copyErr instanceof Error
+									? copyErr.message
+									: String(copyErr),
+						};
+					}
+				}
+				return {
+					success: false,
+					error: err instanceof Error ? err.message : String(err),
+				};
+			}
+		});
+
 		// Open a file using the OS default application
 		ipcMain.handle("open-file", async (_, filePath: string) => {
 			try {

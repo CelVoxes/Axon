@@ -49,6 +49,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		ipcRenderer.invoke("directory-exists", dirPath),
 	listDirectory: (dirPath: string) =>
 		ipcRenderer.invoke("fs-list-directory", dirPath),
+	moveFile: async (srcPath: string, destPath: string) => {
+		const result = await ipcRenderer.invoke("fs-move", srcPath, destPath);
+		try {
+			window.dispatchEvent(new Event("refreshFileTree"));
+		} catch {}
+		return result;
+	},
 	openFile: (filePath: string) => ipcRenderer.invoke("open-file", filePath),
 	getFileInfo: (filePath: string) =>
 		ipcRenderer.invoke("get-file-info", filePath),
