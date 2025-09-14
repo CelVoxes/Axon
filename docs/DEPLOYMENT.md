@@ -209,3 +209,52 @@ curl -X POST https://your-backend/search/llm \
 - Add Sign-In button in UI using `AuthService.loginWithFirebaseGooglePopup()`.
 - Add a “Usage” panel (per-user token totals from `UsageLog`).
 - Configure automated backups for Postgres and monitoring/logging.
+
+## PM2 + venv (bare VM)
+
+Use PM2 to supervise the API while running inside a Python virtual environment.
+
+1) Create a virtualenv and install dependencies
+
+```bash
+cd /opt/axon
+python3 -m venv /opt/axon/.venv  # or your preferred path, e.g., /root/axon-venv
+source /opt/axon/.venv/bin/activate
+pip install -r backend/requirements.txt prisma
+```
+
+2) Install Node.js and pm2
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+sudo npm i -g pm2
+```
+
+3) Prepare env and start with PM2
+
+```bash
+cd /opt/axon
+# Create .env with OPENAI_API_KEY (and DATABASE_URL, FIREBASE_PROJECT_ID, GOOGLE_CLIENT_ID if needed)
+echo "OPENAI_API_KEY=..." >> .env
+
+# Start using the default .venv in repo root
+PORT=8002 WORKERS=2 pm2 start backend/pm2-ecosystem.config.js
+
+# If your venv is elsewhere, set VENV_DIR
+# VENV_DIR=/root/axon-venv PORT=8002 WORKERS=2 pm2 start backend/pm2-ecosystem.config.js
+
+# Persist across reboots
+pm2 startup systemd -u $USER --hp $HOME
+pm2 save
+```
+
+4) Operations
+
+- Update code: `cd /opt/axon && git pull && pm2 reload axon-api`
+- Logs: `pm2 logs axon-api --lines 200`
+- Health: `curl http://127.0.0.1:8002/health`
+
+Notes
+- The start script (`backend/pm2-start.sh`) activates `VENV_DIR` when provided, else `.venv`, else system Python.
+- Prisma migrations run only when `DATABASE_URL` is set; otherwise they are skipped.
