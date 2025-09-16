@@ -402,6 +402,14 @@ export class CodeQualityService {
 		// Step 1: Normalize and clean
 		let enhancedCode = normalizePythonCode(code);
 
+		// Step 1.5: Remove duplicate imports relative to global context (avoid repeating prior cells)
+		try {
+			if (options.globalCodeContext && options.globalCodeContext.trim()) {
+				const existing = sharedGetExistingImports(options.globalCodeContext);
+				enhancedCode = sharedRemoveDuplicateImports(enhancedCode, existing);
+			}
+		} catch (_) {}
+
 		// Step 2: Only add imports if they're actually needed and missing from global context
 		if (options.addImports) {
 			enhancedCode = this.smartAddImports(

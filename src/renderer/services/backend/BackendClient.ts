@@ -563,31 +563,31 @@ export class BackendClient implements IBackendClient {
 	/**
 	 * Classify chat intent using backend LLM analyzer. Returns a simplified intent string.
 	 */
-	async classifyIntent(message: string): Promise<{
-		intent: string; // "ADD_CELL" | "SEARCH_DATA" | "START_ANALYSIS"
-		confidence?: number;
-		reason?: string;
-	}> {
-		const controller = new AbortController();
-		this.abortControllers.add(controller);
-		try {
-			const response = await this.axiosInstance.post(
-				`${this.baseUrl}/llm/intent`,
-				{ text: message },
-				{ signal: controller.signal }
-			);
-			return response.data as {
-				intent: string;
-				confidence?: number;
-				reason?: string;
-			};
-		} catch (error) {
-			log.error("BackendClient: Error classifying intent:", error);
-			throw error;
-		} finally {
-			this.abortControllers.delete(controller);
-		}
-	}
+    async classifyIntent(message: string, sessionId?: string): Promise<{
+        intent: string; // "ADD_CELL" | "SEARCH_DATA" | "START_ANALYSIS"
+        confidence?: number;
+        reason?: string;
+    }> {
+        const controller = new AbortController();
+        this.abortControllers.add(controller);
+        try {
+            const response = await this.axiosInstance.post(
+                `${this.baseUrl}/llm/intent`,
+                { text: message, session_id: sessionId },
+                { signal: controller.signal }
+            );
+            return response.data as {
+                intent: string;
+                confidence?: number;
+                reason?: string;
+            };
+        } catch (error) {
+            log.error("BackendClient: Error classifying intent:", error);
+            throw error;
+        } finally {
+            this.abortControllers.delete(controller);
+        }
+    }
 
 	async generatePlan(request: {
 		question: string;

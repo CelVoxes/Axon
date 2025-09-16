@@ -14,16 +14,17 @@ import {
 } from "../../components/Chat/ChatPanelUtils";
 
 interface NotebookEditArgs {
-	filePath: string;
-	cellIndex: number;
-	language: string;
-	fullCode: string;
-	userMessage: string;
-	selection?: {
-		selStart: number;
-		selEnd: number;
-		startLine: number;
-		endLine: number;
+    filePath: string;
+    cellIndex: number;
+    language: string;
+    fullCode: string;
+    userMessage: string;
+    sessionId?: string;
+    selection?: {
+        selStart: number;
+        selEnd: number;
+        startLine: number;
+        endLine: number;
 		withinSelection: string;
 	};
 	outputText?: string;
@@ -104,12 +105,12 @@ export class NotebookEditingService {
 			const end = selEnd;
 			let lastCellUpdate = 0;
 
-			await this.backendClient.generateCodeStream(
-				{
-					task_description:
-						`${task}\n\nUser instruction: ${userMessage}\n\n` +
-						(outputText && outputText.trim().length > 0
-							? `${
+        await this.backendClient.generateCodeStream(
+            {
+                task_description:
+                    `${task}\n\nUser instruction: ${userMessage}\n\n` +
+                    (outputText && outputText.trim().length > 0
+                        ? `${
 									hasErrorOutput ? "Error" : "Execution"
 							  } output for context:\n\n\`\`\`text\n${outputText}\n\`\`\`\n\n`
 							: "") +
@@ -118,15 +119,15 @@ export class NotebookEditingService {
 						} lines. Return EXACTLY ${
 							withinSelection.split("\n").length
 						} modified lines (no imports, no extra lines). Example format:\nline1\nline2\n\nYour response:`,
-					language: lang,
-					context: "Notebook code edit-in-place",
-					notebook_edit: true,
-					session_id: wsPath ? `session:${wsPath}` : undefined,
-					model: ConfigManager.getInstance().getDefaultModel(),
-				},
-				(chunk: string) => {
-					streamedResponse += chunk;
-					const cleanedSnippet = stripCodeFences(streamedResponse);
+                language: lang,
+                context: "Notebook code edit-in-place",
+                notebook_edit: true,
+                session_id: args.sessionId || (wsPath ? `session:${wsPath}` : undefined),
+                model: ConfigManager.getInstance().getDefaultModel(),
+            },
+            (chunk: string) => {
+                streamedResponse += chunk;
+                const cleanedSnippet = stripCodeFences(streamedResponse);
 
 					// Create the code message on first chunk, then update subsequently
 					if (!snippetMessageCreated) {

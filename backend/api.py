@@ -302,6 +302,9 @@ class AskResponse(BaseModel):
 class IntentRequest(BaseModel):
     text: str
     context: Optional[Dict[str, Any]] = None
+    # Optional chat/session identifier to chain this call in the same Responses
+    # conversation for tracking, without polluting chat history
+    session_id: Optional[str] = None
 
 class IntentResponse(BaseModel):
     intent: str  # "ADD_CELL" | "SEARCH_DATA" | "START_ANALYSIS"
@@ -1178,7 +1181,9 @@ async def classify_intent(request: IntentRequest):
     """
     try:
         llm_service = get_llm_service()
-        result = await llm_service.classify_intent(request.text, request.context)
+        # Chain to existing session if provided so provider usage/ids are grouped,
+        # but keep classification out of the stored chat history
+        result = await llm_service.classify_intent(request.text, request.context, session_id=request.session_id)
         # Normalize response
         intent = str(result.get("intent", "ADD_CELL")).upper()
         if intent not in ("ADD_CELL", "SEARCH_DATA", "START_ANALYSIS"):

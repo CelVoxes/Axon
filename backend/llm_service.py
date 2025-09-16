@@ -1650,7 +1650,7 @@ JSON response:"""
             print(f"Query analysis error: {e}")
             return self._basic_query_analysis(query)
 
-    async def classify_intent(self, text: str, context: Optional[dict] = None) -> Dict[str, Any]:
+    async def classify_intent(self, text: str, context: Optional[dict] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
         """Classify user intent into one of two actions for the app backend:
         - ADD_CELL: user wants to add/execute code in the current notebook
         - SEARCH_DATA: user wants to find/search/download datasets
@@ -1682,6 +1682,8 @@ JSON response:"""
                     "- Priority order: START_ANALYSIS > SEARCH_DATA > ADD_CELL when ambiguous.\n\n"
                     "Respond as JSON: {\"intent\": \"ADD_CELL|SEARCH_DATA|START_ANALYSIS\", \"confidence\": 0.0-1.0, \"reason\": \"...\"}"
                 )
+                # Chain to existing session if available for provider-side tracking,
+                # but do not store this exchange in conversation state
                 resp = await self.provider.generate(
                     [
                         {"role": "system", "content": system},
@@ -1689,7 +1691,15 @@ JSON response:"""
                     ],
                     max_tokens=120,
                     temperature=0.0,
+                    store=False,
+                    previous_response_id=self._get_previous_response_id(session_id),
+                    metadata={"session_id": session_id or "", "action": "intent"},
                 )
+                # Best-effort: update session meta with new response id/usage for tracking
+                try:
+                    self._update_session_usage(session_id)
+                except Exception:
+                    pass
                 parsed = json.loads(resp)
                 intent = str(parsed.get("intent", "ADD_CELL")).strip().upper()
                 if intent not in ("ADD_CELL", "SEARCH_DATA", "START_ANALYSIS"):

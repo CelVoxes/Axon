@@ -195,6 +195,21 @@ export class NotebookCodeGenerationService {
     ].join("\n");
   }
 
+  private async isDuplicateCell(notebookPath: string, code: string): Promise<boolean> {
+    try {
+      const nb = await this.notebookService.readNotebook(notebookPath);
+      const normalize = (s: string) => String(s || "").replace(/\s+/g, " ").trim();
+      const target = normalize(code);
+      for (const cell of nb.cells || []) {
+        if (cell?.cell_type !== 'code') continue;
+        const srcArr: string[] = Array.isArray(cell.source) ? cell.source : [];
+        const cellCode = srcArr.join("");
+        if (normalize(cellCode) === target) return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
   private async ensureRSetupCell(
     notebookPath: string,
     datasets: Dataset[]
@@ -302,13 +317,32 @@ export class NotebookCodeGenerationService {
     }
 
     const bestCode = this.codeQualityService.getBestCode(validation);
-    const finalCode = this.sanitizeNotebookPythonCode(bestCode);
+    let finalCode = this.sanitizeNotebookPythonCode(bestCode);
+
+    // Final safety: strip duplicate imports vs global context to avoid repetition across cells
+    try {
+      const { getExistingImports, removeDuplicateImports } = await import("../../utils/ImportUtils");
+      const existing = getExistingImports(this.getGlobalCodeContext());
+      finalCode = removeDuplicateImports(finalCode, existing);
+    } catch (_) {}
 
     // Extract any package hints from the generated code
     const llmSuggestedPkgs = this.extractPackagesFromCode(generatedCode);
 
     // Check if we need to add package installation cell first (Python path only)
     await this.ensurePackageInstallationCell(notebookPath, datasets, llmSuggestedPkgs);
+
+    // Skip adding cell if it already exists verbatim
+    if (await this.isDuplicateCell(notebookPath, finalCode)) {
+      try {
+        (this.codeGenerator as any).emitValidationSuccess(
+          stepId,
+          "Skipped adding duplicate cell (already present in notebook)",
+          bestCode
+        );
+      } catch (_) {}
+      return;
+    }
 
     // Add validated code as notebook cell
     await this.notebookService.addCodeCell(notebookPath, finalCode);

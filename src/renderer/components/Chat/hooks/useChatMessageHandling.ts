@@ -83,38 +83,51 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 		[backendClient, addMessage, resetLoadingState]
 	);
 
-	const performNotebookEdit = useCallback(
-		async (args: {
-			filePath: string;
-			cellIndex: number;
-			language: string;
-			fullCode: string;
-			userMessage: string;
-			selection?: {
-				selStart: number;
-				selEnd: number;
-				startLine: number;
-				endLine: number;
-				withinSelection: string;
-			};
-			outputText?: string;
-			hasErrorOutput?: boolean;
-		}) => {
-			if (!notebookEditingService) {
-				addMessage(
-					"Backend not ready to edit code. Please try again in a moment.",
-					false
-				);
-				return;
-			}
+    const performNotebookEdit = useCallback(
+        async (args: {
+            filePath: string;
+            cellIndex: number;
+            language: string;
+            fullCode: string;
+            userMessage: string;
+            selection?: {
+                selStart: number;
+                selEnd: number;
+                startLine: number;
+                endLine: number;
+                withinSelection: string;
+            };
+            outputText?: string;
+            hasErrorOutput?: boolean;
+        }) => {
+            if (!notebookEditingService) {
+                addMessage(
+                    "Backend not ready to edit code. Please try again in a moment.",
+                    false
+                );
+                return;
+            }
 
-			await notebookEditingService.performNotebookEdit(args, {
-				addMessage,
-				analysisDispatch,
-			});
-		},
-		[notebookEditingService, addMessage, analysisDispatch]
-	);
+            // Chain edits to the current chat+workspace session for Responses API tracking
+            let sessionId: string | undefined;
+            try {
+                const { findWorkspacePath } = await import("../../../utils/WorkspaceUtils");
+                const wsDir =
+                    findWorkspacePath({
+                        filePath: args.filePath,
+                        currentWorkspace: workspaceState.currentWorkspace,
+                    }) || workspaceState.currentWorkspace || "";
+                const chatId = (analysisState as any).activeChatSessionId || "global";
+                if (wsDir) sessionId = `session:${wsDir}:${chatId}`;
+            } catch (_) {}
+
+            await notebookEditingService.performNotebookEdit({ ...args, sessionId }, {
+                addMessage,
+                analysisDispatch,
+            });
+        },
+        [notebookEditingService, addMessage, analysisDispatch, workspaceState.currentWorkspace, analysisState]
+    );
 
 	const buildContextFromMessages = useCallback((messages: any[]): string => {
 		const recent = (messages || []).slice(-10);

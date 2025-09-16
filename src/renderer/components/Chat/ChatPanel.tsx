@@ -141,11 +141,14 @@ const ReasoningBlock: React.FC<{ message: Message }> = ({ message }) => {
 					}}
 				/>
 			</div>
-				{isExpanded && (
-					<div className="thought-markdown" style={{ fontSize: "12px", color: "#9ca3af" }}>
-						<ReactMarkdown children={sanitizeMarkdown(text)} />
-					</div>
-				)}
+			{isExpanded && (
+				<div
+					className="thought-markdown"
+					style={{ fontSize: "12px", color: "#9ca3af" }}
+				>
+					<ReactMarkdown children={sanitizeMarkdown(text)} />
+				</div>
+			)}
 		</div>
 	);
 };
@@ -618,12 +621,35 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				return;
 			}
 
-			await notebookEditingService.performNotebookEdit(args, {
-				addMessage,
-				analysisDispatch,
-			});
+			// Compute stable session id including workspace and chat id for proper Responses chaining
+			let sessionId: string | undefined;
+			try {
+				const wsDir =
+					findWorkspacePath({
+						filePath: args.filePath,
+						currentWorkspace: workspaceState.currentWorkspace,
+					}) ||
+					workspaceState.currentWorkspace ||
+					"";
+				const chatId = (analysisState as any).activeChatSessionId || "global";
+				if (wsDir) sessionId = `session:${wsDir}:${chatId}`;
+			} catch (_) {}
+
+			await notebookEditingService.performNotebookEdit(
+				{ ...args, sessionId },
+				{
+					addMessage,
+					analysisDispatch,
+				}
+			);
 		},
-		[notebookEditingService, addMessage, analysisDispatch]
+		[
+			notebookEditingService,
+			addMessage,
+			analysisDispatch,
+			workspaceState.currentWorkspace,
+			analysisState,
+		]
 	);
 
 	const handleSendMessage = useCallback(async () => {
@@ -731,20 +757,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								});
 								return;
 							}
-							// if (evt?.type === "summary" && typeof evt.text === "string" && evt.text.trim().length > 0) {
-							//     // Add a separate assistant message for reasoning summary
-							//     analysisDispatch({
-							//         type: "ADD_MESSAGE",
-							//         payload: {
-							//             id: `summary-${Date.now()}`,
-							//             content: `🧠 Summary: ${evt.text}`,
-							//             isUser: false,
-							//             isStreaming: false,
-							//             status: "completed" as any,
-							//         },
-							//     });
-							//     return;
-							// }
+
 							if (evt?.type === "done") {
 								analysisDispatch({
 									type: "UPDATE_MESSAGE",
@@ -1122,24 +1135,34 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				return;
 			}
 
-			// Get intent classification from backend
-			const intentResult = await backendClient!.classifyIntent(userMessage);
-
-			// Debug intent classification
-			console.log("🎯 Intent Classification Result:", {
+			// Get intent classification from backend (chain to chat session for tracking)
+			const wsDirForIntent =
+				findWorkspacePath({
+					filePath: notebookFile || (workspaceState.activeFile as string) || "",
+					currentWorkspace: workspaceState.currentWorkspace,
+				}) ||
+				workspaceState.currentWorkspace ||
+				"";
+			const intentSessionId = `session:${wsDirForIntent}:${
+				(analysisState as any).activeChatSessionId || "global"
+			}`;
+			const intentResult = await backendClient!.classifyIntent(
 				userMessage,
-				intent: intentResult.intent,
-				confidence: intentResult.confidence,
-				reason: intentResult.reason,
-			});
+				intentSessionId
+			);
+
+			// Show intent reasoning in chat so the user sees what's going on
+			try {
+				const conf =
+					typeof intentResult.confidence === "number"
+						? Math.round(intentResult.confidence * 100)
+						: null;
+				const reason = intentResult.reason ? `${intentResult.reason}` : "";
+				addMessage([reason].filter(Boolean).join("\n"), false);
+			} catch (_) {}
 
 			// If confidence is too low (< 0.7), treat as general question instead of forcing into specific intent
 			const isLowConfidence = (intentResult.confidence || 0) < 0.7;
-			console.log("🎯 Intent Analysis:", {
-				isLowConfidence,
-				threshold: 0.7,
-				actualConfidence: intentResult.confidence,
-			});
 
 			// Handle dataset search based on backend intent
 			if (intentResult.intent === "SEARCH_DATA" && !isLowConfidence) {
@@ -1184,12 +1207,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				(intentResult.intent === "ADD_CELL" && !isLowConfidence) ||
 				// Local heuristic: if a notebook is open and the user clearly asks to add/insert a cell,
 				// honor it even if LLM confidence is low.
-				(isNotebookOpen && /\b(add|insert|new)\s+(markdown\s+)?cell\b/i.test(userMessage))
+				(isNotebookOpen &&
+					/\b(add|insert|new)\s+(markdown\s+)?cell\b/i.test(userMessage))
 			) {
-				console.log(
-					"🔬 ADD_CELL intent detected, checking for open notebooks..."
-				);
-
 				// Use reliable notebook detection hook (no race conditions)
 				console.log("🔬 Notebook detection result:", {
 					notebookFile,
