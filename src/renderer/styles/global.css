@@ -347,27 +347,40 @@ textarea:focus {
 
 .chat-input-container textarea {
 	width: 100%;
-	background: #1e1e1e;
-	border: 1px solid #6c6c6c;
-	border-radius: 6px;
-	color: #d4d4d4;
-	padding: 8px 12px;
 	font-size: var(--font-size-base);
 	font-family: inherit;
 	resize: none;
 	min-height: 72px;
 	max-height: 120px;
 	line-height: 1.4;
-	transition: border-color 0.2s ease;
 	box-sizing: border-box;
 }
 
-.chat-input-container textarea:focus {
-	outline: none;
+.chat-input-container .composer-textarea-wrapper {
+	position: relative;
+	background: #1e1e1e;
+	border: 1px solid #6c6c6c;
+	border-radius: 6px;
 }
 
-.chat-input-container textarea::placeholder {
+.chat-input-container .composer-textarea-wrapper textarea {
+	border: none;
+	background: transparent;
+}
+
+.chat-input-container .composer-textarea-wrapper textarea::placeholder {
 	color: #858585;
+}
+
+.chat-input-container .composer-textarea-wrapper:focus-within {
+	border-color: #a0a0a0;
+}
+
+.composer-highlight .composer-tag {
+	background: rgba(59, 130, 246, 0.28);
+	border-radius: 4px;
+	color: transparent;
+	box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.15);
 }
 
 .send-button {

@@ -1,3 +1,4 @@
+import path from "path";
 import { Dataset, DataTypeAnalysis } from "../types";
 import { FilesystemAdapter } from "../../utils/fs/FilesystemAdapter";
 import { DefaultFilesystemAdapter } from "../../utils/fs/DefaultFilesystemAdapter";
@@ -10,6 +11,8 @@ export interface FileAnalysis {
 export class DatasetManager {
     private fs: FilesystemAdapter;
 	private statusCallback?: (status: string) => void;
+    private fileAnalysisCache = new Map<string, FileAnalysis>();
+    private datasetAnalysisCache = new Map<string, FileAnalysis>();
 
     constructor(fsAdapter?: FilesystemAdapter) {
         this.fs = fsAdapter ?? new DefaultFilesystemAdapter();
@@ -225,6 +228,237 @@ export class DatasetManager {
 		}
 	}
 
+	private normalizeFsPath(p?: string | null): string | null {
+		if (!p) return null;
+		try {
+			return path.normalize(p).replace(/\\/g, "/");
+		} catch (_) {
+			return p;
+		}
+	}
+
+	private buildDatasetCacheKey(dataset: Dataset): string | null {
+		const localPath = this.normalizeFsPath((dataset as any)?.localPath || null);
+		if (localPath) return `path:${localPath}`;
+		if (dataset.id) return `id:${dataset.id}`;
+		if (dataset.title) return `title:${dataset.title}`;
+		return null;
+	}
+
+	private recordDatasetAnalysis(
+		cacheKey: string | null,
+		analysis: FileAnalysis
+	): FileAnalysis {
+		if (cacheKey) this.datasetAnalysisCache.set(cacheKey, analysis);
+		return analysis;
+	}
+
+	private recordFileAnalysis(
+		pathKey: string | null,
+		analysis: FileAnalysis
+	): FileAnalysis {
+		if (pathKey) this.fileAnalysisCache.set(pathKey, analysis);
+		return analysis;
+	}
+
+	private inferAnalysisFromDatasetMetadata(dataset: Dataset): FileAnalysis | null {
+		const dirMeta: any = (dataset as any)?.directory;
+		const tenxMeta: any = dirMeta?.tenx;
+		const contains: string[] = Array.isArray(dirMeta?.contains)
+			? dirMeta.contains.map((c: any) => String(c || "").toLowerCase())
+			: [];
+		if (
+			tenxMeta &&
+			(tenxMeta.matrix_mtx || tenxMeta.features_genes || tenxMeta.barcodes)
+		) {
+			return { dataType: "single_cell_expression", format: "10x_mtx" };
+		}
+		if (
+			contains.includes("matrix.mtx") ||
+			contains.includes("matrix.mtx.gz") ||
+			contains.includes("barcodes.tsv") ||
+			contains.includes("features.tsv") ||
+			contains.includes("genes.tsv")
+		) {
+			return { dataType: "single_cell_expression", format: "10x_mtx" };
+		}
+
+		const delimited = (dataset as any)?.delimited;
+		if (delimited?.flow_like) {
+			return { dataType: "flow_cytometry", format: "csv_bundle" };
+		}
+		if (delimited?.count >= 2 && delimited?.examples?.some?.((name: string) =>
+			/\.fcs(\.gz)?$/i.test(name)
+		)) {
+			return { dataType: "flow_cytometry", format: "fcs_bundle" };
+		}
+
+		const url = String((dataset as any)?.url || "").toLowerCase();
+		if (url.endsWith(".h5ad")) {
+			return { dataType: "single_cell_expression", format: "h5ad" };
+		}
+		if (url.endsWith(".loom")) {
+			return { dataType: "single_cell_expression", format: "loom" };
+		}
+		if (url.endsWith(".mtx")) {
+			return { dataType: "single_cell_expression", format: "mtx" };
+		}
+
+		return null;
+	}
+
+	private detectFormatFromExtension(filePath: string): string {
+		const lc = filePath.toLowerCase();
+		if (lc.endsWith(".csv")) return "csv";
+		if (lc.endsWith(".tsv") || lc.endsWith(".txt")) return "tsv";
+		if (lc.endsWith(".fastq") || lc.endsWith(".fq")) return "fastq";
+		if (lc.endsWith(".bam")) return "bam";
+		if (lc.endsWith(".vcf")) return "vcf";
+		if (lc.endsWith(".h5ad")) return "h5ad";
+		if (lc.endsWith(".mtx") || lc.endsWith(".mtx.gz")) return "mtx";
+		if (lc.endsWith(".h5") || lc.endsWith(".hdf5")) return "h5";
+		if (lc.endsWith(".loom")) return "loom";
+		if (/\.fcs(\.gz)?$/i.test(lc)) return "fcs";
+		return "unknown";
+	}
+
+	private dataTypeFromExtension(format: string, filePath: string): string | null {
+		switch (format) {
+			case "h5ad":
+			case "loom":
+				return "single_cell_expression";
+			case "mtx":
+				return "single_cell_expression";
+			case "fcs": {
+				const spectralHint = /\b(spectral|cytek|aurora|unmix|unmixed|spill|spillover)\b/.test(
+					filePath.toLowerCase()
+				);
+				return spectralHint ? "spectral_flow_cytometry" : "flow_cytometry";
+			}
+			case "fastq":
+				return "sequence_data";
+			case "bam":
+				return "alignment_data";
+			case "vcf":
+				return "variant_data";
+		}
+		return null;
+	}
+
+	private shouldReadFileHead(
+		info: { size?: number } | null,
+		format: string
+	): boolean {
+		if (format !== "csv" && format !== "tsv" && format !== "unknown") {
+			return false;
+		}
+		if (!info || typeof info.size !== "number") {
+			return true;
+		}
+		return info.size <= 512_000; // 500 KB guardrail
+	}
+
+	private detectDataTypeFromCsvHeader(header: string[]): string {
+		const headerLower = header.map((h) => h.toLowerCase());
+		const hasFSC = headerLower.some((c) => c.startsWith("fsc"));
+		const hasSSC = headerLower.some((c) => c.startsWith("ssc"));
+		const hasCD = header.some((c) => /\bcd\d+/i.test(c));
+		const hasFluor = header.some((c) =>
+			/(fitc|pe|apc|percp|bv\d{2,3}|af\d{2,3}|a[0-9]{2,3}|b[0-9]{2,3})/i.test(c)
+		);
+		if (hasFSC || hasSSC || hasCD || hasFluor) {
+			return "flow_cytometry";
+		}
+		if (
+			headerLower.some((col) => col.includes("cell")) &&
+			headerLower.some((col) => col.includes("gene"))
+		) {
+			return "single_cell_expression";
+		}
+		if (
+			headerLower.some((col) => col.includes("gene")) &&
+			headerLower.some((col) => col.includes("sample"))
+		) {
+			return "expression_matrix";
+		}
+		if (
+			headerLower.some((col) => col.includes("patient")) ||
+			headerLower.some((col) => col.includes("clinical"))
+		) {
+			return "clinical_data";
+		}
+		if (
+			headerLower.some((col) => col.includes("metadata")) ||
+			headerLower.some((col) => col.includes("info"))
+		) {
+			return "metadata";
+		}
+		return "unknown";
+	}
+
+	private detectDataTypeFromContent(
+		lines: string[],
+		format: string
+	): string {
+		if (format === "csv" || format === "tsv") {
+			const delimiter = format === "csv" ? "," : "\t";
+			const header = lines[0]?.split(delimiter) || [];
+			if (header.length) {
+				return this.detectDataTypeFromCsvHeader(header);
+			}
+		}
+		if (format === "unknown" && lines.length) {
+			const firstLine = lines[0] || "";
+			if (firstLine.includes(",")) {
+				return this.detectDataTypeFromCsvHeader(firstLine.split(","));
+			}
+			if (firstLine.includes("\t")) {
+				return this.detectDataTypeFromCsvHeader(firstLine.split("\t"));
+			}
+		}
+		if (format === "mtx") {
+			return "single_cell_expression";
+		}
+		return "unknown";
+	}
+
+	private async analyzeDirectoryPath(dirPath: string): Promise<FileAnalysis> {
+		const entries = await this.fs.listDirectory(dirPath).catch(() => [] as any[]);
+		const lowerNames = entries.map((e: any) => String(e.name || "").toLowerCase());
+		if (
+			lowerNames.includes("matrix.mtx") ||
+			lowerNames.includes("matrix.mtx.gz")
+		) {
+			return { dataType: "single_cell_expression", format: "mtx" };
+		}
+		const filteredDir = entries.find(
+			(e: any) =>
+				e.isDirectory && /filtered_feature_bc_matrix/i.test(String(e.name || ""))
+		);
+		if (filteredDir) {
+			const nested = await this.analyzeDirectoryPath(filteredDir.path);
+			if (nested.dataType !== "unknown") {
+				return nested;
+			}
+		}
+		const hasFCS = entries.some(
+			(e: any) => !e.isDirectory && /\.fcs(\.gz)?$/i.test(String(e.name || ""))
+		);
+		if (hasFCS) {
+			const hasSpectralMeta = entries.some(
+				(e: any) =>
+					!e.isDirectory &&
+					/\b(spill|spillover|unmix|unmixing)\b/i.test(String(e.name || "")) &&
+					/\.(csv|tsv|txt)$/i.test(String(e.name || ""))
+			);
+			return {
+				dataType: hasSpectralMeta ? "spectral_flow_cytometry" : "flow_cytometry",
+				format: "fcs_bundle",
+			};
+		}
+		return { dataType: "unknown", format: "unknown" };
+	}
+
 	/**
 	 * Simple method to extract data types from datasets
 	 */
@@ -247,6 +481,50 @@ export class DatasetManager {
 
 	// Removed duplicate updateStatus method
 
+	private async resolveDatasetAnalysis(
+		dataset: Dataset,
+		workspaceDir: string
+	): Promise<FileAnalysis> {
+		const cacheKey = this.buildDatasetCacheKey(dataset);
+		const label = dataset.title || dataset.id || "dataset";
+		if (cacheKey && this.datasetAnalysisCache.has(cacheKey)) {
+			return this.datasetAnalysisCache.get(cacheKey)!;
+		}
+
+		const metadataAnalysis = this.inferAnalysisFromDatasetMetadata(dataset);
+		if (metadataAnalysis) {
+			if (metadataAnalysis.dataType !== "unknown") {
+				this.updateStatus(
+					`Detected ${metadataAnalysis.dataType} (${metadataAnalysis.format}) for ${label} via metadata`
+				);
+			}
+			return this.recordDatasetAnalysis(cacheKey, metadataAnalysis);
+		}
+
+		const candidatePaths = await this.findDatasetFiles(dataset, workspaceDir);
+		for (const candidate of candidatePaths) {
+			const analysis = await this.analyzeFileType(candidate);
+			if (analysis.dataType !== "unknown" || analysis.format !== "unknown") {
+				this.updateStatus(
+					`Detected ${analysis.dataType} (${analysis.format}) for ${label} at ${candidate}`
+				);
+				return this.recordDatasetAnalysis(cacheKey, analysis);
+			}
+		}
+
+		const fallback: FileAnalysis = {
+			dataType:
+				dataset.dataType || this.inferDataTypeFromMetadata(dataset) || "unknown",
+			format: dataset.fileFormat || "unknown",
+		};
+		if (fallback.dataType !== "unknown") {
+			this.updateStatus(
+				`Fallback detected ${fallback.dataType} (${fallback.format}) for ${label}`
+			);
+		}
+		return this.recordDatasetAnalysis(cacheKey, fallback);
+	}
+
 	async analyzeDataTypesAndSelectTools(
 		datasets: Dataset[],
 		workspaceDir: string
@@ -256,26 +534,14 @@ export class DatasetManager {
 		);
 
 		try {
-			// First, try to detect data types from actual files if they exist
+			// Resolve each dataset using metadata shortcuts, cached analysis, and lightweight file probes
 			const detectedDataTypes: string[] = [];
 			const detectedFormats: string[] = [];
 
 			for (const dataset of datasets) {
-				// Check if files exist in workspace
-				const datasetFiles = await this.findDatasetFiles(dataset, workspaceDir);
-
-				if (datasetFiles.length > 0) {
-					// Analyze actual files to determine data type
-					const fileAnalysis = await this.analyzeFileType(datasetFiles[0]);
-					detectedDataTypes.push(fileAnalysis.dataType);
-					detectedFormats.push(fileAnalysis.format);
-				} else {
-					// Fall back to metadata-based detection
-					detectedDataTypes.push(
-						dataset.dataType || this.inferDataTypeFromMetadata(dataset)
-					);
-					detectedFormats.push(dataset.fileFormat || "unknown");
-				}
+				const analysis = await this.resolveDatasetAnalysis(dataset, workspaceDir);
+				detectedDataTypes.push(analysis.dataType);
+				detectedFormats.push(analysis.format);
 			}
 
 			// Get tool recommendations based on detected data types
@@ -314,11 +580,19 @@ export class DatasetManager {
 			// If dataset directly references a local path, honor it
             if ((dataset as any).localPath) {
                 const p = (dataset as any).localPath as string;
-                // If it's a directory, return signal for 10x-style folder rather than trying to read as file
                 const info = await this.fs.getFileInfo(p).catch(
                         () => null as any
                 );
                 if (info && info.isDirectory) {
+                    const entries = await this.fs.listDirectory(p).catch(() => [] as any[]);
+                    const tenxSubdir = entries.find(
+                        (entry: any) =>
+                            entry.isDirectory &&
+                            /filtered_feature_bc_matrix/i.test(String(entry.name || ""))
+                    );
+                    if (tenxSubdir) {
+                        return [p, tenxSubdir.path];
+                    }
                     return [p];
                 }
                 return [p];
@@ -346,137 +620,47 @@ export class DatasetManager {
 	}
 
 	async analyzeFileType(filePath: string): Promise<FileAnalysis> {
-		try {
-			// Detect directory-based 10x MTX structure early
-            const info = await this.fs.getFileInfo(filePath).catch(
-                () => null as any
-            );
-            if (info && info.isDirectory) {
-                // Heuristics: matrix.mtx present -> MTX dataset
-                const entries = await this.fs.listDirectory(filePath).catch(
-                    () => []
-                );
-                const names = entries.map((e) => e.name.toLowerCase());
-                if (names.includes("matrix.mtx") || names.includes("matrix.mtx.gz")) {
-                    return { dataType: "single_cell_expression", format: "mtx" };
-                }
-                // Directory with FCS files and optional spectral metadata
-                const hasFCS = entries.some((e: any) => !e.isDirectory && /\.fcs(\.gz)?$/i.test(e.name));
-                const hasSpectralMeta = entries.some(
-                    (e: any) => !e.isDirectory && /\b(spill|spillover|unmix|unmixing)\b/i.test(e.name) && /\.(csv|tsv|txt)$/i.test(e.name)
-                );
-                if (hasFCS) {
-                    return {
-                        dataType: hasSpectralMeta ? "spectral_flow_cytometry" : "flow_cytometry",
-                        format: "fcs_bundle",
-                    };
-                }
-                return { dataType: "unknown", format: "unknown" };
-            }
-
-			// For large/binary files, avoid reading whole content unnecessarily
-			let content = "";
-            try {
-                content = await this.fs.readFile(filePath);
-            } catch (_) {
-                // If cannot read as text, continue with extension-based detection
-            }
-			const lines = content.split("\n").slice(0, 10); // Check first 10 lines
-
-			// Detect format
-			let format = "unknown";
-			if (filePath.endsWith(".csv")) format = "csv";
-			else if (filePath.endsWith(".tsv") || filePath.endsWith(".txt"))
-				format = "tsv";
-			else if (filePath.endsWith(".fastq") || filePath.endsWith(".fq"))
-				format = "fastq";
-			else if (filePath.endsWith(".bam")) format = "bam";
-			else if (filePath.endsWith(".vcf")) format = "vcf";
-			else if (filePath.endsWith(".h5ad"))
-				format = "h5ad"; // AnnData format for single-cell
-			else if (filePath.endsWith(".mtx"))
-				format = "mtx"; // Matrix market format
-			else if (filePath.endsWith(".h5") || filePath.endsWith(".hdf5"))
-                format = "h5";
-            else if (filePath.endsWith(".loom")) format = "loom";
-            else if (/\.fcs(\.gz)?$/i.test(filePath)) format = "fcs";
-
-            // Detect data type based on content patterns
-            let dataType = "unknown";
-
-            if (format === "csv" || format === "tsv") {
-                const delimiter = format === "csv" ? "," : "\t";
-                const header = lines[0]?.split(delimiter) || [];
-
-                // Flow cytometry-like: FSC/SSC/fluorochrome channel names or CD markers
-                const headerLower = header.map((h) => h.toLowerCase());
-                const hasFSC = headerLower.some((c) => c.startsWith("fsc"));
-                const hasSSC = headerLower.some((c) => c.startsWith("ssc"));
-                const hasCD = header.some((c) => /\bcd\d+/i.test(c));
-                const hasFluor = header.some((c) => /(fitc|pe|apc|percp|bv\d{2,3}|af\d{2,3}|a[0-9]{2,3}|b[0-9]{2,3})/i.test(c));
-                if (hasFSC || hasSSC || hasCD || hasFluor) {
-                    dataType = "flow_cytometry";
-                }
-                // Otherwise fall through to other CSV heuristics
-
-                // Check for single-cell expression patterns
-                if (
-                    header.some((col) => col.toLowerCase().includes("cell")) &&
-                    header.some((col) => col.toLowerCase().includes("gene"))
-                ) {
-                    dataType = "single_cell_expression";
-                }
-				// Check for bulk expression matrix patterns
-				else if (
-					header.some((col) => col.toLowerCase().includes("gene")) &&
-					header.some((col) => col.toLowerCase().includes("sample"))
-				) {
-					dataType = "expression_matrix";
-				}
-				// Check for clinical data patterns
-				else if (
-					header.some((col) => col.toLowerCase().includes("patient")) ||
-					header.some((col) => col.toLowerCase().includes("clinical"))
-				) {
-					dataType = "clinical_data";
-				}
-				// Check for metadata patterns
-				else if (
-					header.some((col) => col.toLowerCase().includes("metadata")) ||
-					header.some((col) => col.toLowerCase().includes("info"))
-				) {
-					dataType = "metadata";
-				}
-            } else if (format === "h5ad") {
-                dataType = "single_cell_expression"; // AnnData is primarily for single-cell
-            } else if (format === "mtx") {
-                // Check if it's likely single-cell based on file size and patterns
-                if (content.length > 1000000) {
-                    // Large matrix files are often single-cell
-                    dataType = "single_cell_expression";
-                } else {
-                    dataType = "expression_matrix";
-                }
-            } else if (format === "fcs") {
-                // Default: flow cytometry; upgrade to spectral if filename hints present
-                const lc = filePath.toLowerCase();
-                const spectralHint = /\b(spectral|cytek|aurora|unmix|unmixed|spill|spillover)\b/.test(lc);
-                dataType = spectralHint ? "spectral_flow_cytometry" : "flow_cytometry";
-            } else if (format === "fastq") {
-                dataType = "sequence_data";
-            } else if (format === "bam") {
-                dataType = "alignment_data";
-            } else if (format === "vcf") {
-                dataType = "variant_data";
-            } else if (format === "h5" || format === "loom") {
-                dataType = "single_cell_expression";
-            }
-
-			return { dataType, format };
-		} catch (error) {
-			console.error("Error analyzing file type:", error);
-			return { dataType: "unknown", format: "unknown" };
+		const normalized = this.normalizeFsPath(filePath);
+		if (normalized && this.fileAnalysisCache.has(normalized)) {
+			return this.fileAnalysisCache.get(normalized)!;
 		}
+
+		let info: { size?: number; isDirectory: boolean } | null = null;
+		try {
+			info = await this.fs.getFileInfo(filePath);
+		} catch (_) {
+			info = null;
+		}
+
+		if (info?.isDirectory) {
+			const directoryAnalysis = await this.analyzeDirectoryPath(filePath);
+			return this.recordFileAnalysis(normalized, directoryAnalysis);
+		}
+
+		const format = this.detectFormatFromExtension(filePath);
+		const extensionDataType = this.dataTypeFromExtension(format, filePath);
+		if (extensionDataType) {
+			return this.recordFileAnalysis(normalized, {
+				dataType: extensionDataType,
+				format,
+			});
+		}
+
+		let lines: string[] = [];
+		if (this.shouldReadFileHead(info, format)) {
+			try {
+				const content = await this.fs.readFile(filePath);
+				lines = content.split(/\r?\n/).slice(0, 10);
+			} catch (_) {
+				// ignore read failures and fall back to format heuristics
+			}
+		}
+
+		const dataType = this.detectDataTypeFromContent(lines, format);
+		return this.recordFileAnalysis(normalized, {
+			dataType,
+			format,
+		});
 	}
 
 	inferDataTypeFromMetadata(dataset: Dataset): string {
@@ -671,10 +855,54 @@ export class DatasetManager {
 			}
 		}
 
+		for (const format of formats) {
+			switch (format) {
+				case "10x_mtx":
+					tools.add("scanpy");
+					tools.add("anndata");
+					tools.add("leidenalg");
+					tools.add("pynndescent");
+					approaches.add("tenx_ingestion");
+					break;
+				case "h5ad":
+				case "loom":
+					tools.add("scanpy");
+					tools.add("anndata");
+					approaches.add("anndata_workflow");
+					break;
+				case "fcs_bundle":
+					tools.add("fcsparser");
+					tools.add("flowkit");
+					approaches.add("fcs_ingestion");
+					break;
+			}
+		}
+
 		return {
 			tools: Array.from(tools),
 			approaches: Array.from(approaches),
 		};
+	}
+
+	private choosePrimaryDataType(dataTypes: string[]): string {
+		const priorities = [
+			"single_cell_expression",
+			"spectral_flow_cytometry",
+			"flow_cytometry",
+			"expression_matrix",
+			"sequence_data",
+			"variant_data",
+			"clinical_data",
+			"metadata",
+			"unknown",
+		];
+		const unique = dataTypes.length ? dataTypes : ["unknown"];
+		for (const priority of priorities) {
+			if (unique.includes(priority)) {
+				return priority;
+			}
+		}
+		return unique[0];
 	}
 
 	async generateDataTypeSpecificPlan(
@@ -685,7 +913,9 @@ export class DatasetManager {
 		const steps: { description: string; prerequisites?: string[] }[] = [];
 
         // Generate steps based on the primary data type
-		const primaryDataType = dataAnalysis.dataTypes[0] || "unknown";
+		const primaryDataType = this.choosePrimaryDataType(
+			dataAnalysis.dataTypes.map((d) => d || "unknown")
+		);
 
         switch (primaryDataType) {
             case "spectral_flow_cytometry":
@@ -712,17 +942,17 @@ export class DatasetManager {
                 steps.push({ description: "Plot UMAP colored by clusters/sample" });
                 break;
             case "single_cell_expression":
-                steps.push({ description: "Perform quality control and filtering" });
-                steps.push({ description: "Detect existing normalization/log transforms (log1p/CPM/TPM) and scaling; avoid double-normalization" });
-                steps.push({ description: "If raw, normalize (library-size) and log1p; then scale" });
-                steps.push({ description: "Identify highly variable genes" });
-                steps.push({ description: "PCA (save embeddings), neighbors graph" });
-                steps.push({ description: "UMAP (fit on subset), then transform remaining in batches" });
-                steps.push({ description: "Cluster cells to identify populations" });
-				steps.push({
-					description: "Find marker genes for each cluster",
-				});
-				break;
+                steps.push({ description: "Load 10x/AnnData dataset into an AnnData object" });
+                steps.push({ description: "Run basic Scanpy QC metrics and filter obvious low-quality cells/genes" });
+                steps.push({ description: "Normalize total counts and apply log1p transform" });
+                steps.push({ description: "Select highly variable genes" });
+                steps.push({ description: "Scale the data and compute PCA embeddings" });
+                steps.push({ description: "Build the neighborhood graph from the PCA representation" });
+                steps.push({ description: "Run UMAP on the neighbors graph" });
+                steps.push({ description: "Cluster cells with Leiden" });
+                steps.push({ description: "Rank marker genes per cluster" });
+                steps.push({ description: "Plot UMAP colored by cluster and key markers" });
+                break;
 
 			case "expression_matrix":
 				steps.push({ description: "Perform quality control" });

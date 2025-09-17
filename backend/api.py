@@ -245,6 +245,7 @@ class ToolCallResponse(BaseModel):
 
 class QueryAnalysisRequest(BaseModel):
     query: str
+    session_id: Optional[str] = None
 
 
 class QueryAnalysisResponse(BaseModel):
@@ -268,6 +269,7 @@ class SearchTermsRequest(BaseModel):
     query: str
     attempt: int = 1
     is_first_attempt: bool = True
+    session_id: Optional[str] = None
 
 
 class SearchTermsResponse(BaseModel):
@@ -279,6 +281,7 @@ class DataTypeSuggestionsRequest(BaseModel):
 	user_question: str
 	available_datasets: List[Dict[str, Any]]
 	current_context: str = ""
+	session_id: Optional[str] = None
 
 
 class DataTypeSuggestionsResponse(BaseModel):
@@ -943,7 +946,8 @@ async def analyze_query(request: QueryAnalysisRequest, user=Depends(get_current_
     """Analyze a query to extract components and intent."""
     try:
         llm_service = get_llm_service()
-        analysis = await llm_service.analyze_query(request.query)
+        # Chain to same session for Responses API memory
+        analysis = await llm_service.analyze_query(request.query, session_id=request.session_id)
         
         return QueryAnalysisResponse(
             intent=analysis.get("intent", "unknown"),
@@ -1013,7 +1017,8 @@ async def generate_search_terms(request: SearchTermsRequest, user=Depends(get_cu
         terms = await llm_service.generate_search_terms(
             user_query=request.query,
             attempt=request.attempt,
-            is_first_attempt=request.is_first_attempt
+            is_first_attempt=request.is_first_attempt,
+            session_id=getattr(request, "session_id", None)
         )
         
         return SearchTermsResponse(terms=terms)
@@ -1031,7 +1036,8 @@ async def generate_data_type_suggestions(request: DataTypeSuggestionsRequest, us
             request.data_types,
             request.user_question,
             request.available_datasets,
-            request.current_context
+            request.current_context,
+            getattr(request, "session_id", None)
         )
         return DataTypeSuggestionsResponse(**suggestions)
     except Exception as e:

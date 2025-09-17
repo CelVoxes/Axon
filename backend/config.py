@@ -103,6 +103,41 @@ class SearchConfig:
         """Return configured OpenAI service tier ("flex" to enable Flex processing)."""
         return DEFAULT_OPENAI_SERVICE_TIER
 
+    # ---------------- LLM context window configuration ----------------
+    # Token limits are best-effort defaults and can be overridden via env vars.
+    # Fallback applies when the model is unknown.
+    _MODEL_CONTEXT_TOKEN_DEFAULT = int(os.getenv("AXON_DEFAULT_CONTEXT_TOKENS", "128000"))
+    _MODEL_CONTEXT_TOKENS = {
+        # Allow env overrides per model; fall back to default when unset
+        "gpt-5-mini": int(os.getenv("AXON_CTX_GPT5_MINI", str("272000"))),
+        "gpt-4o": int(os.getenv("AXON_CTX_GPT4O", "128000")),
+        "gpt-4o-mini": int(os.getenv("AXON_CTX_GPT4O_MINI", "128000")),
+        "gpt-4.1": int(os.getenv("AXON_CTX_GPT41", "128000")),
+        "gpt-4.1-mini": int(os.getenv("AXON_CTX_GPT41_MINI", "128000")),
+    }
+
+    @staticmethod
+    def get_model_context_tokens(model: Optional[str]) -> int:
+        """Return the approximate context window tokens for a given model.
+
+        - Matches by exact or prefix (to handle versioned model names)
+        - Falls back to env default or 128k
+        """
+        try:
+            if not model:
+                return SearchConfig._MODEL_CONTEXT_TOKEN_DEFAULT
+            key = model.lower()
+            # Try exact match first
+            if key in SearchConfig._MODEL_CONTEXT_TOKENS:
+                return int(SearchConfig._MODEL_CONTEXT_TOKENS[key])
+            # Then try prefix match to accommodate versioned names
+            for name, limit in SearchConfig._MODEL_CONTEXT_TOKENS.items():
+                if key.startswith(name):
+                    return int(limit)
+        except Exception:
+            pass
+        return SearchConfig._MODEL_CONTEXT_TOKEN_DEFAULT
+
     # Caching helpers
     @staticmethod
     def get_cache_search_ttl_seconds() -> int:

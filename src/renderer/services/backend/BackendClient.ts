@@ -19,6 +19,8 @@ export class BackendClient implements IBackendClient {
 	private abortControllers: Set<AbortController> = new Set();
 	private authToken: string | null = null;
 	private axiosInstance: any;
+	// Track last context hash per session to avoid resending unchanged context payloads
+	private lastContextHashBySession: Map<string, string> = new Map();
 
 	constructor(baseUrl?: string) {
 		const cfg = ConfigManager.getInstance().getSection("backend");
@@ -513,6 +515,16 @@ export class BackendClient implements IBackendClient {
 		const controller = new AbortController();
 		this.abortControllers.add(controller);
 		try {
+			const sessionId = (() => {
+				try {
+					const ws = (window as any)?.electronAPI?.getCurrentWorkspace?.();
+					const chatId =
+						(window as any)?.analysisState?.activeChatSessionId || "global";
+					if (typeof ws === "string" && ws.trim())
+						return `session:${ws}:${chatId}`;
+				} catch (_) {}
+				return undefined as any;
+			})();
 			const response = await this.axiosInstance.post(
 				`${this.baseUrl}/llm/code`,
 				{
@@ -520,6 +532,7 @@ export class BackendClient implements IBackendClient {
 					language: request.language || "python",
 					context: request.context,
 					model: request.model,
+					...(sessionId ? { session_id: sessionId } : {}),
 				},
 				{ signal: controller.signal }
 			);
@@ -544,10 +557,21 @@ export class BackendClient implements IBackendClient {
 		const controller = new AbortController();
 		this.abortControllers.add(controller);
 		try {
+			const sessionId = (() => {
+				try {
+					const ws = (window as any)?.electronAPI?.getCurrentWorkspace?.();
+					const chatId =
+						(window as any)?.analysisState?.activeChatSessionId || "global";
+					if (typeof ws === "string" && ws.trim())
+						return `session:${ws}:${chatId}`;
+				} catch (_) {}
+				return undefined as any;
+			})();
 			const response = await this.axiosInstance.post(
 				`${this.baseUrl}/llm/analyze`,
 				{
 					query: query,
+					...(sessionId ? { session_id: sessionId } : {}),
 				},
 				{ signal: controller.signal }
 			);
@@ -563,31 +587,34 @@ export class BackendClient implements IBackendClient {
 	/**
 	 * Classify chat intent using backend LLM analyzer. Returns a simplified intent string.
 	 */
-    async classifyIntent(message: string, sessionId?: string): Promise<{
-        intent: string; // "ADD_CELL" | "SEARCH_DATA" | "START_ANALYSIS"
-        confidence?: number;
-        reason?: string;
-    }> {
-        const controller = new AbortController();
-        this.abortControllers.add(controller);
-        try {
-            const response = await this.axiosInstance.post(
-                `${this.baseUrl}/llm/intent`,
-                { text: message, session_id: sessionId },
-                { signal: controller.signal }
-            );
-            return response.data as {
-                intent: string;
-                confidence?: number;
-                reason?: string;
-            };
-        } catch (error) {
-            log.error("BackendClient: Error classifying intent:", error);
-            throw error;
-        } finally {
-            this.abortControllers.delete(controller);
-        }
-    }
+	async classifyIntent(
+		message: string,
+		sessionId?: string
+	): Promise<{
+		intent: string; // "ADD_CELL" | "SEARCH_DATA" | "START_ANALYSIS"
+		confidence?: number;
+		reason?: string;
+	}> {
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
+		try {
+			const response = await this.axiosInstance.post(
+				`${this.baseUrl}/llm/intent`,
+				{ text: message, session_id: sessionId },
+				{ signal: controller.signal }
+			);
+			return response.data as {
+				intent: string;
+				confidence?: number;
+				reason?: string;
+			};
+		} catch (error) {
+			log.error("BackendClient: Error classifying intent:", error);
+			throw error;
+		} finally {
+			this.abortControllers.delete(controller);
+		}
+	}
 
 	async generatePlan(request: {
 		question: string;
@@ -599,6 +626,16 @@ export class BackendClient implements IBackendClient {
 		const controller = new AbortController();
 		this.abortControllers.add(controller);
 		try {
+			const sessionId = (() => {
+				try {
+					const ws = (window as any)?.electronAPI?.getCurrentWorkspace?.();
+					const chatId =
+						(window as any)?.analysisState?.activeChatSessionId || "global";
+					if (typeof ws === "string" && ws.trim())
+						return `session:${ws}:${chatId}`;
+				} catch (_) {}
+				return undefined as any;
+			})();
 			const response = await this.axiosInstance.post(
 				`${this.baseUrl}/llm/plan`,
 				{
@@ -607,6 +644,7 @@ export class BackendClient implements IBackendClient {
 					current_state: request.current_state || {},
 					available_data: request.available_data || [],
 					task_type: request.task_type || "general",
+					...(sessionId ? { session_id: sessionId } : {}),
 				},
 				{ signal: controller.signal }
 			);
@@ -701,25 +739,30 @@ export class BackendClient implements IBackendClient {
 	 * Stream Ask (Q&A) with reasoning-aware events.
 	 * onEvent receives objects: { type: 'status'|'answer'|'done', ... }
 	 */
-    async askQuestionStream(
-        params: { question: string; context?: string; sessionId?: string; streamRaw?: boolean },
-        onEvent: (evt: any) => void
-    ): Promise<void> {
+	async askQuestionStream(
+		params: {
+			question: string;
+			context?: string;
+			sessionId?: string;
+			streamRaw?: boolean;
+		},
+		onEvent: (evt: any) => void
+	): Promise<void> {
 		const controller = new AbortController();
 		this.abortControllers.add(controller);
 		try {
-            const response = await fetch(`${this.baseUrl}/llm/ask/stream`, {
-                method: "POST",
-                headers: this.buildHeaders(),
-                body: JSON.stringify({
-                    question: params.question,
-                    context: params.context || "",
-                    session_id: params.sessionId,
-                    model: ConfigManager.getInstance().getDefaultModel(),
-                    stream_raw: params.streamRaw === true,
-                }),
-                signal: controller.signal,
-            });
+			const response = await fetch(`${this.baseUrl}/llm/ask/stream`, {
+				method: "POST",
+				headers: this.buildHeaders(),
+				body: JSON.stringify({
+					question: params.question,
+					context: params.context || "",
+					session_id: params.sessionId,
+					model: ConfigManager.getInstance().getDefaultModel(),
+					stream_raw: params.streamRaw === true,
+				}),
+				signal: controller.signal,
+			});
 
 			await readNdjsonStream(response, {
 				onLine: (json: any) => onEvent(json),
@@ -750,11 +793,22 @@ export class BackendClient implements IBackendClient {
 		);
 
 		try {
+			const sessionId = (() => {
+				try {
+					const ws = (window as any)?.electronAPI?.getCurrentWorkspace?.();
+					const chatId =
+						(window as any)?.analysisState?.activeChatSessionId || "global";
+					if (typeof ws === "string" && ws.trim())
+						return `session:${ws}:${chatId}`;
+				} catch (_) {}
+				return undefined as any;
+			})();
 			const requestBody = {
 				data_types: request.dataTypes,
 				user_question: request.query,
 				available_datasets: request.selectedDatasets,
 				current_context: request.contextInfo || "",
+				...(sessionId ? { session_id: sessionId } : {}),
 			};
 
 			const response = await fetch(`${this.baseUrl}/llm/suggestions`, {
@@ -825,72 +879,109 @@ export class BackendClient implements IBackendClient {
 	/**
 	 * Stream code generation using LLM
 	 */
-    async generateCodeStream(
-        request: any,
-        onChunk: (chunk: string) => void,
-        onReasoningDelta?: (delta: string) => void,
-        onSummary?: (summary: string) => void
-    ): Promise<any> {
-        log.info("🚀 BackendClient.generateCodeStream: Starting stream request");
-        log.debug("🚀 Streaming endpoint: %s", `${this.baseUrl}/llm/code/stream`);
+	async generateCodeStream(
+		request: any,
+		onChunk: (chunk: string) => void,
+		onReasoningDelta?: (delta: string) => void,
+		onSummary?: (summary: string) => void
+	): Promise<any> {
+		log.info("🚀 BackendClient.generateCodeStream: Starting stream request");
+		log.debug("🚀 Streaming endpoint: %s", `${this.baseUrl}/llm/code/stream`);
 
-        const controller = new AbortController();
-        this.abortControllers.add(controller);
-        try {
-            const response = await fetch(`${this.baseUrl}/llm/code/stream`, {
-                method: "POST",
-                headers: this.buildHeaders(),
-                body: JSON.stringify(request),
-                signal: controller.signal,
-            });
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
+		try {
+			// Avoid resending identical context blobs across chained turns for the same session
+			const bodyObj: any = { ...request };
+			try {
+				if (
+					typeof bodyObj?.session_id === "string" &&
+					typeof bodyObj?.context === "string"
+				) {
+					const sid = bodyObj.session_id as string;
+					const ctx: string = bodyObj.context as string;
+					const h = this.hashString(ctx);
+					const last = this.lastContextHashBySession.get(sid);
+					if (last && last === h) {
+						delete bodyObj.context; // unchanged; rely on Responses memory
+					} else {
+						this.lastContextHashBySession.set(sid, h);
+					}
+				}
+			} catch (_) {}
 
-            let code = "";
-            await readNdjsonStream(response, {
-                onLine: (obj: any) => {
-                    try {
-                        if (typeof obj?.chunk === "string" && obj.chunk.length > 0) {
-                            try {
-                                log.info("FE stream: code chunk (%d chars)", obj.chunk.length);
-                            } catch (_) {}
-                            onChunk(obj.chunk);
-                            code += obj.chunk;
-                            return;
-                        }
-                        if (obj?.type === "reasoning" && typeof obj?.delta === "string") {
-                            try {
-                                log.info("FE stream: reasoning delta (%d chars): %s", obj.delta.length, obj.delta.slice(0, 80));
-                            } catch (_) {}
-                            if (onReasoningDelta) onReasoningDelta(obj.delta);
-                            return;
-                        }
-                        if (obj?.type === "summary" && typeof obj?.text === "string") {
-                            if (onSummary) onSummary(obj.text);
-                            return;
-                        }
-                    } catch (_) {}
-                },
-                onError: (m) => log.warn("readNdjsonStream parse error:", m),
-            });
+			const response = await fetch(`${this.baseUrl}/llm/code/stream`, {
+				method: "POST",
+				headers: this.buildHeaders(),
+				body: JSON.stringify(bodyObj),
+				signal: controller.signal,
+			});
 
-            if (code.length === 0) {
-                log.warn("🚀 WARNING: No content received from stream!");
-            }
-            return { code, success: true };
-        } catch (error) {
-            log.error(
-                "🚀 BackendClient: Error streaming code generation:",
-                error as any
-            );
-            log.error("🚀 Error details:", {
-                message: error instanceof Error ? error.message : String(error),
-                stack: error instanceof Error ? error.stack : undefined,
-                request: request,
-            });
-            throw error;
-        } finally {
-            this.abortControllers.delete(controller);
-        }
-    }
+			let code = "";
+			await readNdjsonStream(response, {
+				onLine: (obj: any) => {
+					try {
+						if (typeof obj?.chunk === "string" && obj.chunk.length > 0) {
+							try {
+								log.info("FE stream: code chunk (%d chars)", obj.chunk.length);
+							} catch (_) {}
+							onChunk(obj.chunk);
+							code += obj.chunk;
+							return;
+						}
+						if (obj?.type === "reasoning" && typeof obj?.delta === "string") {
+							try {
+								log.info(
+									"FE stream: reasoning delta (%d chars): %s",
+									obj.delta.length,
+									obj.delta.slice(0, 80)
+								);
+							} catch (_) {}
+							if (onReasoningDelta) onReasoningDelta(obj.delta);
+							return;
+						}
+						if (obj?.type === "summary" && typeof obj?.text === "string") {
+							if (onSummary) onSummary(obj.text);
+							return;
+						}
+					} catch (_) {}
+				},
+				onError: (m) => log.warn("readNdjsonStream parse error:", m),
+			});
+
+			if (code.length === 0) {
+				log.warn("🚀 WARNING: No content received from stream!");
+			}
+			return { code, success: true };
+		} catch (error) {
+			log.error(
+				"🚀 BackendClient: Error streaming code generation:",
+				error as any
+			);
+			log.error("🚀 Error details:", {
+				message: error instanceof Error ? error.message : String(error),
+				stack: error instanceof Error ? error.stack : undefined,
+				request: request,
+			});
+			throw error;
+		} finally {
+			this.abortControllers.delete(controller);
+		}
+	}
+
+	private hashString(s: string): string {
+		// Simple djb2 hash (string) to avoid heavy crypto in renderer
+		try {
+			let hash = 5381;
+			for (let i = 0; i < s.length; i++) {
+				hash = (hash << 5) + hash + s.charCodeAt(i);
+				hash = hash | 0; // force 32-bit
+			}
+			return String(hash >>> 0);
+		} catch (_) {
+			return String(s.length) + ":" + s.slice(0, 16);
+		}
+	}
 
 	abortAllRequests(): void {
 		try {
@@ -916,10 +1007,28 @@ export class BackendClient implements IBackendClient {
 		language?: "python" | "r";
 	}): Promise<any> {
 		try {
+			const bodyObj: any = { ...request };
+			try {
+				if (
+					typeof bodyObj?.session_id === "string" &&
+					typeof (bodyObj as any)?.context === "string"
+				) {
+					const sid = bodyObj.session_id as string;
+					const ctx: string = (bodyObj as any).context as string;
+					const h = this.hashString(ctx);
+					const last = this.lastContextHashBySession.get(sid);
+					if (last && last === h) {
+						delete (bodyObj as any).context;
+					} else {
+						this.lastContextHashBySession.set(sid, h);
+					}
+				}
+			} catch (_) {}
+
 			const response = await fetch(`${this.baseUrl}/llm/code`, {
 				method: "POST",
 				headers: this.buildHeaders(),
-				body: JSON.stringify(request),
+				body: JSON.stringify(bodyObj),
 			});
 
 			if (response.ok) {

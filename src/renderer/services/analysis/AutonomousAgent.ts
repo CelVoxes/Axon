@@ -67,115 +67,176 @@ export class AutonomousAgent {
 	private notebookService: NotebookService;
 	private environmentManager: EnvironmentManager;
 	private workspaceManager: WorkspaceManager;
-    private workspacePath: string;
-    private originalQuery: string = "";
-    public isRunning: boolean = false;
-    private shouldStopAnalysis: boolean = false;
-    private selectedModel: string = ConfigManager.getInstance().getDefaultModel();
+	private workspacePath: string;
+	private originalQuery: string = "";
+	public isRunning: boolean = false;
+	private shouldStopAnalysis: boolean = false;
+	private selectedModel: string = ConfigManager.getInstance().getDefaultModel();
 
-    // Extract pip/conda packages suggested by LLM code snippets
-    private extractPackagesFromCode(code: string): string[] {
-        const pkgs = new Set<string>();
-        try {
-            const c = String(code || "");
-            const installRe = /(\%?pip|python\s+-m\s+pip)\s+install\s+([^\n;#]+)/gi;
-            let m: RegExpExecArray | null;
-            while ((m = installRe.exec(c)) !== null) {
-                const raw = m[2] || "";
-                raw
-                    .split(/\s+/)
-                    .map((t) => t.trim())
-                    .filter((t) => !!t && !t.startsWith("-") && !t.startsWith("#"))
-                    .forEach((t) => pkgs.add(t));
-            }
-            const subprocRe = /subprocess\.(?:check_call|run)\([^\)]*?([\[\(][^\]\)]+[\]\)])\)/gi;
-            const arrayTokenRe = /['\"]([^'\"]+)['\"]/g;
-            while ((m = subprocRe.exec(c)) !== null) {
-                const list = m[1] || "";
-                const tokens: string[] = [];
-                let tm: RegExpExecArray | null;
-                while ((tm = arrayTokenRe.exec(list)) !== null) {
-                    tokens.push(tm[1]);
-                }
-                const pipIdx = tokens.findIndex((t) => t.toLowerCase() === "pip");
-                const installIdx = tokens.findIndex((t) => t.toLowerCase() === "install");
-                if (pipIdx >= 0 && installIdx > pipIdx) {
-                    const pkgTokens = tokens.slice(installIdx + 1);
-                    pkgTokens
-                        .filter((t) => !!t && !t.startsWith("-"))
-                        .forEach((t) => pkgs.add(t));
-                }
-            }
-        } catch (_) {}
-        return Array.from(pkgs);
-    }
+	// Lightweight dataset → hint detection to steer scRNA-seq reliably
+	private detectSingleCellFromDatasets(datasets: Dataset[]): boolean {
+		try {
+			if (!Array.isArray(datasets)) return false;
+			return datasets.some((d: any) => {
+				const dt = String(d?.dataType || "").toLowerCase();
+				const ff = String(d?.fileFormat || "").toLowerCase();
+				const plat = String(d?.platform || "").toLowerCase();
+				const url = String(d?.url || "").toLowerCase();
+				const lp = String((d as any)?.localPath || "").toLowerCase();
+				return (
+					dt.includes("single_cell") ||
+					dt.includes("singlecell") ||
+					dt.includes("scrna") ||
+					ff.includes("10x") ||
+					ff.includes("h5ad") ||
+					plat.includes("10x") ||
+					url.endsWith(".h5ad") ||
+					/filtered_feature_bc_matrix/.test(lp)
+				);
+			});
+		} catch (_) {
+			return false;
+		}
+	}
 
-    private buildInstallCellCode(packages: string[]): string {
-        const unique = Array.from(new Set(packages)).filter(Boolean).sort((a, b) => a.localeCompare(b));
-        return [
-            "# Install required packages as a single pip transaction for consistent dependency resolution",
-            "import subprocess",
-            "import sys",
-            "",
-            `required_packages = ${JSON.stringify(unique)}`,
-            "",
-            'print("Installing required packages as one pip call...")',
-            "try:",
-            '    subprocess.check_call([sys.executable, "-m", "pip", "install", *required_packages])',
-            '    print("✓ All packages installed")',
-            "except subprocess.CalledProcessError:",
-            '    print("⚠ Failed to install one or more packages")',
-            "",
-            "# Optional: verify dependency conflicts",
-            "try:",
-            '    subprocess.check_call([sys.executable, "-m", "pip", "check"])  # verifies dependency conflicts',
-            '    print("Dependency check passed")',
-            "except subprocess.CalledProcessError:",
-            '    print("⚠ Dependency conflicts detected")',
-        ].join("\n");
-    }
+	private buildDatasetHints(datasets: Dataset[]): string {
+		const isSc = this.detectSingleCellFromDatasets(datasets);
+		if (isSc) {
+			return [
+				"DATASET HINT: single-cell RNA-seq detected (10x/AnnData).",
+				"Use Scanpy standard pipeline; no heuristic transform checks.",
+				"Prefer ad.read_h5ad when *.h5ad present; else sc.read_10x_mtx(data_dir).",
+			].join(" \n");
+		}
+		return "";
+	}
 
-    private async ensurePackageInstallationCell(
-        notebookPath: string,
-        datasets: Dataset[],
-        llmSuggestedPkgs?: string[]
-    ): Promise<void> {
-        try {
-            // Check if notebook already contains an install step
-            const nb = await this.notebookService.readNotebook(notebookPath);
-            const existingCode = (nb.cells || [])
-                .filter((c: any) => c?.cell_type === 'code')
-                .map((c: any) => Array.isArray(c.source) ? c.source.join('') : String(c.source || ''))
-                .join('\n');
-            const installRegex = /(\b%?pip\s+install\b|\b%?conda\s+install\b)/i;
-            const pipModuleRegex = /sys\.executable[\s\S]*?"-m"[\s\S]*?"pip"[\s\S]*?"install"/i;
-            const subprocessPipRegex = /subprocess\.(check_call|run)\([^\)]*"pip"[^\)]*"install"/i;
-            const hasInstall = installRegex.test(existingCode) || pipModuleRegex.test(existingCode) || subprocessPipRegex.test(existingCode);
-            if (hasInstall) {
-                console.log('⏭️ Skipping package installation - already exists in notebook');
-                return;
-            }
+	// Extract pip/conda packages suggested by LLM code snippets
+	private extractPackagesFromCode(code: string): string[] {
+		const pkgs = new Set<string>();
+		try {
+			const c = String(code || "");
+			const installRe = /(\%?pip|python\s+-m\s+pip)\s+install\s+([^\n;#]+)/gi;
+			let m: RegExpExecArray | null;
+			while ((m = installRe.exec(c)) !== null) {
+				const raw = m[2] || "";
+				raw
+					.split(/\s+/)
+					.map((t) => t.trim())
+					.filter((t) => !!t && !t.startsWith("-") && !t.startsWith("#"))
+					.forEach((t) => pkgs.add(t));
+			}
+			const subprocRe =
+				/subprocess\.(?:check_call|run)\([^\)]*?([\[\(][^\]\)]+[\]\)])\)/gi;
+			const arrayTokenRe = /['\"]([^'\"]+)['\"]/g;
+			while ((m = subprocRe.exec(c)) !== null) {
+				const list = m[1] || "";
+				const tokens: string[] = [];
+				let tm: RegExpExecArray | null;
+				while ((tm = arrayTokenRe.exec(list)) !== null) {
+					tokens.push(tm[1]);
+				}
+				const pipIdx = tokens.findIndex((t) => t.toLowerCase() === "pip");
+				const installIdx = tokens.findIndex(
+					(t) => t.toLowerCase() === "install"
+				);
+				if (pipIdx >= 0 && installIdx > pipIdx) {
+					const pkgTokens = tokens.slice(installIdx + 1);
+					pkgTokens
+						.filter((t) => !!t && !t.startsWith("-"))
+						.forEach((t) => pkgs.add(t));
+				}
+			}
+		} catch (_) {}
+		return Array.from(pkgs);
+	}
 
-            // Try environment-derived package list
-            const envInstall = await this.environmentManager.generatePackageInstallationCode(
-                datasets,
-                [],
-                this.workspacePath
-            );
+	private buildInstallCellCode(packages: string[]): string {
+		const unique = Array.from(new Set(packages))
+			.filter(Boolean)
+			.sort((a, b) => a.localeCompare(b));
+		return [
+			"# Install required packages as a single pip transaction for consistent dependency resolution",
+			"import subprocess",
+			"import sys",
+			"",
+			`required_packages = ${JSON.stringify(unique)}`,
+			"",
+			'print("Installing required packages as one pip call...")',
+			"try:",
+			'    subprocess.check_call([sys.executable, "-m", "pip", "install", *required_packages])',
+			'    print("✓ All packages installed")',
+			"except subprocess.CalledProcessError:",
+			'    print("⚠ Failed to install one or more packages")',
+			"",
+			"# Optional: verify dependency conflicts",
+			"try:",
+			'    subprocess.check_call([sys.executable, "-m", "pip", "check"])  # verifies dependency conflicts',
+			'    print("Dependency check passed")',
+			"except subprocess.CalledProcessError:",
+			'    print("⚠ Dependency conflicts detected")',
+		].join("\n");
+	}
 
-            let finalInstallCode = envInstall && envInstall.trim().length > 0 ? envInstall : undefined;
-            if (!finalInstallCode && Array.isArray(llmSuggestedPkgs) && llmSuggestedPkgs.length > 0) {
-                console.log('📦 Falling back to LLM-suggested packages for install cell (agent):', llmSuggestedPkgs);
-                finalInstallCode = this.buildInstallCellCode(llmSuggestedPkgs);
-            }
+	private async ensurePackageInstallationCell(
+		notebookPath: string,
+		datasets: Dataset[],
+		llmSuggestedPkgs?: string[]
+	): Promise<void> {
+		try {
+			// Check if notebook already contains an install step
+			const nb = await this.notebookService.readNotebook(notebookPath);
+			const existingCode = (nb.cells || [])
+				.filter((c: any) => c?.cell_type === "code")
+				.map((c: any) =>
+					Array.isArray(c.source) ? c.source.join("") : String(c.source || "")
+				)
+				.join("\n");
+			const installRegex = /(\b%?pip\s+install\b|\b%?conda\s+install\b)/i;
+			const pipModuleRegex =
+				/sys\.executable[\s\S]*?"-m"[\s\S]*?"pip"[\s\S]*?"install"/i;
+			const subprocessPipRegex =
+				/subprocess\.(check_call|run)\([^\)]*"pip"[^\)]*"install"/i;
+			const hasInstall =
+				installRegex.test(existingCode) ||
+				pipModuleRegex.test(existingCode) ||
+				subprocessPipRegex.test(existingCode);
+			if (hasInstall) {
+				console.log(
+					"⏭️ Skipping package installation - already exists in notebook"
+				);
+				return;
+			}
 
-            if (finalInstallCode && finalInstallCode.trim().length > 0) {
-                await this.notebookService.addCodeCell(notebookPath, finalInstallCode);
-            }
-        } catch (e) {
-            console.warn('AutonomousAgent: ensurePackageInstallationCell failed:', e);
-        }
-    }
+			// Try environment-derived package list
+			const envInstall =
+				await this.environmentManager.generatePackageInstallationCode(
+					datasets,
+					[],
+					this.workspacePath
+				);
+
+			let finalInstallCode =
+				envInstall && envInstall.trim().length > 0 ? envInstall : undefined;
+			if (
+				!finalInstallCode &&
+				Array.isArray(llmSuggestedPkgs) &&
+				llmSuggestedPkgs.length > 0
+			) {
+				console.log(
+					"📦 Falling back to LLM-suggested packages for install cell (agent):",
+					llmSuggestedPkgs
+				);
+				finalInstallCode = this.buildInstallCellCode(llmSuggestedPkgs);
+			}
+
+			if (finalInstallCode && finalInstallCode.trim().length > 0) {
+				await this.notebookService.addCodeCell(notebookPath, finalInstallCode);
+			}
+		} catch (e) {
+			console.warn("AutonomousAgent: ensurePackageInstallationCell failed:", e);
+		}
+	}
 	// Ensure generated Python code is safe to run inside a notebook (no CLI arg parsing surprises)
 	private sanitizeNotebookPythonCode(code: string): string {
 		try {
@@ -199,13 +260,13 @@ export class AutonomousAgent {
 	private conversationId: string;
 	// Legacy event listener removed - validation is now synchronous
 
-    constructor(
-        backendClient: BackendClient,
-        workspacePath: string,
-        selectedModel?: string,
-        kernelName?: string,
-        sessionId?: string
-    ) {
+	constructor(
+		backendClient: BackendClient,
+		workspacePath: string,
+		selectedModel?: string,
+		kernelName?: string,
+		sessionId?: string
+	) {
 		this.backendClient = backendClient;
 		this.analysisOrchestrator = new AnalysisOrchestrationService(backendClient);
 		this.datasetManager = new DatasetManager();
@@ -213,11 +274,11 @@ export class AutonomousAgent {
 		this.workspaceManager = new WorkspaceManager();
 
 		// Use dependency injection to break circular dependencies
-        this.codeGenerator = new CodeGenerationService(
-            backendClient,
-            selectedModel || ConfigManager.getInstance().getDefaultModel(),
-            sessionId
-        );
+		this.codeGenerator = new CodeGenerationService(
+			backendClient,
+			selectedModel || ConfigManager.getInstance().getDefaultModel(),
+			sessionId
+		);
 		this.codeExecutor = new CellExecutionService(workspacePath);
 
 		// Single code quality service handles all validation and enhancement
@@ -666,7 +727,9 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 	 */
 	private buildLocalDataPreparationCode(datasets: Dataset[]): string {
 		const lines: string[] = [];
-		const localDatasets = datasets.filter((d: any) => Boolean((d as any).localPath));
+		const localDatasets = datasets.filter((d: any) =>
+			Boolean((d as any).localPath)
+		);
 
 		lines.push("from pathlib import Path");
 		lines.push("print('Using mentioned local data folder as data_dir...')");
@@ -678,30 +741,32 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			return lines.join("\\n");
 		}
 
-        // Choose a single folder as data_dir (prefer the first directory; otherwise the parent of the first file)
-        const firstDir = (localDatasets as any[]).find((d) => Boolean(d.isLocalDirectory));
-        const firstAny = (localDatasets as any[])[0];
-        const chosen = firstDir || firstAny;
-        const chosenPath = (chosen?.localPath || "")
-            .replace(/\\/g, "\\\\")
-            .replace(/\"/g, '\\"');
-        lines.push(`# Use the mentioned path as data_dir`);
-        lines.push(`p = Path("${chosenPath}")`);
-        lines.push("if not p.exists():\n    raise FileNotFoundError(f'Path not found: {p}')");
-        lines.push("data_dir = p if p.is_dir() else p.parent");
-        lines.push("print(f'data_dir set to: {data_dir}')");
-        lines.push("# Optional: quick peek at contents");
-        lines.push("try:");
-        lines.push("    items = list(data_dir.iterdir())");
-        lines.push("    print(f'Items in data_dir ({len(items)}):')");
-        lines.push("    for x in items[:10]: print(' -', x.name)");
-        lines.push("except Exception as e:");
-        lines.push("    print('Could not list data_dir contents:', e)");
+		// Choose a single folder as data_dir (prefer the first directory; otherwise the parent of the first file)
+		const firstDir = (localDatasets as any[]).find((d) =>
+			Boolean(d.isLocalDirectory)
+		);
+		const firstAny = (localDatasets as any[])[0];
+		const chosen = firstDir || firstAny;
+		const chosenPath = (chosen?.localPath || "")
+			.replace(/\\/g, "\\\\")
+			.replace(/\"/g, '\\"');
+		lines.push(`# Use the mentioned path as data_dir`);
+		lines.push(`p = Path("${chosenPath}")`);
+		lines.push(
+			"if not p.exists():\n    raise FileNotFoundError(f'Path not found: {p}')"
+		);
+		lines.push("data_dir = p if p.is_dir() else p.parent");
+		lines.push("print(f'data_dir set to: {data_dir}')");
+		lines.push("# Optional: quick peek at contents");
+		lines.push("try:");
+		lines.push("    items = list(data_dir.iterdir())");
+		lines.push("    print(f'Items in data_dir ({len(items)}):')");
+		lines.push("    for x in items[:10]: print(' -', x.name)");
+		lines.push("except Exception as e:");
+		lines.push("    print('Could not list data_dir contents:', e)");
 		lines.push("");
 		return lines.join("\\n") + "\\n";
 	}
-
-
 
 	/**
 	 * DEPRECATED: Use generateValidatedStepCode() instead
@@ -714,13 +779,15 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		workingDir: string,
 		stepIndex: number
 	): Promise<string> {
-		console.warn('AutonomousAgent: generateSingleStepCode is deprecated, use generateValidatedStepCode instead');
-		
+		console.warn(
+			"AutonomousAgent: generateSingleStepCode is deprecated, use generateValidatedStepCode instead"
+		);
+
 		// Redirect to the validated path to maintain compatibility
 		const analysisStep = {
 			id: `deprecated-step-${Date.now()}`,
 			description: stepDescription,
-			code: "", 
+			code: "",
 			status: "pending" as const,
 		};
 
@@ -744,8 +811,16 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		datasets: Dataset[],
 		workingDir: string
 	): Promise<string> {
-		console.log('AutonomousAgent: generateValidatedCode called for:', stepDescription);
-		
+		console.log(
+			"AutonomousAgent: generateValidatedCode called for:",
+			stepDescription
+		);
+		// Append dataset-derived hints (e.g., single-cell) to the original question
+		const dsHint = this.buildDatasetHints(datasets);
+		if (dsHint) {
+			originalQuestion = `${originalQuestion}\n\n${dsHint}`;
+		}
+
 		const analysisStep = {
 			id: `unified-step-${Date.now()}`,
 			description: stepDescription,
@@ -766,15 +841,18 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 	 * Generate, validate, and add code to notebook
 	 * Uses the unified validation pipeline
 	 */
-    public async generateAndAddValidatedCode(
-        stepDescription: string,
-        originalQuestion: string,
-        datasets: Dataset[],
-        workingDir: string,
-        notebookPath: string
-    ): Promise<void> {
-		console.log('AutonomousAgent: generateAndAddValidatedCode called for:', stepDescription);
-		
+	public async generateAndAddValidatedCode(
+		stepDescription: string,
+		originalQuestion: string,
+		datasets: Dataset[],
+		workingDir: string,
+		notebookPath: string
+	): Promise<void> {
+		console.log(
+			"AutonomousAgent: generateAndAddValidatedCode called for:",
+			stepDescription
+		);
+
 		// Ensure context includes existing notebook cells to avoid duplicate imports/setup
 		await this.seedContextFromNotebook(notebookPath);
 
@@ -786,32 +864,52 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			workingDir
 		);
 
-        // Sanitize for notebook execution safety
-        const sanitized = this.sanitizeNotebookPythonCode(stepCode);
+		// Sanitize for notebook execution safety
+		const sanitized = this.sanitizeNotebookPythonCode(stepCode);
 
-        // Ensure install cell if needed (use LLM-suggested packages as hint)
-        const llmSuggestedPkgs = this.extractPackagesFromCode(stepCode);
-        await this.ensurePackageInstallationCell(notebookPath, datasets, llmSuggestedPkgs);
+		// Ensure install cell if needed (use LLM-suggested packages as hint)
+		const llmSuggestedPkgs = this.extractPackagesFromCode(stepCode);
+		await this.ensurePackageInstallationCell(
+			notebookPath,
+			datasets,
+			llmSuggestedPkgs
+		);
 
-        // Add to notebook and emit validation events in proper order
-        console.log('AutonomousAgent: Adding validated code to notebook...');
-        await this.notebookService.addCodeCell(notebookPath, sanitized);
-		
-		// Emit validation events AFTER notebook cell is successfully added  
+		// Add to notebook and emit validation events in proper order
+		console.log("AutonomousAgent: Adding validated code to notebook...");
+		await this.notebookService.addCodeCell(notebookPath, sanitized);
+
+		// Emit validation events AFTER notebook cell is successfully added
 		if ((this as any).pendingValidationResult && this.codeGenerator) {
 			const validationResult = (this as any).pendingValidationResult;
 			const stepId = (this as any).pendingValidationStepId;
-			
+
 			if (validationResult?.validationEventData) {
 				const eventData = validationResult.validationEventData;
 				if (eventData.isValid) {
-					if (typeof (this.codeGenerator as any).emitValidationSuccess === "function") {
-						const message = `Code validation passed${eventData.wasFixed ? ' (fixes applied)' : ''}${eventData.warnings.length > 0 ? ` with ${eventData.warnings.length} warning(s)` : ''}`;
+					if (
+						typeof (this.codeGenerator as any).emitValidationSuccess ===
+						"function"
+					) {
+						const message = `Code validation passed${
+							eventData.wasFixed ? " (fixes applied)" : ""
+						}${
+							eventData.warnings.length > 0
+								? ` with ${eventData.warnings.length} warning(s)`
+								: ""
+						}`;
 						// Use stepCode (unsanitized) for UI comparison, not sanitized code
-						(this.codeGenerator as any).emitValidationSuccess(stepId, message, stepCode);
+						(this.codeGenerator as any).emitValidationSuccess(
+							stepId,
+							message,
+							stepCode
+						);
 					}
 				} else {
-					if (typeof (this.codeGenerator as any).emitValidationErrors === "function") {
+					if (
+						typeof (this.codeGenerator as any).emitValidationErrors ===
+						"function"
+					) {
 						(this.codeGenerator as any).emitValidationErrors(
 							stepId,
 							eventData.errors,
@@ -822,13 +920,15 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 					}
 				}
 			}
-			
+
 			// Clear pending validation
 			(this as any).pendingValidationResult = null;
 			(this as any).pendingValidationStepId = null;
 		}
 
-		console.log('AutonomousAgent: Code generation and validation completed successfully');
+		console.log(
+			"AutonomousAgent: Code generation and validation completed successfully"
+		);
 	}
 
 	async executeStep(
@@ -1275,17 +1375,27 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 	): Promise<boolean> {
 		// Generate package installation cell
 		try {
-			console.log("🔧 AutonomousAgent: About to generate package installation code for datasets:", datasets.length);
-			
-			// Test the package installation code generation directly first
-			const testPackageCode = await this.environmentManager.generatePackageInstallationCode(
-				datasets,
-				analysisSteps,
-				workspaceDir
+			console.log(
+				"🔧 AutonomousAgent: About to generate package installation code for datasets:",
+				datasets.length
 			);
-			console.log("📦 AutonomousAgent: Generated package installation code length:", testPackageCode?.length);
-			console.log("📦 AutonomousAgent: Package code preview:", testPackageCode?.substring(0, 200));
-			
+
+			// Test the package installation code generation directly first
+			const testPackageCode =
+				await this.environmentManager.generatePackageInstallationCode(
+					datasets,
+					analysisSteps,
+					workspaceDir
+				);
+			console.log(
+				"📦 AutonomousAgent: Generated package installation code length:",
+				testPackageCode?.length
+			);
+			console.log(
+				"📦 AutonomousAgent: Package code preview:",
+				testPackageCode?.substring(0, 200)
+			);
+
 			const packageCellSuccess = await this.generateSetupCell(
 				"Package installation",
 				() => Promise.resolve(testPackageCode), // Use pre-generated code to avoid double generation
@@ -1293,7 +1403,9 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				false // Don't add to global context
 			);
 			if (!packageCellSuccess) {
-				console.warn("⚠️ Package installation cell generation returned false, but continuing...");
+				console.warn(
+					"⚠️ Package installation cell generation returned false, but continuing..."
+				);
 			} else {
 				console.log("✅ Package installation cell generation succeeded");
 			}
@@ -1320,7 +1432,9 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 					"data-download"
 				);
 				if (!dataDownloadSuccess) {
-					console.warn("Data download cell generation failed, but continuing...");
+					console.warn(
+						"Data download cell generation failed, but continuing..."
+					);
 				}
 			} catch (error) {
 				console.error("Data download cell generation failed:", error);
@@ -1334,7 +1448,9 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		);
 		if (localDatasets.length > 0) {
 			// Do not auto-add a cell; LLM will set data_dir and load based on context (snapshot + localPath)
-			console.log("🔎 Skipping auto-added local data prep; LLM decides loading from data_dir");
+			console.log(
+				"🔎 Skipping auto-added local data prep; LLM decides loading from data_dir"
+			);
 		}
 
 		// Do not precreate any loader helpers; LLM will decide loading approach in analysis cells
@@ -1352,7 +1468,9 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		addToContext: boolean,
 		contextKey?: string
 	): Promise<boolean> {
-		console.log(`AutonomousAgent: generateSetupCell called for: ${stepDescription}`);
+		console.log(
+			`AutonomousAgent: generateSetupCell called for: ${stepDescription}`
+		);
 		if (this.shouldStopAnalysis) {
 			this.updateStatus("Analysis cancelled");
 			return false;
@@ -1371,7 +1489,10 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 
 		// Generate code
 		const rawCode = await codeGenerator();
-		console.log(`AutonomousAgent: Generated code for ${stepDescription}:`, rawCode.substring(0, 200) + "...");
+		console.log(
+			`AutonomousAgent: Generated code for ${stepDescription}:`,
+			rawCode.substring(0, 200) + "..."
+		);
 
 		// Emit generation completed event
 		EventManager.dispatchEvent("code-generation-completed", {
@@ -1382,31 +1503,47 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			timestamp: Date.now(),
 		});
 
-        // Validate and enhance code
-        console.log('AutonomousAgent: Starting validation for step:', stepId, 'with stepTitle:', stepDescription);
-        let validationResult;
-        try {
-            // For local-data-prep, avoid injecting output directory boilerplate that can break simple guards
-            const disableDirCreation = contextKey === "local-data-prep";
-            validationResult = await this.codeQualityService.validateAndTest(
-                rawCode,
-                stepId,
-                {
-                    stepTitle: stepDescription,
-                    skipExecution: true,
-                    globalCodeContext: this.getGlobalCodeContext(),
-                    skipValidationEvents: true, // We'll emit events manually after notebook cell addition
-                    addDirectoryCreation: !disableDirCreation,
-                }
-            );
-			console.log('AutonomousAgent: Validation completed successfully for step:', stepId);
-			
+		// Validate and enhance code
+		console.log(
+			"AutonomousAgent: Starting validation for step:",
+			stepId,
+			"with stepTitle:",
+			stepDescription
+		);
+		let validationResult;
+		try {
+			// For local-data-prep, avoid injecting output directory boilerplate that can break simple guards
+			const disableDirCreation = contextKey === "local-data-prep";
+			validationResult = await this.codeQualityService.validateAndTest(
+				rawCode,
+				stepId,
+				{
+					stepTitle: stepDescription,
+					skipExecution: true,
+					globalCodeContext: this.getGlobalCodeContext(),
+					skipValidationEvents: true, // We'll emit events manually after notebook cell addition
+					addDirectoryCreation: !disableDirCreation,
+				}
+			);
+			console.log(
+				"AutonomousAgent: Validation completed successfully for step:",
+				stepId
+			);
+
 			// Note: Validation success event will be emitted AFTER notebook cell is added
 		} catch (error) {
-			console.error('AutonomousAgent: Validation failed for step:', stepId, 'Error:', error);
-			
+			console.error(
+				"AutonomousAgent: Validation failed for step:",
+				stepId,
+				"Error:",
+				error
+			);
+
 			// For validation errors, we still emit immediately since we won't be adding the cell
-			if (this.codeGenerator && typeof (this.codeGenerator as any).emitValidationErrors === "function") {
+			if (
+				this.codeGenerator &&
+				typeof (this.codeGenerator as any).emitValidationErrors === "function"
+			) {
 				(this.codeGenerator as any).emitValidationErrors(
 					stepId,
 					[error instanceof Error ? error.message : "Validation failed"],
@@ -1415,7 +1552,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 					rawCode
 				);
 			}
-			
+
 			throw error;
 		}
 
@@ -1435,13 +1572,28 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		if (validationResult?.validationEventData && this.codeGenerator) {
 			const eventData = validationResult.validationEventData;
 			if (eventData.isValid) {
-				if (typeof (this.codeGenerator as any).emitValidationSuccess === "function") {
-					const message = `Setup cell validation passed${eventData.wasFixed ? ' (fixes applied)' : ''}${eventData.warnings.length > 0 ? ` with ${eventData.warnings.length} warning(s)` : ''}`;
+				if (
+					typeof (this.codeGenerator as any).emitValidationSuccess ===
+					"function"
+				) {
+					const message = `Setup cell validation passed${
+						eventData.wasFixed ? " (fixes applied)" : ""
+					}${
+						eventData.warnings.length > 0
+							? ` with ${eventData.warnings.length} warning(s)`
+							: ""
+					}`;
 					// Use bestCode (unsanitized) for UI comparison, not finalCode (sanitized for notebook)
-					(this.codeGenerator as any).emitValidationSuccess(stepId, message, bestCode);
+					(this.codeGenerator as any).emitValidationSuccess(
+						stepId,
+						message,
+						bestCode
+					);
 				}
 			} else {
-				if (typeof (this.codeGenerator as any).emitValidationErrors === "function") {
+				if (
+					typeof (this.codeGenerator as any).emitValidationErrors === "function"
+				) {
 					(this.codeGenerator as any).emitValidationErrors(
 						stepId,
 						eventData.errors,
@@ -1474,7 +1626,10 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			}
 
 			const step = analysisSteps[i];
-			console.log('AutonomousAgent: Starting generateAndTestStepCode for step:', i + 1);
+			console.log(
+				"AutonomousAgent: Starting generateAndTestStepCode for step:",
+				i + 1
+			);
 			const stepCode = await this.generateAndTestStepCode(
 				step,
 				query,
@@ -1482,29 +1637,51 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				workspaceDir,
 				i + 2
 			);
-			console.log('AutonomousAgent: generateAndTestStepCode completed for step:', i + 1);
+			console.log(
+				"AutonomousAgent: generateAndTestStepCode completed for step:",
+				i + 1
+			);
 
-			console.log('AutonomousAgent: Adding validated code to notebook for step:', i + 1);
+			console.log(
+				"AutonomousAgent: Adding validated code to notebook for step:",
+				i + 1
+			);
 			await this.notebookService.addCodeCell(
 				notebookPath,
 				this.sanitizeNotebookPythonCode(stepCode)
 			);
-			console.log('AutonomousAgent: Code added to notebook for step:', i + 1);
-			
+			console.log("AutonomousAgent: Code added to notebook for step:", i + 1);
+
 			// Emit validation events AFTER notebook cell is successfully added
 			if ((this as any).pendingValidationResult && this.codeGenerator) {
 				const validationResult = (this as any).pendingValidationResult;
 				const stepId = (this as any).pendingValidationStepId;
-				
+
 				if (validationResult?.validationEventData) {
 					const eventData = validationResult.validationEventData;
 					if (eventData.isValid) {
-						if (typeof (this.codeGenerator as any).emitValidationSuccess === "function") {
-							const message = `Code validation passed${eventData.wasFixed ? ' (fixes applied)' : ''}${eventData.warnings.length > 0 ? ` with ${eventData.warnings.length} warning(s)` : ''}`;
-							(this.codeGenerator as any).emitValidationSuccess(stepId, message, stepCode);
+						if (
+							typeof (this.codeGenerator as any).emitValidationSuccess ===
+							"function"
+						) {
+							const message = `Code validation passed${
+								eventData.wasFixed ? " (fixes applied)" : ""
+							}${
+								eventData.warnings.length > 0
+									? ` with ${eventData.warnings.length} warning(s)`
+									: ""
+							}`;
+							(this.codeGenerator as any).emitValidationSuccess(
+								stepId,
+								message,
+								stepCode
+							);
 						}
 					} else {
-						if (typeof (this.codeGenerator as any).emitValidationErrors === "function") {
+						if (
+							typeof (this.codeGenerator as any).emitValidationErrors ===
+							"function"
+						) {
 							(this.codeGenerator as any).emitValidationErrors(
 								stepId,
 								eventData.errors,
@@ -1515,7 +1692,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 						}
 					}
 				}
-				
+
 				// Clear pending validation
 				(this as any).pendingValidationResult = null;
 				(this as any).pendingValidationStepId = null;
@@ -1545,8 +1722,16 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		workspaceDir: string,
 		stepIndex: number
 	): Promise<string> {
-		console.log(`AutonomousAgent: generateAndTestStepCode called for step: ${step.description}`);
+		console.log(
+			`AutonomousAgent: generateAndTestStepCode called for step: ${step.description}`
+		);
 		const stepId = `step-${stepIndex}-${Date.now()}`;
+
+		// Strengthen query with dataset-derived hints (e.g., scRNA-seq) to steer codegen
+		const dsHint = this.buildDatasetHints(datasets);
+		if (dsHint) {
+			query = `${query}\n\n${dsHint}`;
+		}
 
 		// Generate code using unified method
 		const request: CodeGenerationRequest = {
@@ -1577,14 +1762,14 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 					addDirectoryCreation: false,
 				}
 			);
-			
+
 			// Store the validated code and full validation result for later event emission
 			const validatedCode = this.codeQualityService.getBestCode(quality);
-			
+
 			// Store validation result for later emission (after notebook cell is added)
 			(this as any).pendingValidationResult = quality;
 			(this as any).pendingValidationStepId = stepId;
-			
+
 			return validatedCode;
 		} catch (e) {
 			console.warn(
@@ -1593,7 +1778,10 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			);
 
 			// Emit validation error event to satisfy UI event system
-			if (this.codeGenerator && typeof (this.codeGenerator as any).emitValidationErrors === "function") {
+			if (
+				this.codeGenerator &&
+				typeof (this.codeGenerator as any).emitValidationErrors === "function"
+			) {
 				(this.codeGenerator as any).emitValidationErrors(
 					stepId,
 					[e instanceof Error ? e.message : String(e)],
@@ -1668,11 +1856,16 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			);
 
 			// Validation is synchronous, events are fired but code is already validated
-			
-			const validatedCode = this.codeQualityService.getBestCode(validationResult);
-			
+
+			const validatedCode =
+				this.codeQualityService.getBestCode(validationResult);
+
 			// Update the same (last) notebook cell's code after validation
-			await this.notebookService.updateCellCode(notebookPath, -1, validatedCode);
+			await this.notebookService.updateCellCode(
+				notebookPath,
+				-1,
+				validatedCode
+			);
 		} catch (e) {
 			console.warn("Auto-fix validation failed, using unvalidated code:", e);
 			// Fallback to unvalidated code if validation fails

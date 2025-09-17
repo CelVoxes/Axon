@@ -123,35 +123,47 @@ export function useChatEvents({
 				/* ignore */
 			}
 
-            // Add the mention and prompt; include a trimmed output snippet so the LLM sees context
-            if (alias) {
-                // Clear any existing input and start fresh with the mention
-                const mentionText = alias;
-                const outputType = Boolean(d.hasError) ? "error" : "output";
-                // Truncate output for composer to avoid huge messages
-                const raw = (out || '').toString();
-                const getLimit = (key: string, fallback: number) => {
-                    try { const v = (window.localStorage && window.localStorage.getItem(key)) || ''; const n = parseInt(v as string, 10); return !Number.isNaN(n) && n > 0 ? n : fallback; } catch { return fallback; }
-                };
-                const maxChars = getLimit('axon.askChatOutputChars', 2000);
-                const maxLines = getLimit('axon.askChatOutputLines', 60);
-                const lines = raw.split(/\r?\n/);
-                const clippedLines = lines.slice(0, maxLines);
-                let clipped = clippedLines.join('\n');
-                if (clipped.length > maxChars) clipped = clipped.slice(0, maxChars);
-                const snipNotice = (raw.length > clipped.length || lines.length > clippedLines.length) ? `\n... [truncated]` : '';
-                const snippet = clipped ? `\n\n\`\`\`text\n${clipped}${snipNotice}\n\`\`\`` : '';
-                const final = `${mentionText} Please fix if there is an error in the ${outputType}.${snippet}`;
-                setInputValue(final);
-                inputValueRef.current = final;
-            } else {
-                // Fallback to old behavior if no alias
-                const prefix = `Please review the ${lang} cell output and fix any issues.`;
-                const body = `\n\nCell: (referenced cell)\n`;
-                const prefill = prefix + body;
-                setInputValue(prefill);
-                inputValueRef.current = prefill;
-            }
+			// Add the mention and prompt; include a trimmed output snippet so the LLM sees context
+			if (alias) {
+				// Clear any existing input and start fresh with the mention
+				const mentionText = alias;
+				const outputType = Boolean(d.hasError) ? "error" : "output";
+				// Truncate output for composer to avoid huge messages
+				const raw = (out || "").toString();
+				const getLimit = (key: string, fallback: number) => {
+					try {
+						const v =
+							(window.localStorage && window.localStorage.getItem(key)) || "";
+						const n = parseInt(v as string, 10);
+						return !Number.isNaN(n) && n > 0 ? n : fallback;
+					} catch {
+						return fallback;
+					}
+				};
+				const maxChars = getLimit("axon.askChatOutputChars", 2000);
+				const maxLines = getLimit("axon.askChatOutputLines", 60);
+				const lines = raw.split(/\r?\n/);
+				const clippedLines = lines.slice(0, maxLines);
+				let clipped = clippedLines.join("\n");
+				if (clipped.length > maxChars) clipped = clipped.slice(0, maxChars);
+				const snipNotice =
+					raw.length > clipped.length || lines.length > clippedLines.length
+						? `\n... [truncated]`
+						: "";
+				const snippet = clipped
+					? `\n\n\`\`\`text\n${clipped}${snipNotice}\n\`\`\``
+					: "";
+				const final = `${mentionText} Please fix if there is an error in the output.${snippet}`;
+				setInputValue(final);
+				inputValueRef.current = final;
+			} else {
+				// Fallback to old behavior if no alias
+				const prefix = `Please review the ${lang} cell output and fix any issues.`;
+				const body = `\n\nCell: (referenced cell)\n`;
+				const prefill = prefix + body;
+				setInputValue(prefill);
+				inputValueRef.current = prefill;
+			}
 
 			// Stash cell context (code + output) so Ask mode can include it for the LLM.
 			// This does NOT force an edit; it only provides additional context.

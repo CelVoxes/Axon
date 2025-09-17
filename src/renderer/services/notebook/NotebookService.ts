@@ -76,10 +76,10 @@ export class NotebookService {
 		this.workspacePath = newWorkspacePath;
 	}
 
-  /**
-   * Add a markdown cell to a notebook
-   */
-  async addMarkdownCell(notebookPath: string, content: string): Promise<void> {
+	/**
+	 * Add a markdown cell to a notebook
+	 */
+	async addMarkdownCell(notebookPath: string, content: string): Promise<void> {
 		// Validate content before adding
 		if (!content || !content.trim()) {
 			console.warn(
@@ -88,24 +88,24 @@ export class NotebookService {
 			return;
 		}
 
-    console.log(
-      `NotebookService: Adding markdown cell with ${content.length} characters to ${notebookPath}`
-    );
+		console.log(
+			`NotebookService: Adding markdown cell with ${content.length} characters to ${notebookPath}`
+		);
 
-    // Ensure the target notebook is open and ready so the FileEditor can handle the event
-    try {
-      const opened = await this.openNotebookInEditor(notebookPath);
-      if (!opened) {
-        console.warn(
-          `NotebookService: Proceeding to add markdown cell even though openNotebookInEditor() returned false: ${notebookPath}`
-        );
-      }
-    } catch (e) {
-      console.warn(
-        `NotebookService: Failed to open notebook before adding markdown cell: ${notebookPath}`,
-        e
-      );
-    }
+		// Ensure the target notebook is open and ready so the FileEditor can handle the event
+		try {
+			const opened = await this.openNotebookInEditor(notebookPath);
+			if (!opened) {
+				console.warn(
+					`NotebookService: Proceeding to add markdown cell even though openNotebookInEditor() returned false: ${notebookPath}`
+				);
+			}
+		} catch (e) {
+			console.warn(
+				`NotebookService: Failed to open notebook before adding markdown cell: ${notebookPath}`,
+				e
+			);
+		}
 
 		// Ensure newlines are preserved when the FileEditor converts to ipynb source
 		const normalized = content.replace(/\r\n/g, "\n");
@@ -136,10 +136,10 @@ export class NotebookService {
 		await ackPromise;
 	}
 
-  /**
-   * Add a code cell to a notebook
-   */
-  async addCodeCell(notebookPath: string, code: string): Promise<void> {
+	/**
+	 * Add a code cell to a notebook
+	 */
+	async addCodeCell(notebookPath: string, code: string): Promise<void> {
 		// Validate code content before adding
 		if (!code || !code.trim()) {
 			console.warn(
@@ -148,24 +148,24 @@ export class NotebookService {
 			return;
 		}
 
-    console.log(
-      `NotebookService: Adding code cell with ${code.length} characters to ${notebookPath}`
-    );
+		console.log(
+			`NotebookService: Adding code cell with ${code.length} characters to ${notebookPath}`
+		);
 
-    // Ensure the target notebook is open and ready so the FileEditor can handle the event
-    try {
-      const opened = await this.openNotebookInEditor(notebookPath);
-      if (!opened) {
-        console.warn(
-          `NotebookService: Proceeding to add code cell even though openNotebookInEditor() returned false: ${notebookPath}`
-        );
-      }
-    } catch (e) {
-      console.warn(
-        `NotebookService: Failed to open notebook before adding code cell: ${notebookPath}`,
-        e
-      );
-    }
+		// Ensure the target notebook is open and ready so the FileEditor can handle the event
+		try {
+			const opened = await this.openNotebookInEditor(notebookPath);
+			if (!opened) {
+				console.warn(
+					`NotebookService: Proceeding to add code cell even though openNotebookInEditor() returned false: ${notebookPath}`
+				);
+			}
+		} catch (e) {
+			console.warn(
+				`NotebookService: Failed to open notebook before adding code cell: ${notebookPath}`,
+				e
+			);
+		}
 
 		// Attach a filtered acknowledgement listener BEFORE dispatch to avoid cross-notebook races
 		const ackPromise = new Promise<any>((resolve, reject) => {
@@ -186,25 +186,32 @@ export class NotebookService {
 				}
 			);
 		});
-    EventManager.dispatchEvent("add-notebook-cell", {
-      filePath: notebookPath,
-      cellType: "code",
-      content: code,
-    });
-		
+		EventManager.dispatchEvent("add-notebook-cell", {
+			filePath: notebookPath,
+			cellType: "code",
+			content: code,
+		});
+
 		const result = await ackPromise;
-		
+
 		// Check if the cell addition was successful
 		if (!result.success) {
-			throw new Error(`Failed to add cell to notebook: ${result.error || 'Unknown error'}`);
+			throw new Error(
+				`Failed to add cell to notebook: ${result.error || "Unknown error"}`
+			);
 		}
-		
-		console.log(`NotebookService: Successfully added code cell to ${notebookPath}`);
+
+		console.log(
+			`NotebookService: Successfully added code cell to ${notebookPath}`
+		);
 
 		// For package installation cells, add a small delay to ensure proper saving
-		const isPackageInstall = /(^|\n)\s*(%pip|%conda|pip\s+install|conda\s+install)\b/i.test(code);
+		const isPackageInstall =
+			/(^|\n)\s*(%pip|%conda|pip\s+install|conda\s+install)\b/i.test(code);
 		if (isPackageInstall) {
-			console.log(`NotebookService: Package installation cell detected - adding save delay`);
+			console.log(
+				`NotebookService: Package installation cell detected - adding save delay`
+			);
 			await this.waitForSaveCompletion(notebookPath);
 		}
 	}
@@ -214,8 +221,8 @@ export class NotebookService {
 	 */
 	private async waitForSaveCompletion(notebookPath: string): Promise<void> {
 		// Add a delay to allow the debounced save to trigger
-		await new Promise(resolve => setTimeout(resolve, 1000));
-		
+		await new Promise((resolve) => setTimeout(resolve, 1000));
+
 		// Verify the file exists and is readable
 		let attempts = 0;
 		const maxAttempts = 5;
@@ -223,20 +230,29 @@ export class NotebookService {
 			try {
 				const content = await ElectronClient.readFile(notebookPath);
 				if (content && content.length > 0) {
-					console.log(`NotebookService: Confirmed notebook save completion after ${attempts + 1} attempts`);
+					console.log(
+						`NotebookService: Confirmed notebook save completion after ${
+							attempts + 1
+						} attempts`
+					);
 					return;
 				}
 			} catch (error) {
-				console.warn(`NotebookService: Save verification attempt ${attempts + 1} failed:`, error);
+				console.warn(
+					`NotebookService: Save verification attempt ${attempts + 1} failed:`,
+					error
+				);
 			}
-			
+
 			attempts++;
 			if (attempts < maxAttempts) {
-				await new Promise(resolve => setTimeout(resolve, 500));
+				await new Promise((resolve) => setTimeout(resolve, 500));
 			}
 		}
-		
-		console.warn(`NotebookService: Could not verify save completion after ${maxAttempts} attempts`);
+
+		console.warn(
+			`NotebookService: Could not verify save completion after ${maxAttempts} attempts`
+		);
 	}
 
 	/**
@@ -459,6 +475,54 @@ export class NotebookService {
 		}
 
 		return readyResult.isReady;
+	}
+
+	/**
+	 * Replace the first markdown cell's content with provided markdown.
+	 */
+	async updateFirstMarkdownCell(
+		notebookPath: string,
+		content: string
+	): Promise<boolean> {
+		try {
+			const fileContent = await ElectronClient.readFile(notebookPath);
+			const nb = JSON.parse(fileContent) as NotebookData;
+			const markdownIndex = (nb.cells || []).findIndex(
+				(c) => c.cell_type === "markdown"
+			);
+			const normalized = (content || "").replace(/\r\n/g, "\n");
+			const parts = normalized.split("\n");
+			const source = parts.map((line, i) =>
+				i < parts.length - 1 ? `${line}\n` : line
+			);
+			let targetIndex = markdownIndex;
+			if (markdownIndex < 0) {
+				nb.cells = [
+					{
+						cell_type: "markdown",
+						source,
+						metadata: {},
+					},
+					...(nb.cells || []),
+				];
+				targetIndex = 0;
+			} else {
+				nb.cells[markdownIndex].source = source;
+			}
+			await ElectronClient.writeFile(notebookPath, JSON.stringify(nb, null, 2));
+
+			// Nudge the editor to reflect the change without waiting for a full reload
+			EventManager.dispatchEvent("update-notebook-cell-code", {
+				filePath: notebookPath,
+				cellIndex: targetIndex,
+				code: normalized,
+				cellType: "markdown",
+			});
+			return true;
+		} catch (e) {
+			console.warn("NotebookService.updateFirstMarkdownCell failed:", e);
+			return false;
+		}
 	}
 
 	/**

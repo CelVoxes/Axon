@@ -97,7 +97,9 @@ export class CodeQualityService {
 		stepId: string,
 		options: CodeQualityPipelineOptions = {}
 	): Promise<CodeQualityResult> {
-		console.log(`CodeQualityService: validateAndTest called for stepId: ${stepId}, code length: ${code.length}`);
+		console.log(
+			`CodeQualityService: validateAndTest called for stepId: ${stepId}, code length: ${code.length}`
+		);
 		const {
 			skipValidation = false,
 			skipExecution = true, // Default to skipping execution for performance
@@ -111,19 +113,21 @@ export class CodeQualityService {
 		} = options;
 
 		// Detect package-install or non-analytical utility cells and avoid mutating them
-        const isInstallCell =
-            /package\s*install|package-install|pip\s+install|%pip|%conda|conda\s+install/i.test(
-                `${stepTitle}\n${code}`
-            );
+		const isInstallCell =
+			/package\s*install|package-install|pip\s+install|%pip|%conda|conda\s+install/i.test(
+				`${stepTitle}\n${code}`
+			);
 
-        // Detect data download cells and skip linting similar to install cells
-        // Heuristics: keywords in title, presence of common download libs/APIs, or URLs
-        const isDataDownloadCell =
-            /\b(download|fetch|retrieve)\b/i.test(`${stepTitle}`) ||
-            /requests\s*\.|urllib\s*\.|gdown\b|wget\b|curl\b/i.test(code) ||
-            /(https?:\/\/|ftp:\/\/)/i.test(code);
-		
-		console.log(`CodeQualityService: isInstallCell check for "${stepTitle}" - result: ${isInstallCell}`);
+		// Detect data download cells and skip linting similar to install cells
+		// Heuristics: keywords in title, presence of common download libs/APIs, or URLs
+		const isDataDownloadCell =
+			/\b(download|fetch|retrieve)\b/i.test(`${stepTitle}`) ||
+			/requests\s*\.|urllib\s*\.|gdown\b|wget\b|curl\b/i.test(code) ||
+			/(https?:\/\/|ftp:\/\/)/i.test(code);
+
+		console.log(
+			`CodeQualityService: isInstallCell check for "${stepTitle}" - result: ${isInstallCell}`
+		);
 
 		const result: CodeQualityResult = {
 			isValid: true,
@@ -135,30 +139,30 @@ export class CodeQualityService {
 			cleanedCode: code,
 		};
 
-        if (isInstallCell || isDataDownloadCell) {
-            // For install cells, keep code as-is (only normalize whitespace minimally)
-            this.updateStatus(
-                isInstallCell
-                    ? `Skipping lint/fix for install cell: ${stepTitle}`
-                    : `Skipping lint/fix for data download cell: ${stepTitle}`
-            );
-            result.cleanedCode = normalizePythonCode(code);
-            result.lintedCode = result.cleanedCode;
-            result.isValid = true;
+		if (isInstallCell || isDataDownloadCell) {
+			// For install cells, keep code as-is (only normalize whitespace minimally)
+			this.updateStatus(
+				isInstallCell
+					? `Skipping lint/fix for install cell: ${stepTitle}`
+					: `Skipping lint/fix for data download cell: ${stepTitle}`
+			);
+			result.cleanedCode = normalizePythonCode(code);
+			result.lintedCode = result.cleanedCode;
+			result.isValid = true;
 
-            // Emit a validation success event so the UI doesn't wait for a timeout
-            try {
-                this.codeGenerationService.emitValidationSuccess(
-                    stepId,
-                    isInstallCell
-                        ? `Skipped linting for install cell: ${stepTitle}`
-                        : `Skipped linting for data download cell: ${stepTitle}`,
-                    result.lintedCode
-                );
-            } catch (_) {}
+			// Emit a validation success event so the UI doesn't wait for a timeout
+			try {
+				this.codeGenerationService.emitValidationSuccess(
+					stepId,
+					isInstallCell
+						? `Skipped linting for install cell: ${stepTitle}`
+						: `Skipped linting for data download cell: ${stepTitle}`,
+					result.lintedCode
+				);
+			} catch (_) {}
 
-            return result;
-        }
+			return result;
+		}
 
 		// Step 1: Single comprehensive code enhancement (if not skipped)
 		if (!skipCleaning) {
@@ -181,12 +185,13 @@ export class CodeQualityService {
 					// Best-effort: use the execution service's workspace path when available
 					(this.cellExecutionService as any)?.getWorkspacePath?.() || undefined
 				);
+				// Fast path: small cells (<= 200 lines) get fixes without formatting
 				const fixResult = await autoFixWithRuffAndLLM(
 					this.backendClient,
 					result.cleanedCode,
 					{
 						filename: `${stepTitle.replace(/\s+/g, "_").toLowerCase()}.py`,
-						stepTitle
+						stepTitle,
 					},
 					sessionId
 				);
@@ -261,7 +266,7 @@ export class CodeQualityService {
 							result.lintedCode
 						);
 					}
-					
+
 					// Store validation data for manual emission if events are skipped
 					if (skipValidationEvents) {
 						result.validationEventData = {
@@ -270,7 +275,7 @@ export class CodeQualityService {
 							warnings: result.validationWarnings,
 							wasFixed: fixResult.wasFixed,
 							originalCode: result.originalCode,
-							lintedCode: result.lintedCode
+							lintedCode: result.lintedCode,
 						};
 					}
 
@@ -282,20 +287,28 @@ export class CodeQualityService {
 					if (!skipValidationEvents) {
 						// Only show success message if there were warnings or fixes applied
 						if (result.validationWarnings.length > 0 || fixResult.wasFixed) {
-							const usedLLMFallback = (fixResult as any).ruffSucceeded === false;
+							const usedLLMFallback =
+								(fixResult as any).ruffSucceeded === false;
 							const base = usedLLMFallback
 								? `Code validation passed via LLM fallback (Ruff unavailable)`
-								: `Code validation passed${fixResult.wasFixed ? ' (fixes applied)' : ''}`;
-							const msg = `${base}${result.validationWarnings.length > 0 ? ` with ${result.validationWarnings.length} warning(s)` : ''}`;
+								: `Code validation passed${
+										fixResult.wasFixed ? " (fixes applied)" : ""
+								  }`;
+							const msg = `${base}${
+								result.validationWarnings.length > 0
+									? ` with ${result.validationWarnings.length} warning(s)`
+									: ""
+							}`;
 
 							this.codeGenerationService.emitValidationSuccess(
 								stepId,
 								msg,
-								result.lintedCode
+								result.lintedCode,
+								result.validationWarnings
 							);
 						}
 					}
-					
+
 					// Store validation data for manual emission if events are skipped
 					if (skipValidationEvents) {
 						result.validationEventData = {
@@ -304,7 +317,7 @@ export class CodeQualityService {
 							warnings: result.validationWarnings,
 							wasFixed: fixResult.wasFixed,
 							originalCode: result.originalCode,
-							lintedCode: result.lintedCode
+							lintedCode: result.lintedCode,
 						};
 					}
 					this.updateStatus(`✅ Code validation passed for ${stepTitle}`);
@@ -402,26 +415,22 @@ export class CodeQualityService {
 		// Step 1: Normalize and clean
 		let enhancedCode = normalizePythonCode(code);
 
-		// Step 1.5: Remove duplicate imports relative to global context (avoid repeating prior cells)
-		try {
-			if (options.globalCodeContext && options.globalCodeContext.trim()) {
-				const existing = sharedGetExistingImports(options.globalCodeContext);
-				enhancedCode = sharedRemoveDuplicateImports(enhancedCode, existing);
-			}
-		} catch (_) {}
+		// Step 1.5: Keep cells self-contained — do not remove imports based on global context
+		// (We intentionally avoid stripping imports that may be required at cell runtime.)
 
 		// Step 2: Only add imports if they're actually needed and missing from global context
 		if (options.addImports) {
+			// Always ensure minimal critical imports exist in the cell itself
 			enhancedCode = this.smartAddImports(
 				enhancedCode,
-				options.globalCodeContext
+				undefined // don't suppress imports due to global context; keep cells runnable
 			);
 		}
 
 		// Step 3: Only add directory creation if needed and missing from global context
 		if (
 			options.addDirectoryCreation &&
-			!this.hasDirectoryCreation(enhancedCode, options.globalCodeContext)
+			!this.hasDirectoryCreation(enhancedCode, undefined)
 		) {
 			enhancedCode = this.addDirectoryCreation(enhancedCode);
 		}
@@ -617,7 +626,8 @@ ${code.replace(/while\s+(True|1):/g, (match) => {
 					task_description: `Refactor the following Python code to fix the execution error:\n\nError Output:\n${errorOutput}\n\nOriginal Code:\n${originalCode}\n\nCell Title: ${cellTitle}\nWorkspace: ${workspacePath}\n\nProvide only the corrected code, no explanations.`,
 					language: "python",
 					context: "Code refactoring based on error output",
-					session_id: this.codeGenerationService.getSessionIdForPath(workspacePath),
+					session_id:
+						this.codeGenerationService.getSessionIdForPath(workspacePath),
 				},
 				(chunk: string) => {
 					refactoredCode += chunk;
@@ -628,6 +638,16 @@ ${code.replace(/while\s+(True|1):/g, (match) => {
 				"CodeQualityService: Code refactoring completed:",
 				refactoredCode
 			);
+			// Update session stats after refactor stream completes
+			try {
+				const { SessionStatsService } = await import(
+					"../backend/SessionStatsService"
+				);
+				await SessionStatsService.update(
+					this.backendClient,
+					this.codeGenerationService.getSessionIdForPath(workspacePath)
+				);
+			} catch (_) {}
 			return refactoredCode || originalCode;
 		} catch (error) {
 			console.error("CodeQualityService: Error refactoring code:", error);

@@ -1,4 +1,5 @@
 import React from "react";
+import { EventManager } from "../../utils/EventManager";
 import styled from "styled-components";
 import { FiSquare, FiFolder, FiX } from "react-icons/fi";
 import { getFileTypeIcon } from "../shared/utils";
@@ -25,6 +26,58 @@ const MentionChip = styled.span`
 	line-height: 14px;
 	background: #333;
 	color: #e5e7eb;
+`;
+
+const TextareaWrapper = styled.div`
+	position: relative;
+	background: #1e1e1e;
+	border: 1px solid #6c6c6c;
+	border-radius: 6px;
+	overflow: hidden;
+`;
+
+const HighlightOverlay = styled.div`
+	position: absolute;
+	inset: 0;
+	padding: 8px 12px;
+	pointer-events: none;
+	font-family: inherit;
+	font-size: var(--font-size-base);
+	line-height: 1.4;
+	white-space: pre-wrap;
+	word-break: break-word;
+	color: transparent;
+	-webkit-text-fill-color: transparent;
+	z-index: 1;
+	background: transparent;
+	min-height: 72px;
+`;
+
+const StyledTextarea = styled.textarea`
+	position: relative;
+	z-index: 2;
+	width: 100%;
+	background: transparent;
+	border: none;
+	color: #d4d4d4;
+	-webkit-text-fill-color: #d4d4d4;
+	caret-color: #d4d4d4;
+	padding: 8px 12px;
+	font-size: var(--font-size-base);
+	font-family: inherit;
+	resize: none;
+	min-height: 72px;
+	max-height: 120px;
+	line-height: 1.4;
+	box-sizing: border-box;
+
+	&:focus {
+		outline: none;
+	}
+
+	&::placeholder {
+		color: #858585;
+	}
 `;
 
 interface ComposerProps {
@@ -354,6 +407,20 @@ export const Composer = React.forwardRef<ComposerRef, ComposerProps>(
 				// Initial fetch and polling
 				fetchStats();
 				interval = setInterval(fetchStats, 3000);
+
+				// Event-driven refresh on session activity (no polling delay)
+				EventManager.addEventListener("session-stats-updated", (event: any) => {
+					try {
+						const detail = (event as CustomEvent).detail as any;
+						if (!detail || !detail.sessionId || !detail.stats) return;
+						if (detail.sessionId !== sessionId) return;
+						setCtxUsage({
+							approxTokens: Number(detail.stats?.approx_tokens || 0),
+							limitTokens: Number(detail.stats?.limit_tokens || 128000),
+							nearLimit: Boolean(detail.stats?.near_limit),
+						});
+					} catch (_) {}
+				});
 			})();
 
 			return () => {
@@ -379,6 +446,24 @@ export const Composer = React.forwardRef<ComposerRef, ComposerProps>(
 			if (pct >= 60) return "#f59e0b"; // amber
 			return "#10b981"; // green
 		}, [usagePercent]);
+
+		const highlightMarkup = React.useMemo(() => {
+			if (!value) {
+				return "&nbsp;";
+			}
+			const escapeHtml = (input: string) =>
+				input
+					.replace(/&/g, "&amp;")
+					.replace(/</g, "&lt;")
+					.replace(/>/g, "&gt;")
+					.replace(/"/g, "&quot;");
+
+			let html = escapeHtml(value);
+			html = html.replace(/\r\n|\r|\n/g, "<br />");
+			html = html.replace(/(@[^\s@]+)/g, '<span class="composer-tag">$1</span>');
+			html = html.replace(/(#[^\s#]+)/g, '<span class="composer-tag">$1</span>');
+			return html;
+		}, [value]);
 
 		return (
 			<div className="chat-input-container">
@@ -499,17 +584,24 @@ export const Composer = React.forwardRef<ComposerRef, ComposerProps>(
 					</div>
 				</div>
 				<MentionsBar $visible={false} />
-				<textarea
-					value={value}
-					onChange={handleTextareaChange}
-					onKeyDown={handleKeyDownInternal}
-					placeholder={
-						mode === "Ask" ? "Ask a question" : "Plan, search, build anything"
-					}
-					disabled={!!disabled || isLoading}
-					rows={2}
-					ref={textareaRef}
-				/>
+				<TextareaWrapper className="composer-textarea-wrapper">
+					<HighlightOverlay
+						className="composer-highlight"
+						aria-hidden="true"
+						dangerouslySetInnerHTML={{ __html: highlightMarkup }}
+					/>
+					<StyledTextarea
+						value={value}
+						onChange={handleTextareaChange}
+						onKeyDown={handleKeyDownInternal}
+						placeholder={
+							mode === "Ask" ? "Ask a question" : "Plan, search, build anything"
+						}
+						disabled={!!disabled || isLoading}
+						rows={2}
+						ref={textareaRef}
+					/>
+				</TextareaWrapper>
 
 				<div className="chat-controls">
 					<div

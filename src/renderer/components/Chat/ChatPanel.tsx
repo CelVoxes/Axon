@@ -739,6 +739,23 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								setProgressMessage("Thinking...");
 								return;
 							}
+							if (evt?.type === "summary" && typeof evt.text === "string") {
+								// Append a compact reasoning summary message
+								analysisDispatch({
+									type: "ADD_MESSAGE",
+									payload: {
+										id: `ask-summary-${Date.now()}`,
+										content: "",
+										isUser: false,
+										isStreaming: false,
+										code: evt.text,
+										codeLanguage: "reasoning",
+										codeTitle: "🧠 Summary",
+										status: "completed" as any,
+									},
+								});
+								return;
+							}
 							if (evt?.type === "answer" && typeof evt.delta === "string") {
 								if (accumulated.length === 0) {
 									setProgressMessage("Drafting answer...");
@@ -770,6 +787,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 									},
 								});
 								setProgressMessage("");
+								// Trigger session stats refresh immediately after stream completion
+								(async () => {
+									try {
+										const { SessionStatsService } = await import(
+											"../../services/backend/SessionStatsService"
+										);
+										await SessionStatsService.update(backendClient!, sessionId);
+									} catch (_) {}
+								})();
 							}
 						} catch (_) {}
 					}
@@ -1157,12 +1183,63 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					typeof intentResult.confidence === "number"
 						? Math.round(intentResult.confidence * 100)
 						: null;
+
 				const reason = intentResult.reason ? `${intentResult.reason}` : "";
 				addMessage([reason].filter(Boolean).join("\n"), false);
 			} catch (_) {}
 
-			// If confidence is too low (< 0.7), treat as general question instead of forcing into specific intent
+			// Update session stats immediately after intent call
+			try {
+				const { SessionStatsService } = await import(
+					"../../services/backend/SessionStatsService"
+				);
+				await SessionStatsService.update(backendClient!, intentSessionId);
+			} catch (_) {}
+
 			const isLowConfidence = (intentResult.confidence || 0) < 0.7;
+			const addCellRequested =
+				(intentResult.intent === "ADD_CELL" && !isLowConfidence) ||
+				(isNotebookOpen &&
+					/\b(add|insert|new)\s+(markdown\s+)?cell\b/i.test(userMessage));
+
+			// Fetch structured analysis (intent/entities/data_types/etc.) and display a short summary
+			let analysisContext: {
+				intent?: string;
+				entities?: string[];
+				data_types?: string[];
+				analysis_type?: string;
+				complexity?: string;
+			} | null = null;
+			if (!addCellRequested) {
+				try {
+					analysisContext = await backendClient!.analyzeQuery(
+						userMessage as any
+					);
+					if (analysisContext) {
+						const parts: string[] = [];
+						if (analysisContext.intent)
+							parts.push(`\nIntent: ${analysisContext.intent}`);
+						if (
+							Array.isArray(analysisContext.entities) &&
+							analysisContext.entities.length
+						)
+							parts.push(`\nEntities: ${analysisContext.entities.join(", ")}`);
+						if (
+							Array.isArray(analysisContext.data_types) &&
+							analysisContext.data_types.length
+						)
+							parts.push(
+								`\nData types: ${analysisContext.data_types.join(", ")}`
+							);
+						if (analysisContext.analysis_type)
+							parts.push(`\nAnalysis: ${analysisContext.analysis_type}`);
+						if (analysisContext.complexity)
+							parts.push(`\nComplexity: ${analysisContext.complexity}`);
+						if (parts.length)
+							addMessage(`**Analysis**\n${parts.join("\n")}`, false);
+					}
+				} catch (_) {}
+			}
 
 			// Handle dataset search based on backend intent
 			if (intentResult.intent === "SEARCH_DATA" && !isLowConfidence) {
@@ -1203,13 +1280,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				}
 			}
 			// Handle ADD_CELL intent for active notebooks (prioritize over dataset-based analysis)
-			else if (
-				(intentResult.intent === "ADD_CELL" && !isLowConfidence) ||
-				// Local heuristic: if a notebook is open and the user clearly asks to add/insert a cell,
-				// honor it even if LLM confidence is low.
-				(isNotebookOpen &&
-					/\b(add|insert|new)\s+(markdown\s+)?cell\b/i.test(userMessage))
-			) {
+			else if (addCellRequested) {
 				// Use reliable notebook detection hook (no race conditions)
 				console.log("🔬 Notebook detection result:", {
 					notebookFile,
@@ -1252,9 +1323,36 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								sessionId
 							);
 
+							const enrichedOriginal = (() => {
+								if (!analysisContext) return userMessage;
+								const lines = [
+									`ANALYSIS CONTEXT:`,
+									analysisContext.intent
+										? `Intent: ${analysisContext.intent}`
+										: "",
+									Array.isArray(analysisContext.entities) &&
+									analysisContext.entities.length
+										? `Entities: ${analysisContext.entities.join(", ")}`
+										: "",
+									Array.isArray(analysisContext.data_types) &&
+									analysisContext.data_types.length
+										? `Data types: ${analysisContext.data_types.join(", ")}`
+										: "",
+									analysisContext.analysis_type
+										? `Analysis: ${analysisContext.analysis_type}`
+										: "",
+									analysisContext.complexity
+										? `Complexity: ${analysisContext.complexity}`
+										: "",
+								]
+									.filter(Boolean)
+									.join("\n");
+								return `${userMessage}\n\n${lines}`;
+							})();
+
 							await nbCodeService.generateAndAddValidatedCode({
 								stepDescription: userMessage,
-								originalQuestion: userMessage,
+								originalQuestion: enrichedOriginal,
 								datasets: selectedDatasets, // Pass selected datasets for package installation detection
 								workingDir: wsDir,
 								notebookPath: nbFilePath,
@@ -1310,13 +1408,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				}
 			}
 			// Handle ADD_CELL intent for active notebooks (prioritize over dataset-based analysis)
-			else if (
-				(intentResult.intent === "ADD_CELL" && !isLowConfidence) ||
-				// Local heuristic: if a notebook is open and the user clearly asks to add/insert a cell,
-				// honor it even if LLM confidence is low.
-				(isNotebookOpen &&
-					/\b(add|insert|new)\s+(markdown\s+)?cell\b/i.test(userMessage))
-			) {
+			else if (addCellRequested) {
 				console.log(
 					"🔬 ADD_CELL intent detected, checking for open notebooks..."
 				);
@@ -1380,9 +1472,36 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 								sessionId
 							);
 
+							const enrichedOriginal = (() => {
+								if (!analysisContext) return userMessage;
+								const lines = [
+									`ANALYSIS CONTEXT:`,
+									analysisContext.intent
+										? `Intent: ${analysisContext.intent}`
+										: "",
+									Array.isArray(analysisContext.entities) &&
+									analysisContext.entities.length
+										? `Entities: ${analysisContext.entities.join(", ")}`
+										: "",
+									Array.isArray(analysisContext.data_types) &&
+									analysisContext.data_types.length
+										? `Data types: ${analysisContext.data_types.join(", ")}`
+										: "",
+									analysisContext.analysis_type
+										? `Analysis: ${analysisContext.analysis_type}`
+										: "",
+									analysisContext.complexity
+										? `Complexity: ${analysisContext.complexity}`
+										: "",
+								]
+									.filter(Boolean)
+									.join("\n");
+								return `${userMessage}\n\n${lines}`;
+							})();
+
 							await nbCodeService.generateAndAddValidatedCode({
 								stepDescription: userMessage,
-								originalQuestion: userMessage,
+								originalQuestion: enrichedOriginal,
 								datasets: selectedDatasets, // Pass selected datasets for package installation detection
 								workingDir: wsDir,
 								notebookPath: nbFilePath,
@@ -1763,6 +1882,54 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					analysisResult.steps,
 					analysisResult.workingDirectory // Use the question-specific workspace
 				);
+
+				// Add/Update Analysis Overview markdown cell using the computed plan
+				if (notebookPath) {
+					try {
+						const notebookService = new (
+							await import("../../services/notebook/NotebookService")
+						).NotebookService({
+							workspacePath: analysisResult.workingDirectory,
+						});
+						const overviewLines: string[] = [];
+						overviewLines.push(`# Analysis Overview`);
+						overviewLines.push("");
+						overviewLines.push(`**Question:** ${originalQuery}`);
+						try {
+							const u: any = analysisResult.understanding || {};
+							const aType = u.analysisType || u.analysis_type || null;
+							if (aType) overviewLines.push(`**Type:** ${String(aType)}`);
+							if (Array.isArray(u.dataNeeded) && u.dataNeeded.length)
+								overviewLines.push(
+									`**Data Needed:** ${u.dataNeeded.join(", ")}`
+								);
+							if (Array.isArray(u.expectedOutputs) && u.expectedOutputs.length)
+								overviewLines.push(
+									`**Expected Outputs:** ${u.expectedOutputs.join(", ")}`
+								);
+						} catch (_) {}
+						overviewLines.push("");
+						overviewLines.push(`**Selected Datasets:**`);
+						overviewLines.push("");
+						datasets.forEach((d) => {
+							const src = (d as any).source || "Local/Unknown";
+							const url = (d as any).url ? ` — ${(d as any).url}` : "";
+							overviewLines.push(
+								`- ${d.id}: ${d.title || "Untitled"} (${src})${url}`
+							);
+						});
+						overviewLines.push("");
+						overviewLines.push(`**Planned Steps:**`);
+						analysisResult.steps.forEach((s: any, i: number) => {
+							overviewLines.push(`${i + 1}. ${s.description || s.id}`);
+						});
+						const overview: string = overviewLines.join("\n");
+						await notebookService.updateFirstMarkdownCell(
+							notebookPath,
+							overview
+						);
+					} catch (_) {}
+				}
 
 				if (!notebookPath) {
 					console.error("Failed to create notebook");
@@ -2475,9 +2642,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 				{isProcessing && (
 					<ProcessingIndicator
-						text={
-							progressMessage || analysisState.analysisStatus || "Processing"
-						}
+						text={progressMessage || analysisState.analysisStatus || "Thinking"}
 					/>
 				)}
 

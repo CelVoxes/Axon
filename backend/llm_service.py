@@ -3,6 +3,7 @@
 import os
 import asyncio
 import json
+import hashlib
 from typing import List, Optional, Dict, Any, Union, Sequence, cast
 import re
 from abc import ABC, abstractmethod
@@ -619,8 +620,23 @@ class LLMService:
         # Session metadata for Responses chaining and budget tracking
         # { session_id: { 'last_response_id': str|None, 'approx_chars': int, 'approx_tokens': int } }
         self.session_meta: Dict[str, Dict[str, Any]] = {}
-        # Default heuristic for model context budget (tokens)
-        self.default_context_tokens = 128000
+        # Track last seeded context hash per session to avoid resending identical blobs
+        self._session_context_hash: Dict[str, str] = {}
+        # Default heuristic for model context budget (tokens). Final per-session
+        # limit is computed dynamically based on the active model.
+        from .config import SearchConfig
+        try:
+            mdl = getattr(self, "provider", None)
+            # Prefer provider.model when available; otherwise use configured default
+            current_model = None
+            try:
+                current_model = getattr(mdl, "model", None)
+            except Exception:
+                current_model = None
+            self.default_context_tokens = int(SearchConfig.get_model_context_tokens(current_model))
+        except Exception:
+            # Safe fallback
+            self.default_context_tokens = 128000
         # Debug flags (opt-in via env)
         self._debug_enabled = str(os.getenv("AXON_LLM_DEBUG", "")).lower() in ("1", "true", "yes", "on")
         self._stats_debug_enabled = str(os.getenv("AXON_LLM_STATS_DEBUG", "")).lower() in ("1", "true", "yes", "on")
@@ -690,6 +706,33 @@ class LLMService:
         val = meta.get('last_response_id')
         return val if isinstance(val, str) else None
 
+    def _should_include_context(self, session_id: Optional[str], context: Optional[str]) -> bool:
+        if not session_id:
+            return False
+        if not isinstance(context, str) or not context.strip():
+            return False
+        prev_id = self._get_previous_response_id(session_id)
+        # Seed on first turn for this session
+        if not prev_id:
+            return True
+        try:
+            h = hashlib.sha256(context.encode('utf-8')).hexdigest()
+            last = self._session_context_hash.get(session_id)
+            return h != last
+        except Exception:
+            return True
+
+    def _record_context_hash(self, session_id: Optional[str], context: Optional[str]) -> None:
+        if not session_id:
+            return
+        if not isinstance(context, str) or not context:
+            return
+        try:
+            h = hashlib.sha256(context.encode('utf-8')).hexdigest()
+            self._session_context_hash[session_id] = h
+        except Exception:
+            pass
+
     def _build_minimal_messages(
         self,
         session_id: Optional[str],
@@ -711,12 +754,37 @@ class LLMService:
             cast(Message, {"role": "user", "content": user_content}),
         ]
 
+    def _resolve_session_limit_tokens(self, session_id: Optional[str]) -> int:
+        """Return the per-session context-token limit based on the session's active model.
+
+        Falls back to the instance default if model cannot be resolved.
+        """
+        try:
+            from .config import SearchConfig
+            # Resolve a model preference stored in session meta or on provider
+            model_name = None
+            if session_id and session_id in self.session_meta:
+                meta = self.session_meta.get(session_id) or {}
+                m = meta.get('model')
+                if isinstance(m, str) and m:
+                    model_name = m
+            if not model_name:
+                try:
+                    model_name = getattr(self.provider, 'model', None)
+                except Exception:
+                    model_name = None
+            limit = int(SearchConfig.get_model_context_tokens(model_name))
+            return limit
+        except Exception:
+            return int(self.default_context_tokens)
+
     def _is_near_context_limit(self, session_id: Optional[str], threshold: float = 0.8) -> bool:
         if not session_id:
             return False
         meta = self.session_meta.get(session_id) or {}
         approx_tokens = int(meta.get('approx_tokens', 0) or 0)
-        return approx_tokens > int(self.default_context_tokens * threshold)
+        limit_tokens = self._resolve_session_limit_tokens(session_id)
+        return approx_tokens > int(limit_tokens * threshold)
 
     def get_last_reasoning_summary(self) -> Optional[str]:
         try:
@@ -739,17 +807,31 @@ class LLMService:
                 "last_response_id": meta.get('last_response_id'),
                 "approx_tokens": tokens,
                 "approx_chars": int(meta.get('approx_chars', 0) or 0),
-                "limit_tokens": int(self.default_context_tokens),
+                "limit_tokens": int(self._resolve_session_limit_tokens(session_id)),
                 "near_limit": self._is_near_context_limit(session_id),
             }
         
-        # If no exact match, attempt smart matching:
-        # 1) Match by chat ID suffix (session:wsdir:chatId)
-        # 2) Match by base workspace prefix (session:wsdir)
+        # If no exact match, optionally attempt smart matching.
+        # IMPORTANT: For specific chat sessions (chatId != 'global'), we return zeros instead of
+        # borrowing usage from other sessions. This prevents a new chat from inheriting prior usage.
         if ':' in session_id:
             parts = session_id.split(':')
             chat_id_suffix = parts[-1]
             base_prefix = ':'.join(parts[:-1]) if len(parts) > 1 else session_id
+
+            # Strict behavior for per-chat sessions: if this chat hasn't produced any LLM calls yet,
+            # do NOT fallback to other sessions. Show zero until this session accumulates usage.
+            if isinstance(chat_id_suffix, str) and chat_id_suffix.lower() != 'global':
+                self._debug_stats("📊 LLM Service: No exact stats for per-chat session; returning zeros (no fallback)")
+                return {
+                    "session_id": session_id,
+                    "last_response_id": None,
+                    "approx_tokens": 0,
+                    "approx_chars": 0,
+                    "limit_tokens": int(self.default_context_tokens),
+                    "near_limit": False,
+                }
+
             self._debug_stats(f"📊 LLM Service: Looking for sessions matching chat suffix: {chat_id_suffix} or base prefix: {base_prefix}")
             best_match = None
             max_tokens = 0
@@ -778,7 +860,7 @@ class LLMService:
                     "last_response_id": best_meta.get('last_response_id'),
                     "approx_tokens": tokens,
                     "approx_chars": int(best_meta.get('approx_chars', 0) or 0),
-                    "limit_tokens": int(self.default_context_tokens),
+                    "limit_tokens": int(self._resolve_session_limit_tokens(best_session_id)),
                     "near_limit": self._is_near_context_limit(best_session_id),
                 }
         
@@ -789,7 +871,7 @@ class LLMService:
             "last_response_id": None,
             "approx_tokens": 0,
             "approx_chars": 0,
-            "limit_tokens": int(self.default_context_tokens),
+            "limit_tokens": int(self._resolve_session_limit_tokens(session_id)),
             "near_limit": False,
         }
 
@@ -895,8 +977,11 @@ class LLMService:
             "notebook outputs, datasets, and results. Be concise and precise. "
             "Do not invent files or environments."
         )
+        # Include context only when needed to avoid prompt bloat; rely on Responses chaining otherwise
+        include_context = self._should_include_context(session_id, context)
+        ctx_text = context if include_context else None
         user_content = (
-            f"Question: {question}\n\n" + (f"Context:\n{context}" if context else "")
+            f"Question: {question}\n\n" + (f"Context:\n{ctx_text}" if ctx_text else "")
         )
 
         if not self.provider:
@@ -923,6 +1008,8 @@ class LLMService:
                     model=resolved_model,
                 )
                 self._update_session_usage(session_id)
+                if include_context:
+                    self._record_context_hash(session_id, context)
                 self._append_and_prune(session_id, "assistant", response)
                 return response
             else:
@@ -936,6 +1023,8 @@ class LLMService:
                     store=True,
                     model=resolved_model,
                 )
+                if include_context:
+                    self._record_context_hash(session_id, context)
                 return response
         except Exception as e:
             print(f"LLMService.ask error: {e}")
@@ -958,8 +1047,11 @@ class LLMService:
             "If you need to plan internally, you MAY use <thinking>...</thinking>.\n"
             "Place user-visible content inside <final>...</final>."
         )
+        # Include context only when needed; rely on Responses chaining across turns
+        include_context = self._should_include_context(session_id, context)
+        ctx_text = context if include_context else None
         user_content = (
-            f"Question: {question}\n\n" + (f"Context:\n{context}" if context else "")
+            f"Question: {question}\n\n" + (f"Context:\n{ctx_text}" if ctx_text else "")
         )
 
         try:
@@ -982,6 +1074,8 @@ class LLMService:
                         total += chunk
                         yield chunk
                 self._update_session_usage(session_id)
+                if include_context:
+                    self._record_context_hash(session_id, context)
                 self._append_and_prune(session_id, "assistant", total)
             else:
                 async for chunk in self.provider.generate_stream(
@@ -996,6 +1090,8 @@ class LLMService:
                 ):
                     if chunk:
                         yield chunk
+                if include_context:
+                    self._record_context_hash(session_id, context)
         except Exception as e:
             yield f"(error) {e}"
     
@@ -1003,7 +1099,8 @@ class LLMService:
         self, 
         user_query: str, 
         attempt: int = 1, 
-        is_first_attempt: bool = True
+        is_first_attempt: bool = True,
+        session_id: Optional[str] = None,
     ) -> List[str]:
         """Generate search terms for dataset search."""
         if not self.provider:
@@ -1011,10 +1108,26 @@ class LLMService:
         
         try:
             prompt = self._build_search_prompt(user_query, attempt, is_first_attempt)
-            response = await self.provider.generate([
-                {"role": "system", "content": "You are a biomedical search expert specializing in finding relevant datasets in biological databases."},
-                {"role": "user", "content": prompt}
-            ], max_tokens=200, temperature=0.3)
+            system = "You are a biomedical search expert specializing in finding relevant datasets in biological databases."
+            if session_id:
+                minimal_msgs = self._build_minimal_messages(session_id, system, prompt)
+                response = await self.provider.generate(
+                    minimal_msgs,
+                    max_tokens=200,
+                    temperature=0.3,
+                    store=False,
+                    previous_response_id=self._get_previous_response_id(session_id),
+                    model=self._resolve_model(session_id, None),
+                )
+                try:
+                    self._update_session_usage(session_id)
+                except Exception:
+                    pass
+            else:
+                response = await self.provider.generate([
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt}
+                ], max_tokens=200, temperature=0.3)
             
             return self._parse_comma_separated_response(response)[:5]
             
@@ -1077,6 +1190,9 @@ Simplified query:"""
             return self._generate_fallback_code(task_description, language)
         
         lang = (language or "python").strip()
+        # Avoid resending identical context across chained turns
+        include_context = self._should_include_context(session_id, context)
+        ctx_text = context if include_context else None
         prompt = f"""
 You are an expert programmer specializing in data analysis and bioinformatics.
 Generate clean, executable {lang} code for the following task.
@@ -1084,7 +1200,7 @@ Generate clean, executable {lang} code for the following task.
 Task: {task_description}
 Language: {lang}
 
-{f"Context: {context}" if context else ""}
+{f"Context: {ctx_text}" if ctx_text else ""}
 
 Requirements:
 - Return ONLY {lang} code, no markdown or prose
@@ -1114,12 +1230,16 @@ Code:
                     model=resolved_model,
                 )
                 self._update_session_usage(session_id)
+                if include_context:
+                    self._record_context_hash(session_id, context)
                 self._append_and_prune(session_id, "assistant", response)
             else:
                 response = await self.provider.generate([
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
                 ], max_tokens=2000, temperature=0.1, store=True, model=resolved_model)
+                if include_context:
+                    self._record_context_hash(session_id, context)
             if (lang or "").lower() == "python":
                 return self.extract_python_code(response) or self._generate_fallback_code(task_description, language)
             else:
@@ -1150,6 +1270,9 @@ Code:
         
         # Use different prompts for notebook edits vs full code generation
         lang = (language or "python").strip()
+        # Decide whether to include the full context blob for this session
+        include_context = self._should_include_context(session_id, context)
+        ctx_text = context if include_context else None
         if notebook_edit:
             prompt = f"""
 You are editing a specific section of code in a Jupyter notebook. 
@@ -1157,7 +1280,7 @@ You are editing a specific section of code in a Jupyter notebook.
 TASK: {task_description}
 LANGUAGE: {lang}
 
-{f"CONTEXT: {context}" if context else ""}
+{f"CONTEXT: {ctx_text}" if ctx_text else ""}
 
 CRITICAL RULES FOR NOTEBOOK EDITING:
 1. Return ONLY the exact replacement code for the specified lines
@@ -1179,7 +1302,7 @@ Generate concise, executable {lang} code for the following task.
 TASK: {task_description}
 LANGUAGE: {lang}
 
-{f"CONTEXT: {context}" if context else ""}
+{f"CONTEXT: {ctx_text}" if ctx_text else ""}
 
 CRITICAL REQUIREMENTS (concise):
 1. Return ONLY {lang} code — no markdown or prose
@@ -1258,6 +1381,8 @@ Generate the code now:
                         total += chunk
                         yield chunk
                 self._update_session_usage(session_id)
+                if include_context:
+                    self._record_context_hash(session_id, context)
                 self._append_and_prune(session_id, "assistant", total)
             else:
                 async for chunk in self.provider.generate_stream([
@@ -1265,6 +1390,8 @@ Generate the code now:
                     {"role": "user", "content": prompt}
                 ], max_tokens=3000, temperature=0.1, store=True, model=resolved_model, **({"reasoning": reasoning} if reasoning else {})):
                     yield chunk
+                if include_context:
+                    self._record_context_hash(session_id, context)
                 
         except Exception as e:
             print(f"Error generating streaming code: {e}")
@@ -1617,8 +1744,8 @@ JSON response:"""
             print(f"Tool calling error: {e}")
             return {"error": f"Tool calling failed: {e}"}
     
-    async def analyze_query(self, query: str) -> Dict[str, Any]:
-        """Analyze a query to extract components and intent."""
+    async def analyze_query(self, query: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """Analyze a query to extract components and intent. Chains to session when provided."""
         if not self.provider:
             return self._basic_query_analysis(query)
         
@@ -1636,10 +1763,27 @@ Extract and return a JSON object with:
 
 JSON response:"""
             
-            response = await self.provider.generate([
-                {"role": "system", "content": "You are a biomedical query analyzer that extracts structured information from research questions."},
-                {"role": "user", "content": prompt}
-            ], max_tokens=300, temperature=0.1)
+            system = "You are a biomedical query analyzer that extracts structured information from research questions."
+            if session_id:
+                # Chain to session without polluting stored history
+                minimal_msgs = self._build_minimal_messages(session_id, system, prompt)
+                response = await self.provider.generate(
+                    minimal_msgs,
+                    max_tokens=300,
+                    temperature=0.1,
+                    store=False,
+                    previous_response_id=self._get_previous_response_id(session_id),
+                    model=self._resolve_model(session_id, None),
+                )
+                try:
+                    self._update_session_usage(session_id)
+                except Exception:
+                    pass
+            else:
+                response = await self.provider.generate([
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt}
+                ], max_tokens=300, temperature=0.1)
             
             try:
                 return json.loads(response)
@@ -1920,7 +2064,8 @@ Make the steps specific, actionable, and appropriate for the current context and
         data_types: List[str],
         user_question: str,
         available_datasets: List[Dict[str, Any]],
-        current_context: str = ""
+        current_context: str = "",
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate dynamic analysis suggestions based on the selected data types.
@@ -2000,10 +2145,26 @@ Make suggestions specific, actionable, and tailored to the user's question and d
             return self._generate_fallback_suggestions(data_types, user_question)
             
         try:
-            response = await self.provider.generate([
-                {"role": "system", "content": "You are an expert bioinformatics assistant that provides specific, actionable analysis suggestions based on data types and research questions."},
-                {"role": "user", "content": prompt}
-            ], max_tokens=1500, temperature=0.3)
+            system = "You are an expert bioinformatics assistant that provides specific, actionable analysis suggestions based on data types and research questions."
+            if session_id:
+                minimal_msgs = self._build_minimal_messages(session_id, system, prompt)
+                response = await self.provider.generate(
+                    minimal_msgs,
+                    max_tokens=1500,
+                    temperature=0.3,
+                    store=False,
+                    previous_response_id=self._get_previous_response_id(session_id),
+                    model=self._resolve_model(session_id, None),
+                )
+                try:
+                    self._update_session_usage(session_id)
+                except Exception:
+                    pass
+            else:
+                response = await self.provider.generate([
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt}
+                ], max_tokens=1500, temperature=0.3)
             
             # Try to parse JSON from the response
             try:

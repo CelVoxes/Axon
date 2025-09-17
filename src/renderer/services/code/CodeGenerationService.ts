@@ -33,6 +33,23 @@ export class CodeGenerationService implements ICodeGenerator {
 		{ accumulatedCode: string; startTime: number }
 	>();
 	private log = Logger.createLogger("codeGenerationService");
+	private static HEAVY_CTX_KEY_PREFIX = "axon.codegen.heavyctx.seeded.";
+
+	private isHeavyContextSeeded(sessionId: string): boolean {
+		try {
+			const key = CodeGenerationService.HEAVY_CTX_KEY_PREFIX + sessionId;
+			return localStorage.getItem(key) === "1";
+		} catch (_) {
+			return false;
+		}
+	}
+
+	private markHeavyContextSeeded(sessionId: string): void {
+		try {
+			const key = CodeGenerationService.HEAVY_CTX_KEY_PREFIX + sessionId;
+			localStorage.setItem(key, "1");
+		} catch (_) {}
+	}
 
 	constructor(
 		backendClient: BackendClient,
@@ -45,7 +62,8 @@ export class CodeGenerationService implements ICodeGenerator {
 	}
 
 	public getSessionIdForPath(workingDir?: string): string {
-		if (this.sessionOverride && this.sessionOverride.trim()) return this.sessionOverride;
+		if (this.sessionOverride && this.sessionOverride.trim())
+			return this.sessionOverride;
 		const wd = (workingDir || "").trim();
 		return wd ? `session:${wd}` : "session:default";
 	}
@@ -294,11 +312,11 @@ General requirements (concise):
 
 		// Add global code context from entire conversation if available
 		if (request.globalCodeContext && request.globalCodeContext.trim()) {
-			context += `\n\n⚠️  CRITICAL: The following code has already been generated. DO NOT repeat any of it! ⚠️\n\nPREVIOUSLY GENERATED CODE FROM ENTIRE CONVERSATION:\n\n\`\`\`python\n${request.globalCodeContext}\n\`\`\`\n\nIMPORTANT: Do not repeat imports or setup code that was already generated. Focus only on the new functionality for this step.`;
+			context += `\n\n⚠️  NOTE: Prior code from this conversation is provided below to give context.\n\nPREVIOUSLY GENERATED CODE FROM ENTIRE CONVERSATION:\n\n\`\`\`python\n${request.globalCodeContext}\n\`\`\`\n\nInclude the minimal imports required to run this cell independently. It is acceptable if imports were used before. Avoid heavy global setup duplication.`;
 		}
 
 		if (request.previousCode && request.previousCode.trim()) {
-			context += `\n\nPreviously generated code (DO NOT REPEAT IMPORTS OR SETUP):\n\`\`\`python\n${request.previousCode}\n\`\`\`\n\nIMPORTANT: Do not repeat imports or setup code that was already generated. Focus only on the new functionality for this step.`;
+			context += `\n\nPreviously generated code (for reference):\n\`\`\`python\n${request.previousCode}\n\`\`\`\n\nInclude minimal required imports at the top of this cell; do not rely on prior cells being executed.`;
 		}
 
 		return context;
@@ -308,37 +326,42 @@ General requirements (concise):
 	 * Build enhanced context and augment with Scanpy RAG snippets (version-aware docstrings)
 	 */
 	private async buildEnhancedContextWithDocs(
-		request: CodeGenerationRequest
+		request: CodeGenerationRequest,
+		lean: boolean = false
 	): Promise<string> {
 		let context = this.buildEnhancedContext(request);
 
 		// Detect spectral flow cytometry datasets
-		const isSpectralFlow = Array.isArray(request.datasets)
-			&& request.datasets.some((d: any) =>
-				String((d?.dataType || "")).toLowerCase() === "spectral_flow_cytometry"
+		const isSpectralFlow =
+			Array.isArray(request.datasets) &&
+			request.datasets.some(
+				(d: any) =>
+					String(d?.dataType || "").toLowerCase() === "spectral_flow_cytometry"
 			);
 
-		// Append a concise snapshot of local datasets (data_dir) to inform loader choice
-		try {
-			const localDatasets = (request.datasets || []).filter((d: any) =>
-				Boolean((d as any).localPath)
-			);
-			if (localDatasets.length > 0) {
-				const snapshot = await buildDatasetSnapshot(
-					localDatasets as any,
-					request.workingDir
+		// Append a concise snapshot of local datasets (data_dir) to inform loader choice (first heavy seed only)
+		if (!lean) {
+			try {
+				const localDatasets = (request.datasets || []).filter((d: any) =>
+					Boolean((d as any).localPath)
 				);
-				if (snapshot && snapshot.trim()) {
-					context += `\n\nFolder snapshot (for local mentions; use data_dir):\n${snapshot}`;
-					context += `\n\nGuidance: Decide how to load based on snapshot and file extensions/markers. For *.csv/*.tsv bundles, iterate files via a glob, add a 'sample' column and concatenate into one table. Do not assume pre-defined helpers.`;
-					context += `\n\nIf a directory contains multiple CSV/TSV files: iterate them (use glob), load appropriately (R: readr::read_csv/read_tsv; Python: pandas.read_csv), align columns, add a 'sample' column from filename, and concatenate into one table.`;
-					if (!isSpectralFlow) {
-						context += `\nFor flow/spectral cytometry-like data: First detect existing scaling and compensation.\n- Detect arcsinh/logicle/z-scored data by inspecting column names (e.g., 'arcsinh', 'asinh', 'logicle', 'normalized') and value distributions.\n  Heuristics: if many values are negative and 95th percentile < ~20 per marker, likely already arcsinh/logicle; if 99th percentile >> 1e4 and non-negative, likely raw.\n- Only apply arcsinh (cofactor≈5) if raw intensities; otherwise skip.\n- Respect existing compensation/unmixing; if absent and sidecar matrix present (spill/unmix CSV or FCS $SPILLOVER keyword), apply it before scaling.\n- Then standardize (skip if already standardized), compute neighbors + UMAP (umap-learn), cluster (e.g., DBSCAN/HDBSCAN/KMeans), and plot UMAP colored by cluster and sample.`;
+				if (localDatasets.length > 0) {
+					const snapshot = await buildDatasetSnapshot(
+						localDatasets as any,
+						request.workingDir
+					);
+					if (snapshot && snapshot.trim()) {
+						context += `\n\nFolder snapshot (for local mentions; use data_dir):\n${snapshot}`;
+						context += `\n\nGuidance: Decide how to load based on snapshot and file extensions/markers. For *.csv/*.tsv bundles, iterate files via a glob, add a 'sample' column and concatenate into one table. Do not assume pre-defined helpers.`;
+						context += `\n\nIf a directory contains multiple CSV/TSV files: iterate them (use glob), load appropriately (R: readr::read_csv/read_tsv; Python: pandas.read_csv), align columns, add a 'sample' column from filename, and concatenate into one table.`;
+						if (!isSpectralFlow) {
+							context += `\nFor flow/spectral cytometry-like data: First detect existing scaling and compensation.\n- Detect arcsinh/logicle/z-scored data by inspecting column names (e.g., 'arcsinh', 'asinh', 'logicle', 'normalized') and value distributions.\n  Heuristics: if many values are negative and 95th percentile < ~20 per marker, likely already arcsinh/logicle; if 99th percentile >> 1e4 and non-negative, likely raw.\n- Only apply arcsinh (cofactor≈5) if raw intensities; otherwise skip.\n- Respect existing compensation/unmixing; if absent and sidecar matrix present (spill/unmix CSV or FCS $SPILLOVER keyword), apply it before scaling.\n- Then standardize (skip if already standardized), compute neighbors + UMAP (umap-learn), cluster (e.g., DBSCAN/HDBSCAN/KMeans), and plot UMAP colored by cluster and sample.`;
+						}
 					}
 				}
+			} catch (_) {
+				// Best-effort; snapshot is optional
 			}
-		} catch (_) {
-			// Best-effort; snapshot is optional
 		}
 		// Append tool-specific guidance
 		if (isSpectralFlow) {
@@ -346,17 +369,20 @@ General requirements (concise):
 			context += `\n\nTARGET LANGUAGE: R\n\nSeurat v5 sketch guidance (spectral flow):\n- Use library(Seurat) and assume data are CSV/TSV files under data_dir (rows=cells/events, cols=markers).\n- Build a Seurat object from the numeric matrix (ensure features=markers/columns).\n- If compensation/unmixing sidecar exists (spill/unmix CSV), apply it before scaling.\n- Detect whether values look raw vs arcsinh/logicle; only apply arcsinh (cofactor≈5) when clearly raw.\n- Use Seurat v5's sketch-based workflow: compute PCA/Neighbors/UMAP on a representative sketch (e.g., tens of thousands of cells) and map remaining cells to the learned embedding (projection).\n- Cluster cells on the embedding and save labels and UMAP coordinates.\n- Save intermediate and final outputs (e.g., embeddings, cluster labels) under results/.\nCRITICAL:\n- Return ONLY R code; no markdown or prose.\n- Do not rely on external GUIs; write clean, scriptable code.\n- Avoid network downloads; use data_dir only.`;
 		} else {
 			// Scanpy RAG guidance for Python single-cell workflows
-			try {
-				const rag = await ScanpyDocsService.getInstance().buildRagContextForRequest(
-					request.stepDescription,
-					request.originalQuestion,
-					request.workingDir
-				);
-				if (rag && rag.trim()) {
-					context += `\n\nAuthoritative Scanpy references (from installed environment):\n${rag}\n\nStrict rules:\n- Prefer APIs present above; do not invent parameters.\n- If an API is not present, adapt to available alternatives.\n- Cite the function names you used.`;
+			if (!lean) {
+				try {
+					const rag =
+						await ScanpyDocsService.getInstance().buildRagContextForRequest(
+							request.stepDescription,
+							request.originalQuestion,
+							request.workingDir
+						);
+					if (rag && rag.trim()) {
+						context += `\n\nAuthoritative Scanpy references (from installed environment):\n${rag}\n\nStrict rules:\n- Prefer APIs present above; do not invent parameters.\n- If an API is not present, adapt to available alternatives.\n- Cite the function names you used.`;
+					}
+				} catch (e) {
+					// Best-effort; silently continue without RAG if unavailable
 				}
-			} catch (e) {
-				// Best-effort; silently continue without RAG if unavailable
 			}
 		}
 
@@ -383,21 +409,94 @@ General requirements (concise):
 			const text = `${request.stepDescription || ""}\n${
 				request.originalQuestion || ""
 			}`.toLowerCase();
-			const isSingleCell =
+			// Heuristic detection of single-cell RNA-seq
+			// 1) Text-based cues (user question/step)
+			let isSingleCell =
 				/\b(single\s*-?cell|scrna|scanpy|anndata|h5ad|cellxgene|census|10x|matrix\.mtx)\b/.test(
 					text
 				);
+			const textCue = isSingleCell;
+			// 2) Dataset-based cues (URLs, directory metadata, dataset fields)
+			try {
+				if (Array.isArray(request.datasets)) {
+					const ds = request.datasets as any[];
+					const hasH5ad = ds.some(
+						(d) =>
+							typeof (d as any)?.url === "string" &&
+							(d as any).url.toLowerCase().endsWith(".h5ad")
+					);
+					const hasTenxMeta = ds.some((d) => {
+						const dir = (d as any)?.directory;
+						const contains: string[] | undefined = Array.isArray(dir?.contains)
+							? dir.contains
+							: undefined;
+						const tenx = dir?.tenx;
+						const containsTenx =
+							Array.isArray(contains) &&
+							contains.some((name) =>
+								/matrix\.mtx|features\.(tsv|gz)|genes\.tsv|barcodes\.(tsv|gz)/i.test(
+									String(name)
+								)
+							);
+						const tenxFlags =
+							tenx && (tenx.matrix_mtx || tenx.features_genes || tenx.barcodes);
+						// Path hints (common 10x folder names)
+						const p = String((d as any)?.localPath || "");
+						const pathHint = /filtered_feature_bc_matrix/i.test(p);
+						return Boolean(containsTenx || tenxFlags || pathHint);
+					});
+					const dataTypeFlag = ds.some((d) => {
+						const t = String((d as any)?.dataType || "").toLowerCase();
+						return (
+							t.includes("single_cell") ||
+							t.includes("singlecell") ||
+							t.includes("scrna")
+						);
+					});
+					const platform10x = ds.some((d) =>
+						String((d as any)?.platform || "")
+							.toLowerCase()
+							.includes("10x")
+					);
+					const fileFormat10x = ds.some((d) =>
+						String((d as any)?.fileFormat || "")
+							.toLowerCase()
+							.includes("10x")
+					);
+					isSingleCell =
+						isSingleCell ||
+						hasH5ad ||
+						hasTenxMeta ||
+						dataTypeFlag ||
+						platform10x ||
+						fileFormat10x;
+					try {
+						(this as any).log?.debug?.("scRNA-seq detection", {
+							textCue,
+							hasH5ad,
+							hasTenxMeta,
+							dataTypeFlag,
+							platform10x,
+							fileFormat10x,
+							result: isSingleCell,
+						});
+					} catch (_) {}
+				}
+			} catch (_) {}
 			const isFlow = /\b(flow|cytometry|fcs|spillover|unmix|compensat)\b/.test(
 				text
 			);
-			const isSpectralFlow = Array.isArray(request.datasets)
-				&& request.datasets.some((d: any) => String((d?.dataType || "")).toLowerCase() === "spectral_flow_cytometry");
+			const isSpectralFlow =
+				Array.isArray(request.datasets) &&
+				request.datasets.some(
+					(d: any) =>
+						String(d?.dataType || "").toLowerCase() ===
+						"spectral_flow_cytometry"
+				);
 
 			if (isSingleCell) {
-				// For scRNA-seq, instruct the model to use the standard Scanpy pipeline without extra normalization/transform checks
-				context += `\n\nSTANDARD SCANPY PIPELINE (single-cell RNA-seq):\n- Imports: import scanpy as sc; import anndata as ad; (plus numpy/pandas/matplotlib as needed)\n- Load: prefer ad.read_h5ad(<file>) when *.h5ad under data_dir; else use sc.read_10x_mtx for 10x directories (matrix.mtx + barcodes.tsv + features.tsv)\n- Basic QC: sc.pp.calculate_qc_metrics (optional short summary), optionally filter low-count genes/cells (keep this minimal)\n- Normalize: sc.pp.normalize_total(adata)\n- Log: sc.pp.log1p(adata)\n- HVGs: sc.pp.highly_variable_genes(adata, n_top_genes=2000, flavor='seurat')\n- (Optional) adata.raw = adata before scaling\n- Scale: sc.pp.scale(adata, max_value=10)\n- PCA: sc.tl.pca(adata, svd_solver='arpack')\n- Neighbors: sc.pp.neighbors(adata)\n- UMAP: sc.tl.umap(adata)\n- Clusters: sc.tl.leiden(adata, key_added='leiden')\n- Markers: sc.tl.rank_genes_groups(adata, 'leiden', method='t-test')\n- Plots: sc.pl.umap(adata, color=['leiden'], save=False)\nCRITICAL:\n- Do NOT add heuristics to detect pre-normalization/log transforms; just run the pipeline above.\n- Prefer the exact function names above (no custom clustering substitutes).\n\n10X DIRECTORY HANDLING:\n- If data_dir contains a 'filtered_feature_bc_matrix' folder, read with: sc.read_10x_mtx(data_dir / 'filtered_feature_bc_matrix', var_names='gene_symbols', make_unique=True)\n- If data_dir is itself a 10x matrix folder (contains matrix.mtx(.gz), features.tsv(.gz), barcodes.tsv(.gz)), call sc.read_10x_mtx(data_dir, var_names='gene_symbols', make_unique=True)\n\nDATA TYPE DETECTION & PIPELINE SELECTION:\n- If adata.var contains 'feature_types':\n  • If it includes 'Gene Expression' only → run the RNA pipeline above.\n  • If it includes both 'Gene Expression' and 'Antibody Capture' (CITE-seq):\n    - Create gex = adata[:, adata.var['feature_types'] == 'Gene Expression'].copy() and adt = adata[:, adata.var['feature_types'] == 'Antibody Capture'].copy()\n    - Run the RNA pipeline on gex as above.\n    - For ADT: apply sc.pp.normalize_total(adt), sc.pp.log1p(adt), (optional) sc.pp.scale(adt), then PCA/UMAP/neighbors; store results as adt.obsm and plot UMAP colored by top proteins.\n    - Save both gex and adt AnnData objects to results/.\n  • If it includes ATAC/Chromatin ('Peaks' or 'Chromatin Accessibility'):\n    - Run the RNA pipeline on the RNA subset as above.\n    - For ATAC, add a short note that dedicated ATAC processing is out of scope here (no extra libraries); proceed with RNA-only outputs.\n- If dataset metadata indicates 'CITE-seq' or '10x Multiome', apply the same selection rules above.\n`;
-
-				// Skip global scaling/transform detection for scRNA-seq to avoid non-standard logic
+				// Enforce the standard Scanpy pipeline (no heuristics); do not remove required imports
+				context += `\n\nSTANDARD SCANPY PIPELINE (single-cell RNA-seq ONLY — no extra heuristics):\n- Imports: import scanpy as sc; import anndata as ad; (plus numpy/pandas/matplotlib as needed)\n- Load: prefer ad.read_h5ad(<file>) when *.h5ad under data_dir; else use sc.read_10x_mtx for 10x directories (matrix.mtx + barcodes.tsv + features.tsv)\n- Basic QC: sc.pp.calculate_qc_metrics (short summary only)\n- Normalize: sc.pp.normalize_total(adata)\n- Log: sc.pp.log1p(adata)\n- HVGs: sc.pp.highly_variable_genes(adata, n_top_genes=2000, flavor='seurat')\n- (Optional) adata.raw = adata before scaling\n- Scale: sc.pp.scale(adata, max_value=10)\n- PCA: sc.tl.pca(adata, svd_solver='arpack')\n- Neighbors: sc.pp.neighbors(adata)\n- UMAP: sc.tl.umap(adata)\n- Clusters: sc.tl.leiden(adata, key_added='leiden')\n- Markers: sc.tl.rank_genes_groups(adata, 'leiden', method='t-test')\n- Plots: sc.pl.umap(adata, color=['leiden'], save=False)\nSTRICTLY FORBIDDEN IN THIS CELL:\n- Do NOT add heuristic checks for existing normalization/log transforms\n- Do NOT replace clustering with custom implementations\n- Do NOT remove required imports\n\n10X DIRECTORY HANDLING:\n- If data_dir contains 'filtered_feature_bc_matrix', read with: sc.read_10x_mtx(data_dir / 'filtered_feature_bc_matrix', var_names='gene_symbols', make_unique=True)\n- If data_dir is itself a 10x matrix folder (matrix.mtx(.gz), features.tsv(.gz), barcodes.tsv(.gz)), call sc.read_10x_mtx(data_dir, var_names='gene_symbols', make_unique=True)\n`;
 			} else {
 				// Global scaling/normalization detection guidance for other numeric datasets
 				context += `\n\nGLOBAL SCALING/TRANSFORM DETECTION (apply broadly to numeric matrices):\n- Before any normalization, detect whether values are already transformed/scaled to avoid double-transforming.\n- Sources of truth: file/column metadata (headers, FCS keywords), sidecar matrices (spill/unmix), and value distributions.\n- Heuristics per feature set (vote across markers/genes):\n  • Standardized-like: mean≈0 and std≈1 for most columns → skip re-standardization.\n  • Log/arcsinh/logicle-like: compressed range (e.g., 95th pct < ~20), negatives allowed in a small fraction → likely already transformed; do not re-apply log/arcsinh.\n  • Raw-like: large non-negative range (e.g., 99th pct ≥ 1e3–1e4), near-zero negatives → treat as raw; normalize then transform.\n- Cytometry: respect prior compensation/unmixing (FCS $SPILLOVER or sidecar CSV); apply before any scaling.\n- Expression matrices: detect units (TPM/CPM/FPKM), existing log transforms, and z-scoring; avoid double transforms.\n- Record decisions (e.g., in adata.uns['scale_status'] or a dict) and reference in later steps.`;
@@ -431,7 +530,7 @@ General requirements (concise):
 			startTime: timestamp,
 		});
 
-        return await this.generateDataDrivenStepCodeStream(request, stepId);
+		return await this.generateDataDrivenStepCodeStream(request, stepId);
 	}
 
 	private async generateDataDrivenStepCodeStream(
@@ -439,21 +538,16 @@ General requirements (concise):
 		stepId: string
 	): Promise<CodeGenerationResult> {
 		this.log.debug("stream: start %s (%s)", request.stepDescription, stepId);
+		const sessionId = this.buildSessionId(request);
 
 		try {
-			// Prepare enhanced context with more detailed information + Scanpy RAG
-			const enhancedContext = await this.buildEnhancedContextWithDocs(request);
-
+			// Prepare context and stream request
 			this.log.debug(
-				"stream: enhanced context length=%d",
-				enhancedContext.length
+				"stream: POST %s",
+				`${this.backendClient.getBaseUrl()}/llm/code/stream`
 			);
-            this.log.debug(
-                "stream: POST %s",
-                `${this.backendClient.getBaseUrl()}/llm/code/stream`
-            );
 
-            let chunkCount = 0;
+			let chunkCount = 0;
 			const generation = this.activeGenerations.get(stepId);
 			if (!generation) {
 				throw new Error(`Generation tracking not found for stepId: ${stepId}`);
@@ -486,48 +580,74 @@ General requirements (concise):
 				} as CodeGenerationChunkEvent);
 			};
 
-            // Emit generation started event and begin streaming code (reasoning may interleave via code stream)
-            EventManager.dispatchEvent("code-generation-started", {
-                stepId,
-                stepDescription: request.stepDescription,
-                timestamp: Date.now(),
-            } as CodeGenerationStartedEvent);
+			// Emit generation started event and begin streaming code (reasoning may interleave via code stream)
+			EventManager.dispatchEvent("code-generation-started", {
+				stepId,
+				stepDescription: request.stepDescription,
+				timestamp: Date.now(),
+			} as CodeGenerationStartedEvent);
 
-            // Removed fallback planning stream: rely solely on model-emitted reasoning
+			// Removed fallback planning stream: rely solely on model-emitted reasoning
 
-            // Decide target language (R for spectral flow cytometry; Python otherwise)
-            const targetLanguage: "python" | "r" = (Array.isArray(request.datasets) && request.datasets.some((d: any) => String((d?.dataType || "")).toLowerCase() === "spectral_flow_cytometry"))
-                ? "r"
-                : (request.language || "python");
+			// Decide target language (R for spectral flow cytometry; Python otherwise)
+			const targetLanguage: "python" | "r" =
+				Array.isArray(request.datasets) &&
+				request.datasets.some(
+					(d: any) =>
+						String(d?.dataType || "").toLowerCase() ===
+						"spectral_flow_cytometry"
+				)
+					? "r"
+					: request.language || "python";
 
-            const result = await this.backendClient.generateCodeStream(
-                {
-                    task_description: request.stepDescription,
-                    language: targetLanguage,
-                    context: enhancedContext,
-                    model: ConfigManager.getInstance().getDefaultModel(),
-                    session_id: this.buildSessionId(request),
-                },
-                chunkCallback,
-                (reasoningDelta: string) => {
-                    try {
-                        EventManager.dispatchEvent("code-generation-reasoning", {
-                            stepId,
-                            delta: reasoningDelta,
-                            timestamp: Date.now(),
-                        } as any);
-                    } catch (_) {}
-                },
-                (summaryText: string) => {
-                    try {
-                        EventManager.dispatchEvent("code-generation-summary", {
-                            stepId,
-                            summary: summaryText,
-                            timestamp: Date.now(),
-                        } as any);
-                    } catch (_) {}
-                }
-            );
+			// Use lean context after the first heavy seed for this session
+			const heavySeeded = this.isHeavyContextSeeded(sessionId);
+			const enhancedContext = await this.buildEnhancedContextWithDocs(
+				request,
+				heavySeeded
+			);
+
+			const result = await this.backendClient.generateCodeStream(
+				{
+					task_description: request.stepDescription,
+					language: targetLanguage,
+					context: enhancedContext,
+					model: ConfigManager.getInstance().getDefaultModel(),
+					session_id: sessionId,
+				},
+				chunkCallback,
+				(reasoningDelta: string) => {
+					try {
+						EventManager.dispatchEvent("code-generation-reasoning", {
+							stepId,
+							delta: reasoningDelta,
+							timestamp: Date.now(),
+						} as any);
+					} catch (_) {}
+				},
+				(summaryText: string) => {
+					try {
+						EventManager.dispatchEvent("code-generation-summary", {
+							stepId,
+							summary: summaryText,
+							timestamp: Date.now(),
+						} as any);
+					} catch (_) {}
+				}
+			);
+
+			// Mark heavy context as seeded after first successful generation
+			if (!heavySeeded) {
+				this.markHeavyContextSeeded(sessionId);
+			}
+
+			// Emit a session stats update so UI refreshes immediately
+			try {
+				const { SessionStatsService } = await import(
+					"../backend/SessionStatsService"
+				);
+				await SessionStatsService.update(this.backendClient, sessionId);
+			} catch (_) {}
 
 			this.log.debug(
 				"stream: completed, chunks=%d codeLen=%d",
@@ -599,7 +719,14 @@ General requirements (concise):
 
 			// Fallback to non-streaming method
 			this.log.warn("falling back to non-streaming method");
-			return this.generateDataDrivenStepCodeFallback(request, stepId);
+			const fb = await this.generateDataDrivenStepCodeFallback(request, stepId);
+			try {
+				const { SessionStatsService } = await import(
+					"../backend/SessionStatsService"
+				);
+				await SessionStatsService.update(this.backendClient, sessionId);
+			} catch (_) {}
+			return fb;
 		}
 	}
 
@@ -611,7 +738,13 @@ General requirements (concise):
 		stepId: string
 	): Promise<CodeGenerationResult> {
 		try {
-			const isSpectralFlow = Array.isArray(request.datasets) && request.datasets.some((d: any) => String((d?.dataType || "")).toLowerCase() === "spectral_flow_cytometry");
+			const isSpectralFlow =
+				Array.isArray(request.datasets) &&
+				request.datasets.some(
+					(d: any) =>
+						String(d?.dataType || "").toLowerCase() ===
+						"spectral_flow_cytometry"
+				);
 			const result = await this.backendClient.generateCodeFix({
 				prompt: request.stepDescription,
 				model: this.selectedModel,
@@ -805,11 +938,17 @@ ${datasetLoadingCode}
 	/**
 	 * Method to emit validation success as an event
 	 */
-	emitValidationSuccess(stepId: string, message?: string, code?: string): void {
+	emitValidationSuccess(
+		stepId: string,
+		message?: string,
+		code?: string,
+		warnings?: string[]
+	): void {
 		EventManager.dispatchEvent("code-validation-success", {
 			stepId,
 			message: message || "No linter errors found",
 			code,
+			warnings: Array.isArray(warnings) ? warnings : [],
 			timestamp: Date.now(),
 		});
 	}
