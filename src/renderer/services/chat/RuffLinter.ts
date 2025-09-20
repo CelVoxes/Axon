@@ -236,7 +236,11 @@ export class RuffLinter {
 
 		// Sort fixes by position (end to start) to avoid offset issues
 		const fixesToApply = diagnostics
-			.filter((d) => d.fix && d.fix.edits.length > 0)
+			.filter((d) => {
+				if (!d.fix || d.fix.edits.length === 0) return false;
+				// Avoid auto-removing imports that appear unused (e.g., scanpy alias)
+				return d.code !== "F401";
+			})
 			.flatMap((d) => d.fix!.edits)
 			.sort((a, b) => {
 				// Sort by line (descending), then by column (descending)

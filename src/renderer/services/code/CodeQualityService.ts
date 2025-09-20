@@ -97,8 +97,13 @@ export class CodeQualityService {
 		stepId: string,
 		options: CodeQualityPipelineOptions = {}
 	): Promise<CodeQualityResult> {
+		const now = () =>
+			typeof performance !== "undefined" && typeof performance.now === "function"
+				? performance.now()
+				: Date.now();
+		const overallStart = now();
 		console.log(
-			`CodeQualityService: validateAndTest called for stepId: ${stepId}, code length: ${code.length}`
+			`CodeQualityService: validateAndTest(${stepId}) started (len=${code.length})`
 		);
 		const {
 			skipValidation = false,
@@ -160,6 +165,11 @@ export class CodeQualityService {
 					result.lintedCode
 				);
 			} catch (_) {}
+			console.log(
+				`CodeQualityService: validateAndTest(${stepId}) finished in ${(
+					now() - overallStart
+				).toFixed(1)}ms (skip lint)`
+			);
 
 			return result;
 		}
@@ -167,6 +177,7 @@ export class CodeQualityService {
 		// Step 1: Single comprehensive code enhancement (if not skipped)
 		if (!skipCleaning) {
 			this.updateStatus(`Enhancing code for ${stepTitle}...`);
+			const cleanStart = now();
 			result.cleanedCode = this.enhanceCode(code, {
 				addImports,
 				addErrorHandling,
@@ -174,11 +185,17 @@ export class CodeQualityService {
 				stepDescription,
 				globalCodeContext: options.globalCodeContext,
 			});
+			console.log(
+				`CodeQualityService: enhanceCode(${stepId}) took ${(
+					now() - cleanStart
+				).toFixed(1)}ms`
+			);
 		}
 
 		// Step 2: Code Validation (if not skipped) - Using optimized Ruff+LLM service
 		if (!skipValidation) {
 			this.updateStatus(`Validating code for ${stepTitle}...`);
+			const lintStart = now();
 
 			try {
 				const sessionId = this.codeGenerationService.getSessionIdForPath(
@@ -194,6 +211,11 @@ export class CodeQualityService {
 						stepTitle,
 					},
 					sessionId
+				);
+				console.log(
+					`CodeQualityService: lint (Ruff/LLM) ${stepId} took ${(
+						now() - lintStart
+					).toFixed(1)}ms`
 				);
 
 				// Post-process undefined-name errors that are satisfied by prior cells' imports
@@ -364,6 +386,12 @@ export class CodeQualityService {
 			}
 		}
 
+		const totalMs = now() - overallStart;
+		console.log(
+			`CodeQualityService: validateAndTest(${stepId}) finished in ${totalMs.toFixed(
+				1
+			)}ms`
+		);
 		return result;
 	}
 

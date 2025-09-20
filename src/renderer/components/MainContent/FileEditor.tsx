@@ -5,7 +5,10 @@ import { CodeCell } from "./CodeCell";
 import { FiPlus, FiTrash2 } from "react-icons/fi";
 import { ActionButton } from "@components/shared/StyledComponents";
 import { SummaryButton } from "@components/shared/SummaryButton";
-import { SummaryOptionsModal, SummaryOptions } from "@components/shared/SummaryOptionsModal";
+import {
+	SummaryOptionsModal,
+	SummaryOptions,
+} from "@components/shared/SummaryOptionsModal";
 import { Tooltip } from "@components/shared/Tooltip";
 import { useWorkspaceContext } from "../../context/AppContext";
 import { typography } from "../../styles/design-system";
@@ -16,6 +19,7 @@ import { ElectronClient } from "../../utils/ElectronClient";
 import { COLORS } from "../../utils/ThemeUtils";
 import { NotebookSummaryService } from "../../services/notebook/NotebookSummaryService";
 import { BackendClient } from "../../services/backend/BackendClient";
+import { NotebookCanvas } from "./NotebookCanvas";
 
 // Cache detected Python versions per workspace to avoid repeated kernel calls on save
 const workspacePythonVersionCache = new Map<string, string>();
@@ -147,26 +151,52 @@ const InsertCellButton = styled.button`
 	}
 `;
 
+// Compact on/off toggle control for Canvas mode
+const ModeToggle = styled.button<{ $enabled: boolean }>`
+	position: relative;
+	width: 42px;
+	height: 22px;
+	border-radius: 999px;
+	border: 1px solid #404040;
+	background: ${(p) => (p.$enabled ? "#007acc" : "#2d2d30")};
+	cursor: pointer;
+	padding: 0;
+	outline: none;
+	transition: background 0.15s ease, border-color 0.15s ease;
+
+	&::after {
+		content: "";
+		position: absolute;
+		top: 2px;
+		left: ${(p) => (p.$enabled ? "22px" : "2px")};
+		width: 18px;
+		height: 18px;
+		border-radius: 50%;
+		background: #ffffff;
+		transition: left 0.15s ease;
+	}
+`;
+
 // Lightweight DnD wrapper to show insertion indicator while dragging
 const CellDndWrapper = styled.div<{
-  $isDragOver?: boolean;
-  $position?: "above" | "below" | null;
+	$isDragOver?: boolean;
+	$position?: "above" | "below" | null;
 }>`
-  position: relative;
+	position: relative;
 
-  &::before {
-    content: "";
-    position: absolute;
-    left: -8px;
-    right: -8px;
-    height: 2px;
-    background: ${(p) => (p.$isDragOver ? "#007acc" : "transparent")};
-    top: ${(p) => (p.$position === "above" ? "-9px" : "auto")};
-    bottom: ${(p) => (p.$position === "below" ? "-9px" : "auto")};
-    border-radius: 2px;
-    pointer-events: none;
-    transition: background 0.08s ease;
-  }
+	&::before {
+		content: "";
+		position: absolute;
+		left: -8px;
+		right: -8px;
+		height: 2px;
+		background: ${(p) => (p.$isDragOver ? "#007acc" : "transparent")};
+		top: ${(p) => (p.$position === "above" ? "-9px" : "auto")};
+		bottom: ${(p) => (p.$position === "below" ? "-9px" : "auto")};
+		border-radius: 2px;
+		pointer-events: none;
+		transition: background 0.08s ease;
+	}
 `;
 
 interface FileEditorProps {
@@ -207,18 +237,23 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		Array<{ code: string; output: string }>
 	>([]);
 	const [cellIds, setCellIds] = useState<string[]>([]);
+	// View mode: developer (linear cells) vs canvas (graph view)
+	const [viewMode, setViewMode] = useState<"developer" | "canvas">("developer");
 
 	// Drag-and-drop state for reordering cells
 	const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
 	const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
-	const [dragOverPosition, setDragOverPosition] = useState<"above" | "below" | null>(null);
+	const [dragOverPosition, setDragOverPosition] = useState<
+		"above" | "below" | null
+	>(null);
 	const draggingIndexRef = useRef<number | null>(null);
-	
+
 	// Summary modal state
 	const [showSummaryModal, setShowSummaryModal] = useState<boolean>(false);
-	const [isGeneratingSummary, setIsGeneratingSummary] = useState<boolean>(false);
-	const [summaryStreamContent, setSummaryStreamContent] = useState<string>('');
-	
+	const [isGeneratingSummary, setIsGeneratingSummary] =
+		useState<boolean>(false);
+	const [summaryStreamContent, setSummaryStreamContent] = useState<string>("");
+
 	// Summary service instance
 	const summaryServiceRef = useRef<NotebookSummaryService | null>(null);
 
@@ -228,7 +263,10 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	// Debounce save handling (configurable via localStorage)
 	const getAutoSaveDebounceMs = () => {
 		try {
-			const raw = (window.localStorage && window.localStorage.getItem('axon.autoSaveDebounceMs')) || '';
+			const raw =
+				(window.localStorage &&
+					window.localStorage.getItem("axon.autoSaveDebounceMs")) ||
+				"";
 			const n = parseInt(raw as string, 10);
 			if (!Number.isNaN(n) && n > 0) return n;
 		} catch (_) {}
@@ -242,7 +280,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		notebookDataRef.current = notebookData;
 		isReadyRef.current = !!notebookData;
 	}, [notebookData]);
-	
+
 	// Initialize summary service
 	useEffect(() => {
 		if (!summaryServiceRef.current) {
@@ -250,7 +288,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 				const backendClient = new BackendClient();
 				summaryServiceRef.current = new NotebookSummaryService(backendClient);
 			} catch (error) {
-				console.error('Failed to initialize NotebookSummaryService:', error);
+				console.error("Failed to initialize NotebookSummaryService:", error);
 			}
 		}
 	}, []);
@@ -281,7 +319,10 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		setPendingEvents([]);
 		// Reset unsaved indicator baseline on load
 		try {
-			workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: false } });
+			workspaceDispatch({
+				type: "SET_FILE_DIRTY",
+				payload: { filePath, dirty: false },
+			});
 		} catch (_) {}
 	}, [filePath]);
 
@@ -312,9 +353,16 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	// Function to process pending events
 	const processPendingEvents = () => {
 		const currentNotebookData = notebookDataRef.current;
-		console.log('🔄 FileEditor: Processing pending events', { hasNotebookData: !!currentNotebookData, pendingEventsCount: pendingEvents.length });
+		console.log("🔄 FileEditor: Processing pending events", {
+			hasNotebookData: !!currentNotebookData,
+			pendingEventsCount: pendingEvents.length,
+		});
 		if (currentNotebookData && pendingEvents.length > 0) {
-			console.log('📤 FileEditor: Re-dispatching', pendingEvents.length, 'pending events');
+			console.log(
+				"📤 FileEditor: Re-dispatching",
+				pendingEvents.length,
+				"pending events"
+			);
 			pendingEvents.forEach((pendingEvent) => {
 				// Re-dispatch the event to be handled by the current handlers
 				const event = new CustomEvent(pendingEvent.type, {
@@ -350,8 +398,8 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 							"import sys\nprint(sys.version.split(' ')[0])",
 							workspacePath
 						);
-						if (res?.success && typeof res.data?.output === "string") {
-							const candidate = res.data.output.trim();
+						if (res?.success && typeof res.output === "string") {
+							const candidate = res.output.trim();
 							if (candidate && /\d+\.\d+(\.\d+)?/.test(candidate)) {
 								detected = candidate;
 								workspacePythonVersionCache.set(workspacePath, candidate);
@@ -384,7 +432,12 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			}
 			// Mark as saved
 			setHasChanges(false);
-			try { workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: false } }); } catch (_) {}
+			try {
+				workspaceDispatch({
+					type: "SET_FILE_DIRTY",
+					payload: { filePath, dirty: false },
+				});
+			} catch (_) {}
 		} catch (error) {
 			console.error("FileEditor: Error saving notebook:", error);
 		}
@@ -393,9 +446,14 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	// Debounced queue for notebook saves to reduce disk churn
 	const isAutoSaveEnabled = () => {
 		try {
-			const v = (window.localStorage && window.localStorage.getItem('axon.autoSaveNotebooks')) || '';
-			return String(v).toLowerCase() !== 'false';
-		} catch (_) { return true; }
+			const v =
+				(window.localStorage &&
+					window.localStorage.getItem("axon.autoSaveNotebooks")) ||
+				"";
+			return String(v).toLowerCase() !== "false";
+		} catch (_) {
+			return true;
+		}
 	};
 
 	const queueNotebookSave = (
@@ -422,24 +480,113 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 	// Add event listeners for notebook cell events
 	useEffect(() => {
+		const handleRunNotebookCell = async (event: CustomEvent) => {
+			const { filePath: eventFilePath, cellIndex } = (event.detail ||
+				{}) as any;
+			if (eventFilePath !== filePath || !filePath.endsWith(".ipynb")) return;
+			const idx = typeof cellIndex === "number" ? cellIndex : 0;
+			try {
+				const currentNotebookData = notebookDataRef.current;
+				const isReady = isReadyRef.current;
+				if (!currentNotebookData || !isReady) return;
+				if (idx < 0 || idx >= currentNotebookData.cells.length) return;
+				// Extract code for the cell and execute via electronAPI
+				const cell = currentNotebookData.cells[idx];
+				const lang = cell.cell_type === "markdown" ? "python" : "python";
+				const code = Array.isArray(cell.source)
+					? cell.source.join("")
+					: String((cell as any).source || "");
+				if (!code.trim() || cell.cell_type === "markdown") return;
+				const execId = `canvas-run-${Date.now()}-${idx}`;
+				const res = await electronAPI.executeJupyterCode(
+					code,
+					workspacePath,
+					execId,
+					lang
+				);
+				// Update output in editor state so it persists
+				const outText = res && res.output ? String(res.output) : "";
+				setCellStates((prev) => {
+					const next = Array.isArray(prev) ? [...prev] : ([] as any[]);
+					next[idx] = {
+						...(next[idx] || { code: code, output: "" }),
+						output: outText,
+					};
+					return next;
+				});
+				// Reflect output into notebook data and save (debounced)
+				const updatedCells = [...currentNotebookData.cells];
+				updatedCells[idx] = {
+					...updatedCells[idx],
+					outputs: outText
+						? [{ output_type: "stream", name: "stdout", text: [outText] }]
+						: [],
+				};
+				const updatedNotebook = { ...currentNotebookData, cells: updatedCells };
+				setNotebookData(updatedNotebook);
+				setHasChanges(true);
+				queueNotebookSave(updatedNotebook);
+				EventManager.dispatchEvent("notebook-cell-run-complete", {
+					filePath,
+					cellIndex: idx,
+					success: true,
+					output: outText,
+				});
+			} catch (e) {
+				console.error("Failed to run notebook cell from canvas:", e);
+				EventManager.dispatchEvent("notebook-cell-run-complete", {
+					filePath,
+					cellIndex: typeof cellIndex === "number" ? cellIndex : null,
+					success: false,
+					error: e instanceof Error ? e.message : String(e),
+				});
+			}
+		};
+		const handleStopNotebookCell = async (event: CustomEvent) => {
+			const { filePath: eventFilePath } = (event.detail || {}) as any;
+			if (eventFilePath !== filePath || !filePath.endsWith(".ipynb")) return;
+			try {
+				await electronAPI.interruptJupyter(workspacePath);
+				const idx =
+					typeof (event.detail as any)?.cellIndex === "number"
+						? (event.detail as any).cellIndex
+						: null;
+				EventManager.dispatchEvent("notebook-cell-run-stopped", {
+					filePath,
+					cellIndex: idx,
+					success: true,
+				});
+			} catch (err) {
+				console.error("Failed to stop notebook cell from canvas:", err);
+			}
+		};
 		const handleAddNotebookCell = async (event: CustomEvent) => {
 			const {
 				filePath: eventFilePath,
 				cellType,
 				content: cellContent,
+				insertAfter,
 			} = event.detail;
-			console.log('🎯 FileEditor: handleAddNotebookCell called', { eventFilePath, filePath, cellType, contentLength: cellContent?.length });
+			console.log("🎯 FileEditor: handleAddNotebookCell called", {
+				eventFilePath,
+				filePath,
+				cellType,
+				contentLength: cellContent?.length,
+			});
 
 			// Only handle events for the current notebook file
 			if (eventFilePath === filePath && filePath.endsWith(".ipynb")) {
-				console.log('📄 FileEditor: File paths match and is notebook');
+				console.log("📄 FileEditor: File paths match and is notebook");
 				// Use the ref to get the current notebook data
 				const currentNotebookData = notebookDataRef.current;
 				const isReady = isReadyRef.current;
-				console.log('🔍 FileEditor: Notebook state', { hasNotebookData: !!currentNotebookData, isReady });
+				console.log("🔍 FileEditor: Notebook state", {
+					hasNotebookData: !!currentNotebookData,
+					isReady,
+				});
 
 				if (currentNotebookData && isReady) {
-					console.log('✅ FileEditor: Adding cell to notebook');
+					console.log("✅ FileEditor: Adding cell to notebook");
 					// Create new cell in Jupyter notebook format
 					const newCell: NotebookCell = {
 						cell_type: cellType,
@@ -449,38 +596,69 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 						outputs: [],
 					};
 
-					// Add cell to notebook data
+					const targetAfterIndex =
+						typeof insertAfter === "number"
+							? Math.min(
+								Math.max(insertAfter, -1),
+								(currentNotebookData.cells.length || 0) - 1
+							)
+							: null;
+					const insertIndex =
+						targetAfterIndex != null ? targetAfterIndex + 1 : currentNotebookData.cells.length;
+					const updatedCells = [...currentNotebookData.cells];
+					updatedCells.splice(insertIndex, 0, newCell);
+
 					const updatedNotebook = {
 						...currentNotebookData,
-						cells: [...currentNotebookData.cells, newCell],
+						cells: updatedCells,
 					};
 
 					setNotebookData(updatedNotebook);
-					setCellIds((prev) => [...prev, generateCellId()]);
+					setCellIds((prev) => {
+						const next = [...prev];
+						const newId = generateCellId();
+						if (insertIndex >= next.length) {
+							return [...next, newId];
+						}
+						next.splice(insertIndex, 0, newId);
+						return next;
+					});
 					setHasChanges(true);
 
 					// Auto-save and dispatch success event after scheduling
 					try {
 						// Check if this is a package installation cell - if so, save immediately
-						const isPackageInstallCell = /(^|\n)\s*(%pip|%conda|pip\s+install|conda\s+install)\b/i.test(cellContent);
-						
-					const allowImmediate = (() => {
-						try {
-							const raw = (window.localStorage && window.localStorage.getItem('axon.autoSaveInstallCells')) || '';
-							return String(raw).toLowerCase() !== 'false';
-						} catch (_) { return true; }
-					})();
-					if (isPackageInstallCell && allowImmediate) {
-						console.log('📦 FileEditor: Package installation cell detected - saving immediately');
-						await saveNotebookToFile(updatedNotebook, true);
-					} else {
-						queueNotebookSave(updatedNotebook);
-					}
-						
+						const isPackageInstallCell =
+							/(^|\n)\s*(%pip|%conda|pip\s+install|conda\s+install)\b/i.test(
+								cellContent
+							);
+
+						const allowImmediate = (() => {
+							try {
+								const raw =
+									(window.localStorage &&
+										window.localStorage.getItem("axon.autoSaveInstallCells")) ||
+									"";
+								return String(raw).toLowerCase() !== "false";
+							} catch (_) {
+								return true;
+							}
+						})();
+						if (isPackageInstallCell && allowImmediate) {
+							console.log(
+								"📦 FileEditor: Package installation cell detected - saving immediately"
+							);
+							await saveNotebookToFile(updatedNotebook, true);
+						} else {
+							queueNotebookSave(updatedNotebook);
+						}
+
 						EventManager.dispatchEvent("notebook-cell-added", {
 							filePath: eventFilePath,
 							cellType,
 							success: true,
+							insertAfter:
+								typeof insertAfter === "number" ? insertAfter : undefined,
 						});
 					} catch (error) {
 						console.error(
@@ -496,7 +674,9 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					}
 				} else {
 					// Queue the event for later processing
-					console.log('⏳ FileEditor: Queuing add-notebook-cell event for later processing');
+					console.log(
+						"⏳ FileEditor: Queuing add-notebook-cell event for later processing"
+					);
 					setPendingEvents((prev) => [
 						...prev,
 						{
@@ -696,6 +876,14 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			"update-notebook-cell-code",
 			handleUpdateNotebookCellCode as unknown as EventListener
 		);
+			window.addEventListener(
+				"run-notebook-cell",
+				handleRunNotebookCell as unknown as EventListener
+			);
+			window.addEventListener(
+				"stop-notebook-cell",
+				handleStopNotebookCell as unknown as EventListener
+			);
 
 		// Cleanup
 		return () => {
@@ -711,6 +899,14 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 				"update-notebook-cell-code",
 				handleUpdateNotebookCellCode as unknown as EventListener
 			);
+				window.removeEventListener(
+					"run-notebook-cell",
+					handleRunNotebookCell as unknown as EventListener
+				);
+				window.removeEventListener(
+					"stop-notebook-cell",
+					handleStopNotebookCell as unknown as EventListener
+				);
 		};
 	}, [filePath]); // Remove notebookData dependency to prevent listener recreation
 
@@ -755,7 +951,10 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	// Keep global unsaved indicator in sync with local editor state
 	useEffect(() => {
 		try {
-			workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: hasChanges } });
+			workspaceDispatch({
+				type: "SET_FILE_DIRTY",
+				payload: { filePath, dirty: hasChanges },
+			});
 		} catch (_) {}
 	}, [hasChanges, filePath]);
 
@@ -984,7 +1183,10 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			}
 			setHasChanges(false);
 			try {
-				workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: false } });
+				workspaceDispatch({
+					type: "SET_FILE_DIRTY",
+					payload: { filePath, dirty: false },
+				});
 			} catch (_) {}
 		} catch (error) {
 			console.error("Error saving file:", error);
@@ -1003,17 +1205,25 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		if (!notebookData) return;
 		if (from === to) return;
 		if (from < 0 || to < 0) return;
-		if (from >= notebookData.cells.length || to > notebookData.cells.length) return;
+		if (from >= notebookData.cells.length || to > notebookData.cells.length)
+			return;
 
 		const updatedCells = reorderList(notebookData.cells, from, to);
 		const updatedNotebook = { ...notebookData, cells: updatedCells };
 
 		// Keep in-memory state arrays aligned
-		setCellStates((prev) => (Array.isArray(prev) ? reorderList(prev, from, to) : prev));
+		setCellStates((prev) =>
+			Array.isArray(prev) ? reorderList(prev, from, to) : prev
+		);
 		setCellIds((prev) => reorderList(prev, from, to));
 		setNotebookData(updatedNotebook);
 		setHasChanges(true);
-		try { workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: true } }); } catch (_) {}
+		try {
+			workspaceDispatch({
+				type: "SET_FILE_DIRTY",
+				payload: { filePath, dirty: true },
+			});
+		} catch (_) {}
 		queueNotebookSave(updatedNotebook);
 	};
 
@@ -1041,10 +1251,13 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 	) => {
 		// Allow drop
 		e.preventDefault();
-		try { e.dataTransfer.dropEffect = "move"; } catch (_) {}
+		try {
+			e.dataTransfer.dropEffect = "move";
+		} catch (_) {}
 		const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
 		const offsetY = e.clientY - rect.top;
-		const pos: "above" | "below" = offsetY < rect.height / 2 ? "above" : "below";
+		const pos: "above" | "below" =
+			offsetY < rect.height / 2 ? "above" : "below";
 		setDragOverIndex(index);
 		setDragOverPosition(pos);
 	};
@@ -1068,7 +1281,8 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		}
 		const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
 		const offsetY = e.clientY - rect.top;
-		const pos: "above" | "below" = offsetY < rect.height / 2 ? "above" : "below";
+		const pos: "above" | "below" =
+			offsetY < rect.height / 2 ? "above" : "below";
 		let to = pos === "above" ? index : index + 1;
 		// Adjust target if removing earlier element shrinks indices
 		if (from < to) to = to - 1;
@@ -1132,7 +1346,12 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 		setNotebookData(updatedNotebook);
 		setHasChanges(true);
-		try { workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: true } }); } catch (_) {}
+		try {
+			workspaceDispatch({
+				type: "SET_FILE_DIRTY",
+				payload: { filePath, dirty: true },
+			});
+		} catch (_) {}
 		queueNotebookSave(updatedNotebook);
 		// Maintain stable ids in parallel
 		setCellIds((prev) => {
@@ -1167,7 +1386,12 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			return next;
 		});
 		setHasChanges(true);
-		try { workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: true } }); } catch (_) {}
+		try {
+			workspaceDispatch({
+				type: "SET_FILE_DIRTY",
+				payload: { filePath, dirty: true },
+			});
+		} catch (_) {}
 
 		// Auto-save the notebook (debounced)
 		queueNotebookSave(updatedNotebook);
@@ -1184,7 +1408,12 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			return next;
 		});
 		setHasChanges(true);
-		try { workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: true } }); } catch (_) {}
+		try {
+			workspaceDispatch({
+				type: "SET_FILE_DIRTY",
+				payload: { filePath, dirty: true },
+			});
+		} catch (_) {}
 
 		// Auto-save the notebook when cell code is updated (debounced)
 		if (notebookData) {
@@ -1214,7 +1443,12 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			return next;
 		});
 		setHasChanges(true);
-		try { workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: true } }); } catch (_) {}
+		try {
+			workspaceDispatch({
+				type: "SET_FILE_DIRTY",
+				payload: { filePath, dirty: true },
+			});
+		} catch (_) {}
 
 		// Auto-save the notebook when cell output is updated (debounced)
 		if (notebookData) {
@@ -1246,62 +1480,71 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		if (value !== undefined) {
 			setContent(value);
 			setHasChanges(true);
-			try { workspaceDispatch({ type: "SET_FILE_DIRTY", payload: { filePath, dirty: true } }); } catch (_) {}
+			try {
+				workspaceDispatch({
+					type: "SET_FILE_DIRTY",
+					payload: { filePath, dirty: true },
+				});
+			} catch (_) {}
 		}
 	};
-	
+
 	// Summary handling methods
 	const handleSummaryClick = () => {
 		setShowSummaryModal(true);
 	};
-	
+
 	const handleSummaryModalClose = () => {
 		setShowSummaryModal(false);
 	};
-	
+
 	const handleGenerateSummary = async (options: SummaryOptions) => {
 		if (!notebookData || !summaryServiceRef.current) {
-			console.error('Cannot generate summary: missing notebook data or summary service');
+			console.error(
+				"Cannot generate summary: missing notebook data or summary service"
+			);
 			return;
 		}
-		
+
 		setIsGeneratingSummary(true);
-		setSummaryStreamContent(''); // Reset stream content
+		setSummaryStreamContent(""); // Reset stream content
 		try {
-        const sessionId = `session:${workspacePath || 'global'}`;
-        
-        // Use generateAndExportSummary with streaming for real-time updates
-        const result = await summaryServiceRef.current.generateAndExportSummary(
-            notebookData.cells,
-            options,
-            filePath,
-            sessionId,
-            (chunk: string) => {
-            	// Stream callback - update UI with each chunk
-            	setSummaryStreamContent(prev => prev + chunk);
-            }
-        );
-        
-        const { summary, exportResult } = result;
-        const exportSuccess = exportResult;
-			
+			const sessionId = `session:${workspacePath || "global"}`;
+
+			// Use generateAndExportSummary with streaming for real-time updates
+			const result = await summaryServiceRef.current.generateAndExportSummary(
+				notebookData.cells,
+				options,
+				filePath,
+				sessionId,
+				(chunk: string) => {
+					// Stream callback - update UI with each chunk
+					setSummaryStreamContent((prev) => prev + chunk);
+				}
+			);
+
+			const { summary, exportResult } = result;
+			const exportSuccess = exportResult;
+
 			if (exportSuccess.success && exportSuccess.filePath) {
 				// Show success message with the actual file path
-				const fileName = exportSuccess.filePath.split('/').pop();
+				const fileName = exportSuccess.filePath.split("/").pop();
 				alert(`Summary generated successfully!\nSaved to: reports/${fileName}`);
-				
+
 				// Optionally, open the summary file in the editor
 				setTimeout(() => {
-					EventManager.dispatchEvent('file-open-request', {
+					EventManager.dispatchEvent("file-open-request", {
 						filePath: exportSuccess.filePath,
 					});
 				}, 500);
 			} else {
-				alert('Summary generated but failed to save to file. Please try again.');
+				alert(
+					"Summary generated but failed to save to file. Please try again."
+				);
 			}
 		} catch (error) {
-			console.error('Error generating summary:', error);
-			alert('Failed to generate summary. Please try again.');
+			console.error("Error generating summary:", error);
+			alert("Failed to generate summary. Please try again.");
 		} finally {
 			setIsGeneratingSummary(false);
 			setShowSummaryModal(false);
@@ -1360,127 +1603,182 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 							<MetaItem>Cells: {notebookData.cells.length}</MetaItem>
 						</MetaRow>
 					</NotebookMetadata>
-					
+
 					{/* Notebook Actions */}
 					<NotebookActions>
+						{/* Single toggle (off = Developer, on = Canvas) */}
+						<div
+							style={{ display: "inline-flex", gap: 8, alignItems: "center" }}
+						>
+							<span style={{ fontSize: typography.xs, color: "#cfcfcf" }}>
+								Developer
+							</span>
+							<ModeToggle
+								$enabled={viewMode === "canvas"}
+								onClick={() =>
+									setViewMode((m) => (m === "canvas" ? "developer" : "canvas"))
+								}
+								aria-label="Toggle canvas mode"
+							/>
+							<span style={{ fontSize: typography.xs, color: "#cfcfcf" }}>
+								Canvas
+							</span>
+						</div>
 						<SummaryButton
 							onClick={handleSummaryClick}
-							disabled={!notebookData.cells || notebookData.cells.length === 0 || isGeneratingSummary}
+							disabled={
+								!notebookData.cells ||
+								notebookData.cells.length === 0 ||
+								isGeneratingSummary
+							}
 							cellCount={notebookData.cells ? notebookData.cells.length : 0}
 						/>
 					</NotebookActions>
 				</NotebookHeader>
 
-				{/* Insert controls at the very top */}
-				<InsertButtonsRow>
-					<Tooltip content="Add a new Python cell at the top" placement="top">
-						<InsertCellButton onClick={() => addCellAt(0, "code")}>
-							<FiPlus size={12} /> Insert Code Cell Above
-						</InsertCellButton>
-					</Tooltip>
-					<Tooltip
-						content="Add a new Markdown text cell at the top"
-						placement="top"
-					>
-						<InsertCellButton onClick={() => addCellAt(0, "markdown")}>
-							<FiPlus size={12} /> Insert Markdown Above
-						</InsertCellButton>
-					</Tooltip>
-				</InsertButtonsRow>
-
-				{notebookData.cells.map((cell, index) => {
-					const cellContent = Array.isArray(cell.source)
-						? cell.source.join("")
-						: typeof cell.source === "string"
-						? cell.source
-						: "";
-
-					// Extract output from cell if it exists
-					let cellOutput = "";
-					if (cell.outputs && cell.outputs.length > 0) {
-						cellOutput = cell.outputs
-							.map((output: any) => {
-								if (output.output_type === "stream") {
-									return output.text?.join("") || "";
-								} else if (output.output_type === "execute_result") {
-									return output.data?.["text/plain"]?.join("") || "";
-								} else if (output.output_type === "error") {
-									return `Error: ${output.ename}: ${output.evalue}`;
+				{/* Canvas mode */}
+				{viewMode === "canvas" ? (
+					<div style={{ height: "calc(100% - 16px)", minHeight: 400 }}>
+						{/* Placeholder container for the canvas; actual component wired below */}
+						<NotebookCanvas
+							filePath={filePath}
+							cells={notebookData.cells}
+							cellStates={cellStates}
+							onOpenCell={(index) => {
+								// Switch back to developer mode and scroll to the cell
+								setViewMode("developer");
+								const anchor = document.getElementById(`nb-cell-${index}`);
+								if (anchor && anchor.scrollIntoView) {
+									anchor.scrollIntoView({ behavior: "smooth", block: "start" });
 								}
-								return "";
-							})
-							.join("\n");
-					}
+							}}
+						/>
+					</div>
+				) : null}
 
-					// Get current cell state (code and output)
-					const currentCellState = (cellStates[index] as any) || {
-						code: cellContent,
-						output: cellOutput,
-						editedByChatAt: undefined as string | undefined,
-					};
-
-					return (
-						<React.Fragment key={cellIds[index] || `cell-${index}`}>
-							<CellDndWrapper
-								$isDragOver={dragOverIndex === index}
-								$position={dragOverIndex === index ? dragOverPosition : null}
-								onDragOver={(e) => handleDragOverOnCell(e, index)}
-								onDrop={(e) => handleDropOnCell(e, index)}
-								onDragLeave={() => {
-									if (dragOverIndex === index) {
-										setDragOverIndex(null);
-										setDragOverPosition(null);
-									}
-								}}
+				{/* Developer (linear) mode */}
+				{viewMode === "developer" && (
+					<>
+						{/* Insert controls at the very top */}
+						<InsertButtonsRow>
+							<Tooltip
+								content="Add a new Python cell at the top"
+								placement="top"
 							>
-								<CodeCell
-								initialCode={currentCellState.code}
-								initialOutput={currentCellState.output}
-								language={cell.cell_type === "markdown" ? "markdown" : "python"}
-								workspacePath={workspacePath}
-								filePath={filePath}
-								cellIndex={index}
-								editedByChatAt={currentCellState.editedByChatAt}
-								onExecute={(code, output) => {
-									updateCellCode(index, code);
-									updateCellOutput(index, output);
-								}}
-								onCodeChange={(code) => {
-									updateCellCode(index, code);
-								}}
-								// Ensure Markdown edits are persisted
-								onDelete={() => deleteCell(index)}
-								onDragStart={(i, e) => handleCellDragStart(i, e)}
-								onDragEnd={handleCellDragEnd}
-							/>
-							</CellDndWrapper>
+								<InsertCellButton onClick={() => addCellAt(0, "code")}>
+									<FiPlus size={12} /> Insert Code Cell Above
+								</InsertCellButton>
+							</Tooltip>
+							<Tooltip
+								content="Add a new Markdown text cell at the top"
+								placement="top"
+							>
+								<InsertCellButton onClick={() => addCellAt(0, "markdown")}>
+									<FiPlus size={12} /> Insert Markdown Above
+								</InsertCellButton>
+							</Tooltip>
+						</InsertButtonsRow>
 
-							{/* Insert controls between cells (after current index) */}
-							<InsertButtonsRow>
-								<Tooltip
-									content="Insert a Python cell below this"
-									placement="top"
-								>
-									<InsertCellButton
-										onClick={() => addCellAt(index + 1, "code")}
+						{notebookData.cells.map((cell, index) => {
+							const cellContent = Array.isArray(cell.source)
+								? cell.source.join("")
+								: typeof cell.source === "string"
+								? cell.source
+								: "";
+
+							// Extract output from cell if it exists
+							let cellOutput = "";
+							if (cell.outputs && cell.outputs.length > 0) {
+								cellOutput = cell.outputs
+									.map((output: any) => {
+										if (output.output_type === "stream") {
+											return output.text?.join("") || "";
+										} else if (output.output_type === "execute_result") {
+											return output.data?.["text/plain"]?.join("") || "";
+										} else if (output.output_type === "error") {
+											return `Error: ${output.ename}: ${output.evalue}`;
+										}
+										return "";
+									})
+									.join("\n");
+							}
+
+							// Get current cell state (code and output)
+							const currentCellState = (cellStates[index] as any) || {
+								code: cellContent,
+								output: cellOutput,
+								editedByChatAt: undefined as string | undefined,
+							};
+
+							return (
+								<React.Fragment key={cellIds[index] || `cell-${index}`}>
+									<CellDndWrapper
+										id={`nb-cell-${index}`}
+										$isDragOver={dragOverIndex === index}
+										$position={
+											dragOverIndex === index ? dragOverPosition : null
+										}
+										onDragOver={(e) => handleDragOverOnCell(e, index)}
+										onDrop={(e) => handleDropOnCell(e, index)}
+										onDragLeave={() => {
+											if (dragOverIndex === index) {
+												setDragOverIndex(null);
+												setDragOverPosition(null);
+											}
+										}}
 									>
-										<FiPlus size={12} /> Insert Code Cell Here
-									</InsertCellButton>
-								</Tooltip>
-								<Tooltip
-									content="Insert a Markdown cell below this"
-									placement="top"
-								>
-									<InsertCellButton
-										onClick={() => addCellAt(index + 1, "markdown")}
-									>
-										<FiPlus size={12} /> Insert Markdown Here
-									</InsertCellButton>
-								</Tooltip>
-							</InsertButtonsRow>
-						</React.Fragment>
-					);
-				})}
+										<CodeCell
+											initialCode={currentCellState.code}
+											initialOutput={currentCellState.output}
+											language={
+												cell.cell_type === "markdown" ? "markdown" : "python"
+											}
+											workspacePath={workspacePath}
+											filePath={filePath}
+											cellIndex={index}
+											editedByChatAt={currentCellState.editedByChatAt}
+											onExecute={(code, output) => {
+												updateCellCode(index, code);
+												updateCellOutput(index, output);
+											}}
+											onCodeChange={(code) => {
+												updateCellCode(index, code);
+											}}
+											// Ensure Markdown edits are persisted
+											onDelete={() => deleteCell(index)}
+											onDragStart={(i, e) => handleCellDragStart(i, e)}
+											onDragEnd={handleCellDragEnd}
+										/>
+									</CellDndWrapper>
+
+									{/* Insert controls between cells (after current index) */}
+									<InsertButtonsRow>
+										<Tooltip
+											content="Insert a Python cell below this"
+											placement="top"
+										>
+											<InsertCellButton
+												onClick={() => addCellAt(index + 1, "code")}
+											>
+												<FiPlus size={12} /> Insert Code Cell Here
+											</InsertCellButton>
+										</Tooltip>
+										<Tooltip
+											content="Insert a Markdown cell below this"
+											placement="top"
+										>
+											<InsertCellButton
+												onClick={() => addCellAt(index + 1, "markdown")}
+											>
+												<FiPlus size={12} /> Insert Markdown Here
+											</InsertCellButton>
+										</Tooltip>
+									</InsertButtonsRow>
+								</React.Fragment>
+							);
+						})}
+					</>
+				)}
 			</NotebookContainer>
 		);
 	};
@@ -1579,7 +1877,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					/>
 				</EditorContent>
 			)}
-			
+
 			{/* Summary Options Modal */}
 			{filePath.endsWith(".ipynb") && notebookData && (
 				<SummaryOptionsModal

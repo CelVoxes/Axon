@@ -38,6 +38,7 @@ import {
 	LocalDatasetEntry,
 } from "../../services/chat/LocalDatasetRegistry";
 import { electronAPI } from "../../utils/electronAPI";
+import { EventManager } from "../../utils/EventManager";
 
 import { AnalysisOrchestrationService } from "../../services/chat/AnalysisOrchestrationService";
 import { ExamplesComponent } from "./AnalysisSuggestionsComponent";
@@ -47,7 +48,7 @@ import { groupSessionsByTime } from "./ChatPanelUtils";
 import { useCodeGenerationEvents } from "./hooks/useCodeGenerationEvents";
 import { useVirtualEnvEvents } from "./hooks/useVirtualEnvEvents";
 import { useChatEvents } from "./hooks/useChatEvents";
-import { useChatUIState } from "./hooks/useChatUIState";
+import { useChatUIState, ChecklistSummary } from "./hooks/useChatUIState";
 import { useChatInteractions } from "./hooks/useChatInteractions";
 import { useNotebookDetection } from "./hooks/useNotebookDetection";
 import { NotebookEditingService } from "../../services/chat/NotebookEditingService";
@@ -153,6 +154,76 @@ const ReasoningBlock: React.FC<{ message: Message }> = ({ message }) => {
 	);
 };
 
+const ChecklistPanel: React.FC<{
+	summary: ChecklistSummary | null;
+	autoExpandToken: number;
+}> = React.memo(({ summary, autoExpandToken }) => {
+	const [expanded, setExpanded] = useState(false);
+	const isComplete =
+		summary !== null &&
+			summary.total > 0 &&
+			summary.completed >= summary.total;
+
+	useEffect(() => {
+		if (!summary) {
+			setExpanded(false);
+		}
+		if (summary && isComplete) {
+			setExpanded(false);
+		}
+	}, [summary, isComplete]);
+
+	useEffect(() => {
+		if (summary && autoExpandToken > 0 && !isComplete) {
+			setExpanded(true);
+		}
+	}, [autoExpandToken, summary, isComplete]);
+
+	if (!summary) return null;
+
+	return (
+		<div>
+			<button
+				type="button"
+				onClick={() => setExpanded((prev) => !prev)}
+				style={{
+					width: "100%",
+					display: "flex",
+					alignItems: "center",
+					gap: "6px",
+					fontSize: "12px",
+					color: "#9ca3af",
+					background: "transparent",
+					border: "none",
+					padding: 0,
+					cursor: "pointer",
+					textAlign: "left",
+				}}
+			>
+				<span style={{ flex: 1 }}>{summary.summary}</span>
+				<FiChevronRight
+					size={12}
+					style={{
+						marginTop: 1,
+						color: "#9ca3af",
+						transform: expanded ? "rotate(90deg)" : undefined,
+						transition: "transform 0.1s ease-in-out",
+					}}
+				/>
+			</button>
+			{expanded && (
+				<div style={{ fontSize: "12px", color: "#9ca3af", marginTop: 4 }}>
+					{summary.lines.map((line, idx) => (
+						<div key={idx} style={{ marginBottom: 2 }}>
+							{line}
+						</div>
+					))}
+				</div>
+			)}
+		</div>
+	);
+});
+
 // Render thinking/planning as a compact header outside of code blocks
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
@@ -173,6 +244,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		inputValue,
 		isLoading,
 		progressMessage,
+		checklistSummary,
 		isProcessing,
 		progressData,
 		validationErrors,
@@ -190,6 +262,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		setInputValue,
 		setIsLoading,
 		setProgressMessage,
+		setChecklistSummary,
 		setIsProcessing,
 		setProgressData,
 		setValidationErrors,
@@ -229,6 +302,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	>(new Map());
 
 	// rAF-batched streaming updates for smoother UI with throttling and proper cleanup
+	const checklistHashRef = useRef<string>("");
+
 	const rafStateRef = useRef<{
 		pending: Record<string, string>;
 		scheduled: boolean;
@@ -351,7 +426,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						normalized.length - currentMessage.code.length
 					);
 					if (lengthDiff < 50 && content.length > 100) {
-						return;
+					return;
 					}
 				}
 			}
@@ -372,6 +447,100 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [activeLocalIndex, setActiveLocalIndex] = useState<number>(-1);
 	const [activeWorkspaceIndex, setActiveWorkspaceIndex] = useState<number>(-1);
 	const [activeCellIndex, setActiveCellIndex] = useState<number>(-1);
+const checklistHydratedRef = useRef(false);
+const checklistSummaryRef = useRef<ChecklistSummary | null>(null);
+
+const resetChecklistState = useCallback(() => {
+	checklistHydratedRef.current = false;
+	checklistSummaryRef.current = null;
+}, []);
+
+const [checklistAutoExpandToken, setChecklistAutoExpandToken] = useState(0);
+const { addMessage, scrollToBottomImmediate } = useChatInteractions({
+		analysisDispatch,
+		chatContainerRef,
+		chatAutoScrollRef,
+	recentMessages,
+		setRecentMessages,
+		setCurrentSuggestions,
+	});
+
+	useEffect(() => {
+		checklistSummaryRef.current = checklistSummary;
+	}, [checklistSummary]);
+
+	const parseChecklistMessage = useCallback(
+		(content: string | undefined | null) => {
+			if (!content) return null;
+			const trimmed = content.trim();
+			if (!trimmed.startsWith("**")) return null;
+			const lines = trimmed.split(/\r?\n/);
+			const header = lines[0] || "";
+			const headerMatch = header.match(/^\*\*(.+?)\*\*/);
+			if (!headerMatch) return null;
+			const summaryLabel = headerMatch[1].trim();
+			const summaryLower = summaryLabel.toLowerCase();
+			if (
+				!summaryLower.startsWith("checklist") &&
+				!summaryLower.startsWith("analysis checklist")
+			) {
+				return null;
+			}
+			const detailLines = lines
+				.slice(1)
+				.map((line) => line.replace(/^\s*-\s*/, "").trim())
+				.filter(Boolean);
+			const safeLines = detailLines.length
+				? detailLines
+				: ["• Step details unavailable"];
+		let completedDone = 0;
+		let total = safeLines.length;
+		let skipped = 0;
+		let next: string | null = null;
+
+		const fractionMatch = summaryLabel.match(/(\d+)\s*\/\s*(\d+)/);
+		if (fractionMatch) {
+			completedDone = parseInt(fractionMatch[1], 10);
+			total = parseInt(fractionMatch[2], 10);
+		}
+		const skippedMatch = summaryLabel.match(/(\d+)\s+skipped/i);
+		if (skippedMatch) {
+			skipped = parseInt(skippedMatch[1], 10);
+		} else {
+			skipped = safeLines.filter((line) => line.startsWith("↷")).length;
+		}
+		const completedLinesCount = safeLines.filter((line) => line.startsWith("✓")).length;
+		const doneFromLines = completedLinesCount + skipped;
+		if (!Number.isFinite(completedDone) || completedDone <= 0) {
+			completedDone = doneFromLines;
+		}
+		const nextMatch = summaryLabel.match(/Next:\s*(.+)$/i);
+		if (nextMatch) {
+			next = nextMatch[1].trim();
+		}
+
+		if (!Number.isFinite(total) || total <= 0) {
+			total = detailLines.length;
+		}
+		if (!Number.isFinite(completedDone) || completedDone < 0) {
+			completedDone = 0;
+		}
+		if (!Number.isFinite(skipped) || skipped < 0) {
+			skipped = 0;
+		}
+		const doneCount = Math.min(completedDone, total);
+
+		return {
+			summary: summaryLabel,
+			lines: safeLines,
+			completed: doneCount,
+			total,
+			skipped,
+			next,
+		};
+		},
+		[]
+	);
 
 	// Suggested quick mentions (e.g., open/active files) to show as chips above the composer
 	const suggestedMentions = React.useMemo(() => {
@@ -546,19 +715,136 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		return new AnalysisOrchestrationService(backendClient);
 	}, [backendClient]);
 
+	useEffect(() => {
+		if (checklistSummary || checklistHydratedRef.current) return;
+		const messages = Array.isArray(analysisState.messages)
+			? analysisState.messages
+			: [];
+		for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+			const msg = messages[idx];
+			if (!msg || msg.isUser) continue;
+			const content = typeof msg.content === "string" ? msg.content : "";
+		const parsed = parseChecklistMessage(content);
+		if (!parsed) continue;
+		setChecklistSummary(parsed);
+			checklistHydratedRef.current = true;
+			setChecklistAutoExpandToken((token) => token + 1);
+			break;
+		}
+	}, [
+		analysisState.messages,
+		checklistSummary,
+		parseChecklistMessage,
+		setChecklistSummary,
+	]);
+
 	// Virtual environment event handling moved to useVirtualEnvEvents hook
 
 	// Code generation event handling moved to useCodeGenerationEvents hook
 
-	// Chat interactions hook for message handling and scrolling
-	const { addMessage, scrollToBottomImmediate } = useChatInteractions({
-		analysisDispatch,
-		chatContainerRef,
-		chatAutoScrollRef,
-		recentMessages,
-		setRecentMessages,
-		setCurrentSuggestions,
-	});
+	useEffect(() => {
+		const cleanup = EventManager.createManagedListener(
+			"analysis-checklist-updated",
+			(event) => {
+				const detail = (event?.detail || {}) as {
+					steps?: Array<{ description: string; status: string; note?: string }>;
+					completed?: number;
+					total?: number;
+					skipped?: number;
+				};
+				const steps = Array.isArray(detail.steps) ? detail.steps : [];
+				if (steps.length === 0) {
+					checklistHashRef.current = "";
+					const prev = checklistSummaryRef.current;
+					const prevLines = prev?.lines?.length
+						? prev.lines
+						: ["✓ All tasks cleared"];
+					const fallbackSkipped =
+						prev?.skipped ?? prevLines.filter((line) => line.startsWith("↷")).length;
+					const baseCompletedLines = prevLines.filter((line) => line.startsWith("✓")).length;
+					const fallbackTotal = prev?.total ?? prevLines.length;
+					const done = Math.min(
+						(prev?.completed ?? baseCompletedLines + fallbackSkipped),
+						fallbackTotal
+					);
+					const summaryParts: string[] = [`${done}/${fallbackTotal} done`];
+					if (fallbackSkipped) {
+						summaryParts.push(`${fallbackSkipped} skipped`);
+					}
+					summaryParts.push("Complete");
+					const finalSummary = `Checklist • ${summaryParts.join(" • ")}`;
+					const finalState: ChecklistSummary = {
+						summary: finalSummary,
+						lines: prevLines,
+						completed: done,
+						total: fallbackTotal,
+						skipped: fallbackSkipped,
+						next: null,
+					};
+					checklistHydratedRef.current = true;
+					setChecklistSummary(finalState);
+					return;
+				}
+				const hash = JSON.stringify(steps);
+				if (hash === checklistHashRef.current) return;
+				checklistHashRef.current = hash;
+
+				const formattedLines = steps.map((step, idx) => {
+					const marker =
+						step.status === "completed"
+							? "✓"
+							: step.status === "skipped"
+							? "↷"
+							: "•";
+					const note = step.note?.trim() ? ` — ${step.note.trim()}` : "";
+					return `${marker} ${idx + 1}. ${step.description}${note}`;
+				});
+
+		const completedCountRaw =
+			typeof detail.completed === "number"
+				? detail.completed
+				: steps.filter((s) => s.status === "completed").length;
+		const skippedCount =
+			typeof detail.skipped === "number"
+				? detail.skipped
+				: steps.filter((s) => s.status === "skipped").length;
+		const totalCount =
+			typeof detail.total === "number" ? detail.total : steps.length;
+		const nextPending = steps.find((s) => s.status === "pending") || null;
+		const doneCount = Math.min(
+			completedCountRaw + skippedCount,
+			totalCount
+		);
+		const summaryParts: string[] = [`${doneCount}/${totalCount} done`];
+				if (skippedCount) {
+					summaryParts.push(`${skippedCount} skipped`);
+				}
+		if (nextPending) {
+			summaryParts.push(`Next: ${nextPending.description}`);
+		} else if (doneCount === totalCount && totalCount > 0) {
+			summaryParts.push("Complete");
+		}
+		const summaryLabel = `Checklist • ${summaryParts.join(" • ")}`;
+		setChecklistSummary({
+			summary: summaryLabel,
+			lines: formattedLines,
+			completed: doneCount,
+			total: totalCount,
+			skipped: skippedCount,
+			next: nextPending ? nextPending.description : null,
+		});
+				if (!checklistHydratedRef.current) {
+					checklistHydratedRef.current = true;
+					setChecklistAutoExpandToken((token) => token + 1);
+				}
+
+				const messageStatus: "pending" | "completed" = nextPending
+					? "pending"
+					: "completed";
+				}
+		);
+		return cleanup;
+	}, [setChecklistSummary]);
 
 	// Auto-scroll to bottom when new messages are added (only if near bottom)
 	useEffect(() => {
@@ -572,9 +858,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			inputValueRef.current = "";
 			setMentionOpen(false);
 			setMentionQuery("");
+			setChecklistSummary(null);
+			resetChecklistState();
+			setChecklistAutoExpandToken(0);
 		} catch (_) {}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [(analysisState as any).activeChatSessionId]);
+	}, [(analysisState as any).activeChatSessionId, resetChecklistState]);
 
 	const validateBackendClient = useCallback(
 		(customErrorMessage?: string): boolean => {
@@ -673,7 +962,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 			let isMounted = true;
 			try {
 				if (!validateBackendClient()) {
-					return;
+				return;
 				}
 				// Build lightweight context from recent messages
 				const recent = (analysisState.messages || []).slice(-10);
@@ -737,7 +1026,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						try {
 							if (evt?.type === "status") {
 								setProgressMessage("Thinking...");
-								return;
+							return;
 							}
 							if (evt?.type === "summary" && typeof evt.text === "string") {
 								// Append a compact reasoning summary message
@@ -754,7 +1043,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 										status: "completed" as any,
 									},
 								});
-								return;
+							return;
 							}
 							if (evt?.type === "answer" && typeof evt.delta === "string") {
 								if (accumulated.length === 0) {
@@ -772,7 +1061,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 										},
 									},
 								});
-								return;
+							return;
 							}
 
 							if (evt?.type === "done") {
@@ -1009,7 +1298,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						"Backend not ready to edit code. Please try again in a moment.",
 						false
 					);
-					return;
+				return;
 				}
 
 				const lang = (cellMentionContext.language || "python").toLowerCase();
@@ -1080,7 +1369,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						"Backend not ready to edit code. Please try again in a moment.",
 						false
 					);
-					return;
+				return;
 				}
 
 				// Build LLM prompt to transform only the selected snippet
@@ -1207,7 +1496,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				intent?: string;
 				entities?: string[];
 				data_types?: string[];
-				analysis_type?: string;
+				analysis_type?: string | string[];
 				complexity?: string;
 			} | null = null;
 			if (!addCellRequested) {
@@ -1231,8 +1520,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							parts.push(
 								`\nData types: ${analysisContext.data_types.join(", ")}`
 							);
-						if (analysisContext.analysis_type)
-							parts.push(`\nAnalysis: ${analysisContext.analysis_type}`);
+						const analysisTypeDisplay = Array.isArray(
+							analysisContext.analysis_type
+						)
+							? analysisContext.analysis_type.join(" → ")
+							: analysisContext.analysis_type;
+						if (analysisTypeDisplay)
+							parts.push(`\nAnalysis: ${analysisTypeDisplay}`);
 						if (analysisContext.complexity)
 							parts.push(`\nComplexity: ${analysisContext.complexity}`);
 						if (parts.length)
@@ -1252,7 +1546,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 				// Check if backendClient is available
 				if (!validateBackendClient()) {
-					return;
+				return;
 				}
 
 				console.log("🔍 Starting search with query:", userMessage);
@@ -1325,6 +1619,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 							const enrichedOriginal = (() => {
 								if (!analysisContext) return userMessage;
+								const analysisTypeDisplay = Array.isArray(
+									analysisContext.analysis_type
+								)
+									? analysisContext.analysis_type.join(" → ")
+									: analysisContext.analysis_type;
 								const lines = [
 									`ANALYSIS CONTEXT:`,
 									analysisContext.intent
@@ -1338,9 +1637,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 									analysisContext.data_types.length
 										? `Data types: ${analysisContext.data_types.join(", ")}`
 										: "",
-									analysisContext.analysis_type
-										? `Analysis: ${analysisContext.analysis_type}`
-										: "",
+									analysisTypeDisplay ? `Analysis: ${analysisTypeDisplay}` : "",
 									analysisContext.complexity
 										? `Complexity: ${analysisContext.complexity}`
 										: "",
@@ -1370,7 +1667,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						// Release chat UI after background operation completes
 						resetLoadingState();
 					});
-					return;
+				return;
 				} else {
 					console.log("❌ No notebook open but ADD_CELL intent detected");
 					// No active notebook but intent is ADD_CELL - inform user
@@ -1379,7 +1676,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							"You can create a new notebook or open an existing one from the file explorer.",
 						false
 					);
-					return;
+				return;
 				}
 			}
 			// Handle START_ANALYSIS intent - start/trigger analysis pipeline on existing data (after ADD_CELL)
@@ -1404,7 +1701,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						"To start analysis, please first search for and select datasets. Use a search query like 'find alzheimer data' to discover relevant datasets.",
 						false
 					);
-					return;
+				return;
 				}
 			}
 			// Handle ADD_CELL intent for active notebooks (prioritize over dataset-based analysis)
@@ -1474,6 +1771,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 							const enrichedOriginal = (() => {
 								if (!analysisContext) return userMessage;
+								const analysisTypeDisplay = Array.isArray(
+									analysisContext.analysis_type
+								)
+									? analysisContext.analysis_type.join(" → ")
+									: analysisContext.analysis_type;
 								const lines = [
 									`ANALYSIS CONTEXT:`,
 									analysisContext.intent
@@ -1487,9 +1789,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 									analysisContext.data_types.length
 										? `Data types: ${analysisContext.data_types.join(", ")}`
 										: "",
-									analysisContext.analysis_type
-										? `Analysis: ${analysisContext.analysis_type}`
-										: "",
+									analysisTypeDisplay ? `Analysis: ${analysisTypeDisplay}` : "",
 									analysisContext.complexity
 										? `Complexity: ${analysisContext.complexity}`
 										: "",
@@ -1519,7 +1819,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						// Release chat UI after background operation completes
 						resetLoadingState();
 					});
-					return;
+				return;
 				} else {
 					console.log("❌ No notebook open but ADD_CELL intent detected");
 					// No active notebook but intent is ADD_CELL - inform user
@@ -1528,7 +1828,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							"You can create a new notebook or open an existing one from the file explorer.",
 						false
 					);
-					return;
+				return;
 				}
 			}
 			// Check for previously selected datasets AFTER ADD_CELL handling to avoid misrouting add-cell requests
@@ -1557,7 +1857,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				try {
 					// Validate backend before proceeding
 					if (!validateBackendClient()) {
-						return;
+					return;
 					}
 
 					// Import and use ChatToolAgent for autonomous tool usage
@@ -1808,14 +2108,30 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						"No workspace is currently open. Please open a workspace first.",
 						false
 					);
-					return;
+				return;
 				}
 				const workspaceDir = workspaceState.currentWorkspace;
 
 				// Check if backendClient is available
 				if (!validateBackendClient()) {
-					return;
+				return;
 				}
+
+				// Reset checklist state for new analysis run
+					checklistHashRef.current = "";
+					resetChecklistState();
+					setChecklistSummary(null);
+				const placeholderSummary = "Checklist • Preparing steps...";
+				const placeholderLines = ["• Generating analysis plan..."];
+				setChecklistSummary({
+					summary: placeholderSummary,
+					lines: placeholderLines,
+					completed: 0,
+					total: 0,
+					skipped: 0,
+					next: null,
+				});
+				setChecklistAutoExpandToken((token) => token + 1);
 
 				// Create AutonomousAgent instance (kernel name will be set after workspace is created)
 				const chatId = (analysisState as any).activeChatSessionId || "global";
@@ -1897,8 +2213,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						overviewLines.push(`**Question:** ${originalQuery}`);
 						try {
 							const u: any = analysisResult.understanding || {};
-							const aType = u.analysisType || u.analysis_type || null;
-							if (aType) overviewLines.push(`**Type:** ${String(aType)}`);
+							const rawType = u.analysisType ?? u.analysis_type ?? null;
+							const formattedType = Array.isArray(rawType)
+								? rawType.join(" → ")
+								: rawType;
+							if (formattedType)
+								overviewLines.push(`**Type:** ${formattedType}`);
 							if (Array.isArray(u.dataNeeded) && u.dataNeeded.length)
 								overviewLines.push(
 									`**Data Needed:** ${u.dataNeeded.join(", ")}`
@@ -1936,7 +2256,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 					addMessage("Failed to create notebook", false);
 					setProgressMessage("");
 					setIsProcessing(false);
-					return;
+				return;
 				}
 
 				console.log("Initial notebook created:", notebookPath);
@@ -2298,13 +2618,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 							ws && p && p.startsWith(ws) ? p.slice(ws.length + 1) : p;
 						if (!activeFile || !activeFile.endsWith(".ipynb")) {
 							setCellMentionItems([]);
-							return;
+						return;
 						}
 
 						// Check cache first to avoid re-reading the same file
 						if (cellItemsCache.current?.activeFile === activeFile) {
 							setCellMentionItems(cellItemsCache.current.items);
-							return;
+						return;
 						}
 
 						const fileContent = await window.electronAPI.readFile(activeFile);
@@ -2375,7 +2695,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						if (!workspaceState.currentWorkspace) {
 							setWorkspaceMentionItems([]);
 							setCellMentionItems([]);
-							return;
+						return;
 						}
 						const wsRoot = workspaceState.currentWorkspace;
 						const token = match[1] || "";
@@ -2645,6 +2965,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						text={progressMessage || analysisState.analysisStatus || "Thinking"}
 					/>
 				)}
+
+				<ChecklistPanel
+					summary={checklistSummary}
+					autoExpandToken={checklistAutoExpandToken}
+				/>
 
 				{/* Show success when there are no errors and a message exists */}
 				{!validationErrors?.length && (
@@ -3030,7 +3355,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 																s.id ===
 																(analysisState as any).activeChatSessionId
 															)
-																return;
+															return;
 															analysisDispatch({
 																type: "SET_ACTIVE_CHAT_SESSION",
 																payload: s.id,

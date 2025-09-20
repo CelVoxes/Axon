@@ -90,12 +90,14 @@ export const ElectronClient = {
 	async executeJupyterCode(
 		code: string,
 		workspacePath?: string,
-		executionId?: string
+		executionId?: string,
+		language: "python" | "r" = "python"
 	): Promise<{ success: boolean; output?: string; error?: string }> {
 		const res: any = await (window as any).electronAPI.executeJupyterCode(
 			code,
 			workspacePath,
-			executionId
+			executionId,
+			language
 		);
 		return res;
 	},

@@ -234,18 +234,32 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		try {
 			const result = await this.backendClient.analyzeQuery(query);
 
+			const parsedSteps = this.normalizePlanSteps(result.analysis_type);
+			const fallbackSteps = [
+				"Load and explore the data",
+				"Perform statistical analysis",
+				"Create visualizations",
+				"Interpret results",
+			];
+			const requiredSteps = parsedSteps.length > 0 ? parsedSteps : fallbackSteps;
+
+			const analysisTypeValue = Array.isArray(result.analysis_type)
+				? result.analysis_type[0]
+				: result.analysis_type;
+
 			// Enhanced understanding with dataset context
 			const understanding: AnalysisUnderstanding = {
 				userQuestion: query,
-				requiredSteps: result.analysis_type
-					? [result.analysis_type]
-					: ["Load and explore data", "Perform analysis", "Visualize results"],
+				requiredSteps,
 				dataNeeded: result.data_types || ["Dataset files", "Analysis tools"],
 				expectedOutputs: result.entities || [
 					"Analysis results",
 					"Visualizations",
 				],
-				analysisType: result.analysis_type || "exploratory",
+				analysisType:
+					typeof analysisTypeValue === "string" && analysisTypeValue.trim()
+						? analysisTypeValue
+						: "exploratory",
 				datasets,
 			};
 
@@ -438,6 +452,93 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		if (stepCount <= 3 && dataComplexity <= 2) return "simple";
 		if (stepCount <= 6 && dataComplexity <= 4) return "moderate";
 		return "complex";
+	}
+
+	private normalizePlanSteps(rawSteps: unknown): string[] {
+		const collected: string[] = [];
+
+		const process = (value: unknown) => {
+			if (!value) return;
+			if (Array.isArray(value)) {
+				value.forEach(process);
+				return;
+			}
+			if (typeof value === "string") {
+				const snippets = this.splitPlanIntoSteps(value);
+				if (snippets.length === 0) {
+					const cleaned = this.cleanPlanStep(value);
+					if (cleaned) {
+						const truncated = cleaned.length > 600 ? `${cleaned.slice(0, 600).trim()}…` : cleaned;
+						collected.push(truncated);
+					}
+				} else {
+					snippets.forEach((snippet) => {
+						const cleaned = this.cleanPlanStep(snippet);
+						if (cleaned) {
+							const truncated = cleaned.length > 600 ? `${cleaned.slice(0, 600).trim()}…` : cleaned;
+							collected.push(truncated);
+						}
+					});
+				}
+			}
+		};
+
+		process(rawSteps);
+
+		const uniqueOrdered = Array.from(
+			new Map(
+				collected.map((step) => [step.toLowerCase(), step] as [string, string])
+			).values()
+		);
+
+		const MAX_STEPS = 40;
+		return uniqueOrdered.slice(0, MAX_STEPS);
+	}
+
+	private splitPlanIntoSteps(planText: string): string[] {
+		const normalized = planText.replace(/\r\n/g, "\n").trim();
+		if (!normalized) {
+			return [];
+		}
+
+		const injectedBreaks = normalized
+			.replace(/(Step\s*\d+[:.\-)])/gi, "\n$1")
+			.replace(/(\d+[\.)])/g, "\n$1")
+			.replace(/([•*\-])\s+/g, "\n$1 ");
+
+		const candidateLines = injectedBreaks
+			.split(/\n+/)
+			.map((line) => this.cleanPlanStep(line))
+			.filter(Boolean);
+
+		if (candidateLines.length > 1) {
+			return candidateLines;
+		}
+
+		const inlineSplit = normalized
+			.replace(/;+/g, ". ")
+			.replace(/(Step\s*\d+[:.\-)])/gi, "\n$1")
+			.replace(/(\d+[\.)])/g, "\n$1")
+			.split(/\n+/)
+			.map((line) => this.cleanPlanStep(line))
+			.filter(Boolean);
+
+		if (inlineSplit.length > 1) {
+			return inlineSplit;
+		}
+
+		return candidateLines.filter(Boolean);
+	}
+
+	private cleanPlanStep(step: string): string {
+		if (!step) return "";
+		return step
+			.replace(/^[\s•*\-]+/g, "")
+			.replace(/^Step\s*\d+[:.\-)\s]*/i, "")
+			.replace(/^\d+[\.)]\s*/, "")
+			.replace(/^[A-Za-z]\)\s*/, "")
+			.replace(/\s+/g, " ")
+			.trim();
 	}
 
 	private generateFallbackSuggestions(

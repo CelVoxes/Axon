@@ -699,12 +699,33 @@ class LLMService:
             except Exception:
                 pass
 
+    def _clear_session_chaining(self, session_id: Optional[str]) -> None:
+        if not session_id:
+            return
+        meta = self.session_meta.get(session_id)
+        if meta is not None:
+            meta['last_response_id'] = None
+        self._session_context_hash.pop(session_id, None)
+        try:
+            setattr(self.provider, "last_response_id", None)
+        except Exception:
+            pass
+
     def _get_previous_response_id(self, session_id: Optional[str]) -> Optional[str]:
         if not session_id:
             return None
         meta = self.session_meta.get(session_id) or {}
         val = meta.get('last_response_id')
         return val if isinstance(val, str) else None
+
+    def _is_previous_response_error(self, error: Exception) -> bool:
+        try:
+            message = str(error).lower()
+        except Exception:
+            return False
+        if "previous_response" not in message:
+            return False
+        return "not found" in message or "previous_response_not_found" in message
 
     def _should_include_context(self, session_id: Optional[str], context: Optional[str]) -> bool:
         if not session_id:
@@ -1060,23 +1081,42 @@ class LLMService:
             total = ""
             if session_msgs is not None:
                 self._append_and_prune(session_id, "user", user_content)
-                # Stream with minimal messages; rely on previous_response_id for context
-                minimal_msgs = self._build_minimal_messages(session_id, system_prompt, user_content)
-                async for chunk in self.provider.generate_stream(
-                    minimal_msgs,
-                    max_tokens=3000,  # Increased for detailed summaries (was 900)
-                    temperature=0.2,
-                    store=True,
-                    previous_response_id=self._get_previous_response_id(session_id),
-                    model=resolved_model,
-                ):
-                    if chunk:
-                        total += chunk
-                        yield chunk
-                self._update_session_usage(session_id)
-                if include_context:
-                    self._record_context_hash(session_id, context)
-                self._append_and_prune(session_id, "assistant", total)
+                use_prev = True
+                while True:
+                    prev_id = self._get_previous_response_id(session_id) if use_prev else None
+                    minimal_msgs = (
+                        self._build_minimal_messages(session_id, system_prompt, user_content)
+                        if use_prev else
+                        [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_content},
+                        ]
+                    )
+                    try:
+                        async for chunk in self.provider.generate_stream(
+                            minimal_msgs,
+                            max_tokens=3000,  # Increased for detailed summaries (was 900)
+                            temperature=0.2,
+                            store=True,
+                            previous_response_id=prev_id,
+                            model=resolved_model,
+                        ):
+                            if chunk:
+                                total += chunk
+                                yield chunk
+                        self._update_session_usage(session_id)
+                        if include_context:
+                            self._record_context_hash(session_id, context)
+                        self._append_and_prune(session_id, "assistant", total)
+                        break
+                    except Exception as exc:
+                        if use_prev and session_id and self._is_previous_response_error(exc):
+                            self._debug(f"⚠️ previous_response_id invalid for {session_id}, retrying without chaining")
+                            self._clear_session_chaining(session_id)
+                            total = ""
+                            use_prev = False
+                            continue
+                        raise
             else:
                 async for chunk in self.provider.generate_stream(
                     [

@@ -551,7 +551,7 @@ export class BackendClient implements IBackendClient {
 		intent: string;
 		entities: string[];
 		data_types: string[];
-		analysis_type: string;
+		analysis_type: string | string[];
 		complexity: string;
 	}> {
 		const controller = new AbortController();

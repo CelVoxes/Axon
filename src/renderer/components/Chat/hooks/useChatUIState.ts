@@ -1,10 +1,20 @@
 import { useState, useCallback, useRef } from "react";
 import { DataTypeSuggestions } from "../../../services/chat/AnalysisOrchestrationService";
 
+export interface ChecklistSummary {
+	summary: string;
+	lines: string[];
+	completed: number;
+	total: number;
+	skipped: number;
+	next?: string | null;
+}
+
 export interface ChatUIState {
 	inputValue: string;
 	isLoading: boolean;
 	progressMessage: string;
+	checklistSummary: ChecklistSummary | null;
 	isProcessing: boolean;
 	progressData: any;
 	validationErrors: string[];
@@ -25,6 +35,7 @@ export interface ChatUIActions {
 	setInputValue: (value: string) => void;
 	setIsLoading: (value: boolean) => void;
 	setProgressMessage: (value: string) => void;
+	setChecklistSummary: (value: ChecklistSummary | null) => void;
 	setIsProcessing: (value: boolean) => void;
 	setProgressData: (value: any) => void;
 	setValidationErrors: (errors: string[]) => void;
@@ -52,6 +63,8 @@ export function useChatUIState(): ChatUIState & ChatUIActions {
 	const [inputValue, setInputValue] = useState("");
 	const [isLoading, setIsLoading] = useState(false);
 	const [progressMessage, setProgressMessage] = useState("");
+	const [checklistSummary, setChecklistSummary] =
+		useState<ChecklistSummary | null>(null);
 	const [isProcessing, setIsProcessing] = useState(false);
 	const [progressData, setProgressData] = useState<any>(null);
 	const [validationErrors, setValidationErrors] = useState<string[]>([]);
@@ -101,6 +114,7 @@ export function useChatUIState(): ChatUIState & ChatUIActions {
 		inputValue,
 		isLoading,
 		progressMessage,
+		checklistSummary,
 		isProcessing,
 		progressData,
 		validationErrors,
@@ -120,6 +134,7 @@ export function useChatUIState(): ChatUIState & ChatUIActions {
 		setInputValue,
 		setIsLoading,
 		setProgressMessage,
+		setChecklistSummary,
 		setIsProcessing,
 		setProgressData,
 		setValidationErrors,

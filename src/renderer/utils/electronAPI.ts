@@ -280,14 +280,58 @@ export const electronAPI = {
 	async executeJupyterCode(
 		code: string,
 		workspacePath?: string,
-		executionId?: string
-	): Promise<{ success: boolean; data?: any; error?: string }> {
-		return safeElectronAPICall<any>(
+		executionId?: string,
+		language: "python" | "r" = "python"
+	): Promise<{ success: boolean; output?: string; error?: string }> {
+		const res = await safeElectronAPICall<any>(
 			"executeJupyterCode",
 			code,
 			workspacePath,
-			executionId
+			executionId,
+			language
 		);
+
+		if (!res.success) {
+			return { success: false, error: res.error };
+		}
+
+		const payload = res.data;
+		if (payload && typeof payload === "object") {
+			if ("success" in payload) {
+				const normalized = payload as {
+					success: boolean;
+					output?: string;
+					error?: string;
+				};
+				return {
+					success: Boolean(normalized.success),
+					output:
+						typeof normalized.output === "string"
+							? normalized.output
+							: undefined,
+					error:
+						typeof normalized.error === "string"
+							? normalized.error
+							: undefined,
+				};
+			}
+
+			if ("output" in payload || "error" in payload) {
+				const maybe = payload as { output?: unknown; error?: unknown };
+				return {
+					success: true,
+					output:
+						typeof maybe.output === "string" ? maybe.output : undefined,
+					error: typeof maybe.error === "string" ? maybe.error : undefined,
+				};
+			}
+		}
+
+		if (typeof payload === "string") {
+			return { success: true, output: payload };
+		}
+
+		return { success: true };
 	},
 
 	/**

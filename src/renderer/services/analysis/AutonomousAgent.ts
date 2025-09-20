@@ -257,6 +257,14 @@ export class AutonomousAgent {
 
 	// Global code context to track all generated code across the conversation
 	private globalCodeContext = new Map<string, string>();
+	private generatedCodeSignatures = new Set<string>();
+	private executedOperations = new Set<string>();
+	private analysisFullyCovered = false;
+	private analysisTaskChecklist: Array<{
+		description: string;
+		status: "pending" | "completed" | "skipped";
+		note?: string;
+	}> = [];
 	private conversationId: string;
 	// Legacy event listener removed - validation is now synchronous
 
@@ -355,6 +363,8 @@ export class AutonomousAgent {
 					if (code && code.trim().length > 0) {
 						const id = `nb-cell-${idx}`;
 						this.addCodeToContext(id, code);
+						this.registerCodeSignature(code);
+						this.registerOperations(this.extractOperationSignatures(code));
 						added++;
 					}
 				}
@@ -410,7 +420,183 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 	 */
 	clearCodeContext(): void {
 		this.globalCodeContext.clear();
+		this.generatedCodeSignatures.clear();
+		this.executedOperations.clear();
+		this.analysisFullyCovered = false;
+		this.analysisTaskChecklist = [];
 		console.log("🧹 AutonomousAgent: Cleared global code context");
+	}
+
+	private initializeChecklist(steps: AnalysisStep[]): void {
+		this.analysisTaskChecklist = steps.map((step) => ({
+			description: step.description || step.id,
+			status: "pending",
+		}));
+		this.emitChecklistStatus();
+	}
+
+	private updateChecklist(description: string, status: "completed" | "skipped", note?: string) {
+		const entry = this.analysisTaskChecklist.find((item) => item.description === description);
+		if (entry) {
+			entry.status = status;
+			if (note) entry.note = note;
+		} else {
+			this.analysisTaskChecklist.push({ description, status, note });
+		}
+		this.emitChecklistStatus();
+	}
+
+	private emitChecklistStatus() {
+		if (!this.analysisTaskChecklist.length) return;
+		const total = this.analysisTaskChecklist.length;
+		const completed = this.analysisTaskChecklist.filter((item) => item.status === "completed").length;
+		const pending = this.analysisTaskChecklist.filter((item) => item.status === "pending");
+		const skipped = this.analysisTaskChecklist.filter((item) => item.status === "skipped").length;
+		const topPending = pending.slice(0, 3).map((item) => item.description);
+		EventManager.dispatchEvent("analysis-checklist-updated", {
+			steps: this.analysisTaskChecklist.map((item) => ({ ...item })),
+			completed,
+			total,
+			skipped,
+		});
+		const parts: string[] = [`Checklist ${completed}/${total} complete`];
+		if (skipped) {
+			parts.push(`${skipped} skipped`);
+		}
+		if (topPending.length) {
+			parts.push(`Next: ${topPending[0]}`);
+		}
+		this.updateStatus(parts.join(" • "));
+	}
+
+	private skipRemainingSteps(
+		analysisSteps: AnalysisStep[],
+		startIndex: number,
+		reason: string
+	) {
+		for (let idx = startIndex; idx < analysisSteps.length; idx++) {
+			const step = analysisSteps[idx];
+			step.code = "";
+			step.status = "completed";
+			step.output = "Skipped";
+			const description = step.description || step.id;
+			const entry = this.analysisTaskChecklist.find((item) => item.description === description);
+			if (entry) {
+				entry.status = "skipped";
+				entry.note = reason;
+			} else {
+				this.analysisTaskChecklist.push({
+					description,
+					status: "skipped",
+					note: reason,
+				});
+			}
+			const statusReason = reason ? reason.trim() : "skipped";
+			this.updateStatus(`↷ Skipping "${description}" — ${statusReason}`);
+			this.emitChecklistStatus();
+		}
+		if (startIndex >= analysisSteps.length) {
+			this.emitChecklistStatus();
+		}
+	}
+
+	private extractOperationSignatures(code: string): Set<string> {
+		const ops = new Set<string>();
+		if (!code) return ops;
+		const patterns: Array<[string, RegExp]> = [
+			["read_10x", /sc\.read_10x_mtx\s*\(/],
+			["normalize_total", /sc\.pp\.normalize_total\s*\(/],
+			["log1p", /sc\.pp\.log1p\s*\(/],
+			["highly_variable_genes", /sc\.pp\.highly_variable_genes\s*\(/],
+			["regress_out", /sc\.pp\.regress_out\s*\(/],
+			["scale", /sc\.pp\.scale\s*\(/],
+			["pca", /sc\.tl\.pca\s*\(/],
+			["neighbors", /sc\.pp\.neighbors\s*\(/],
+			["umap", /sc\.tl\.umap\s*\(/],
+			["leiden", /sc\.tl\.leiden\s*\(/],
+			["rank_genes_groups", /sc\.tl\.rank_genes_groups\s*\(/],
+			["save", /adata\.write\s*\(/],
+			["plot", /sc\.pl\./],
+			["qc_metrics", /calculate_qc_metrics\s*\(/],
+			["scrublet", /scrublet|scrub\.Scrublet/],
+			["layers_counts", /adata\.layers\[["']counts["']\]/],
+		];
+		for (const [key, regex] of patterns) {
+			if (regex.test(code)) {
+				ops.add(key);
+			}
+		}
+		return ops;
+	}
+
+	private registerOperations(ops: Set<string>): void {
+		if (ops.size === 0) return;
+		ops.forEach((op) => this.executedOperations.add(op));
+		const coreOps = [
+			"normalize_total",
+			"log1p",
+			"highly_variable_genes",
+			"regress_out",
+			"scale",
+			"pca",
+			"neighbors",
+			"umap",
+			"leiden",
+			"rank_genes_groups",
+		];
+		const covered = coreOps.filter((op) => this.executedOperations.has(op));
+		if (covered.length >= 6) {
+			this.analysisFullyCovered = true;
+		}
+	}
+
+	private estimateOperationsFromText(text: string | undefined): Set<string> {
+		const ops = new Set<string>();
+		if (!text) return ops;
+		const lower = text.toLowerCase();
+		const add = (op: string) => ops.add(op);
+		if (/read\s+10x|10x\s+mtx|adata.*layers|load\s+data/.test(lower)) {
+			add("read_10x");
+			add("layers_counts");
+		}
+		if (/normalize|library\s+size/.test(lower)) add("normalize_total");
+		if (/log1p|log-transform|log\s+transform/.test(lower)) add("log1p");
+		if (/highly\s+variable|hvg/.test(lower)) add("highly_variable_genes");
+		if (/regress/.test(lower)) add("regress_out");
+		if (/scale/.test(lower)) add("scale");
+		if (/pca/.test(lower)) add("pca");
+		if (/neighbor/.test(lower)) add("neighbors");
+		if (/umap/.test(lower)) add("umap");
+		if (/leiden|cluster/.test(lower)) add("leiden");
+		if (/differential|rank\s+genes|marker/.test(lower)) add("rank_genes_groups");
+		if (/qc|mitochondrial|calculate_qc_metrics/.test(lower)) add("qc_metrics");
+		if (/scrublet|doublet/.test(lower)) add("scrublet");
+		if (/write|save/.test(lower)) add("save");
+		if (/plot|visualiz(e|ation)/.test(lower)) add("plot");
+		return ops;
+	}
+
+	private computeCodeSignature(code: string): string | null {
+		if (!code) return null;
+		const strippedDoc = code
+			.replace(/"""[\s\S]*?"""/g, "")
+			.replace(/'''[\s\S]*?'''/g, "");
+		const withoutComments = strippedDoc.replace(/#.*$/gm, "");
+		const normalized = withoutComments.replace(/\s+/g, "").trim().toLowerCase();
+		return normalized.length ? normalized : null;
+	}
+
+	private isDuplicateCode(code: string): boolean {
+		const signature = this.computeCodeSignature(code);
+		if (!signature) return false;
+		return this.generatedCodeSignatures.has(signature);
+	}
+
+	private registerCodeSignature(code: string): void {
+		const signature = this.computeCodeSignature(code);
+		if (signature) {
+			this.generatedCodeSignatures.add(signature);
+		}
 	}
 
 	/**
@@ -1271,6 +1457,11 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			}
 		}
 
+		// Reset code signature tracking for this generation pass
+		this.generatedCodeSignatures.clear();
+		this.executedOperations.clear();
+		this.analysisFullyCovered = false;
+
 		// Seed global context from existing notebook so subsequent code is aware
 		await this.seedContextFromNotebook(notebookPath);
 
@@ -1559,10 +1750,21 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		const bestCode = this.codeQualityService.getBestCode(validationResult);
 		const finalCode = this.sanitizeNotebookPythonCode(bestCode);
 
+		if (this.isDuplicateCode(finalCode)) {
+			console.log(
+				"AutonomousAgent: Setup cell already present, skipping duplicate for:",
+				stepDescription
+			);
+			return true;
+		}
+
 		// Add to global context if requested
 		if (addToContext && contextKey) {
 			this.addCodeToContext(contextKey, finalCode);
 		}
+
+		this.registerCodeSignature(finalCode);
+		this.registerOperations(this.extractOperationSignatures(finalCode));
 
 		// Add to notebook AFTER validation completes but BEFORE validation events are emitted
 		await this.notebookService.addCodeCell(notebookPath, finalCode);
@@ -1619,6 +1821,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		analysisSteps: AnalysisStep[],
 		workspaceDir: string
 	): Promise<boolean> {
+		this.initializeChecklist(analysisSteps);
 		for (let i = 0; i < analysisSteps.length; i++) {
 			if (this.shouldStopAnalysis) {
 				this.updateStatus("Analysis cancelled");
@@ -1626,6 +1829,28 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			}
 
 			const step = analysisSteps[i];
+			const estimatedOps = this.estimateOperationsFromText(step.description || step.id);
+			const newEstimatedOps = Array.from(estimatedOps).filter(
+				(op) => !this.executedOperations.has(op)
+			);
+			const stepsRemaining = analysisSteps.length - (i + 1);
+			const shouldSkipBefore =
+				i > 0 &&
+				this.analysisFullyCovered &&
+				newEstimatedOps.length === 0 &&
+				stepsRemaining >= 2;
+			if (shouldSkipBefore) {
+				console.log(
+					"AutonomousAgent: Skipping step before generation (analysis already covered):",
+					i + 1
+				);
+				this.skipRemainingSteps(analysisSteps, i, "analysis already covered");
+				this.updateStatus(
+					`Skipping remaining ${stepsRemaining + 1} step(s) — analysis already satisfied`
+				);
+				break;
+			}
+
 			console.log(
 				"AutonomousAgent: Starting generateAndTestStepCode for step:",
 				i + 1
@@ -1642,15 +1867,54 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				i + 1
 			);
 
+			const sanitizedCode = this.sanitizeNotebookPythonCode(stepCode);
+			const stepOps = this.extractOperationSignatures(sanitizedCode);
+			const newOps = Array.from(stepOps).filter(
+				(op) => !this.executedOperations.has(op)
+			);
+			if (i > 0 && this.analysisFullyCovered && newOps.length === 0) {
+				console.log(
+					"AutonomousAgent: Skipping step with no new operations (analysis already covered):",
+					i + 1
+				);
+				step.code = sanitizedCode;
+				step.status = "completed";
+				step.output = "Skipped";
+				this.updateChecklist(step.description || step.id, "skipped", "analysis already covered");
+				this.registerOperations(stepOps);
+				(this as any).pendingValidationResult = null;
+				(this as any).pendingValidationStepId = null;
+				this.skipRemainingSteps(analysisSteps, i + 1, "analysis already covered");
+				this.updateStatus(
+					`Skipping remaining ${analysisSteps.length - (i + 1)} step(s) — analysis already satisfied`
+				);
+				break;
+			}
+			if (this.isDuplicateCode(sanitizedCode)) {
+				console.log(
+					"AutonomousAgent: Skipping duplicate analysis code for step:",
+					i + 1
+				);
+				step.code = sanitizedCode;
+				step.status = "completed";
+				step.output = "Skipped (duplicate code)";
+				this.updateChecklist(step.description || step.id, "skipped", "duplicate code");
+				(this as any).pendingValidationResult = null;
+				(this as any).pendingValidationStepId = null;
+				this.registerOperations(stepOps);
+				continue;
+			}
+
 			console.log(
 				"AutonomousAgent: Adding validated code to notebook for step:",
 				i + 1
 			);
-			await this.notebookService.addCodeCell(
-				notebookPath,
-				this.sanitizeNotebookPythonCode(stepCode)
-			);
+			await this.notebookService.addCodeCell(notebookPath, sanitizedCode);
+			this.registerCodeSignature(sanitizedCode);
+			this.registerOperations(stepOps);
+			this.addCodeToContext(`notebook-step-${i + 1}`, sanitizedCode);
 			console.log("AutonomousAgent: Code added to notebook for step:", i + 1);
+			this.updateChecklist(step.description || step.id, "completed");
 
 			// Emit validation events AFTER notebook cell is successfully added
 			if ((this as any).pendingValidationResult && this.codeGenerator) {

@@ -771,14 +771,16 @@ export class DatasetManager {
                     tools.add("scanpy");
                     tools.add("anndata");
                     tools.add("pandas");
-					tools.add("numpy");
-					tools.add("scipy");
-					tools.add("matplotlib");
-					tools.add("seaborn");
-					tools.add("plotly");
-					tools.add("leidenalg"); // For clustering
-					tools.add("umap-learn"); // For dimensionality reduction
-					tools.add("scikit-learn");
+                        tools.add("numpy");
+                        tools.add("scipy");
+                        tools.add("matplotlib");
+                        tools.add("seaborn");
+                        tools.add("plotly");
+                        // Doublet detection (optional but recommended)
+                        tools.add("scrublet");
+                    tools.add("leidenalg"); // For clustering
+                    tools.add("umap-learn"); // For dimensionality reduction
+                    tools.add("scikit-learn");
 					approaches.add("single_cell_quality_control");
 					approaches.add("normalization");
 					approaches.add("feature_selection");
@@ -943,15 +945,20 @@ export class DatasetManager {
                 break;
             case "single_cell_expression":
                 steps.push({ description: "Load 10x/AnnData dataset into an AnnData object" });
-                steps.push({ description: "Run basic Scanpy QC metrics and filter obvious low-quality cells/genes" });
-                steps.push({ description: "Normalize total counts and apply log1p transform" });
-                steps.push({ description: "Select highly variable genes" });
-                steps.push({ description: "Scale the data and compute PCA embeddings" });
-                steps.push({ description: "Build the neighborhood graph from the PCA representation" });
-                steps.push({ description: "Run UMAP on the neighbors graph" });
-                steps.push({ description: "Cluster cells with Leiden" });
-                steps.push({ description: "Rank marker genes per cluster" });
-                steps.push({ description: "Plot UMAP colored by cluster and key markers" });
+                steps.push({ description: "Persist raw counts (e.g., adata.layers['counts'] = adata.X; optionally adata.raw = adata)" });
+                steps.push({ description: "QC with Scanpy only: sc.pp.calculate_qc_metrics to compute n_genes_by_counts, total_counts, pct_counts_mt (mt- genes)" });
+                steps.push({ description: "Apply fixed QC thresholds, not ad hoc checks: e.g., min_genes=200, max_genes=6000, pct_counts_mt <= 10%" });
+                steps.push({ description: "Detect and remove doublets using Scrublet on raw counts before normalization (keep if Scrublet unavailable)" });
+                steps.push({ description: "Normalize total counts and apply log1p transform (sc.pp.normalize_total; sc.pp.log1p)" });
+                steps.push({ description: "Select highly variable genes (sc.pp.highly_variable_genes)" });
+                steps.push({ description: "Optionally score cell cycle (sc.tl.score_genes_cell_cycle); regress out n_counts, pct_counts_mt, cell cycle (sc.pp.regress_out)" });
+                steps.push({ description: "Scale the data (sc.pp.scale) and compute PCA embeddings (sc.tl.pca)" });
+                steps.push({ description: "If multiple batches: integrate/batch-correct (e.g., BBKNN, Harmony, scVI) prior to neighbors/UMAP" });
+                steps.push({ description: "Build neighbors graph with Scanpy (sc.pp.neighbors)" });
+                steps.push({ description: "Run UMAP with Scanpy (sc.tl.umap) — do not call umap-learn directly" });
+                steps.push({ description: "Cluster cells (e.g., Leiden) and annotate" });
+                steps.push({ description: "Rank marker genes per cluster (sc.tl.rank_genes_groups)" });
+                steps.push({ description: "Plot UMAP colored by cluster and key markers (sc.pl.umap)" });
                 break;
 
 			case "expression_matrix":

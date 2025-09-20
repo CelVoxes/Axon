@@ -60,7 +60,6 @@ const StyledTextarea = styled.textarea`
 	background: transparent;
 	border: none;
 	color: #d4d4d4;
-	-webkit-text-fill-color: #d4d4d4;
 	caret-color: #d4d4d4;
 	padding: 8px 12px;
 	font-size: var(--font-size-base);
@@ -123,41 +122,55 @@ export const Composer = React.forwardRef<ComposerRef, ComposerProps>(
 		const [model, setModel] = React.useState<string>(
 			ConfigManager.getInstance().getDefaultModel()
 		);
-    const [models, setModels] = React.useState<string[]>(
-        ConfigManager.getInstance().getAvailableModels()
-    );
+		const [models, setModels] = React.useState<string[]>(
+			ConfigManager.getInstance().getAvailableModels()
+		);
 
-    // Fetch models/default from backend to avoid duplication and keep in sync
-    React.useEffect(() => {
-        let cancelled = false;
-        (async () => {
-            try {
-                const { BackendClient } = await import("../../services/backend/BackendClient");
-                const bc = new BackendClient();
-                const conf = await bc.getLLMConfig();
-                if (!conf) return;
-                if (cancelled) return;
-                // Update models list from backend
-                if (Array.isArray(conf.available_models) && conf.available_models.length > 0) {
-                    setModels(conf.available_models);
-                    // Also migrate ConfigManager so other parts stay consistent
-                    const cm = ConfigManager.getInstance();
-                    cm.setValue("analysis", "defaultModel", (conf.default_model || cm.getDefaultModel()) as any);
-                    // Persist backend-provided models list
-                    (cm as any).config.analysis.availableModels = conf.available_models as any;
-                }
-                // Update selected model if backend specifies a different default
-                if (typeof conf.default_model === 'string' && conf.default_model && conf.default_model !== model) {
-                    setModel(conf.default_model);
-                }
-            } catch (e) {
-                // Ignore; use local defaults
-            }
-        })();
-        return () => {
-            cancelled = true;
-        };
-    }, []);
+		// Fetch models/default from backend to avoid duplication and keep in sync
+		React.useEffect(() => {
+			let cancelled = false;
+			(async () => {
+				try {
+					const { BackendClient } = await import(
+						"../../services/backend/BackendClient"
+					);
+					const bc = new BackendClient();
+					const conf = await bc.getLLMConfig();
+					if (!conf) return;
+					if (cancelled) return;
+					// Update models list from backend
+					if (
+						Array.isArray(conf.available_models) &&
+						conf.available_models.length > 0
+					) {
+						setModels(conf.available_models);
+						// Also migrate ConfigManager so other parts stay consistent
+						const cm = ConfigManager.getInstance();
+						cm.setValue(
+							"analysis",
+							"defaultModel",
+							(conf.default_model || cm.getDefaultModel()) as any
+						);
+						// Persist backend-provided models list
+						(cm as any).config.analysis.availableModels =
+							conf.available_models as any;
+					}
+					// Update selected model if backend specifies a different default
+					if (
+						typeof conf.default_model === "string" &&
+						conf.default_model &&
+						conf.default_model !== model
+					) {
+						setModel(conf.default_model);
+					}
+				} catch (e) {
+					// Ignore; use local defaults
+				}
+			})();
+			return () => {
+				cancelled = true;
+			};
+		}, []);
 
 		const [showModelMenu, setShowModelMenu] = React.useState(false);
 		const [showModeMenu, setShowModeMenu] = React.useState(false);
@@ -460,8 +473,14 @@ export const Composer = React.forwardRef<ComposerRef, ComposerProps>(
 
 			let html = escapeHtml(value);
 			html = html.replace(/\r\n|\r|\n/g, "<br />");
-			html = html.replace(/(@[^\s@]+)/g, '<span class="composer-tag">$1</span>');
-			html = html.replace(/(#[^\s#]+)/g, '<span class="composer-tag">$1</span>');
+			html = html.replace(
+				/(@[^\s@]+)/g,
+				'<span class="composer-tag">$1</span>'
+			);
+			html = html.replace(
+				/(#[^\s#]+)/g,
+				'<span class="composer-tag">$1</span>'
+			);
 			return html;
 		}, [value]);
 

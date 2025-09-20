@@ -281,7 +281,9 @@ export interface ElectronAPI {
 	checkJupyterStatus: () => Promise<boolean>;
 	executeJupyterCode: (
 		code: string,
-		workspacePath?: string
+		workspacePath?: string,
+		executionId?: string,
+		language?: "python" | "r"
 	) => Promise<{ success: boolean; output?: string; error?: string }>;
 	interruptJupyter: (
 		workspacePath?: string
