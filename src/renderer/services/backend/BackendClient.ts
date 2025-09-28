@@ -21,6 +21,26 @@ export class BackendClient implements IBackendClient {
 	private axiosInstance: any;
 	// Track last context hash per session to avoid resending unchanged context payloads
 	private lastContextHashBySession: Map<string, string> = new Map();
+	// Track active sessions with Responses API memory
+	private activeSessions: Set<string> = new Set();
+	// Per-renderer salt so session ids are unique across app launches
+	private sessionInstanceId: string = `run_${Date.now()}_${Math.random()
+		.toString(36)
+		.slice(2, 8)}`;
+
+	/**
+	 * Check if a session has active Responses API memory
+	 */
+	private hasActiveSession(sessionId: string): boolean {
+		return this.activeSessions.has(sessionId);
+	}
+
+	/**
+	 * Mark a session as having active memory (called after successful API response)
+	 */
+	private markSessionActive(sessionId: string): void {
+		this.activeSessions.add(sessionId);
+	}
 
 	constructor(baseUrl?: string) {
 		const cfg = ConfigManager.getInstance().getSection("backend");
@@ -95,6 +115,62 @@ export class BackendClient implements IBackendClient {
 
 	getBaseUrl(): string {
 		return this.baseUrl;
+	}
+
+	/**
+	 * Ensure a session id is scoped to this renderer/process instance.
+	 * Accepts strings with or without the leading `session:` prefix.
+	 */
+	scopeSessionId(
+		sessionId?: string | null,
+		...fallbackParts: Array<string | undefined | null>
+	): string | undefined {
+		const base = sessionId || this.buildSessionSuffix(fallbackParts);
+		if (!base) return undefined;
+		const trimmed = base.startsWith("session:")
+			? base.slice("session:".length)
+			: base;
+		const withoutSalt = trimmed.replace(/^run_[^:]+:/, "");
+		const suffix = withoutSalt.trim().length > 0 ? withoutSalt : "default";
+		return `session:${this.sessionInstanceId}:${suffix}`;
+	}
+
+	private buildSessionSuffix(
+		parts: Array<string | undefined | null>
+	): string | undefined {
+		const tokens = parts
+			.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+			.map((p) => p.trim());
+		if (tokens.length === 0) return undefined;
+		return tokens.join(":");
+	}
+
+	buildSessionId(
+		...parts: Array<string | undefined | null>
+	): string {
+		const suffix = this.buildSessionSuffix(parts) || "default";
+		return `session:${this.sessionInstanceId}:${suffix}`;
+	}
+
+	private resolveChatSessionId(raw?: string | null): string | undefined {
+		let workspace: string | undefined;
+		let chatId: string | undefined;
+		try {
+			const ws = (window as any)?.electronAPI?.getCurrentWorkspace?.();
+			if (typeof ws === "string" && ws.trim()) {
+				workspace = ws.trim();
+			}
+		} catch (_) {}
+		try {
+			const activeChat = (window as any)?.analysisState?.activeChatSessionId;
+			if (typeof activeChat === "string" && activeChat.trim()) {
+				chatId = activeChat.trim();
+			}
+		} catch (_) {}
+		if (workspace) {
+			return this.scopeSessionId(raw, workspace, chatId || "global");
+		}
+		return this.scopeSessionId(raw);
 	}
 
 	async getLLMConfig(): Promise<{
@@ -515,16 +591,7 @@ export class BackendClient implements IBackendClient {
 		const controller = new AbortController();
 		this.abortControllers.add(controller);
 		try {
-			const sessionId = (() => {
-				try {
-					const ws = (window as any)?.electronAPI?.getCurrentWorkspace?.();
-					const chatId =
-						(window as any)?.analysisState?.activeChatSessionId || "global";
-					if (typeof ws === "string" && ws.trim())
-						return `session:${ws}:${chatId}`;
-				} catch (_) {}
-				return undefined as any;
-			})();
+			const sessionId = this.resolveChatSessionId();
 			const response = await this.axiosInstance.post(
 				`${this.baseUrl}/llm/code`,
 				{
@@ -553,20 +620,12 @@ export class BackendClient implements IBackendClient {
 		data_types: string[];
 		analysis_type: string | string[];
 		complexity: string;
+		reasoning_summary?: string | null;
 	}> {
 		const controller = new AbortController();
 		this.abortControllers.add(controller);
 		try {
-			const sessionId = (() => {
-				try {
-					const ws = (window as any)?.electronAPI?.getCurrentWorkspace?.();
-					const chatId =
-						(window as any)?.analysisState?.activeChatSessionId || "global";
-					if (typeof ws === "string" && ws.trim())
-						return `session:${ws}:${chatId}`;
-				} catch (_) {}
-				return undefined as any;
-			})();
+			const sessionId = this.resolveChatSessionId();
 			const response = await this.axiosInstance.post(
 				`${this.baseUrl}/llm/analyze`,
 				{
@@ -578,6 +637,79 @@ export class BackendClient implements IBackendClient {
 			return response.data;
 		} catch (error) {
 			log.error("BackendClient: Error analyzing query:", error);
+			throw error;
+		} finally {
+			this.abortControllers.delete(controller);
+		}
+	}
+
+	async analyzeQueryStream(
+		query: string,
+		handlers?: {
+			onStatus?: (status: string) => void;
+			onReasoning?: (delta: string) => void;
+			onAnalysis?: (analysis: any) => void;
+			onError?: (message: string) => void;
+		}
+	): Promise<any> {
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
+		try {
+			const sessionId = this.resolveChatSessionId();
+
+			const response = await fetch(`${this.baseUrl}/llm/analyze/stream`, {
+				method: "POST",
+				headers: this.buildHeaders(),
+				body: JSON.stringify({
+					query,
+					...(sessionId ? { session_id: sessionId } : {}),
+				}),
+				signal: controller.signal,
+			});
+
+			let finalAnalysis: any = null;
+			await readNdjsonStream(response, {
+				onLine: (obj: any) => {
+					try {
+						switch (obj?.type) {
+							case "status":
+								if (typeof obj?.status === "string") {
+									handlers?.onStatus?.(obj.status);
+								}
+								break;
+							case "reasoning":
+								if (typeof obj?.delta === "string") {
+									handlers?.onReasoning?.(obj.delta);
+								}
+								break;
+							case "analysis":
+								if (obj?.analysis) {
+									finalAnalysis = obj.analysis;
+									handlers?.onAnalysis?.(finalAnalysis);
+								}
+								break;
+							case "error":
+								if (typeof obj?.message === "string") {
+									handlers?.onError?.(obj.message);
+								}
+								break;
+						}
+					} catch (streamErr) {
+						log.warn("BackendClient.analyzeQueryStream parse error:", streamErr);
+					}
+				},
+				onError: (message) => {
+					log.warn("BackendClient.analyzeQueryStream error: %s", message);
+					handlers?.onError?.(message);
+				},
+			});
+
+			if (!finalAnalysis) {
+				throw new Error("Streaming analysis ended without payload");
+			}
+			return finalAnalysis;
+		} catch (error) {
+			log.error("BackendClient: Error analyzing query (stream):", error);
 			throw error;
 		} finally {
 			this.abortControllers.delete(controller);
@@ -598,9 +730,10 @@ export class BackendClient implements IBackendClient {
 		const controller = new AbortController();
 		this.abortControllers.add(controller);
 		try {
+			const scopedSessionId = this.scopeSessionId(sessionId);
 			const response = await this.axiosInstance.post(
 				`${this.baseUrl}/llm/intent`,
-				{ text: message, session_id: sessionId },
+				{ text: message, session_id: scopedSessionId },
 				{ signal: controller.signal }
 			);
 			return response.data as {
@@ -626,16 +759,7 @@ export class BackendClient implements IBackendClient {
 		const controller = new AbortController();
 		this.abortControllers.add(controller);
 		try {
-			const sessionId = (() => {
-				try {
-					const ws = (window as any)?.electronAPI?.getCurrentWorkspace?.();
-					const chatId =
-						(window as any)?.analysisState?.activeChatSessionId || "global";
-					if (typeof ws === "string" && ws.trim())
-						return `session:${ws}:${chatId}`;
-				} catch (_) {}
-				return undefined as any;
-			})();
+			const sessionId = this.resolveChatSessionId();
 			const response = await this.axiosInstance.post(
 				`${this.baseUrl}/llm/plan`,
 				{
@@ -668,13 +792,14 @@ export class BackendClient implements IBackendClient {
 		const controller = new AbortController();
 		this.abortControllers.add(controller);
 		try {
+			const scopedSessionId = this.scopeSessionId(params.sessionId);
 			const response = await fetch(`${this.baseUrl}/llm/ask`, {
 				method: "POST",
 				headers: this.buildHeaders(),
 				body: JSON.stringify({
 					question: params.question,
 					context: params.context || "",
-					session_id: params.sessionId,
+					session_id: scopedSessionId,
 					model: ConfigManager.getInstance().getDefaultModel(),
 				}),
 				signal: controller.signal,
@@ -751,13 +876,14 @@ export class BackendClient implements IBackendClient {
 		const controller = new AbortController();
 		this.abortControllers.add(controller);
 		try {
+			const scopedSessionId = this.scopeSessionId(params.sessionId);
 			const response = await fetch(`${this.baseUrl}/llm/ask/stream`, {
 				method: "POST",
 				headers: this.buildHeaders(),
 				body: JSON.stringify({
 					question: params.question,
 					context: params.context || "",
-					session_id: params.sessionId,
+					session_id: scopedSessionId,
 					model: ConfigManager.getInstance().getDefaultModel(),
 					stream_raw: params.streamRaw === true,
 				}),
@@ -793,16 +919,7 @@ export class BackendClient implements IBackendClient {
 		);
 
 		try {
-			const sessionId = (() => {
-				try {
-					const ws = (window as any)?.electronAPI?.getCurrentWorkspace?.();
-					const chatId =
-						(window as any)?.analysisState?.activeChatSessionId || "global";
-					if (typeof ws === "string" && ws.trim())
-						return `session:${ws}:${chatId}`;
-				} catch (_) {}
-				return undefined as any;
-			})();
+			const sessionId = this.resolveChatSessionId();
 			const requestBody = {
 				data_types: request.dataTypes,
 				user_question: request.query,
@@ -851,6 +968,127 @@ export class BackendClient implements IBackendClient {
 	}
 
 	/**
+	 * Generate dynamic analysis roadmap using LLM
+	 */
+	async generateRoadmap(
+		context: any,
+		handlers?: {
+			onStatus?: (status: string) => void;
+			onReasoning?: (delta: string) => void;
+			onPlanStep?: (step: string, index: number) => void;
+			onPlan?: (plan: any) => void;
+			onError?: (message: string) => void;
+		}
+	): Promise<any> {
+		log.debug("BackendClient: generateRoadmap called with minimal context: %o", {
+			userQuestion: context.userQuestion?.substring(0, 100) + "...",
+			sessionId: context.sessionId ? "present" : "missing",
+			datasetIds: context.datasetIds?.length || 0,
+		});
+
+		const controller = new AbortController();
+		this.abortControllers.add(controller);
+		try {
+			// Use sessionId from context if available, otherwise generate one
+			const sessionId = this.resolveChatSessionId(context.sessionId);
+
+			// Create minimal request body - let Responses API handle memory
+			const requestBody: any = {
+				question: context.userQuestion,
+				task_type: "analysis_roadmap",
+				dataset_ids: context.datasetIds || [],
+				...(context.analysisType ? { analysis_type: context.analysisType } : {}),
+				...(sessionId ? { session_id: sessionId } : {}),
+			};
+
+			try {
+				const serializedContext = JSON.stringify({
+					userQuestion: context.userQuestion,
+					analysisType: context.analysisType,
+					datasetIds: context.datasetIds,
+				});
+				if (sessionId) {
+					const ctxHash = this.hashString(serializedContext);
+					const last = this.lastContextHashBySession.get(sessionId);
+					const hasMemory = this.hasActiveSession(sessionId);
+					if (hasMemory && last && last === ctxHash) {
+						log.debug("BackendClient: Omitting duplicate plan context for active session");
+					} else {
+						requestBody.context = serializedContext;
+						this.lastContextHashBySession.set(sessionId, ctxHash);
+					}
+				} else {
+					requestBody.context = serializedContext;
+				}
+			} catch (_) {}
+
+			const response = await fetch(`${this.baseUrl}/llm/plan/stream`, {
+				method: "POST",
+				headers: this.buildHeaders(),
+				body: JSON.stringify(requestBody),
+				signal: controller.signal,
+			});
+
+			let finalPlan: any = null;
+			await readNdjsonStream(response, {
+				onLine: (obj: any) => {
+					try {
+						switch (obj?.type) {
+							case "status":
+								if (typeof obj?.status === "string") {
+									handlers?.onStatus?.(obj.status);
+								}
+								break;
+							case "reasoning":
+								if (typeof obj?.delta === "string") {
+									handlers?.onReasoning?.(obj.delta);
+								}
+								break;
+							case "plan_step":
+								if (typeof obj?.step === "string") {
+									handlers?.onPlanStep?.(obj.step, obj.index ?? -1);
+								}
+								break;
+							case "plan":
+								if (obj?.plan) {
+									finalPlan = obj.plan;
+									handlers?.onPlan?.(finalPlan);
+								}
+								break;
+							case "error":
+								if (typeof obj?.message === "string") {
+									handlers?.onError?.(obj.message);
+								}
+								break;
+						}
+					} catch (streamErr) {
+						log.warn("BackendClient.generateRoadmap stream parse error:", streamErr);
+					}
+				},
+				onError: (message) => {
+					log.warn("BackendClient.generateRoadmap stream error: %s", message);
+					handlers?.onError?.(message);
+				},
+			});
+
+			if (!finalPlan) {
+				throw new Error("Streaming plan ended without final payload");
+			}
+
+			log.debug("BackendClient: Successful roadmap stream plan: %o", finalPlan);
+			if (sessionId) {
+				this.markSessionActive(sessionId);
+			}
+			return finalPlan;
+		} catch (error) {
+			log.error("BackendClient: Error generating roadmap:", error);
+			throw error;
+		} finally {
+			this.abortControllers.delete(controller);
+		}
+	}
+
+	/**
 	 * Validate code using LLM
 	 */
 	async validateCode(request: {
@@ -893,6 +1131,9 @@ export class BackendClient implements IBackendClient {
 		try {
 			// Avoid resending identical context blobs across chained turns for the same session
 			const bodyObj: any = { ...request };
+			if (typeof bodyObj?.session_id === "string") {
+				bodyObj.session_id = this.scopeSessionId(bodyObj.session_id);
+			}
 			try {
 				if (
 					typeof bodyObj?.session_id === "string" &&
@@ -902,8 +1143,11 @@ export class BackendClient implements IBackendClient {
 					const ctx: string = bodyObj.context as string;
 					const h = this.hashString(ctx);
 					const last = this.lastContextHashBySession.get(sid);
-					if (last && last === h) {
+
+					// If context unchanged and session has memory, omit context entirely
+					if (last && last === h && this.hasActiveSession(sid)) {
 						delete bodyObj.context; // unchanged; rely on Responses memory
+						log.debug("BackendClient: Omitting duplicate context for active session");
 					} else {
 						this.lastContextHashBySession.set(sid, h);
 					}
@@ -922,21 +1166,11 @@ export class BackendClient implements IBackendClient {
 				onLine: (obj: any) => {
 					try {
 						if (typeof obj?.chunk === "string" && obj.chunk.length > 0) {
-							try {
-								log.info("FE stream: code chunk (%d chars)", obj.chunk.length);
-							} catch (_) {}
 							onChunk(obj.chunk);
 							code += obj.chunk;
 							return;
 						}
 						if (obj?.type === "reasoning" && typeof obj?.delta === "string") {
-							try {
-								log.info(
-									"FE stream: reasoning delta (%d chars): %s",
-									obj.delta.length,
-									obj.delta.slice(0, 80)
-								);
-							} catch (_) {}
 							if (onReasoningDelta) onReasoningDelta(obj.delta);
 							return;
 						}
@@ -1017,8 +1251,11 @@ export class BackendClient implements IBackendClient {
 					const ctx: string = (bodyObj as any).context as string;
 					const h = this.hashString(ctx);
 					const last = this.lastContextHashBySession.get(sid);
-					if (last && last === h) {
-						delete (bodyObj as any).context;
+
+					// If context unchanged and session has memory, omit context entirely
+					if (last && last === h && this.hasActiveSession(sid)) {
+						delete (bodyObj as any).context; // unchanged; rely on Responses memory
+						log.debug("BackendClient: Omitting duplicate context for active session");
 					} else {
 						this.lastContextHashBySession.set(sid, h);
 					}
@@ -1047,7 +1284,6 @@ export class BackendClient implements IBackendClient {
 	 */
 	async getSessionStats(sessionId: string): Promise<{
 		session_id: string;
-		last_response_id?: string | null;
 		approx_tokens: number;
 		approx_chars: number;
 		limit_tokens: number;

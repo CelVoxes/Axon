@@ -30,9 +30,18 @@ export interface Message {
 	codeLanguage?: string;
 	codeTitle?: string;
 	suggestions?: any; // DataTypeSuggestions from AnalysisSuggestionsService
-    // Finalized duration for reasoning/"Thought" messages (in seconds). Used to keep
-    // the displayed timer stable across reloads once streaming is complete.
-    reasoningSeconds?: number;
+	// Finalized duration for reasoning/"Thought" messages (in seconds). Used to keep
+	// the displayed timer stable across reloads once streaming is complete.
+	reasoningSeconds?: number;
+}
+
+export interface ChecklistSummary {
+	summary: string;
+	lines: string[];
+	completed: number;
+	total: number;
+	skipped: number;
+	next?: string | null;
 }
 
 export interface ChatSessionMeta {
@@ -61,6 +70,7 @@ interface AppState {
 	currentMessage: string;
 	isStreaming: boolean;
 	analysisStatus: string;
+	checklistSummary: ChecklistSummary | null;
 
 	// UI state
 	chatCollapsed: boolean;
@@ -99,6 +109,7 @@ type AppAction =
 	| { type: "SET_STREAMING"; payload: boolean }
 	| { type: "SET_CHAT_MESSAGES"; payload: Message[] }
 	| { type: "SET_ANALYSIS_STATUS"; payload: string }
+	| { type: "SET_CHECKLIST_SUMMARY"; payload: ChecklistSummary | null }
 
 	// UI actions
 	| { type: "SET_CHAT_COLLAPSED"; payload: boolean }
@@ -126,6 +137,7 @@ const initialState: AppState = {
 	currentMessage: "",
 	isStreaming: false,
 	analysisStatus: "",
+	checklistSummary: null,
 
 	// UI state
 	chatCollapsed: false,
@@ -154,26 +166,45 @@ function appReducer(state: AppState, action: AppAction): AppState {
 				currentMessage: "",
 				isStreaming: false,
 				analysisStatus: "",
+				checklistSummary: null,
 			};
 
 		case "SET_FILE_TREE":
 			return { ...state, fileTree: action.payload };
 
 		case "OPEN_FILE":
-			if (!state.openFiles.includes(action.payload)) {
-				return {
-					...state,
-					openFiles: [...state.openFiles, action.payload],
-					activeFile: action.payload,
-				};
+			const updatedOpenFiles = !state.openFiles.includes(action.payload)
+				? [...state.openFiles, action.payload]
+				: state.openFiles;
+
+			// Persist updated open files list if workspace is active
+			if (state.currentWorkspace && updatedOpenFiles.length > 0) {
+				const openFilesKey = `workspace:openFiles:${state.currentWorkspace}`;
+				electronAPI.storeSet(openFilesKey, updatedOpenFiles).catch(() => {
+					// ignore persistence errors
+				});
 			}
-			return { ...state, activeFile: action.payload };
+
+			return {
+				...state,
+				openFiles: updatedOpenFiles,
+				activeFile: action.payload,
+			};
 
 		case "CLOSE_FILE":
 			const newOpenFiles = state.openFiles.filter((f) => f !== action.payload);
 			// Remove from unsaved set when closing
 			const nextUnsaved = new Set(state.unsavedFiles);
 			nextUnsaved.delete(action.payload);
+
+			// Persist updated open files list if workspace is active
+			if (state.currentWorkspace && newOpenFiles.length >= 0) {
+				const openFilesKey = `workspace:openFiles:${state.currentWorkspace}`;
+				electronAPI.storeSet(openFilesKey, newOpenFiles).catch(() => {
+					// ignore persistence errors
+				});
+			}
+
 			return {
 				...state,
 				openFiles: newOpenFiles,
@@ -207,19 +238,25 @@ function appReducer(state: AppState, action: AppAction): AppState {
 		case "SET_ACTIVE_FILE":
 			// Ensure active file is also in openFiles array (especially important for .ipynb files)
 			const newActiveFile = action.payload;
-			const shouldAddToOpenFiles = newActiveFile && !state.openFiles.includes(newActiveFile);
-			return { 
-				...state, 
+			const shouldAddToOpenFiles =
+				newActiveFile && !state.openFiles.includes(newActiveFile);
+			return {
+				...state,
 				activeFile: newActiveFile,
-				openFiles: shouldAddToOpenFiles ? [...state.openFiles, newActiveFile] : state.openFiles
+				openFiles: shouldAddToOpenFiles
+					? [...state.openFiles, newActiveFile]
+					: state.openFiles,
 			};
 
 		case "SET_FILE_DIRTY": {
 			const { filePath, dirty } = action.payload;
 			const next = new Set(state.unsavedFiles);
-			if (dirty) next.add(filePath); else next.delete(filePath);
+			if (dirty) next.add(filePath);
+			else next.delete(filePath);
 			// Avoid unnecessary state churn
-			const same = next.size === state.unsavedFiles.size && [...next].every(s => state.unsavedFiles.has(s));
+			const same =
+				next.size === state.unsavedFiles.size &&
+				[...next].every((s) => state.unsavedFiles.has(s));
 			if (same) return state;
 			return { ...state, unsavedFiles: next };
 		}
@@ -264,6 +301,9 @@ function appReducer(state: AppState, action: AppAction): AppState {
 		case "SET_ANALYSIS_STATUS":
 			return { ...state, analysisStatus: action.payload };
 
+		case "SET_CHECKLIST_SUMMARY":
+			return { ...state, checklistSummary: action.payload };
+
 		// UI actions
 		case "SET_CHAT_COLLAPSED":
 			return { ...state, chatCollapsed: action.payload };
@@ -301,6 +341,7 @@ function appReducer(state: AppState, action: AppAction): AppState {
 				activeChatSessionId: id,
 				chatSessions: [newMeta, ...state.chatSessions],
 				messages: [],
+				checklistSummary: null,
 			};
 		}
 
@@ -316,11 +357,15 @@ const AppContext = createContext<{
 
 // Fine-grained slice contexts to reduce unnecessary re-renders
 const WorkspaceContext = createContext<{
-    state: Pick<
-        AppState,
-        "currentWorkspace" | "fileTree" | "openFiles" | "activeFile" | "unsavedFiles"
-    >;
-    dispatch: React.Dispatch<AppAction>;
+	state: Pick<
+		AppState,
+		| "currentWorkspace"
+		| "fileTree"
+		| "openFiles"
+		| "activeFile"
+		| "unsavedFiles"
+	>;
+	dispatch: React.Dispatch<AppAction>;
 } | null>(null);
 
 const AnalysisContext = createContext<{
@@ -335,6 +380,7 @@ const AnalysisContext = createContext<{
 		| "analysisStatus"
 		| "activeChatSessionId"
 		| "chatSessions"
+		| "checklistSummary"
 	>;
 	dispatch: React.Dispatch<AppAction>;
 } | null>(null);
@@ -351,18 +397,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 	const restoredWorkspaceRef = useRef<string | null>(null);
 	const sessionSwitchingRef = useRef<boolean>(false);
 	const lastPersistedSessionRef = useRef<string | null>(null);
+	const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	// Memoize slice states so provider values only change when relevant fields change
-    const workspaceSlice = useMemo(
-        () => ({
-            currentWorkspace: state.currentWorkspace,
-            fileTree: state.fileTree,
-            openFiles: state.openFiles,
-            activeFile: state.activeFile,
-            unsavedFiles: state.unsavedFiles,
-        }),
-        [state.currentWorkspace, state.fileTree, state.openFiles, state.activeFile, state.unsavedFiles]
-    );
+	const workspaceSlice = useMemo(
+		() => ({
+			currentWorkspace: state.currentWorkspace,
+			fileTree: state.fileTree,
+			openFiles: state.openFiles,
+			activeFile: state.activeFile,
+			unsavedFiles: state.unsavedFiles,
+		}),
+		[
+			state.currentWorkspace,
+			state.fileTree,
+			state.openFiles,
+			state.activeFile,
+			state.unsavedFiles,
+		]
+	);
 
 	const analysisSlice = useMemo(
 		() => ({
@@ -375,6 +428,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 			analysisStatus: state.analysisStatus,
 			activeChatSessionId: state.activeChatSessionId,
 			chatSessions: state.chatSessions,
+			checklistSummary: state.checklistSummary,
 		}),
 		[
 			state.bioragConnected,
@@ -386,6 +440,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 			state.analysisStatus,
 			state.activeChatSessionId,
 			state.chatSessions,
+			state.checklistSummary,
 		]
 	);
 
@@ -400,7 +455,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
 	// Note: We intentionally do not auto-open the last workspace on boot.
 
-	// Load chat sessions and active session on workspace change (with legacy migration)
+	// Load chat sessions, active session, and open files on workspace change (with legacy migration)
 	useEffect(() => {
 		(async () => {
 			try {
@@ -409,7 +464,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 					dispatch({ type: "SET_CHAT_MESSAGES", payload: [] as any });
 					dispatch({ type: "SET_CHAT_SESSIONS", payload: [] });
 					dispatch({ type: "SET_ACTIVE_CHAT_SESSION", payload: null });
+					dispatch({ type: "SET_CHECKLIST_SUMMARY", payload: null });
 					return;
+				}
+
+				// Restore open files for this workspace
+				const openFilesKey = `workspace:openFiles:${ws}`;
+				const openFilesResult = await electronAPI.storeGet(openFilesKey);
+				const persistedOpenFiles = openFilesResult?.success && Array.isArray(openFilesResult.data)
+					? openFilesResult.data as string[]
+					: [];
+
+				// Restore open files by dispatching OPEN_FILE actions (but not on initial load)
+				if (persistedOpenFiles.length > 0 && restoredWorkspaceRef.current !== ws) {
+					// Only restore if we haven't already restored this workspace
+					persistedOpenFiles.forEach(filePath => {
+						dispatch({ type: "OPEN_FILE", payload: filePath });
+					});
+
+					// Set the first file as active if there was no active file set
+					if (persistedOpenFiles.length > 0 && !state.activeFile) {
+						dispatch({ type: "SET_ACTIVE_FILE", payload: persistedOpenFiles[0] });
+					}
+
+					// Mark this workspace as restored to avoid re-restoring on subsequent changes
+					restoredWorkspaceRef.current = ws;
 				}
 
 				const sessionsKey = `chat:sessions:${ws}`;
@@ -460,6 +539,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 						type: "SET_CHAT_MESSAGES",
 						payload: (legacyMessages || []) as any,
 					});
+					dispatch({ type: "SET_CHECKLIST_SUMMARY", payload: null });
 					return;
 				}
 
@@ -473,9 +553,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
 				const sessionKey = `chat:session:${ws}:${activeId}`;
 				const msgsRes = await electronAPI.storeGet(sessionKey);
-				const restored = (
-					Array.isArray(msgsRes?.data) ? (msgsRes!.data as any[]) : []
-				).map((m) => ({
+				const sessionData = msgsRes?.data;
+
+				// Handle both new format (with checklist) and legacy format (messages only)
+				let messages: any[] = [];
+				let checklistSummary: ChecklistSummary | null = null;
+
+				if (sessionData) {
+					if (typeof sessionData === "object" && !Array.isArray(sessionData)) {
+						// New format with messages and checklist
+						messages = Array.isArray(sessionData.messages)
+							? sessionData.messages
+							: [];
+						checklistSummary = sessionData.checklistSummary || null;
+					} else {
+						// Legacy format - just messages
+						messages = Array.isArray(sessionData) ? sessionData : [];
+					}
+				}
+
+				const restored = messages.map((m) => ({
 					...m,
 					id: m.id || Math.random().toString(36).slice(2),
 					timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
@@ -485,31 +582,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 				dispatch({ type: "SET_CHAT_SESSIONS", payload: sessions });
 				dispatch({ type: "SET_ACTIVE_CHAT_SESSION", payload: activeId });
 				dispatch({ type: "SET_CHAT_MESSAGES", payload: restored as any });
+				dispatch({ type: "SET_CHECKLIST_SUMMARY", payload: checklistSummary });
 			} catch (e) {
+				console.error("Error loading workspace sessions:", e);
 				dispatch({ type: "SET_CHAT_MESSAGES", payload: [] as any });
 				dispatch({ type: "SET_CHAT_SESSIONS", payload: [] });
 				dispatch({ type: "SET_ACTIVE_CHAT_SESSION", payload: null });
+				dispatch({ type: "SET_CHECKLIST_SUMMARY", payload: null });
 			}
 		})();
 	}, [state.currentWorkspace]);
 
 	// Persist active session messages per workspace and update session metadata
+	// Debounced to avoid blocking the UI during rapid updates
 	useEffect(() => {
-		(async () => {
-			try {
-				const ws = state.currentWorkspace;
-				const activeId = state.activeChatSessionId;
-				if (!ws || !activeId) return;
-				if (restoredWorkspaceRef.current !== ws) return;
-				if (sessionSwitchingRef.current) return;
-				
-				// Only persist if we're in the same session as before, to prevent cross-contamination
-				if (lastPersistedSessionRef.current !== activeId) return;
+		const ws = state.currentWorkspace;
+		const activeId = state.activeChatSessionId;
+		if (!ws || !activeId) return;
 
-				const sessionKey = `chat:session:${ws}:${activeId}`;
-				await electronAPI.storeSet(sessionKey, state.messages);
+		if (persistTimerRef.current) {
+			clearTimeout(persistTimerRef.current);
+			persistTimerRef.current = null;
+		}
+
+		persistTimerRef.current = setTimeout(async () => {
+			persistTimerRef.current = null;
+
+			try {
+				if (!state.currentWorkspace || !state.activeChatSessionId) return;
+				if (restoredWorkspaceRef.current !== state.currentWorkspace) return;
+				if (sessionSwitchingRef.current) return;
+
+				const sessionKey = `chat:session:${state.currentWorkspace}:${state.activeChatSessionId}`;
+				const sessionData = {
+					messages: state.messages,
+					checklistSummary: state.checklistSummary,
+				};
+				await electronAPI.storeSet(sessionKey, sessionData);
 				// Keep legacy key updated for backwards compatibility
-				const legacyKey = `chatHistory:${ws}`;
+				const legacyKey = `chatHistory:${state.currentWorkspace}`;
 				await electronAPI.storeSet(legacyKey, state.messages);
 
 				const lastPreview = state.messages.length
@@ -519,7 +630,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 					: "";
 				const firstUser = state.messages.find((m) => m.isUser)?.content || "";
 				const nextSessions = state.chatSessions.map((s) =>
-					s.id === activeId
+					s.id === state.activeChatSessionId
 						? {
 								...s,
 								title:
@@ -531,7 +642,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 						  }
 						: s
 				);
-				const sessionsKey = `chat:sessions:${ws}`;
+				const sessionsKey = `chat:sessions:${state.currentWorkspace}`;
 				await electronAPI.storeSet(sessionsKey, nextSessions);
 				if (
 					JSON.stringify(nextSessions) !== JSON.stringify(state.chatSessions)
@@ -541,8 +652,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 			} catch (e) {
 				// ignore persistence errors
 			}
-		})();
-	}, [state.currentWorkspace, state.activeChatSessionId, state.messages]);
+		}, 600);
+
+		return () => {
+			if (persistTimerRef.current) {
+				clearTimeout(persistTimerRef.current);
+				persistTimerRef.current = null;
+			}
+		};
+	}, [
+		state.currentWorkspace,
+		state.activeChatSessionId,
+		state.messages,
+		state.checklistSummary,
+		state.chatSessions,
+	]);
 
 	// Persist active session id and sessions list when they change
 	useEffect(() => {
@@ -558,38 +682,84 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 				// ignore
 			}
 		})();
-	}, [state.currentWorkspace, state.activeChatSessionId, state.chatSessions]);
+	}, [state.currentWorkspace, state.activeChatSessionId, state.chatSessions, state.checklistSummary]);
 
-	// Load messages when active chat session changes
+	// Persist open files when they change
 	useEffect(() => {
-		// Set switching flag immediately when session changes
-		sessionSwitchingRef.current = true;
-		
 		(async () => {
 			try {
 				const ws = state.currentWorkspace;
-				const activeId = state.activeChatSessionId;
-				if (!ws || !activeId) {
-					sessionSwitchingRef.current = false;
-					return;
-				}
+				if (!ws || state.openFiles.length === 0) return;
+
+				const openFilesKey = `workspace:openFiles:${ws}`;
+				await electronAPI.storeSet(openFilesKey, state.openFiles);
+			} catch (e) {
+				// ignore persistence errors
+			}
+		})();
+	}, [state.currentWorkspace, state.openFiles]);
+
+	// Load messages when active chat session changes
+	useEffect(() => {
+		(async () => {
+			const ws = state.currentWorkspace;
+			const activeId = state.activeChatSessionId;
+			if (!ws || !activeId) {
+				return;
+			}
+
+			// Set switching flag
+			sessionSwitchingRef.current = true;
+
+			let msgsRes: any = null;
+
+			try {
 				const sessionKey = `chat:session:${ws}:${activeId}`;
-				const msgsRes = await electronAPI.storeGet(sessionKey);
-				const restored = (
-					Array.isArray(msgsRes?.data) ? (msgsRes!.data as any[]) : []
-				).map((m) => ({
-					...m,
-					id: m.id || Math.random().toString(36).slice(2),
-					timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
-				}));
-				dispatch({ type: "SET_CHAT_MESSAGES", payload: restored as any });
+				msgsRes = await electronAPI.storeGet(sessionKey);
+				const sessionData = msgsRes?.data;
+
+				// Handle both new format (with checklist) and legacy format (messages only)
+				let messages: any[] = [];
+				let checklistSummary: ChecklistSummary | null = null;
+
+				if (sessionData) {
+					if (typeof sessionData === "object" && !Array.isArray(sessionData)) {
+						// New format with messages and checklist
+						messages = Array.isArray(sessionData.messages)
+							? sessionData.messages
+							: [];
+						checklistSummary = sessionData.checklistSummary || null;
+					} else {
+						// Legacy format - just messages
+						messages = Array.isArray(sessionData) ? sessionData : [];
+					}
+
+					const restored = messages.map((m) => ({
+						...m,
+						id: m.id || Math.random().toString(36).slice(2),
+						timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+					}));
+
+					dispatch({ type: "SET_CHAT_MESSAGES", payload: restored as any });
+					dispatch({
+						type: "SET_CHECKLIST_SUMMARY",
+						payload: checklistSummary,
+					});
+				}
+
 				// Allow persistence for this session after loading is complete
 				setTimeout(() => {
 					sessionSwitchingRef.current = false;
 					lastPersistedSessionRef.current = activeId;
 				}, 100);
 			} catch (e) {
-				dispatch({ type: "SET_CHAT_MESSAGES", payload: [] as any });
+				console.error("Error loading chat session:", e);
+				// Only clear messages if we actually have a session to load from
+				// and the session data was not successfully loaded
+				if (activeId && msgsRes?.data) {
+					dispatch({ type: "SET_CHAT_MESSAGES", payload: [] as any });
+					// Don't clear checklist on error - it should already be loaded from workspace loader
+				}
 				sessionSwitchingRef.current = false;
 			}
 		})();

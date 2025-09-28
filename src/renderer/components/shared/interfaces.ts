@@ -18,6 +18,8 @@ export interface AnalysisStep {
 	dataTypes?: string[]; // What data types this step works with
 	tools?: string[]; // What tools/libraries this step uses
 	prerequisites?: string[]; // What steps must be completed first
+	implementation?: string; // Implementation details from DatasetManager plan
+	expectedOps?: string[]; // Operations that should complete this step
 }
 
 // Common cell interface for notebooks

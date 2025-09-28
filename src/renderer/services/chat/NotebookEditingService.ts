@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { BackendClient } from "../backend/BackendClient";
 import { NotebookService } from "../notebook/NotebookService";
 import { EventManager } from "../../utils/EventManager";
@@ -37,10 +38,91 @@ interface NotebookEditCallbacks {
 }
 
 export class NotebookEditingService {
+	private static readonly LINT_CACHE_TTL_MS = 15_000;
+	private lintCache = new Map<
+		string,
+		{
+			result: {
+				fixedCode: string;
+				wasFixed: boolean;
+				issues: any[];
+				warnings: any[];
+				timings?: any;
+			};
+			timestamp: number;
+		}
+	>();
+
 	constructor(
 		private backendClient: BackendClient,
 		private currentWorkspace?: string
 	) {}
+
+	private readonly fallbackSessionInstanceId = `offline_${Date.now()}_${Math.random()
+		.toString(36)
+		.slice(2, 8)}`;
+
+	private buildFallbackSessionId(
+		...parts: Array<string | null | undefined>
+	): string {
+		const suffixParts = parts
+			.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+			.map((p) => p.trim().replace(/[:\s]+/g, "_"));
+		const suffix = suffixParts.length ? suffixParts.join(":") : "default";
+		return `session:${this.fallbackSessionInstanceId}:${suffix}`;
+	}
+
+	private resolveSessionId(
+		base?: string | null,
+		...fallbackParts: Array<string | null | undefined>
+	): string | undefined {
+		const trimmedBase = typeof base === "string" ? base.trim() : "";
+		if (this.backendClient) {
+			return this.backendClient.scopeSessionId(
+				trimmedBase || undefined,
+				...fallbackParts
+			);
+		}
+		if (trimmedBase.length > 0) {
+			return trimmedBase.startsWith("session:")
+				? trimmedBase
+				: this.buildFallbackSessionId(trimmedBase);
+		}
+		return this.buildFallbackSessionId(...fallbackParts);
+	}
+
+	private createLintCacheKey(code: string): string {
+		return createHash("sha1").update(code, "utf8").digest("hex");
+
+	}
+
+	private getLintCache(code: string) {
+		const key = this.createLintCacheKey(code);
+		const entry = this.lintCache.get(key);
+		if (!entry) return null;
+		if (Date.now() - entry.timestamp > NotebookEditingService.LINT_CACHE_TTL_MS) {
+			this.lintCache.delete(key);
+			return null;
+		}
+		return entry.result;
+	}
+
+	private setLintCache(code: string, result: {
+		fixedCode: string;
+		wasFixed: boolean;
+		issues: any[];
+		warnings: any[];
+		timings?: any;
+	}) {
+		const key = this.createLintCacheKey(code);
+		if (this.lintCache.size >= 32) {
+			const oldest = this.lintCache.keys().next();
+			if (!oldest.done) {
+				this.lintCache.delete(oldest.value);
+			}
+		}
+		this.lintCache.set(key, { result, timestamp: Date.now() });
+	}
 
 	async performNotebookEdit(
 		args: NotebookEditArgs,
@@ -123,8 +205,7 @@ export class NotebookEditingService {
 					language: lang,
 					context: "Notebook code edit-in-place",
 					notebook_edit: true,
-					session_id:
-						args.sessionId || (wsPath ? `session:${wsPath}` : undefined),
+					session_id: this.resolveSessionId(args.sessionId, wsPath),
 					model: ConfigManager.getInstance().getDefaultModel(),
 				},
 				(chunk: string) => {
@@ -199,12 +280,13 @@ export class NotebookEditingService {
 			const { SessionStatsService } = await import(
 				"../backend/SessionStatsService"
 			);
+			const statsSessionId = this.resolveSessionId(
+				args.sessionId,
+				this.currentWorkspace
+			);
 			await SessionStatsService.update(
 				this.backendClient,
-				args.sessionId ||
-					(this.currentWorkspace
-						? `session:${this.currentWorkspace}`
-						: undefined)
+				statsSessionId
 			);
 		} catch (_) {}
 
@@ -224,83 +306,136 @@ export class NotebookEditingService {
 			base.substring(0, start) + newSelection + base.substring(end);
 
 		// Validate code edits using the LintAutoFixService (same as before consolidation)
+		type LintResult = {
+			fixedCode: string;
+			wasFixed: boolean;
+			issues: any[];
+			warnings: any[];
+			timings?: any;
+		};
 		let finalValidatedCode = newCode;
 		let didAutoFix = false;
 
 		try {
-			// Check if it's a package installation cell and skip validation if so
 			const isInstallCell =
 				/(^|\n)\s*(%pip|%conda|pip\s+install|conda\s+install)\b/i.test(newCode);
+			const selectionLineCount = withinSelection.split(/\r?\n/).length;
+			const newSelectionLineCount = newSelection.split(/\r?\n/).length;
+			const smallEdit =
+				selectionLineCount <= 2 &&
+				newSelectionLineCount <= 2 &&
+				Math.abs(newSelection.length - withinSelection.length) <= 80;
+
+			let lintResult: LintResult;
+			let lintSource: "install" | "small-edit" | "cache" | "lint" = "lint";
 
 			if (isInstallCell) {
+				lintSource = "install";
+				lintResult = {
+					fixedCode: newCode,
+					wasFixed: false,
+					issues: [],
+					warnings: [],
+					timings: undefined,
+				};
 				addMessage(
-					`ℹ️ Package installation cell - skipping validation.`,
+					`ℹ️ Package installation cell - skipping lint check.`,
 					false
 				);
-				finalValidatedCode = newCode;
-
-				// Emit success event for UI
 				try {
 					EventManager.dispatchEvent("code-validation-success", {
 						stepId: streamingMessageId,
 						message: `Package installation commands`,
 						code: newCode,
+						warnings: [],
+						timings: undefined,
 						timestamp: Date.now(),
 					} as any);
 				} catch (_) {}
 			} else {
-				// Use LintAutoFixService for validation
-				const validationResult = await autoFixWithRuffAndLLM(
-					this.backendClient,
-					newCode,
-					{
-						filename: `cell_${cellIndex + 1}_edit.py`,
-						stepTitle: `Code edit for cell ${cellIndex + 1}`,
-					},
-					wsPath ? `session:${wsPath}` : undefined
-				);
+				const cachedLint = this.getLintCache(newCode);
+				if (cachedLint) {
+					lintSource = "cache";
+					lintResult = cachedLint;
+					addMessage(`⚡ Reused recent lint result.`, false);
+				} else if (smallEdit) {
+					lintSource = "small-edit";
+					lintResult = {
+						fixedCode: newCode,
+						wasFixed: false,
+						issues: [],
+						warnings: [],
+						timings: undefined,
+					};
+					addMessage(
+						`ℹ️ Small edit detected — skipping lint check.`,
+						false
+					);
+					this.setLintCache(newCode, lintResult);
+				} else {
+					lintSource = "lint";
+					lintResult = await autoFixWithRuffAndLLM(
+						this.backendClient,
+						newCode,
+						{
+							filename: `cell_${cellIndex + 1}_edit.py`,
+							stepTitle: `Code edit for cell ${cellIndex + 1}`,
+						},
+						this.resolveSessionId(undefined, wsPath)
+					);
+					this.setLintCache(newCode, lintResult);
+				}
+			}
 
-				finalValidatedCode = validationResult.fixedCode;
-				didAutoFix = validationResult.wasFixed;
+			finalValidatedCode = lintResult.fixedCode;
+			didAutoFix = lintResult.wasFixed;
 
-				if (validationResult.issues.length === 0) {
-					addMessage(`✅ Code edit validated successfully.`, false);
-
-					// Emit success event
+			if (lintSource !== "install") {
+				if (lintResult.issues.length === 0) {
+					if (lintSource === "lint") {
+						addMessage(`✅ Lint check passed for the code edit.`, false);
+					}
+					const successMessage =
+						lintSource === "cache"
+							? `Lint check passed (cached)`
+							: lintSource === "small-edit"
+							? `Lint skipped (small edit)`
+							: `Lint check passed`;
 					try {
 						EventManager.dispatchEvent("code-validation-success", {
 							stepId: streamingMessageId,
-							message: `Code edit validation passed`,
+							message: successMessage,
 							code: finalValidatedCode,
+							warnings: lintResult.warnings,
+							timings: lintResult.timings,
 							timestamp: Date.now(),
 						} as any);
 					} catch (_) {}
 				} else {
 					addMessage(
-						`⚠️ Code edit validation found ${validationResult.issues.length} issue(s).`,
+						`⚠️ Lint check found ${lintResult.issues.length} issue(s).`,
 						false
 					);
-
-					// Emit validation error event
 					try {
 						EventManager.dispatchEvent("code-validation-error", {
 							stepId: streamingMessageId,
-							errors: validationResult.issues,
-							warnings: validationResult.warnings,
+							errors: lintResult.issues,
+							warnings: lintResult.warnings,
 							originalCode: newCode,
-							fixedCode: finalValidatedCode,
+							fixedCode: lintResult.fixedCode,
+							timings: lintResult.timings,
 							timestamp: Date.now(),
 						} as any);
 					} catch (_) {}
 				}
 
-				if (didAutoFix) {
-					addMessage(`🔧 Applied automatic fixes to code edit.`, false);
+				if (lintResult.wasFixed) {
+					addMessage(`🔧 Ruff auto-fix applied to the code edit.`, false);
 				}
 			}
 		} catch (error) {
 			console.warn("Code edit validation failed:", error);
-			addMessage(`⚠️ Code edit validation failed, using original code.`, false);
+			addMessage(`⚠️ Lint check failed, using original code.`, false);
 			finalValidatedCode = newCode;
 		}
 

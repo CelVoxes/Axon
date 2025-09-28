@@ -59,7 +59,7 @@ export class CodeGenToolAgent {
       const answer = await backend.askQuestion({
         question,
         context: workingContext,
-        sessionId: `session:${workspaceDir || 'global'}`,
+        sessionId: backend.buildSessionId(workspaceDir || undefined),
       });
       const tool = this.parseToolCall(answer || "");
       if (!tool) break;

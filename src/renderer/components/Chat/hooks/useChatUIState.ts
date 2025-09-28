@@ -1,5 +1,6 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { DataTypeSuggestions } from "../../../services/chat/AnalysisOrchestrationService";
+import { useAnalysisContext } from "../../../context/AppContext";
 
 export interface ChecklistSummary {
 	summary: string;
@@ -60,11 +61,11 @@ export interface ChatUIActions {
 }
 
 export function useChatUIState(): ChatUIState & ChatUIActions {
+	const { state: analysisState, dispatch: analysisDispatch } =
+		useAnalysisContext();
 	const [inputValue, setInputValue] = useState("");
 	const [isLoading, setIsLoading] = useState(false);
 	const [progressMessage, setProgressMessage] = useState("");
-	const [checklistSummary, setChecklistSummary] =
-		useState<ChecklistSummary | null>(null);
 	const [isProcessing, setIsProcessing] = useState(false);
 	const [progressData, setProgressData] = useState<any>(null);
 	const [validationErrors, setValidationErrors] = useState<string[]>([]);
@@ -84,7 +85,12 @@ export function useChatUIState(): ChatUIState & ChatUIActions {
 		useState<DataTypeSuggestions | null>(null);
 	const [showHistoryMenu, setShowHistoryMenu] = useState<boolean>(false);
 
+	// Manage checklist locally to avoid context synchronization issues
+	const [checklistSummary, setChecklistSummaryState] =
+		useState<ChecklistSummary | null>(null);
+
 	const processingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+	const checklistSyncRef = useRef<boolean>(false);
 
 	const scheduleProcessingStop = useCallback((delayMs = 2000) => {
 		if (processingTimeoutRef.current) {
@@ -108,6 +114,29 @@ export function useChatUIState(): ChatUIState & ChatUIActions {
 		setIsProcessing(false);
 		setProgressMessage("");
 	}, []);
+
+	const setChecklistSummary = useCallback(
+		(value: ChecklistSummary | null) => {
+			checklistSyncRef.current = true;
+			setChecklistSummaryState(value);
+			analysisDispatch({
+				type: "SET_CHECKLIST_SUMMARY",
+				payload: value,
+			});
+			setTimeout(() => {
+				checklistSyncRef.current = false;
+			}, 0);
+		},
+		[analysisDispatch]
+	);
+
+	// Sync local checklist state with context when it changes externally
+	useEffect(() => {
+		if (checklistSyncRef.current) return;
+		if (analysisState.checklistSummary !== checklistSummary) {
+			setChecklistSummaryState(analysisState.checklistSummary);
+		}
+	}, [analysisState.checklistSummary]);
 
 	return {
 		// State

@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any, cast
+from typing import List, Optional, Dict, Any, cast, Union
 import uvicorn
 import json
 import datetime as dt
@@ -209,6 +209,7 @@ class LLMSearchResponse(BaseModel):
 
 class QuerySimplificationRequest(BaseModel):
     query: str
+    session_id: Optional[str] = None
 
 
 class QuerySimplificationResponse(BaseModel):
@@ -234,6 +235,7 @@ class ToolCallRequest(BaseModel):
     tool_name: str
     parameters: Dict[str, Any]
     context: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 class ToolCallResponse(BaseModel):
@@ -252,13 +254,13 @@ class QueryAnalysisResponse(BaseModel):
     intent: str
     entities: List[str]
     data_types: List[str]
-    analysis_type: str
+    analysis_type: Union[str, List[str]]
     complexity: str
+    reasoning_summary: Optional[str] = None
 
 
 class SessionStatsResponse(BaseModel):
     session_id: str
-    last_response_id: Optional[str]
     approx_tokens: int
     approx_chars: int
     limit_tokens: int
@@ -347,9 +349,12 @@ async def root():
             "code_generate": "/llm/code",
             "tool_call": "/llm/tool",
             "query_analyze": "/llm/analyze",
-        "ask": "/llm/ask",
+            "query_analyze_stream": "/llm/analyze/stream",
+            "ask": "/llm/ask",
             "ask_stream": "/llm/ask/stream",
             "intent": "/llm/intent",
+            "plan": "/llm/plan",
+            "plan_stream": "/llm/plan/stream",
         }
     }
 
@@ -715,7 +720,10 @@ async def simplify_query(request: QuerySimplificationRequest, user=Depends(get_c
     """Simplify a complex query to its core components."""
     try:
         llm_service = get_llm_service()
-        simplified_query = await llm_service.simplify_query(request.query)
+        simplified_query = await llm_service.simplify_query(
+            request.query,
+            session_id=request.session_id
+        )
         
         return QuerySimplificationResponse(
             original_query=request.query,
@@ -928,7 +936,8 @@ async def call_tool(request: ToolCallRequest, user=Depends(get_current_user)):
         result = await llm_service.call_tool(
             request.tool_name,
             request.parameters,
-            request.context
+            request.context,
+            request.session_id
         )
         
         return ToolCallResponse(
@@ -947,17 +956,95 @@ async def analyze_query(request: QueryAnalysisRequest, user=Depends(get_current_
     try:
         llm_service = get_llm_service()
         # Chain to same session for Responses API memory
-        analysis = await llm_service.analyze_query(request.query, session_id=request.session_id)
-        
+        analysis = await llm_service.analyze_query(
+            request.query,
+            session_id=request.session_id,
+        )
+
+        reasoning_summary = None
+        try:
+            reasoning_summary = llm_service.get_last_reasoning_summary()
+        except Exception:
+            reasoning_summary = None
+
+        # Normalize fields defensively – LLM responses sometimes return null/strings
+        raw_intent = analysis.get("intent") if isinstance(analysis, dict) else None
+        intent = str(raw_intent).strip() if raw_intent else "unknown"
+
+        raw_entities = analysis.get("entities") if isinstance(analysis, dict) else None
+        if isinstance(raw_entities, list):
+            entities = [str(item).strip() for item in raw_entities if str(item).strip()]
+        elif isinstance(raw_entities, str) and raw_entities.strip():
+            entities = [raw_entities.strip()]
+        else:
+            entities = []
+
+        raw_data_types = analysis.get("data_types") if isinstance(analysis, dict) else None
+        if isinstance(raw_data_types, list):
+            data_types = [str(item).strip() for item in raw_data_types if str(item).strip()]
+        elif isinstance(raw_data_types, str) and raw_data_types.strip():
+            data_types = [raw_data_types.strip()]
+        else:
+            data_types = []
+
+        raw_analysis_type = (
+            analysis.get("analysis_type") if isinstance(analysis, dict) else None
+        )
+        analysis_type: Union[str, List[str]]
+        if isinstance(raw_analysis_type, list):
+            analysis_type_list = [
+                str(item).strip() for item in raw_analysis_type if str(item).strip()
+            ]
+            analysis_type = analysis_type_list if analysis_type_list else "unknown"
+        elif isinstance(raw_analysis_type, str) and raw_analysis_type.strip():
+            analysis_type = raw_analysis_type.strip()
+        elif raw_analysis_type is not None:
+            analysis_type = str(raw_analysis_type).strip()
+        else:
+            analysis_type = "unknown"
+
+        raw_complexity = analysis.get("complexity") if isinstance(analysis, dict) else None
+        complexity = (
+            raw_complexity.strip()
+            if isinstance(raw_complexity, str) and raw_complexity.strip()
+            else "simple"
+        )
+
         return QueryAnalysisResponse(
-            intent=analysis.get("intent", "unknown"),
-            entities=analysis.get("entities", []),
-            data_types=analysis.get("data_types", []),
-            analysis_type=analysis.get("analysis_type", "unknown"),
-            complexity=analysis.get("complexity", "simple")
+            intent=intent or "unknown",
+            entities=entities,
+            data_types=data_types,
+            analysis_type=analysis_type,
+            complexity=complexity or "simple",
+            reasoning_summary=reasoning_summary,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query analysis failed: {str(e)}")
+
+
+@app.post("/llm/analyze/stream")
+async def analyze_query_stream(request: QueryAnalysisRequest, user=Depends(get_current_user)):
+    """Streaming query analysis with reasoning deltas."""
+    try:
+        llm_service = get_llm_service()
+
+        async def event_generator():
+            try:
+                async for event in llm_service.analyze_query_stream(
+                    request.query,
+                    session_id=request.session_id,
+                ):
+                    yield f"data: {json.dumps(event)}\n\n"
+            except Exception as stream_error:
+                err_payload = {
+                    "type": "error",
+                    "message": str(stream_error),
+                }
+                yield f"data: {json.dumps(err_payload)}\n\n"
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Query analysis stream failed: {str(e)}")
 
 
 @app.post("/llm/plan")
@@ -970,20 +1057,34 @@ async def generate_plan(request: dict, user=Depends(get_current_user)):
         llm_service = get_llm_service()
         question = request.get("question", "")
         context = request.get("context", "")
+        # Handle both old format (with current_state) and new minimal format
         current_state = request.get("current_state", {})
         available_data = request.get("available_data", [])
+        dataset_ids = request.get("dataset_ids", [])
+        analysis_type = request.get("analysis_type", "general")
+        session_id = request.get("session_id", "")
         task_type = request.get("task_type", "general")
-        
+
         if not question:
             return {"error": "Question is required"}
-        
+
+        # Convert new minimal format to old format for backward compatibility
+        if not current_state and dataset_ids:
+            # New minimal format - build basic current_state from minimal data
+            current_state = {
+                "dataset_ids": dataset_ids,
+                "analysis_type": analysis_type,
+            }
+            # Keep available_data empty for minimal format
+
         # Generate plan using LLM
         plan = await llm_service.generate_plan(
             question=question,
             context=context,
             current_state=current_state,
             available_data=available_data,
-            task_type=task_type
+            task_type=task_type,
+            session_id=session_id
         )
         
         return {
@@ -994,12 +1095,79 @@ async def generate_plan(request: dict, user=Depends(get_current_user)):
             "next_steps": plan.get("next_steps", []),
             "task_type": plan.get("task_type", task_type),
             "priority": plan.get("priority", "medium"),
-            "estimated_time": plan.get("estimated_time", "unknown")
+            "estimated_time": plan.get("estimated_time", "unknown"),
+            "dependencies": plan.get("dependencies", []),
+            "success_criteria": plan.get("success_criteria", []),
+            "reasoning_summary": plan.get("reasoning_summary"),
         }
         
     except Exception as e:
         print(f"Error generating plan: {e}")
         return {"error": str(e)}
+
+
+def _build_plan_stream_response(request: dict):
+    llm_service = get_llm_service()
+    question = request.get("question", "")
+    context = request.get("context", "")
+    current_state = request.get("current_state", {})
+    available_data = request.get("available_data", [])
+    dataset_ids = request.get("dataset_ids", [])
+    analysis_type = request.get("analysis_type", "general")
+    task_type = request.get("task_type", analysis_type or "general")
+    session_id = request.get("session_id")
+
+    if not current_state and dataset_ids:
+        current_state = {
+            "dataset_ids": dataset_ids,
+            "analysis_type": analysis_type,
+        }
+
+    async def event_generator():
+        try:
+            async for event in llm_service.generate_plan_stream(
+                question=question,
+                context=context,
+                current_state=current_state,
+                available_data=available_data,
+                task_type=task_type,
+                session_id=session_id,
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as stream_error:
+            err_payload = {
+                "type": "error",
+                "message": str(stream_error),
+            }
+            yield f"data: {json.dumps(err_payload)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/llm/plan/stream")
+async def generate_plan_stream(request: dict, user=Depends(get_current_user)):
+    """Streaming variant of plan generation."""
+    try:
+        if not request.get("question"):
+            raise HTTPException(status_code=400, detail="Question is required")
+        return _build_plan_stream_response(request)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Plan stream failed: {str(e)}")
+
+
+@app.post("/llm/generate_plan/stream")
+async def generate_plan_stream_alias(request: dict, user=Depends(get_current_user)):
+    """Backward-compatible alias for clients still using /llm/generate_plan/stream."""
+    try:
+        if not request.get("question"):
+            raise HTTPException(status_code=400, detail="Question is required")
+        return _build_plan_stream_response(request)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Plan stream failed: {str(e)}")
 
 
 @app.post("/llm/search-terms", response_model=SearchTermsResponse)
@@ -1163,8 +1331,7 @@ async def get_session_stats(session_id: str):
     """Return approximate session usage and whether the session is near the context limit.
 
     Note: Token counts are best-effort and may be approximated, especially for streaming calls where
-    the SDK does not provide full usage metrics in real time. For Responses API, we chain via
-    previous_response_id and track last_response_id for observability.
+    the SDK does not provide full usage metrics in real time.
     """
     try:
         llm_service = get_llm_service()

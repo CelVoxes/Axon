@@ -55,7 +55,6 @@ class OpenAIProvider(LLMProvider):
         default_model = SearchConfig.get_default_llm_model()
         self.model = model if isinstance(model, str) and model else (default_model if isinstance(default_model, str) and default_model else "gpt-4o-mini")
         self.last_usage = None
-        self.last_response_id: Optional[str] = None
         cfg_tier = SearchConfig.get_openai_service_tier()
         self.service_tier = (service_tier or cfg_tier or "").strip()
         self.last_reasoning_summary: Optional[str] = None
@@ -159,10 +158,6 @@ class OpenAIProvider(LLMProvider):
                             resp = await _do_request("auto")
                     else:
                         raise
-                try:
-                    self.last_response_id = getattr(resp, "id", None)
-                except Exception:
-                    self.last_response_id = None
                 # Best-effort extraction of text
                 text = None
                 try:
@@ -307,33 +302,27 @@ class OpenAIProvider(LLMProvider):
                                         rs = str(rs)
                                         # Use a sentinel prefix to mark reasoning events for the API layer
                                         yield "\x00REASONING:" + rs
-                                # Capture response id if available
+                                # Capture reasoning summary if included with the response
                                 try:
                                     resp_obj = getattr(event, "response", None)
-                                    if resp_obj is not None and getattr(resp_obj, "id", None):
-                                        self.last_response_id = getattr(resp_obj, "id", None)
-                                        # If this is a completion event with a response object, try to extract summary
-                                        try:
-                                            if hasattr(resp_obj, "output"):
-                                                for item in getattr(resp_obj, "output", []) or []:
-                                                    if getattr(item, "type", None) == "reasoning":
-                                                        summary_list = getattr(item, "summary", None)
-                                                        if isinstance(summary_list, (list, tuple)):
-                                                            parts: List[str] = []
-                                                            for s in summary_list:
-                                                                t = None
-                                                                try:
-                                                                    t = getattr(s, "text", None)
-                                                                except Exception:
-                                                                    t = None
-                                                                if t is None and isinstance(s, dict):
-                                                                    t = s.get("text")
-                                                                if isinstance(t, str) and t:
-                                                                    parts.append(t)
-                                                            if parts:
-                                                                self.last_reasoning_summary = "".join(parts).strip() or None
-                                        except Exception:
-                                            pass
+                                    if resp_obj is not None and hasattr(resp_obj, "output"):
+                                        for item in getattr(resp_obj, "output", []) or []:
+                                            if getattr(item, "type", None) == "reasoning":
+                                                summary_list = getattr(item, "summary", None)
+                                                if isinstance(summary_list, (list, tuple)):
+                                                    parts: List[str] = []
+                                                    for s in summary_list:
+                                                        t = None
+                                                        try:
+                                                            t = getattr(s, "text", None)
+                                                        except Exception:
+                                                            t = None
+                                                        if t is None and isinstance(s, dict):
+                                                            t = s.get("text")
+                                                        if isinstance(t, str) and t:
+                                                            parts.append(t)
+                                                    if parts:
+                                                        self.last_reasoning_summary = "".join(parts).strip() or None
                                 except Exception:
                                     pass
                             # Estimate usage after stream completes
@@ -488,33 +477,26 @@ class OpenAIProvider(LLMProvider):
                             if rs:
                                 rs = str(rs)
                                 yield "\x00REASONING:" + rs
-                        # Capture id from streaming events when present
                         try:
                             resp_obj = getattr(event, "response", None)
-                            if resp_obj is not None and getattr(resp_obj, "id", None):
-                                self.last_response_id = getattr(resp_obj, "id", None)
-                                # Try to extract summary on final response
-                                try:
-                                    if hasattr(resp_obj, "output"):
-                                        for item in getattr(resp_obj, "output", []) or []:
-                                            if getattr(item, "type", None) == "reasoning":
-                                                summary_list = getattr(item, "summary", None)
-                                                if isinstance(summary_list, (list, tuple)):
-                                                    parts: List[str] = []
-                                                    for s in summary_list:
-                                                        t = None
-                                                        try:
-                                                            t = getattr(s, "text", None)
-                                                        except Exception:
-                                                            t = None
-                                                        if t is None and isinstance(s, dict):
-                                                            t = s.get("text")
-                                                        if isinstance(t, str) and t:
-                                                            parts.append(t)
-                                                    if parts:
-                                                        self.last_reasoning_summary = "".join(parts).strip() or None
-                                except Exception:
-                                    pass
+                            if resp_obj is not None and hasattr(resp_obj, "output"):
+                                for item in getattr(resp_obj, "output", []) or []:
+                                    if getattr(item, "type", None) == "reasoning":
+                                        summary_list = getattr(item, "summary", None)
+                                        if isinstance(summary_list, (list, tuple)):
+                                            parts: List[str] = []
+                                            for s in summary_list:
+                                                t = None
+                                                try:
+                                                    t = getattr(s, "text", None)
+                                                except Exception:
+                                                    t = None
+                                                if t is None and isinstance(s, dict):
+                                                    t = s.get("text")
+                                                if isinstance(t, str) and t:
+                                                    parts.append(t)
+                                            if parts:
+                                                self.last_reasoning_summary = "".join(parts).strip() or None
                         except Exception:
                             pass
                     # Estimate usage after stream completes
@@ -617,8 +599,8 @@ class LLMService:
         self.provider = self._create_provider(provider, **kwargs)
         # In-memory session conversations: session_id -> [messages]
         self.sessions: Dict[str, List[Message]] = {}
-        # Session metadata for Responses chaining and budget tracking
-        # { session_id: { 'last_response_id': str|None, 'approx_chars': int, 'approx_tokens': int } }
+        # Session metadata used for usage tracking and budgeting
+        # { session_id: { 'approx_chars': int, 'approx_tokens': int, 'model': Optional[str] } }
         self.session_meta: Dict[str, Dict[str, Any]] = {}
         # Track last seeded context hash per session to avoid resending identical blobs
         self._session_context_hash: Dict[str, str] = {}
@@ -657,7 +639,6 @@ class LLMService:
             messages = [cast(Message, {"role": "system", "content": system_prompt})]
             self.sessions[session_id] = messages
             self.session_meta[session_id] = {
-                'last_response_id': None,
                 'approx_chars': len(system_prompt or ""),
                 'approx_tokens': 0,
             }
@@ -682,10 +663,6 @@ class LLMService:
         meta = self.session_meta.get(session_id)
         if meta is None:
             return
-        # Capture last response id from provider if present
-        last_resp_id = getattr(self.provider, 'last_response_id', None)
-        if last_resp_id:
-            meta['last_response_id'] = last_resp_id
         # Accumulate token usage if available
         last_usage = getattr(self.provider, 'last_usage', None)
         if isinstance(last_usage, dict):
@@ -699,43 +676,11 @@ class LLMService:
             except Exception:
                 pass
 
-    def _clear_session_chaining(self, session_id: Optional[str]) -> None:
-        if not session_id:
-            return
-        meta = self.session_meta.get(session_id)
-        if meta is not None:
-            meta['last_response_id'] = None
-        self._session_context_hash.pop(session_id, None)
-        try:
-            setattr(self.provider, "last_response_id", None)
-        except Exception:
-            pass
-
-    def _get_previous_response_id(self, session_id: Optional[str]) -> Optional[str]:
-        if not session_id:
-            return None
-        meta = self.session_meta.get(session_id) or {}
-        val = meta.get('last_response_id')
-        return val if isinstance(val, str) else None
-
-    def _is_previous_response_error(self, error: Exception) -> bool:
-        try:
-            message = str(error).lower()
-        except Exception:
-            return False
-        if "previous_response" not in message:
-            return False
-        return "not found" in message or "previous_response_not_found" in message
-
     def _should_include_context(self, session_id: Optional[str], context: Optional[str]) -> bool:
         if not session_id:
             return False
         if not isinstance(context, str) or not context.strip():
             return False
-        prev_id = self._get_previous_response_id(session_id)
-        # Seed on first turn for this session
-        if not prev_id:
-            return True
         try:
             h = hashlib.sha256(context.encode('utf-8')).hexdigest()
             last = self._session_context_hash.get(session_id)
@@ -762,18 +707,41 @@ class LLMService:
     ) -> List[Message]:
         """
         Build a minimal input message list for the provider to reduce prompt bloat.
-
-        If we have a previous_response_id for this session, we only send the new
-        user message and rely on Responses API session-chaining. Otherwise, we seed
-        with a system+user pair.
+        Always seed with a system prompt followed by the current user request so we
+        never rely on provider-side response chaining.
         """
-        prev_id = self._get_previous_response_id(session_id)
-        if prev_id:
-            return [cast(Message, {"role": "user", "content": user_content})]
-        return [
-            cast(Message, {"role": "system", "content": system_prompt}),
-            cast(Message, {"role": "user", "content": user_content}),
-        ]
+        system_message = cast(Message, {"role": "system", "content": system_prompt})
+
+        if not session_id:
+            return [system_message, cast(Message, {"role": "user", "content": user_content})]
+
+        history = self.sessions.get(session_id)
+        if not history:
+            return [system_message, cast(Message, {"role": "user", "content": user_content})]
+
+        # Rebuild the stored conversation, refreshing the system prompt while keeping
+        # prior assistant/user turns that were cached via _append_and_prune.
+        reconstructed: List[Message] = []
+        for idx, msg in enumerate(history):
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if idx == 0 and role == "system":
+                # Ensure we honor the call-site system prompt (may differ slightly)
+                reconstructed.append(system_message)
+            else:
+                reconstructed.append(
+                    cast(Message, {"role": role, "content": content})
+                )
+
+        if not reconstructed or reconstructed[0].get("role") != "system":
+            reconstructed.insert(0, system_message)
+
+        # Ensure the current user request is present even for helper calls that did
+        # not persist the turn into session history (e.g., lightweight classifiers).
+        if not reconstructed or reconstructed[-1].get("role") != "user" or reconstructed[-1].get("content") != user_content:
+            reconstructed.append(cast(Message, {"role": "user", "content": user_content}))
+
+        return reconstructed
 
     def _resolve_session_limit_tokens(self, session_id: Optional[str]) -> int:
         """Return the per-session context-token limit based on the session's active model.
@@ -825,7 +793,6 @@ class LLMService:
             self._debug_stats(f"📊 LLM Service: Found exact match with {tokens} tokens")
             return {
                 "session_id": session_id,
-                "last_response_id": meta.get('last_response_id'),
                 "approx_tokens": tokens,
                 "approx_chars": int(meta.get('approx_chars', 0) or 0),
                 "limit_tokens": int(self._resolve_session_limit_tokens(session_id)),
@@ -846,7 +813,6 @@ class LLMService:
                 self._debug_stats("📊 LLM Service: No exact stats for per-chat session; returning zeros (no fallback)")
                 return {
                     "session_id": session_id,
-                    "last_response_id": None,
                     "approx_tokens": 0,
                     "approx_chars": 0,
                     "limit_tokens": int(self.default_context_tokens),
@@ -878,7 +844,6 @@ class LLMService:
                 self._debug_stats(f"📊 LLM Service: Using best match: {best_session_id} with {tokens} tokens")
                 return {
                     "session_id": best_session_id,
-                    "last_response_id": best_meta.get('last_response_id'),
                     "approx_tokens": tokens,
                     "approx_chars": int(best_meta.get('approx_chars', 0) or 0),
                     "limit_tokens": int(self._resolve_session_limit_tokens(best_session_id)),
@@ -889,7 +854,6 @@ class LLMService:
         # No match found, return empty stats for the requested session
         return {
             "session_id": session_id,
-            "last_response_id": None,
             "approx_tokens": 0,
             "approx_chars": 0,
             "limit_tokens": int(self._resolve_session_limit_tokens(session_id)),
@@ -909,7 +873,6 @@ class LLMService:
         if meta is None:
             # Initialize a minimal meta entry if needed
             self.session_meta[session_id] = {
-                'last_response_id': None,
                 'approx_chars': 0,
                 'approx_tokens': 0,
             }
@@ -1018,14 +981,12 @@ class LLMService:
             resolved_model = self._resolve_model(session_id, model)
             if session_msgs is not None:
                 self._append_and_prune(session_id, "user", user_content)
-                # Send only minimal messages; rely on previous_response_id for context
                 minimal_msgs = self._build_minimal_messages(session_id, system_prompt, user_content)
                 response = await self.provider.generate(
                     minimal_msgs,
                     max_tokens=3000,  # Increased for detailed summaries (was 800)
                     temperature=0.2,
                     store=True,
-                    previous_response_id=self._get_previous_response_id(session_id),
                     model=resolved_model,
                 )
                 self._update_session_usage(session_id)
@@ -1076,62 +1037,27 @@ class LLMService:
         )
 
         try:
-            session_msgs = self._get_or_init_session(session_id, system_prompt)
+            self._get_or_init_session(session_id, system_prompt)
             resolved_model = self._resolve_model(session_id, model)
             total = ""
-            if session_msgs is not None:
+            if session_id:
                 self._append_and_prune(session_id, "user", user_content)
-                use_prev = True
-                while True:
-                    prev_id = self._get_previous_response_id(session_id) if use_prev else None
-                    minimal_msgs = (
-                        self._build_minimal_messages(session_id, system_prompt, user_content)
-                        if use_prev else
-                        [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_content},
-                        ]
-                    )
-                    try:
-                        async for chunk in self.provider.generate_stream(
-                            minimal_msgs,
-                            max_tokens=3000,  # Increased for detailed summaries (was 900)
-                            temperature=0.2,
-                            store=True,
-                            previous_response_id=prev_id,
-                            model=resolved_model,
-                        ):
-                            if chunk:
-                                total += chunk
-                                yield chunk
-                        self._update_session_usage(session_id)
-                        if include_context:
-                            self._record_context_hash(session_id, context)
-                        self._append_and_prune(session_id, "assistant", total)
-                        break
-                    except Exception as exc:
-                        if use_prev and session_id and self._is_previous_response_error(exc):
-                            self._debug(f"⚠️ previous_response_id invalid for {session_id}, retrying without chaining")
-                            self._clear_session_chaining(session_id)
-                            total = ""
-                            use_prev = False
-                            continue
-                        raise
-            else:
-                async for chunk in self.provider.generate_stream(
-                    [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_content},
-                    ],
-                    max_tokens=3000,  # Increased for detailed summaries (was 900)
-                    temperature=0.2,
-                    store=True,
-                    model=resolved_model,
-                ):
-                    if chunk:
-                        yield chunk
+            minimal_msgs = self._build_minimal_messages(session_id, system_prompt, user_content)
+            async for chunk in self.provider.generate_stream(
+                minimal_msgs,
+                max_tokens=3000,  # Increased for detailed summaries (was 900)
+                temperature=0.2,
+                store=True,
+                model=resolved_model,
+            ):
+                if chunk:
+                    total += chunk
+                    yield chunk
+            if session_id:
+                self._update_session_usage(session_id)
                 if include_context:
                     self._record_context_hash(session_id, context)
+                self._append_and_prune(session_id, "assistant", total)
         except Exception as e:
             yield f"(error) {e}"
     
@@ -1156,7 +1082,6 @@ class LLMService:
                     max_tokens=200,
                     temperature=0.3,
                     store=False,
-                    previous_response_id=self._get_previous_response_id(session_id),
                     model=self._resolve_model(session_id, None),
                 )
                 try:
@@ -1175,7 +1100,7 @@ class LLMService:
             print(f"LLM search terms generation error: {e}")
             return self._extract_basic_terms(user_query)
     
-    async def simplify_query(self, complex_query: str) -> str:
+    async def simplify_query(self, complex_query: str, session_id: Optional[str] = None) -> str:
         """Simplify a complex query to its core components."""
         if not self.provider:
             return complex_query
@@ -1200,13 +1125,30 @@ Return ONLY a simple, concise query optimized for dataset search. Do not include
 Simplified query:"""
             
             # Add timeout protection
-            response = await asyncio.wait_for(
-                self.provider.generate([
-                    {"role": "system", "content": "You are a biomedical research assistant that simplifies complex queries for dataset search. Always prioritize disease/condition names and technical terms. Return only the simplified query, no formatting or explanations."},
-                    {"role": "user", "content": prompt}
-                ], max_tokens=100, temperature=0.2),
-                timeout=25.0  # 25 second timeout
-            )
+            if session_id:
+                minimal_msgs = self._build_minimal_messages(session_id, "You are a biomedical research assistant that simplifies complex queries for dataset search. Always prioritize disease/condition names and technical terms. Return only the simplified query, no formatting or explanations.", prompt)
+                response = await asyncio.wait_for(
+                    self.provider.generate(
+                        minimal_msgs,
+                        max_tokens=100,
+                        temperature=0.2,
+                        store=False,
+                        model=self._resolve_model(session_id, None),
+                    ),
+                    timeout=25.0  # 25 second timeout
+                )
+                try:
+                    self._update_session_usage(session_id)
+                except Exception:
+                    pass
+            else:
+                response = await asyncio.wait_for(
+                    self.provider.generate([
+                        {"role": "system", "content": "You are a biomedical research assistant that simplifies complex queries for dataset search. Always prioritize disease/condition names and technical terms. Return only the simplified query, no formatting or explanations."},
+                        {"role": "user", "content": prompt}
+                    ], max_tokens=100, temperature=0.2),
+                    timeout=25.0  # 25 second timeout
+                )
             
             return response.strip().strip('"').strip("'")
             
@@ -1255,31 +1197,23 @@ Code:
         
         try:
             system_prompt = f"You are an expert programmer. Generate only {lang} code, no explanations."
-            session_msgs = self._get_or_init_session(session_id, system_prompt)
+            self._get_or_init_session(session_id, system_prompt)
             resolved_model = self._resolve_model(session_id, model)
-            if session_msgs is not None:
+            minimal_msgs = self._build_minimal_messages(session_id, system_prompt, prompt)
+            if session_id:
                 self._append_and_prune(session_id, "user", prompt)
-                # Send minimal messages and rely on previous_response_id for context
-                minimal_msgs = self._build_minimal_messages(session_id, system_prompt, prompt)
-                response = await self.provider.generate(
-                    minimal_msgs,
-                    max_tokens=2000,
-                    temperature=0.1,
-                    store=True,
-                    previous_response_id=self._get_previous_response_id(session_id),
-                    model=resolved_model,
-                )
+            response = await self.provider.generate(
+                minimal_msgs,
+                max_tokens=2000,
+                temperature=0.1,
+                store=True,
+                model=resolved_model,
+            )
+            if session_id:
                 self._update_session_usage(session_id)
                 if include_context:
                     self._record_context_hash(session_id, context)
                 self._append_and_prune(session_id, "assistant", response)
-            else:
-                response = await self.provider.generate([
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt}
-                ], max_tokens=2000, temperature=0.1, store=True, model=resolved_model)
-                if include_context:
-                    self._record_context_hash(session_id, context)
             if (lang or "").lower() == "python":
                 return self.extract_python_code(response) or self._generate_fallback_code(task_description, language)
             else:
@@ -1406,14 +1340,14 @@ Generate the code now:
             total = ""
             if session_msgs is not None:
                 self._append_and_prune(session_id, "user", prompt)
-                # Stream with minimal messages; rely on previous_response_id for context
-                minimal_msgs = self._build_minimal_messages(session_id, system_prompt, prompt)
+                minimal_msgs = self._build_minimal_messages(
+                    session_id, system_prompt, prompt
+                )
                 async for chunk in self.provider.generate_stream(
                     minimal_msgs,
                     max_tokens=3000,
                     temperature=0.1,
                     store=True,
-                    previous_response_id=self._get_previous_response_id(session_id),
                     model=resolved_model,
                     **({"reasoning": reasoning} if reasoning else {}),
                 ):
@@ -1741,21 +1675,26 @@ print("Please implement specific analysis based on your data and requirements.")
         return code
     
     async def call_tool(
-        self, 
-        tool_name: str, 
+        self,
+        tool_name: str,
         parameters: Dict[str, Any],
-        context: Optional[str] = None
+        context: Optional[str] = None,
+        session_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Generate tool calling instructions."""
         if not self.provider:
             return {"error": "LLM not available for tool calling"}
         
         try:
+            # Apply context deduplication like other methods
+            include_context = self._should_include_context(session_id, context)
+            ctx_text = context if include_context else ""
+
             prompt = f"""Generate instructions for calling the tool '{tool_name}' with the following parameters:
 
 Parameters: {json.dumps(parameters, indent=2)}
 
-{f"Context: {context}" if context else ""}
+{("Context: " + ctx_text) if ctx_text else ""}
 
 Return a JSON object with:
 - tool_name: the name of the tool
@@ -1763,11 +1702,27 @@ Return a JSON object with:
 - description: what this tool call will do
 
 JSON response:"""
-            
-            response = await self.provider.generate([
-                {"role": "system", "content": "You are a tool calling expert that generates precise tool invocation instructions."},
-                {"role": "user", "content": prompt}
-            ], max_tokens=300, temperature=0.1)
+
+            if session_id:
+                minimal_msgs = self._build_minimal_messages(session_id, "You are a tool calling expert that generates precise tool invocation instructions.", prompt)
+                response = await self.provider.generate(
+                    minimal_msgs,
+                    max_tokens=300,
+                    temperature=0.1,
+                    store=False,
+                    model=self._resolve_model(session_id, None),
+                )
+                try:
+                    self._update_session_usage(session_id)
+                except Exception:
+                    pass
+                if include_context:
+                    self._record_context_hash(session_id, context)
+            else:
+                response = await self.provider.generate([
+                    {"role": "system", "content": "You are a tool calling expert that generates precise tool invocation instructions."},
+                    {"role": "user", "content": prompt}
+                ], max_tokens=300, temperature=0.1)
             
             # Try to parse JSON response
             try:
@@ -1812,7 +1767,6 @@ JSON response:"""
                     max_tokens=300,
                     temperature=0.1,
                     store=False,
-                    previous_response_id=self._get_previous_response_id(session_id),
                     model=self._resolve_model(session_id, None),
                 )
                 try:
@@ -1833,6 +1787,164 @@ JSON response:"""
         except Exception as e:
             print(f"Query analysis error: {e}")
             return self._basic_query_analysis(query)
+
+    async def analyze_query_stream(
+        self,
+        query: str,
+        session_id: Optional[str] = None,
+        *,
+        max_tokens: int = 600,
+    ):
+        """Streaming version of analyze_query that emits reasoning deltas and final JSON.
+
+        Yields dict events:
+        - {"type": "status", "status": "thinking"}
+        - {"type": "reasoning", "delta": "Thought 1 > ..."}
+        - {"type": "analysis", "analysis": {...}}
+        - {"type": "error", "message": str}
+        - {"type": "done"}
+        """
+        if not self.provider:
+            yield {"type": "status", "status": "thinking"}
+            analysis = self._basic_query_analysis(query)
+            yield {"type": "analysis", "analysis": analysis, "fallback": True}
+            yield {"type": "done"}
+            return
+
+        system = (
+            "You are a biomedical query analyzer that extracts structured metadata from the user's request.\n"
+            "Think step-by-step and stream each thought as `Thought <n> > ...`.\n"
+            "When you are ready with the final result, output `<final>{JSON}</final>` containing ONLY valid JSON."
+        )
+
+        include_context = self._should_include_context(session_id, query)
+        user_prompt = (
+            "Analyze this biomedical research query and return a JSON object with:\n"
+            "- intent: main research goal\n"
+            "- entities: key biological entities mentioned\n"
+            "- data_types: required data types\n"
+            "- analysis_type: recommended analysis plan (ordered list)\n"
+            "- complexity: simple/medium/complex\n\n"
+            f"Query: {query}\n\n"
+            "Follow the streaming format instructions carefully."
+        )
+
+        self._get_or_init_session(session_id, system)
+        resolved_model = self._resolve_model(session_id, None)
+
+        processed_reasoning_len = 0
+        total_text = ""
+        final_idx = -1
+        reasoning_lines: List[str] = []
+        pending_reasoning_line = ""
+
+        async def emit_new_reasoning(new_text: str):
+            nonlocal pending_reasoning_line
+            if not new_text:
+                return
+            pending_reasoning_line += new_text
+            while True:
+                newline_idx = pending_reasoning_line.find("\n")
+                if newline_idx == -1:
+                    break
+                line = pending_reasoning_line[:newline_idx].rstrip()
+                pending_reasoning_line = pending_reasoning_line[newline_idx + 1 :]
+                if not line:
+                    continue
+                if line.startswith("Thought"):
+                    reasoning_lines.append(line)
+                    yield_event = {"type": "reasoning", "delta": line + "\n"}
+                    yield yield_event
+
+        async def stream_generator():
+            nonlocal total_text, final_idx, processed_reasoning_len
+            yield {"type": "status", "status": "thinking"}
+
+            async def handle_chunk(chunk: str):
+                nonlocal total_text, final_idx, processed_reasoning_len
+                if not chunk:
+                    return []
+                events = []
+                total_text += chunk
+                if final_idx == -1:
+                    idx = total_text.find("<final>")
+                    if idx != -1:
+                        final_idx = idx
+                reasoning_end = final_idx if final_idx != -1 else len(total_text)
+                reasoning_slice = total_text[processed_reasoning_len:reasoning_end]
+                processed_reasoning_len = reasoning_end
+                if reasoning_slice:
+                    async for evt in emit_new_reasoning(reasoning_slice):
+                        events.append(evt)
+                return events
+
+            async def parse_final_json() -> Optional[Dict[str, Any]]:
+                nonlocal total_text, final_idx
+                if final_idx == -1:
+                    return None
+                json_portion = total_text[final_idx + len("<final>") :]
+                end_idx = json_portion.find("</final>")
+                if end_idx == -1:
+                    return None
+                raw_json = json_portion[:end_idx].strip()
+                try:
+                    result = json.loads(raw_json or "{}")
+                except Exception:
+                    return None
+                if reasoning_lines:
+                    summary = "\n".join(reasoning_lines)
+                    if isinstance(result, dict) and summary:
+                        result.setdefault("reasoning_summary", summary)
+                return result if isinstance(result, dict) else None
+
+            async def iterate_messages():
+                nonlocal pending_reasoning_line, total_text, final_idx, processed_reasoning_len
+                user_content = user_prompt
+                if session_id:
+                    self._append_and_prune(session_id, "user", user_content)
+                minimal_msgs = self._build_minimal_messages(session_id, system, user_content)
+                async for chunk in self.provider.generate_stream(
+                    minimal_msgs,
+                    max_tokens=max_tokens,
+                    temperature=0.1,
+                    store=True,
+                    model=resolved_model,
+                ):
+                    events = await handle_chunk(chunk)
+                    for evt in events:
+                        yield evt
+                    maybe_json = await parse_final_json()
+                    if maybe_json:
+                        if include_context and session_id:
+                            self._record_context_hash(session_id, query)
+                        if session_id:
+                            self._append_and_prune(
+                                session_id,
+                                "assistant",
+                                json.dumps(maybe_json, ensure_ascii=False),
+                            )
+                        self._update_session_usage(session_id)
+                        yield {"type": "analysis", "analysis": maybe_json}
+                        return
+                # Exhausted stream without <final>; fall back
+                fallback = self._basic_query_analysis(query)
+                if reasoning_lines:
+                    fallback["reasoning_summary"] = "\n".join(reasoning_lines)
+                if session_id:
+                    self._append_and_prune(
+                        session_id,
+                        "assistant",
+                        json.dumps(fallback, ensure_ascii=False),
+                    )
+                self._update_session_usage(session_id)
+                yield {"type": "analysis", "analysis": fallback, "fallback": True}
+
+            async for evt in iterate_messages():
+                yield evt
+            yield {"type": "done"}
+
+        async for event in stream_generator():
+            yield event
 
     async def classify_intent(self, text: str, context: Optional[dict] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
         """Classify user intent into one of two actions for the app backend:
@@ -1876,7 +1988,6 @@ JSON response:"""
                     max_tokens=120,
                     temperature=0.0,
                     store=False,
-                    previous_response_id=self._get_previous_response_id(session_id),
                     metadata={"session_id": session_id or "", "action": "intent"},
                 )
                 # Best-effort: update session meta with new response id/usage for tracking
@@ -1964,12 +2075,13 @@ JSON response:"""
         return {"intent": "ADD_CELL", "confidence": 0.7, "reason": "Conservative default"}
     
     async def generate_plan(
-        self, 
-        question: str, 
-        context: str = "", 
+        self,
+        question: str,
+        context: str = "",
         current_state: Optional[dict] = None,
         available_data: Optional[list] = None,
-        task_type: str = "general"
+        task_type: str = "general",
+        session_id: Optional[str] = None
     ) -> dict:
         """
         Generate a plan for any task based on current context and state.
@@ -1979,13 +2091,17 @@ JSON response:"""
             current_state = {}
         if available_data is None:
             available_data = []
-            
+
+        # Apply context deduplication like other methods
+        include_context = self._should_include_context(session_id, context)
+        ctx_text = context if include_context else ""
+
         prompt = f"""
 You are an expert AI assistant that can plan and execute various tasks. Given a question, current context, and available data, create a plan for the next steps.
 
 Question: {question}
 
-Context: {context}
+{("Context: " + ctx_text) if ctx_text else ""}
 
 Current State: {json.dumps(current_state, indent=2)}
 
@@ -2021,12 +2137,29 @@ Make the steps specific, actionable, and appropriate for the current context and
 
         if not self.provider:
             return self._generate_fallback_plan(question, task_type)
-            
+
         try:
-            response = await self.provider.generate([
-                {"role": "system", "content": "You are an expert AI assistant that can plan and execute various tasks. Create specific, actionable plans based on the given context."},
-                {"role": "user", "content": prompt}
-            ], max_tokens=1000, temperature=0.1)
+            system = "You are an expert AI assistant that can plan and execute various tasks. Create specific, actionable plans based on the given context."
+            if session_id:
+                minimal_msgs = self._build_minimal_messages(session_id, system, prompt)
+                response = await self.provider.generate(
+                    minimal_msgs,
+                    max_tokens=1000,
+                    temperature=0.1,
+                    store=False,
+                    model=self._resolve_model(session_id, None),
+                )
+                try:
+                    self._update_session_usage(session_id)
+                except Exception:
+                    pass
+                if include_context:
+                    self._record_context_hash(session_id, context)
+            else:
+                response = await self.provider.generate([
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt}
+                ], max_tokens=1000, temperature=0.1)
             
             # Try to parse JSON from the response
             try:
@@ -2036,6 +2169,12 @@ Make the steps specific, actionable, and appropriate for the current context and
                 if json_start != -1 and json_end != 0:
                     json_str = response[json_start:json_end]
                     plan = json.loads(json_str)
+                    try:
+                        reasoning_summary = getattr(self.provider, "last_reasoning_summary", None)
+                    except Exception:
+                        reasoning_summary = None
+                    if reasoning_summary:
+                        plan["reasoning_summary"] = reasoning_summary
                     return plan
                 else:
                     raise ValueError("No JSON found in response")
@@ -2098,6 +2237,208 @@ Make the steps specific, actionable, and appropriate for the current context and
             "dependencies": [],
             "success_criteria": ["Task completed", "Results documented"]
         }
+
+    async def generate_plan_stream(
+        self,
+        question: str,
+        context: str = "",
+        current_state: Optional[dict] = None,
+        available_data: Optional[list] = None,
+        task_type: str = "general",
+        session_id: Optional[str] = None,
+        *,
+        max_tokens: int = 1200,
+    ):
+        """Streaming plan generation with reasoning deltas and structured output."""
+        if current_state is None:
+            current_state = {}
+        if available_data is None:
+            available_data = []
+
+        if not self.provider:
+            plan = self._generate_fallback_plan(question, task_type)
+            yield {"type": "status", "status": "thinking"}
+            yield {"type": "plan", "plan": plan, "fallback": True}
+            for idx, step in enumerate(plan.get("next_steps", [])):
+                yield {"type": "plan_step", "index": idx, "step": step}
+            yield {"type": "done"}
+            return
+
+        include_context = self._should_include_context(session_id, context)
+        ctx_text = context if include_context else ""
+
+        def _safe_dump(value: Any, max_chars: int = 1200) -> str:
+            try:
+                dumped = json.dumps(value, ensure_ascii=False, indent=2)
+            except Exception:
+                dumped = str(value)
+            if len(dumped) > max_chars:
+                return dumped[: max_chars - 3] + "..."
+            return dumped
+
+        user_prompt = (
+            "You are planning the next analysis actions. Stream each reasoning step as `Thought <n> > ...`.\n"
+            "When ready, output `<final>{JSON}</final>` with the following structure:\n"
+            "{\n"
+            "  \"task_type\": string,\n"
+            "  \"priority\": \"high|medium|low\",\n"
+            "  \"next_steps\": [string,...],\n"
+            "  \"estimated_time\": string,\n"
+            "  \"dependencies\": [string,...],\n"
+            "  \"success_criteria\": [string,...],\n"
+            "  \"analysis_metadata\": {\n"
+            "    \"intent\": string,\n"
+            "    \"entities\": [string,...],\n"
+            "    \"data_types\": [string,...],\n"
+            "    \"analysis_type\": [string,...],\n"
+            "    \"complexity\": \"simple|medium|complex\"\n"
+            "  }\n"
+            "}\n"
+            "Add a `reasoning_summary` field mirroring your key thoughts.\n\n"
+            f"Question: {question}\n\n"
+            f"Context: {ctx_text or '[none]'}\n\n"
+            f"Current State: {_safe_dump(current_state)}\n\n"
+            f"Available Data: {_safe_dump(available_data)}\n\n"
+            f"Task Type: {task_type}\n"
+        )
+
+        system = (
+            "You are an expert planner for biomedical data analysis."
+            " Stream concise thoughts before producing the final JSON plan."
+        )
+
+        self._get_or_init_session(session_id, system)
+        resolved_model = self._resolve_model(session_id, None)
+
+        processed_reasoning_len = 0
+        total_text = ""
+        final_idx = -1
+        reasoning_lines: List[str] = []
+        pending_reasoning_line = ""
+
+        async def emit_new_reasoning(new_text: str):
+            nonlocal pending_reasoning_line
+            if not new_text:
+                return
+            pending_reasoning_line += new_text
+            while True:
+                newline_idx = pending_reasoning_line.find("\n")
+                if newline_idx == -1:
+                    break
+                line = pending_reasoning_line[:newline_idx].rstrip()
+                pending_reasoning_line = pending_reasoning_line[newline_idx + 1 :]
+                if not line:
+                    continue
+                if line.startswith("Thought"):
+                    reasoning_lines.append(line)
+                    yield {"type": "reasoning", "delta": line + "\n"}
+
+        async def stream_generator():
+            nonlocal total_text, final_idx, processed_reasoning_len
+            yield {"type": "status", "status": "thinking"}
+
+            async def handle_chunk(chunk: str):
+                nonlocal total_text, final_idx, processed_reasoning_len
+                events = []
+                if not chunk:
+                    return events
+                total_text += chunk
+                if final_idx == -1:
+                    idx = total_text.find("<final>")
+                    if idx != -1:
+                        final_idx = idx
+                reasoning_end = final_idx if final_idx != -1 else len(total_text)
+                reasoning_slice = total_text[processed_reasoning_len:reasoning_end]
+                processed_reasoning_len = reasoning_end
+                if reasoning_slice:
+                    async for evt in emit_new_reasoning(reasoning_slice):
+                        events.append(evt)
+                return events
+
+            async def parse_final_json() -> Optional[Dict[str, Any]]:
+                nonlocal total_text, final_idx
+                if final_idx == -1:
+                    return None
+                json_portion = total_text[final_idx + len("<final>") :]
+                end_idx = json_portion.find("</final>")
+                if end_idx == -1:
+                    return None
+                raw_json = json_portion[:end_idx].strip()
+                try:
+                    plan = json.loads(raw_json or "{}")
+                except Exception:
+                    return None
+                if isinstance(plan, dict):
+                    if reasoning_lines and not plan.get("reasoning_summary"):
+                        plan["reasoning_summary"] = "\n".join(reasoning_lines)
+                    meta = plan.setdefault("analysis_metadata", {})
+                    if isinstance(meta, dict):
+                        meta.setdefault("intent", "analysis")
+                        meta.setdefault("entities", [])
+                        meta.setdefault("data_types", [])
+                        meta.setdefault("analysis_type", [])
+                        meta.setdefault("complexity", "medium")
+                    return plan
+                return None
+
+            async def iterate_messages():
+                nonlocal pending_reasoning_line, total_text, final_idx, processed_reasoning_len
+                user_content = user_prompt
+                if session_id:
+                    self._append_and_prune(session_id, "user", user_content)
+                minimal_msgs = self._build_minimal_messages(session_id, system, user_content)
+                async for chunk in self.provider.generate_stream(
+                    minimal_msgs,
+                    max_tokens=max_tokens,
+                    temperature=0.1,
+                    store=True,
+                    model=resolved_model,
+                ):
+                    events = await handle_chunk(chunk)
+                    for evt in events:
+                        yield evt
+                    maybe_plan = await parse_final_json()
+                    if maybe_plan:
+                        if include_context and session_id:
+                            self._record_context_hash(session_id, context)
+                        if session_id:
+                            self._append_and_prune(
+                                session_id,
+                                "assistant",
+                                json.dumps(maybe_plan, ensure_ascii=False),
+                            )
+                        self._update_session_usage(session_id)
+                        yield {"type": "plan", "plan": maybe_plan}
+                        for idx, step in enumerate(
+                            maybe_plan.get("next_steps", [])
+                        ):
+                            yield {
+                                "type": "plan_step",
+                                "index": idx,
+                                "step": step,
+                            }
+                        return
+                # Fallback mode
+                fallback = self._generate_fallback_plan(question, task_type)
+                if reasoning_lines and not fallback.get("reasoning_summary"):
+                    fallback["reasoning_summary"] = "\n".join(reasoning_lines)
+                if session_id:
+                    self._append_and_prune(
+                        session_id,
+                        "assistant",
+                        json.dumps(fallback, ensure_ascii=False),
+                    )
+                self._update_session_usage(session_id)
+                yield {"type": "plan", "plan": fallback, "fallback": True}
+                for idx, step in enumerate(fallback.get("next_steps", [])):
+                    yield {"type": "plan_step", "index": idx, "step": step}
+
+            async for evt in iterate_messages():
+                yield evt
+            yield {"type": "done"}
+
+        async for event in stream_generator():
+            yield event
     
     async def generate_data_type_suggestions(
         self,
@@ -2118,6 +2459,10 @@ Make the steps specific, actionable, and appropriate for the current context and
                 "data_insights": []
             }
             
+        # Apply context deduplication like other methods
+        include_context = self._should_include_context(session_id, current_context)
+        ctx_text = current_context if include_context else ""
+
         prompt = f"""
 You are an expert bioinformatics and data science assistant. Based on the selected data types and user question, provide dynamic analysis suggestions.
 
@@ -2127,7 +2472,7 @@ Selected Data Types: {', '.join(data_types)}
 
 Available Datasets: {json.dumps(available_datasets, indent=2)}
 
-Current Context: {current_context}
+{("Current Context: " + ctx_text) if ctx_text else ""}
 
 Please provide:
 
@@ -2193,13 +2538,14 @@ Make suggestions specific, actionable, and tailored to the user's question and d
                     max_tokens=1500,
                     temperature=0.3,
                     store=False,
-                    previous_response_id=self._get_previous_response_id(session_id),
                     model=self._resolve_model(session_id, None),
                 )
                 try:
                     self._update_session_usage(session_id)
                 except Exception:
                     pass
+                if include_context:
+                    self._record_context_hash(session_id, current_context)
             else:
                 response = await self.provider.generate([
                     {"role": "system", "content": system},

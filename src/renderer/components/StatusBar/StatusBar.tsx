@@ -75,8 +75,12 @@ export const StatusBar: React.FC = () => {
 					return;
 				}
 				// Backend now handles fuzzy matching, so try the most specific session ID first
-				const sessionId = `session:${ws}:${chatId}`;
-            		const stats = await client.getSessionStats(sessionId);
+				const sid = (client.scopeSessionId(undefined, ws, chatId) || "").trim();
+	            		if (!sid) {
+	            			if (mounted) setTokenStats(null);
+	            			return;
+	            		}
+	            		const stats = await client.getSessionStats(sid);
             		if (!mounted) return;
             		setTokenStats({
 					approx: stats.approx_tokens || 0,

@@ -31,6 +31,9 @@ interface AnalysisStep {
 	dataTypes?: string[]; // What data types this step works with
 	tools?: string[]; // What tools/libraries this step uses
 	prerequisites?: string[]; // What steps must be completed first
+	implementation?: string; // Implementation details from DatasetManager plan
+	expected_outputs?: string[]; // Expected outputs from this step
+	expectedOps?: string[]; // Operations expected to satisfy this step
 }
 
 export interface WorkflowStep {
@@ -74,43 +77,6 @@ export class AutonomousAgent {
 	private selectedModel: string = ConfigManager.getInstance().getDefaultModel();
 
 	// Lightweight dataset → hint detection to steer scRNA-seq reliably
-	private detectSingleCellFromDatasets(datasets: Dataset[]): boolean {
-		try {
-			if (!Array.isArray(datasets)) return false;
-			return datasets.some((d: any) => {
-				const dt = String(d?.dataType || "").toLowerCase();
-				const ff = String(d?.fileFormat || "").toLowerCase();
-				const plat = String(d?.platform || "").toLowerCase();
-				const url = String(d?.url || "").toLowerCase();
-				const lp = String((d as any)?.localPath || "").toLowerCase();
-				return (
-					dt.includes("single_cell") ||
-					dt.includes("singlecell") ||
-					dt.includes("scrna") ||
-					ff.includes("10x") ||
-					ff.includes("h5ad") ||
-					plat.includes("10x") ||
-					url.endsWith(".h5ad") ||
-					/filtered_feature_bc_matrix/.test(lp)
-				);
-			});
-		} catch (_) {
-			return false;
-		}
-	}
-
-	private buildDatasetHints(datasets: Dataset[]): string {
-		const isSc = this.detectSingleCellFromDatasets(datasets);
-		if (isSc) {
-			return [
-				"DATASET HINT: single-cell RNA-seq detected (10x/AnnData).",
-				"Use Scanpy standard pipeline; no heuristic transform checks.",
-				"Prefer ad.read_h5ad when *.h5ad present; else sc.read_10x_mtx(data_dir).",
-			].join(" \n");
-		}
-		return "";
-	}
-
 	// Extract pip/conda packages suggested by LLM code snippets
 	private extractPackagesFromCode(code: string): string[] {
 		const pkgs = new Set<string>();
@@ -260,11 +226,25 @@ export class AutonomousAgent {
 	private generatedCodeSignatures = new Set<string>();
 	private executedOperations = new Set<string>();
 	private analysisFullyCovered = false;
+	private planLocked = false;
 	private analysisTaskChecklist: Array<{
 		description: string;
 		status: "pending" | "completed" | "skipped";
 		note?: string;
 	}> = [];
+	private planOverride: string[] | null = null;
+	private planStepMetadata = new Map<string, { expectedOps: string[] }>();
+	private planStepOrder: string[] = [];
+	private pendingChecklistUpdate: {
+		payload: {
+			steps: Array<{ description: string; status: string; note?: string }>;
+			completed: number;
+			total: number;
+			skipped: number;
+		};
+		statusMessage: string;
+	} | null = null;
+	private checklistDispatchTimer: ReturnType<typeof setTimeout> | null = null;
 	private conversationId: string;
 	// Legacy event listener removed - validation is now synchronous
 
@@ -278,6 +258,7 @@ export class AutonomousAgent {
 		this.backendClient = backendClient;
 		this.analysisOrchestrator = new AnalysisOrchestrationService(backendClient);
 		this.datasetManager = new DatasetManager();
+		this.datasetManager.setBackendClient(backendClient);
 		this.environmentManager = new EnvironmentManager(this.datasetManager);
 		this.workspaceManager = new WorkspaceManager();
 
@@ -423,7 +404,19 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		this.generatedCodeSignatures.clear();
 		this.executedOperations.clear();
 		this.analysisFullyCovered = false;
+		this.planLocked = false;
 		this.analysisTaskChecklist = [];
+		this.planOverride = null;
+		this.planStepMetadata.clear();
+		this.planStepOrder = [];
+		if (this.checklistDispatchTimer !== null) {
+			clearTimeout(this.checklistDispatchTimer);
+			this.checklistDispatchTimer = null;
+		}
+		this.pendingChecklistUpdate = null;
+		try {
+			delete (window as any).__axonChecklistSnapshot;
+		} catch (_) {}
 		console.log("🧹 AutonomousAgent: Cleared global code context");
 	}
 
@@ -435,8 +428,63 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		this.emitChecklistStatus();
 	}
 
-	private updateChecklist(description: string, status: "completed" | "skipped", note?: string) {
-		const entry = this.analysisTaskChecklist.find((item) => item.description === description);
+	private async maybeSkipUpcomingSteps(
+		analysisSteps: AnalysisStep[],
+		startIndex: number
+	): Promise<void> {
+		if (
+			this.planLocked ||
+			!this.analysisFullyCovered ||
+			startIndex >= analysisSteps.length
+		) {
+			return;
+		}
+
+		for (let idx = startIndex; idx < analysisSteps.length; idx++) {
+			const step = analysisSteps[idx];
+			if (step.status !== "pending") {
+				continue;
+			}
+
+			const description = step.description || step.id;
+			const estimatedOps = this.estimateOperationsFromText(description);
+			const newEstimatedOps = Array.from(estimatedOps).filter(
+				(op) => !this.executedOperations.has(op)
+			);
+			if (newEstimatedOps.length > 0) {
+				break;
+			}
+
+			const llmDecision = await this.shouldSkipStepWithLLM(step, {
+				reason: "analysis already covered",
+				stage: "mid-run",
+			});
+			if (!llmDecision.skip) {
+				break;
+			}
+
+			const reason = llmDecision.reason || "analysis already covered";
+			step.code = "";
+			step.status = "completed";
+			step.output = "Skipped";
+			this.updateChecklist(description, "skipped", "↷");
+			this.updateStatus(`Skipping "${description}" — ${reason}`);
+			EventManager.dispatchEvent("step-skipped", {
+				stepDescription: description,
+				reason,
+				timestamp: Date.now(),
+			});
+		}
+	}
+
+	private updateChecklist(
+		description: string,
+		status: "completed" | "skipped",
+		note?: string
+	) {
+		const entry = this.analysisTaskChecklist.find(
+			(item) => item.description === description
+		);
 		if (entry) {
 			entry.status = status;
 			if (note) entry.note = note;
@@ -449,24 +497,192 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 	private emitChecklistStatus() {
 		if (!this.analysisTaskChecklist.length) return;
 		const total = this.analysisTaskChecklist.length;
-		const completed = this.analysisTaskChecklist.filter((item) => item.status === "completed").length;
-		const pending = this.analysisTaskChecklist.filter((item) => item.status === "pending");
-		const skipped = this.analysisTaskChecklist.filter((item) => item.status === "skipped").length;
+		const completed = this.analysisTaskChecklist.filter(
+			(item) => item.status === "completed"
+		).length;
+		const pending = this.analysisTaskChecklist.filter(
+			(item) => item.status === "pending"
+		);
+		const skipped = this.analysisTaskChecklist.filter(
+			(item) => item.status === "skipped"
+		).length;
 		const topPending = pending.slice(0, 3).map((item) => item.description);
-		EventManager.dispatchEvent("analysis-checklist-updated", {
-			steps: this.analysisTaskChecklist.map((item) => ({ ...item })),
-			completed,
-			total,
-			skipped,
-		});
-		const parts: string[] = [`Checklist ${completed}/${total} complete`];
+		const statusParts: string[] = [`Checklist ${completed}/${total} complete`];
 		if (skipped) {
-			parts.push(`${skipped} skipped`);
+			statusParts.push(`${skipped} skipped`);
 		}
 		if (topPending.length) {
-			parts.push(`Next: ${topPending[0]}`);
+			statusParts.push(`Next: ${topPending[0]}`);
 		}
-		this.updateStatus(parts.join(" • "));
+		this.queueChecklistDispatch(
+			{
+				steps: this.analysisTaskChecklist.map((item) => ({ ...item })),
+				completed,
+				total,
+				skipped,
+			},
+			statusParts.join(" • ")
+		);
+	}
+
+	private queueChecklistDispatch(
+		payload: {
+			steps: Array<{ description: string; status: string; note?: string }>;
+			completed: number;
+			total: number;
+			skipped: number;
+		},
+		statusMessage: string
+	) {
+		// Dispatch immediately so listeners (like the chat panel) can hydrate right away,
+		// even during app startup when timers may fire before React effects register.
+		EventManager.dispatchEvent("analysis-checklist-updated", payload);
+		this.pendingChecklistUpdate = { payload, statusMessage };
+		try {
+			(window as any).__axonChecklistSnapshot = {
+				payload,
+				statusMessage,
+				timestamp: Date.now(),
+			};
+		} catch (_) {}
+		if (this.checklistDispatchTimer !== null) {
+			return;
+		}
+		this.checklistDispatchTimer = setTimeout(() => {
+			const update = this.pendingChecklistUpdate;
+			this.pendingChecklistUpdate = null;
+			this.checklistDispatchTimer = null;
+			if (!update) return;
+			this.updateStatus(update.statusMessage);
+		}, 0);
+	}
+
+	setPlanOverride(steps: string[] | null): void {
+		if (Array.isArray(steps) && steps.length > 0) {
+			this.planOverride = steps
+				.map((step) => (step || "").toString().trim())
+				.filter((step) => step.length > 0);
+			this.planStepOrder = [...this.planOverride];
+		} else {
+			this.planOverride = null;
+			this.planStepOrder = [];
+		}
+	}
+
+	private async shouldSkipStepWithLLM(
+		step: AnalysisStep,
+		options: {
+			reason: string;
+			stage: "pre-generation" | "post-generation" | "mid-run";
+			sanitizedCode?: string;
+		}
+	): Promise<{ skip: boolean; reason?: string }> {
+		if (!this.backendClient) {
+			return { skip: true, reason: options.reason };
+		}
+
+		const truncate = (text: string, max: number = 1400) =>
+			text.length <= max ? text : `${text.slice(0, max)}\n...`;
+
+		const checklistSnapshot =
+			this.analysisTaskChecklist
+				.map((item, idx) => {
+					const note = item.note?.trim() ? ` (${item.note.trim()})` : "";
+					return `${idx + 1}. [${item.status}] ${item.description}${note}`;
+				})
+				.join("\n") || "(no checklist entries)";
+		const executedOpsList = Array.from(this.executedOperations);
+		const operationsText = executedOpsList.length
+			? executedOpsList.map((op) => `- ${op}`).join("\n")
+			: "(no tracked operations yet)";
+		const pendingDescriptions =
+			this.analysisTaskChecklist
+				.filter((item) => item.status === "pending")
+				.map((item) => `- ${item.description}`)
+				.join("\n") || "(no remaining steps)";
+
+		const contextParts: string[] = [];
+		if (this.originalQuery) {
+			contextParts.push(`Original question: ${this.originalQuery}`);
+		}
+		contextParts.push(
+			`Current step description: ${step.description || step.id}\nStage: ${
+				options.stage
+			}\nProposed skip reason: ${options.reason}`
+		);
+		contextParts.push(`Checklist snapshot:\n${checklistSnapshot}`);
+		contextParts.push(`Executed operations:\n${operationsText}`);
+		contextParts.push(`Pending steps:\n${pendingDescriptions}`);
+		if (options.sanitizedCode) {
+			contextParts.push(
+				`Candidate code snippet (truncated):\n${truncate(
+					options.sanitizedCode
+				)}`
+			);
+		}
+		const context = contextParts.join("\n\n");
+
+		const question =
+			"You are reviewing an automated scientific analysis pipeline. " +
+			"Given the context above, decide whether the current step should be executed." +
+			" Reply with SKIP or RUN (optionally followed by a colon and a short reason).";
+
+		try {
+			const sessionId = (() => {
+				try {
+					const generatorAny = this.codeGenerator as any;
+					if (
+						generatorAny &&
+						typeof generatorAny.getSessionIdForPath === "function"
+					) {
+						return generatorAny.getSessionIdForPath(this.workspacePath);
+					}
+				} catch (_) {}
+				return undefined;
+			})();
+			const answer = await this.backendClient.askQuestion({
+				question,
+				context,
+				sessionId,
+			});
+			const raw = String(answer || "").trim();
+			if (!raw) {
+				return { skip: false };
+			}
+			const match = raw.toUpperCase().match(/\b(SKIP|RUN)\b/);
+			if (!match) {
+				return { skip: false };
+			}
+			const decisionWord = match[1];
+			let reasonText: string | undefined;
+			const colonIndex = raw.indexOf(":");
+			if (colonIndex >= 0) {
+				reasonText = raw.slice(colonIndex + 1).trim();
+			} else {
+				const afterMatch = raw
+					.slice(raw.toUpperCase().indexOf(decisionWord) + decisionWord.length)
+					.trim();
+				if (afterMatch.length > 0) {
+					reasonText = afterMatch.replace(/^[\-–—\s]+/, "").trim();
+				}
+			}
+			if (reasonText) {
+				reasonText = reasonText.replace(/^"+|"+$/g, "").trim();
+			}
+			const skip = decisionWord === "SKIP";
+			console.log("AutonomousAgent: LLM skip decision", {
+				step: step.description || step.id,
+				decision: decisionWord,
+				reason: reasonText,
+			});
+			return { skip, reason: reasonText };
+		} catch (error) {
+			console.warn(
+				"AutonomousAgent: LLM skip evaluation failed, defaulting to RUN",
+				error
+			);
+			return { skip: false };
+		}
 	}
 
 	private skipRemainingSteps(
@@ -480,7 +696,9 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			step.status = "completed";
 			step.output = "Skipped";
 			const description = step.description || step.id;
-			const entry = this.analysisTaskChecklist.find((item) => item.description === description);
+			const entry = this.analysisTaskChecklist.find(
+				(item) => item.description === description
+			);
 			if (entry) {
 				entry.status = "skipped";
 				entry.note = reason;
@@ -532,6 +750,10 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 	private registerOperations(ops: Set<string>): void {
 		if (ops.size === 0) return;
 		ops.forEach((op) => this.executedOperations.add(op));
+		if (this.planLocked) {
+			this.updateChecklistForExecutedOperations();
+			return;
+		}
 		const coreOps = [
 			"normalize_total",
 			"log1p",
@@ -547,6 +769,28 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		const covered = coreOps.filter((op) => this.executedOperations.has(op));
 		if (covered.length >= 6) {
 			this.analysisFullyCovered = true;
+		}
+	}
+
+	private updateChecklistForExecutedOperations(): void {
+		if (!this.planLocked || !this.analysisTaskChecklist.length) {
+			return;
+		}
+		let changed = false;
+		for (const entry of this.analysisTaskChecklist) {
+			if (entry.status !== "pending") continue;
+			const meta = this.planStepMetadata.get(entry.description);
+			if (!meta || meta.expectedOps.length === 0) continue;
+			const satisfied = meta.expectedOps.every((op) =>
+				this.executedOperations.has(op)
+			);
+			if (satisfied) {
+				entry.status = "completed";
+				changed = true;
+			}
+		}
+		if (changed) {
+			this.emitChecklistStatus();
 		}
 	}
 
@@ -568,7 +812,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		if (/neighbor/.test(lower)) add("neighbors");
 		if (/umap/.test(lower)) add("umap");
 		if (/leiden|cluster/.test(lower)) add("leiden");
-		if (/differential|rank\s+genes|marker/.test(lower)) add("rank_genes_groups");
+		if (/differential|rank\s+genes|marker/.test(lower))
+			add("rank_genes_groups");
 		if (/qc|mitochondrial|calculate_qc_metrics/.test(lower)) add("qc_metrics");
 		if (/scrublet|doublet/.test(lower)) add("scrublet");
 		if (/write|save/.test(lower)) add("save");
@@ -636,7 +881,17 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		await this.environmentManager.installRequiredPackages(datasets, workingDir);
 	}
 
-	async executeAnalysisRequest(query: string): Promise<AnalysisResult> {
+	async executeAnalysisRequest(
+		query: string,
+		preAnalysis?: {
+			intent?: string;
+			entities?: string[];
+			data_types?: string[];
+			analysis_type?: string | string[];
+			complexity?: string;
+			reasoning_summary?: string;
+		}
+	): Promise<AnalysisResult> {
 		this.originalQuery = query;
 		this.isRunning = true;
 		this.shouldStopAnalysis = false;
@@ -644,7 +899,9 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		try {
 			// Use AnalysisOrchestrator to create the analysis plan
 			const analysisPlan = await this.analysisOrchestrator.createAnalysisPlan(
-				query
+				query,
+				[],
+				preAnalysis
 			);
 
 			// Generate steps using the plan
@@ -670,7 +927,15 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 
 	async executeAnalysisRequestWithData(
 		query: string,
-		downloadedDatasets: Dataset[]
+		downloadedDatasets: Dataset[],
+		preAnalysis?: {
+			intent?: string;
+			entities?: string[];
+			data_types?: string[];
+			analysis_type?: string | string[];
+			complexity?: string;
+			reasoning_summary?: string;
+		}
 	): Promise<AnalysisResult> {
 		this.originalQuery = query;
 		this.isRunning = true;
@@ -679,12 +944,21 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		console.log("AutonomousAgent: workspacePath =", this.workspacePath);
 
 		try {
+			// Clear DatasetManager caches for fresh analysis
+			if (
+				this.datasetManager &&
+				typeof this.datasetManager.clearCaches === "function"
+			) {
+				this.datasetManager.clearCaches();
+			}
+
 			// Use AnalysisOrchestrator to create the analysis plan with existing data
 			const analysisPlan =
 				await this.analysisOrchestrator.createAnalysisPlanWithData(
 					query,
 					downloadedDatasets,
-					this.workspacePath
+					this.workspacePath,
+					preAnalysis
 				);
 
 			// Update the workspace path to use the analysis-specific directory
@@ -794,31 +1068,166 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		datasets: Dataset[],
 		workingDir: string
 	): Promise<AnalysisStep[]> {
-		// Use intelligent step generation based on data types
-		const steps = await this.generateIntelligentAnalysisSteps(
-			understanding.userQuestion,
+		const overrideSteps = Array.isArray(this.planOverride) && this.planOverride.length
+			? this.planOverride
+				.map((step) => (step || "").toString().trim())
+				.filter((step) => step.length > 0)
+			: null;
+		const requestedSteps: string[] = overrideSteps
+			? overrideSteps
+			: Array.isArray(understanding?.requiredSteps)
+			? understanding.requiredSteps
+				.map((step: any) =>
+					typeof step === "string"
+						? step.trim()
+						: typeof step?.description === "string"
+						? step.description.trim()
+						: String(step || "").trim()
+				)
+				.filter((step: string) => step.length > 0)
+			: [];
+
+		const dataAnalysis = await this.datasetManager.analyzeDataTypesAndSelectTools(
 			datasets,
 			workingDir
 		);
+
+		let steps: AnalysisStep[];
+
+		if (requestedSteps.length > 0) {
+			this.updateStatus("Using LLM-defined plan for analysis steps...");
+			steps = requestedSteps.map((description: string, index: number) => ({
+				id: `step_${index + 1}`,
+				description,
+				code: "",
+				status: "pending" as const,
+				dataTypes: dataAnalysis.dataTypes,
+				tools: dataAnalysis.recommendedTools,
+				prerequisites: [],
+				implementation: undefined,
+			}));
+			this.planLocked = true;
+			this.planOverride = null;
+		} else {
+			// Fall back to intelligent generation when the LLM did not supply steps
+			steps = await this.generateIntelligentAnalysisSteps(
+				understanding.userQuestion,
+				datasets,
+				workingDir
+			);
+			this.planLocked = false;
+			this.planOverride = null;
+		}
+
+		this.planStepOrder = steps.map((s) => s.description || s.id);
+		this.planStepMetadata.clear();
+		steps.forEach((step, index) => {
+			const expected = this.deriveExpectedOperations(step.description || step.id);
+			if (expected.length > 0) {
+				step.expectedOps = expected;
+			}
+			step.implementation = this.buildPlanStepImplementation(
+				step.description || step.id,
+				index,
+				this.planStepOrder,
+				expected
+			);
+			this.planStepMetadata.set(step.description || step.id, {
+				expectedOps: expected,
+			});
+		});
 
 		// Store the analysis plan for future step generation
 		const analysisPlan = {
 			understanding,
 			datasets,
 			workingDir,
-			requiredSteps: understanding.requiredSteps,
+			requiredSteps: requestedSteps.length ? requestedSteps : understanding.requiredSteps,
 			userQuestion: understanding.userQuestion,
-			dataTypes: steps[0]?.dataTypes || [],
-			recommendedTools: steps[0]?.tools || [],
+			dataTypes: dataAnalysis.dataTypes,
+			recommendedTools: dataAnalysis.recommendedTools,
 		};
 
 		// Save the analysis plan using WorkspaceManager
 		await this.workspaceManager.saveAnalysisPlan(workingDir, analysisPlan);
 
 		this.updateStatus(
-			"Ready to execute intelligent analysis with data-driven tool selection!"
+			requestedSteps.length
+				? "Ready to execute the LLM-defined analysis plan."
+				: "Ready to execute intelligent analysis with data-driven tool selection!"
 		);
 		return steps;
+	}
+
+	private deriveExpectedOperations(description: string): string[] {
+		const lower = (description || "").toLowerCase();
+		const ops = new Set<string>();
+		const add = (op: string) => ops.add(op);
+		if (/import|load|read/.test(lower)) {
+			add("read_10x");
+			add("layers_counts");
+		}
+		if (/qc|quality/.test(lower)) add("qc_metrics");
+		if (/normalize|scaling|library/.test(lower)) {
+			add("normalize_total");
+			add("log1p");
+			add("scale");
+		}
+		if (/dimensional|pca|neighbors|umap|tsne/.test(lower)) {
+			add("pca");
+			add("neighbors");
+			add("umap");
+		}
+		if (/cluster|leiden|community/.test(lower)) add("leiden");
+		if (/marker|differential|rank genes/.test(lower)) add("rank_genes_groups");
+		if (/visualiz|plot|figure/.test(lower)) add("plot");
+		if (/batch|integration/.test(lower)) add("regress_out");
+		return Array.from(ops);
+	}
+
+	private buildPlanStepImplementation(
+		description: string,
+		index: number,
+		planOrder: string[],
+		expectedOps: string[]
+	): string {
+		const total = planOrder.length;
+		const prior = planOrder.slice(0, index);
+		const next = planOrder.slice(index + 1);
+		const lines: string[] = [];
+		if (total > 0) {
+			lines.push("Plan overview:");
+			planOrder.forEach((stepDesc, idx) => {
+				lines.push(`${idx + 1}. ${stepDesc}`);
+			});
+		}
+		lines.push("");
+		lines.push(
+			`You are implementing step ${index + 1} of ${total}: "${description}".`
+		);
+		if (prior.length > 0) {
+			lines.push(
+				`Assume previous steps are complete: ${prior.join("; ")}. Do not repeat them.`
+			);
+		} else {
+			lines.push("This is the first step in the plan; initialise only what is necessary.");
+		}
+		if (next.length > 0) {
+			lines.push(
+				`Do NOT implement later steps (they will be handled separately): ${next.join(", ")}.`
+			);
+		} else {
+			lines.push("This is the final step; finalise outputs if appropriate.");
+		}
+		if (expectedOps.length > 0) {
+			lines.push(
+				`Focus on achieving these operations in this cell: ${expectedOps.join(", ")}.`
+			);
+		}
+		lines.push(
+			"Keep this cell narrowly scoped. Avoid performing downstream analysis or repeating earlier processing."
+		);
+		return lines.join("\n");
 	}
 
 	private async generateDataLoadingStep(
@@ -1002,11 +1411,6 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			stepDescription
 		);
 		// Append dataset-derived hints (e.g., single-cell) to the original question
-		const dsHint = this.buildDatasetHints(datasets);
-		if (dsHint) {
-			originalQuestion = `${originalQuestion}\n\n${dsHint}`;
-		}
-
 		const analysisStep = {
 			id: `unified-step-${Date.now()}`,
 			description: stepDescription,
@@ -1088,7 +1492,9 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 						(this.codeGenerator as any).emitValidationSuccess(
 							stepId,
 							message,
-							stepCode
+							stepCode,
+							eventData.warnings,
+							eventData.timings || validationResult?.timings
 						);
 					}
 				} else {
@@ -1101,7 +1507,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 							eventData.errors,
 							eventData.warnings,
 							eventData.originalCode,
-							eventData.lintedCode
+							eventData.lintedCode,
+							eventData.timings || validationResult?.timings
 						);
 					}
 				}
@@ -1241,6 +1648,14 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			`⚠️ Step failed, attempting auto-fix (attempt ${attempt + 1})...`
 		);
 
+		// Notify user about auto-fix process
+		EventManager.dispatchEvent("auto-fix-started", {
+			stepDescription: step.description || step.id,
+			attempt: attempt + 1,
+			errorOutput: errorOutput,
+			timestamp: Date.now(),
+		});
+
 		const prepared = await this.generateFixedCode(
 			step.code,
 			errorOutput,
@@ -1252,6 +1667,13 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			`auto-fix-${step.id}-attempt-${attempt + 1}`,
 			prepared
 		);
+
+		// Notify user about auto-fix completion
+		EventManager.dispatchEvent("auto-fix-completed", {
+			stepDescription: step.description || step.id,
+			attempt: attempt + 1,
+			timestamp: Date.now(),
+		});
 	}
 
 	/**
@@ -1274,7 +1696,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			addErrorHandling: true,
 			addDirectoryCreation: true,
 			stepDescription,
-			globalCodeContext: this.getGlobalCodeContext(),
+			// Don't send massive global context - let Responses API handle memory
+			globalCodeContext: "", // Empty to avoid context bloat
 		});
 	}
 
@@ -1306,8 +1729,10 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			datasets: analysisResult.datasets,
 			workingDir: analysisResult.workingDirectory,
 			stepIndex: parseInt(step.id.split("_")[1]) - 1,
-			globalCodeContext: this.getGlobalCodeContext(),
+			// Don't send massive global context - let Responses API handle memory
+			globalCodeContext: "", // Empty to avoid context bloat
 			stepId,
+			implementation: (step as any).implementation || null,
 		};
 
 		const result = await this.codeGenerator.generateCode(request);
@@ -1346,19 +1771,12 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		);
 
 		try {
-			// Use DatasetManager to analyze data types and get tool recommendations
-			const dataAnalysis =
-				await this.datasetManager.analyzeDataTypesAndSelectTools(
+			// Generate dynamic analysis roadmap using LLM instead of hardcoded logic
+			const analysisPlan =
+				await this.datasetManager.generateDynamicAnalysisRoadmap(
+					userQuestion,
 					datasets,
 					workingDir
-				);
-
-			// Generate analysis plan based on data types and user question
-			const analysisPlan =
-				await this.datasetManager.generateDataTypeSpecificPlan(
-					userQuestion,
-					dataAnalysis,
-					datasets
 				);
 
 			// Convert plan to analysis steps
@@ -1367,15 +1785,18 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			for (let i = 0; i < analysisPlan.steps.length; i++) {
 				const planStep = analysisPlan.steps[i];
 
-				// Just create the step description - NO CODE GENERATION YET
+				// Store implementation details from the plan for code generation
 				steps.push({
 					id: `step_${i + 1}`,
 					description: planStep.description,
 					code: "", // Empty - code will be generated later
 					status: "pending",
-					dataTypes: dataAnalysis.dataTypes,
-					tools: dataAnalysis.recommendedTools,
+					dataTypes: analysisPlan.metadata.dataTypes,
+					tools:
+						(planStep as any).tools || analysisPlan.metadata.recommendedTools,
 					prerequisites: planStep.prerequisites || [],
+					implementation: (planStep as any).implementation || null,
+					expected_outputs: (planStep as any).expected_outputs || [],
 				});
 			}
 
@@ -1711,7 +2132,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				{
 					stepTitle: stepDescription,
 					skipExecution: true,
-					globalCodeContext: this.getGlobalCodeContext(),
+					// Don't send massive global context - let Responses API handle memory
+					globalCodeContext: "", // Empty to avoid context bloat
 					skipValidationEvents: true, // We'll emit events manually after notebook cell addition
 					addDirectoryCreation: !disableDirCreation,
 				}
@@ -1789,7 +2211,9 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 					(this.codeGenerator as any).emitValidationSuccess(
 						stepId,
 						message,
-						bestCode
+						bestCode,
+						eventData.warnings,
+						eventData.timings || validationResult?.timings
 					);
 				}
 			} else {
@@ -1801,7 +2225,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 						eventData.errors,
 						eventData.warnings,
 						eventData.originalCode,
-						eventData.lintedCode
+						eventData.lintedCode,
+						eventData.timings || validationResult?.timings
 					);
 				}
 			}
@@ -1829,26 +2254,60 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			}
 
 			const step = analysisSteps[i];
-			const estimatedOps = this.estimateOperationsFromText(step.description || step.id);
+			if (step.status !== "pending") {
+				if (step.output === "Skipped") {
+					this.updateStatus(
+						`Skipping "${step.description || step.id}" — already handled`
+					);
+				}
+				continue;
+			}
+			const estimatedOps = this.estimateOperationsFromText(
+				step.description || step.id
+			);
 			const newEstimatedOps = Array.from(estimatedOps).filter(
 				(op) => !this.executedOperations.has(op)
 			);
 			const stepsRemaining = analysisSteps.length - (i + 1);
+			const allowHeuristics = !this.planLocked;
 			const shouldSkipBefore =
+				allowHeuristics &&
 				i > 0 &&
 				this.analysisFullyCovered &&
 				newEstimatedOps.length === 0 &&
 				stepsRemaining >= 2;
 			if (shouldSkipBefore) {
+				const llmDecision = await this.shouldSkipStepWithLLM(step, {
+					reason: "analysis already covered",
+					stage: "pre-generation",
+				});
+				if (llmDecision.skip) {
+					const note = llmDecision.reason || "analysis already covered";
+					console.log(
+						"AutonomousAgent: LLM confirmed skip before generation:",
+						i + 1,
+						note
+					);
+					step.status = "completed";
+					step.output = "Skipped";
+					this.updateChecklist(step.description || step.id, "skipped", "↷");
+					this.updateStatus(
+						`Skipping "${step.description || step.id}" — ${note}`
+					);
+
+					// Send skip notification to chat
+					EventManager.dispatchEvent("step-skipped", {
+						stepDescription: step.description || step.id,
+						reason: note,
+						timestamp: Date.now(),
+					});
+					await this.maybeSkipUpcomingSteps(analysisSteps, i + 1);
+					continue;
+				}
 				console.log(
-					"AutonomousAgent: Skipping step before generation (analysis already covered):",
+					"AutonomousAgent: LLM override — executing step despite coverage heuristic:",
 					i + 1
 				);
-				this.skipRemainingSteps(analysisSteps, i, "analysis already covered");
-				this.updateStatus(
-					`Skipping remaining ${stepsRemaining + 1} step(s) — analysis already satisfied`
-				);
-				break;
 			}
 
 			console.log(
@@ -1873,36 +2332,74 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				(op) => !this.executedOperations.has(op)
 			);
 			if (i > 0 && this.analysisFullyCovered && newOps.length === 0) {
+				const llmDecision = await this.shouldSkipStepWithLLM(step, {
+					reason: "analysis already covered",
+					stage: "post-generation",
+					sanitizedCode,
+				});
+				if (llmDecision.skip) {
+					const note = llmDecision.reason || "analysis already covered";
+					console.log(
+						"AutonomousAgent: LLM confirmed skip after generation (covered):",
+						i + 1,
+						note
+					);
+					step.code = sanitizedCode;
+					step.status = "completed";
+					step.output = "Skipped";
+					this.updateChecklist(step.description || step.id, "skipped", "↷");
+					this.registerOperations(stepOps);
+					(this as any).pendingValidationResult = null;
+					(this as any).pendingValidationStepId = null;
+
+					// Send skip notification to chat
+					EventManager.dispatchEvent("step-skipped", {
+						stepDescription: step.description || step.id,
+						reason: note,
+						timestamp: Date.now(),
+					});
+					await this.maybeSkipUpcomingSteps(analysisSteps, i + 1);
+					continue;
+				}
 				console.log(
-					"AutonomousAgent: Skipping step with no new operations (analysis already covered):",
+					"AutonomousAgent: LLM override — keeping step with overlapping operations:",
 					i + 1
 				);
-				step.code = sanitizedCode;
-				step.status = "completed";
-				step.output = "Skipped";
-				this.updateChecklist(step.description || step.id, "skipped", "analysis already covered");
-				this.registerOperations(stepOps);
-				(this as any).pendingValidationResult = null;
-				(this as any).pendingValidationStepId = null;
-				this.skipRemainingSteps(analysisSteps, i + 1, "analysis already covered");
-				this.updateStatus(
-					`Skipping remaining ${analysisSteps.length - (i + 1)} step(s) — analysis already satisfied`
-				);
-				break;
 			}
-			if (this.isDuplicateCode(sanitizedCode)) {
+			if (!this.planLocked && this.isDuplicateCode(sanitizedCode)) {
+				const llmDecision = await this.shouldSkipStepWithLLM(step, {
+					reason: "duplicate code",
+					stage: "post-generation",
+					sanitizedCode,
+				});
+				if (llmDecision.skip) {
+					const note = llmDecision.reason || "duplicate code";
+					console.log(
+						"AutonomousAgent: LLM confirmed skip for duplicate code:",
+						i + 1,
+						note
+					);
+					step.code = sanitizedCode;
+					step.status = "completed";
+					step.output = "Skipped (duplicate code)";
+					this.updateChecklist(step.description || step.id, "skipped", "↷");
+					(this as any).pendingValidationResult = null;
+					(this as any).pendingValidationStepId = null;
+					this.registerOperations(stepOps);
+
+					// Send skip notification to chat
+					EventManager.dispatchEvent("step-skipped", {
+						stepDescription: step.description || step.id,
+						reason: note,
+						timestamp: Date.now(),
+					});
+					await this.maybeSkipUpcomingSteps(analysisSteps, i + 1);
+					continue;
+				}
 				console.log(
-					"AutonomousAgent: Skipping duplicate analysis code for step:",
+					"AutonomousAgent: LLM override — keeping cell despite duplication heuristic:",
 					i + 1
 				);
-				step.code = sanitizedCode;
-				step.status = "completed";
-				step.output = "Skipped (duplicate code)";
-				this.updateChecklist(step.description || step.id, "skipped", "duplicate code");
-				(this as any).pendingValidationResult = null;
-				(this as any).pendingValidationStepId = null;
-				this.registerOperations(stepOps);
-				continue;
 			}
 
 			console.log(
@@ -1938,7 +2435,9 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 							(this.codeGenerator as any).emitValidationSuccess(
 								stepId,
 								message,
-								stepCode
+								stepCode,
+								eventData.warnings,
+								eventData.timings || validationResult?.timings
 							);
 						}
 					} else {
@@ -1951,7 +2450,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 								eventData.errors,
 								eventData.warnings,
 								eventData.originalCode,
-								eventData.lintedCode
+								eventData.lintedCode,
+								eventData.timings || validationResult?.timings
 							);
 						}
 					}
@@ -1965,6 +2465,7 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 			this.updateStatus(
 				`Added analysis step ${i + 1} of ${analysisSteps.length}`
 			);
+			await this.maybeSkipUpcomingSteps(analysisSteps, i + 1);
 
 			// Small delay between steps
 			if (i < analysisSteps.length - 1) {
@@ -1992,20 +2493,36 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		const stepId = `step-${stepIndex}-${Date.now()}`;
 
 		// Strengthen query with dataset-derived hints (e.g., scRNA-seq) to steer codegen
-		const dsHint = this.buildDatasetHints(datasets);
-		if (dsHint) {
-			query = `${query}\n\n${dsHint}`;
-		}
+
+		const baseQuestion = this.originalQuery || query;
+		const planIdx = this.planStepOrder.findIndex(
+			(desc) => desc === (step.description || step.id)
+		);
+		const focusQuestionLines: string[] = [];
+		focusQuestionLines.push(`User question: ${baseQuestion}`);
+		focusQuestionLines.push(
+			`Current plan step${
+				planIdx >= 0
+					? ` (${planIdx + 1}/${this.planStepOrder.length})`
+					: ""
+			}: ${step.description}`
+		);
+		focusQuestionLines.push(
+			"Implement only this plan step in the next cell. Earlier steps are complete; later steps will be implemented separately."
+		);
+		const focusQuestion = focusQuestionLines.join("\n");
 
 		// Generate code using unified method
 		const request: CodeGenerationRequest = {
 			stepDescription: step.description,
-			originalQuestion: query,
+			originalQuestion: focusQuestion,
 			datasets,
 			workingDir: workspaceDir,
 			stepIndex,
-			globalCodeContext: this.getGlobalCodeContext(),
+			// Don't send massive global context - let Responses API handle memory
+			globalCodeContext: "", // Empty to avoid context bloat
 			stepId,
+			implementation: step.implementation,
 		};
 
 		const genResult = await this.codeGenerator.generateCode(request);
@@ -2020,7 +2537,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				stepId,
 				{
 					stepTitle: step.description,
-					globalCodeContext: this.getGlobalCodeContext(),
+					// Don't send massive global context - let Responses API handle memory
+					globalCodeContext: "", // Empty to avoid context bloat
 					skipExecution: true,
 					skipValidationEvents: true, // We'll emit events manually after notebook cell addition
 					addDirectoryCreation: false,
@@ -2100,6 +2618,14 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 		}
 
 		this.updateStatus("Attempting auto-fix based on execution error...");
+
+		// Notify user about auto-fix process in notebook
+		EventManager.dispatchEvent("notebook-auto-fix-started", {
+			stepDescription,
+			errorOutput,
+			timestamp: Date.now(),
+		});
+
 		const prepared = await this.generateFixedCode(
 			code,
 			errorOutput,
@@ -2115,9 +2641,16 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				{
 					stepTitle: `Auto-fix: ${stepDescription}`,
 					skipExecution: true,
-					globalCodeContext: this.getGlobalCodeContext(),
+					// Don't send massive global context - let Responses API handle memory
+					globalCodeContext: "", // Empty to avoid context bloat
 				}
 			);
+
+			// Notify user about auto-fix completion in notebook
+			EventManager.dispatchEvent("notebook-auto-fix-completed", {
+				stepDescription,
+				timestamp: Date.now(),
+			});
 
 			// Validation is synchronous, events are fired but code is already validated
 

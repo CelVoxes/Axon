@@ -5,6 +5,14 @@ import { stripCodeFences } from "../../utils/CodeTextUtils";
 interface AutoFixOptions {
 	filename?: string;
 	stepTitle?: string;
+	enableLLMFallback?: boolean;
+}
+
+interface LintTimingBreakdown {
+	totalMs: number;
+	ruffMs?: number;
+	llmMs?: number;
+	recheckMs?: number;
 }
 
 interface AutoFixResult {
@@ -13,6 +21,7 @@ interface AutoFixResult {
 	warnings: string[];
 	wasFixed: boolean;
 	ruffSucceeded: boolean;
+	timings?: LintTimingBreakdown;
 }
 
 // Helper to format diagnostics consistently
@@ -27,6 +36,9 @@ function formatDiagnostics(diagnostics: RuffDiagnostic[]): string[] {
 	);
 }
 
+const MAX_SAFE_LINE_COUNT = 400;
+const MAX_SAFE_CHAR_COUNT = 16000;
+
 export async function autoFixWithRuffAndLLM(
 	backendClient: BackendClient,
 	code: string,
@@ -34,36 +46,83 @@ export async function autoFixWithRuffAndLLM(
 	sessionId?: string
 ): Promise<AutoFixResult> {
 	const filename = options.filename || `cell_${Date.now()}.py`;
+	const getNow =
+		typeof performance !== "undefined" &&
+		typeof performance.now === "function"
+			? () => performance.now()
+			: () => Date.now();
+	const overallStart = getNow();
+	let ruffMs = 0;
+	let llmMs = 0;
+	let recheckMs = 0;
 
 	// Normalize and strip code fences first to avoid formatter parse errors
 	const input = stripCodeFences(code);
 	if (!input || !input.trim()) {
+		const totalMs = getNow() - overallStart;
 		return {
 			fixedCode: code,
 			issues: [],
 			warnings: [],
 			wasFixed: false,
 			ruffSucceeded: true,
+			timings: {
+				totalMs,
+				ruffMs,
+				llmMs,
+				recheckMs,
+			},
 		};
 	}
 
-	// Single pass: Ruff lint + auto-fixes (no formatting) first
+	// Short-circuit for very large cells to avoid blocking the UI
+	const lineCount = input.split(/\r?\n/).length;
+	const charCount = input.length;
+	if (lineCount > MAX_SAFE_LINE_COUNT || charCount > MAX_SAFE_CHAR_COUNT) {
+		const totalMs = getNow() - overallStart;
+		return {
+			fixedCode: input,
+			issues: [],
+			warnings: [
+				`Lint skipped: cell is large (${lineCount} lines, ${charCount.toLocaleString()} chars). Run manual lint if needed.`,
+			],
+			wasFixed: false,
+			ruffSucceeded: false,
+			timings: {
+				totalMs,
+				ruffMs,
+				llmMs,
+				recheckMs,
+			},
+		};
+	}
+
+	// Single pass: Ruff lint + auto-fixes first
 	let initial: RuffResult;
+	const ruffStart = getNow();
 	try {
-		// Skip formatting for speed; we primarily want fixes and diagnostics
 		initial = await ruffLinter.lintCode(input, {
 			enableFixes: true,
 			filename,
 			formatCode: false,
 		});
+		ruffMs = getNow() - ruffStart;
 	} catch (e) {
+		ruffMs = getNow() - ruffStart;
 		// If Ruff fails entirely, skip slow LLM fallback to keep edits snappy
+		const totalMs = getNow() - overallStart;
 		return {
 			fixedCode: input,
 			issues: ["Ruff unavailable"],
 			warnings: [],
 			wasFixed: false,
 			ruffSucceeded: false,
+			timings: {
+				totalMs,
+				ruffMs,
+				llmMs,
+				recheckMs,
+			},
 		};
 	}
 
@@ -94,20 +153,65 @@ export async function autoFixWithRuffAndLLM(
 	// - Syntax errors or undefined names remain after Ruff
 	// - Keep it bounded by size to avoid latency spikes
 	const isSmall = input.split(/\r?\n/).length <= 400;
-	const shouldFallback =
-		!initial.isValid && isSmall && (hasSyntaxErrors || hasUndefined);
+	const enableLLMFallback = options.enableLLMFallback === true;
+	const allowFallback =
+		enableLLMFallback &&
+		!initial.isValid &&
+		isSmall &&
+		(hasSyntaxErrors || hasUndefined);
+	let recheckStart = 0;
 
-	if (!shouldFallback) {
-		return {
-			fixedCode: best,
-			issues: initial.isValid ? [] : issues,
-			warnings,
-			wasFixed,
-			ruffSucceeded: true,
-		};
+	if (!allowFallback) {
+		const totalMs = getNow() - overallStart;
+		try {
+			recheckStart = getNow();
+			const recheck = await ruffLinter.lintCode(best, {
+				enableFixes: false,
+				filename,
+				formatCode: false,
+			});
+			recheckMs = getNow() - recheckStart;
+			const finalIssues = formatDiagnostics(
+				recheck.diagnostics.filter((d) => d.kind === "error")
+			);
+			const finalWarnings = formatDiagnostics(
+				recheck.diagnostics.filter((d) => d.kind === "warning")
+			);
+			return {
+				fixedCode: best,
+				issues: recheck.isValid ? [] : finalIssues,
+				warnings: finalWarnings,
+				wasFixed,
+				ruffSucceeded: true,
+				timings: {
+					totalMs,
+					ruffMs,
+					llmMs,
+					recheckMs,
+				},
+			};
+		} catch (recheckError) {
+			if (!recheckMs && recheckStart) {
+				recheckMs = getNow() - recheckStart;
+			}
+			return {
+				fixedCode: best,
+				issues: initial.isValid ? [] : issues,
+				warnings,
+				wasFixed,
+				ruffSucceeded: true,
+				timings: {
+					totalMs,
+					ruffMs,
+					llmMs,
+					recheckMs,
+				},
+			};
+		}
 	}
 
 	// Minimal LLM fallback (edit-mode-like): fix only listed diagnostics, keep code structure
+	const llmStart = getNow();
 	let llmFixed = await runMinimalLLMFallback(
 		backendClient,
 		best,
@@ -117,36 +221,57 @@ export async function autoFixWithRuffAndLLM(
 		options,
 		sessionId
 	);
+	llmMs = getNow() - llmStart;
 	llmFixed = stripCodeFences(llmFixed);
 
 	// Re-lint quickly to get updated diagnostics for UI
+	let fallbackRecheckStart = 0;
 	try {
+		fallbackRecheckStart = getNow();
 		const recheck = await ruffLinter.lintCode(llmFixed, {
 			enableFixes: false,
 			filename,
 			formatCode: false,
 		});
+		recheckMs = getNow() - fallbackRecheckStart;
 		const newIssues = formatDiagnostics(
 			recheck.diagnostics.filter((d) => d.kind === "error")
 		);
 		const newWarnings = formatDiagnostics(
 			recheck.diagnostics.filter((d) => d.kind === "warning")
 		);
+		const totalMs = getNow() - overallStart;
 		return {
 			fixedCode: llmFixed || best,
 			issues: recheck.isValid ? [] : newIssues,
 			warnings: newWarnings,
 			wasFixed: (llmFixed || "") !== input,
 			ruffSucceeded: true,
+			timings: {
+				totalMs,
+				ruffMs,
+				llmMs,
+				recheckMs,
+			},
 		};
 	} catch (_) {
 		// If recheck fails, return LLM-fixed code with original diagnostics
+		if (!recheckMs && fallbackRecheckStart) {
+			recheckMs = getNow() - fallbackRecheckStart;
+		}
+		const totalMs = getNow() - overallStart;
 		return {
 			fixedCode: llmFixed || best,
 			issues,
 			warnings,
 			wasFixed: (llmFixed || "") !== input,
 			ruffSucceeded: true,
+			timings: {
+				totalMs,
+				ruffMs,
+				llmMs,
+				recheckMs,
+			},
 		};
 	}
 }
@@ -199,6 +324,12 @@ async function fallbackToLLMOnly(
 	options: AutoFixOptions,
 	sessionId?: string
 ): Promise<AutoFixResult> {
+	const getNow =
+		typeof performance !== "undefined" &&
+		typeof performance.now === "function"
+			? () => performance.now()
+			: () => Date.now();
+	const overallStart = getNow();
 	try {
 		let llmFixed = "";
 		await backendClient.generateCodeStream(
@@ -217,20 +348,34 @@ async function fallbackToLLMOnly(
 		);
 
 		const cleaned = stripCodeFences(llmFixed);
+		const totalMs = getNow() - overallStart;
 		return {
 			fixedCode: cleaned || input,
 			issues: [],
 			warnings: ["Ruff unavailable - used LLM-only validation"],
 			wasFixed: cleaned !== input,
 			ruffSucceeded: false,
+			timings: {
+				totalMs,
+				ruffMs: 0,
+				llmMs: totalMs,
+				recheckMs: 0,
+			},
 		};
 	} catch (e) {
+		const totalMs = getNow() - overallStart;
 		return {
 			fixedCode: input,
 			issues: [`Emergency fallback failed: ${e}`],
 			warnings: ["Both Ruff and LLM validation failed"],
 			wasFixed: false,
 			ruffSucceeded: false,
+			timings: {
+				totalMs,
+				ruffMs: 0,
+				llmMs: totalMs,
+				recheckMs: 0,
+			},
 		};
 	}
 }

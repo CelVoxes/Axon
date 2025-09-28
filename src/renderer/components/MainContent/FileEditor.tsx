@@ -256,6 +256,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 
 	// Summary service instance
 	const summaryServiceRef = useRef<NotebookSummaryService | null>(null);
+	const backendClientRef = useRef<BackendClient | null>(null);
 
 	// Use a ref to track the current notebook data to avoid closure issues in event handlers
 	const notebookDataRef = useRef<NotebookData | null>(null);
@@ -286,6 +287,7 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		if (!summaryServiceRef.current) {
 			try {
 				const backendClient = new BackendClient();
+				backendClientRef.current = backendClient;
 				summaryServiceRef.current = new NotebookSummaryService(backendClient);
 			} catch (error) {
 				console.error("Failed to initialize NotebookSummaryService:", error);
@@ -599,12 +601,14 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 					const targetAfterIndex =
 						typeof insertAfter === "number"
 							? Math.min(
-								Math.max(insertAfter, -1),
-								(currentNotebookData.cells.length || 0) - 1
-							)
+									Math.max(insertAfter, -1),
+									(currentNotebookData.cells.length || 0) - 1
+							  )
 							: null;
 					const insertIndex =
-						targetAfterIndex != null ? targetAfterIndex + 1 : currentNotebookData.cells.length;
+						targetAfterIndex != null
+							? targetAfterIndex + 1
+							: currentNotebookData.cells.length;
 					const updatedCells = [...currentNotebookData.cells];
 					updatedCells.splice(insertIndex, 0, newCell);
 
@@ -876,14 +880,14 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 			"update-notebook-cell-code",
 			handleUpdateNotebookCellCode as unknown as EventListener
 		);
-			window.addEventListener(
-				"run-notebook-cell",
-				handleRunNotebookCell as unknown as EventListener
-			);
-			window.addEventListener(
-				"stop-notebook-cell",
-				handleStopNotebookCell as unknown as EventListener
-			);
+		window.addEventListener(
+			"run-notebook-cell",
+			handleRunNotebookCell as unknown as EventListener
+		);
+		window.addEventListener(
+			"stop-notebook-cell",
+			handleStopNotebookCell as unknown as EventListener
+		);
 
 		// Cleanup
 		return () => {
@@ -899,14 +903,14 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 				"update-notebook-cell-code",
 				handleUpdateNotebookCellCode as unknown as EventListener
 			);
-				window.removeEventListener(
-					"run-notebook-cell",
-					handleRunNotebookCell as unknown as EventListener
-				);
-				window.removeEventListener(
-					"stop-notebook-cell",
-					handleStopNotebookCell as unknown as EventListener
-				);
+			window.removeEventListener(
+				"run-notebook-cell",
+				handleRunNotebookCell as unknown as EventListener
+			);
+			window.removeEventListener(
+				"stop-notebook-cell",
+				handleStopNotebookCell as unknown as EventListener
+			);
 		};
 	}, [filePath]); // Remove notebookData dependency to prevent listener recreation
 
@@ -1509,7 +1513,9 @@ export const FileEditor: React.FC<FileEditorProps> = ({ filePath }) => {
 		setIsGeneratingSummary(true);
 		setSummaryStreamContent(""); // Reset stream content
 		try {
-			const sessionId = `session:${workspacePath || "global"}`;
+			const sessionId = backendClientRef.current
+				? backendClientRef.current.buildSessionId(workspacePath || "global")
+				: `session:${workspacePath || "global"}`;
 
 			// Use generateAndExportSummary with streaming for real-time updates
 			const result = await summaryServiceRef.current.generateAndExportSummary(

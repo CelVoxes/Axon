@@ -1,18 +1,21 @@
 """Minimal GEO semantic search system."""
 
 import asyncio
+from typing import Any, Dict, List, Optional
 import numpy as np
-from typing import List, Dict, Any, Optional
-from sentence_transformers import SentenceTransformer
 import aiohttp
 from bs4 import BeautifulSoup
 import re
 import time
 from functools import lru_cache
+import textwrap
+
 try:
     from .config import SearchConfig
 except ImportError:
     from config import SearchConfig
+
+from .llm_similarity import score_items_with_llm
 
 
 class PerformanceMonitor:
@@ -48,15 +51,10 @@ class PerformanceMonitor:
 
 class MinimalGEOSearch:
     """Minimal system for finding similar GEO datasets using semantic search."""
-    
-    def __init__(self, embedding_model: str = "all-MiniLM-L6-v2"):
+
+    def __init__(self):
         """Initialize minimal GEO search.
-        
-        Args:
-            embedding_model: Sentence transformer model for embeddings
         """
-        self.model = None
-        self.model_name = embedding_model
         self._lock = asyncio.Lock()
         self._session = None
         self._last_request_time = 0

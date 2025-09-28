@@ -312,6 +312,13 @@ export class NotebookCodeGenerationService {
 			.substr(2, 6)}`;
 
 		// Streamed generation with events
+		const seededKey = this.sessionId
+			? `axon.codegen.heavyctx.seeded.${this.sessionId}`
+			: null;
+		const shouldSeedContext = !!(
+			seededKey && localStorage.getItem(seededKey) !== "1"
+		);
+
 		const request: CodeGenerationRequest = {
 			stepDescription,
 			originalQuestion,
@@ -320,13 +327,14 @@ export class NotebookCodeGenerationService {
 			stepIndex: 0,
 			// Only seed heavy global code context on the first turn of this session;
 			// subsequent calls lean on Responses memory to avoid resending the same text
-			...(this.sessionId &&
-			localStorage.getItem(`axon.codegen.heavyctx.seeded.${this.sessionId}`) ===
-				"1"
-				? {}
-				: { globalCodeContext: this.getGlobalCodeContext() }),
+			...(shouldSeedContext ? { globalCodeContext: this.getGlobalCodeContext() } : {}),
 			stepId,
+			isDirectEdit: true,
 		};
+
+		if (shouldSeedContext && seededKey) {
+			localStorage.setItem(seededKey, "1");
+		}
 
 		// If datasets indicate spectral flow cytometry, steer generation to R/Seurat
 		const isSpectralFlow =
@@ -407,7 +415,9 @@ export class NotebookCodeGenerationService {
 				(this.codeGenerator as any).emitValidationSuccess(
 					stepId,
 					"Skipped adding duplicate cell (already present in notebook)",
-					bestCode
+					bestCode,
+					undefined,
+					validation?.timings
 				);
 			} catch (_) {}
 			return;
@@ -435,7 +445,9 @@ export class NotebookCodeGenerationService {
 					(this.codeGenerator as any).emitValidationSuccess(
 						stepId,
 						message,
-						bestCode
+						bestCode,
+						eventData.warnings,
+						eventData.timings || validation?.timings
 					);
 				}
 			} else {
@@ -447,7 +459,8 @@ export class NotebookCodeGenerationService {
 						eventData.errors,
 						eventData.warnings,
 						eventData.originalCode,
-						eventData.lintedCode
+						eventData.lintedCode,
+						eventData.timings || validation?.timings
 					);
 				}
 			}

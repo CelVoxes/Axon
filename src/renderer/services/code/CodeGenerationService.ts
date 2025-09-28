@@ -6,6 +6,8 @@ import {
 	CodeGenerationCompletedEvent,
 	CodeGenerationFailedEvent,
 	CodeValidationErrorEvent,
+	CodeValidationSuccessEvent,
+	CodeValidationTimings,
 	CodeGenerationRequest,
 	CodeGenerationResult,
 	Dataset,
@@ -62,19 +64,26 @@ export class CodeGenerationService implements ICodeGenerator {
 	}
 
 	public getSessionIdForPath(workingDir?: string): string {
-		if (this.sessionOverride && this.sessionOverride.trim())
-			return this.sessionOverride;
+		if (this.sessionOverride && this.sessionOverride.trim()) {
+			const scoped = this.backendClient.scopeSessionId(
+				this.sessionOverride
+			);
+			if (scoped) return scoped;
+		}
 		const wd = (workingDir || "").trim();
-		return wd ? `session:${wd}` : "session:default";
+		return this.backendClient.buildSessionId(wd || undefined);
 	}
 
 	private buildSessionId(request: CodeGenerationRequest): string {
-		const sessionId =
+		const scopedOverride =
 			this.sessionOverride && this.sessionOverride.trim()
-				? this.sessionOverride
-				: (request.workingDir || "").trim()
-				? `session:${request.workingDir}`
-				: `session:default`;
+				? this.backendClient.scopeSessionId(this.sessionOverride)
+				: undefined;
+		const sessionId =
+			scopedOverride ||
+			this.backendClient.buildSessionId(
+				(request.workingDir || "").trim() || undefined
+			);
 		console.log(`🔧 CodeGenerationService: Using session ID: ${sessionId}`);
 		return sessionId;
 	}
@@ -276,8 +285,10 @@ export class CodeGenerationService implements ICodeGenerator {
 			})
 			.join("\n\n");
 
-		// Get existing imports from global context
-		const existingImports = sharedGetExistingImports(request.globalCodeContext);
+		// Get existing imports from global context (or empty if not provided)
+		const existingImports = sharedGetExistingImports(
+			request.globalCodeContext || ""
+		);
 		const existingImportsList = Array.from(existingImports).join("\n");
 
 		// Build data access context for the analysis step
@@ -310,9 +321,17 @@ General requirements (concise):
 		// Runtime budget guidance to prevent timeouts on large datasets
 		context += `\n\nRUNTIME AND CHUNKING (prevent timeouts on large data):\n- Keep each cell under ~60–90 seconds of runtime; if work exceeds this, split into additional cells.\n- Process large folders/files in CHUNKS/BATCHES (e.g., per-file loops with intermediate CSV/parquet outputs under results/tmp/).\n- For CSV bundles: sample first to profile; then batch-process files (e.g., 2–4 at a time), writing partial outputs and a manifest to resume.\n- For UMAP: fit on a subset (50k–200k), then transform the rest in batches; persist embeddings to disk.\n- Always save intermediate artifacts (results/) so subsequent cells resume instead of redoing heavy work.`;
 
-		// Add global code context from entire conversation if available
+		// Don't add massive global code context - let Responses API handle memory
+		// Only add minimal import context if available
 		if (request.globalCodeContext && request.globalCodeContext.trim()) {
-			context += `\n\n⚠️  NOTE: Prior code from this conversation is provided below to give context.\n\nPREVIOUSLY GENERATED CODE FROM ENTIRE CONVERSATION:\n\n\`\`\`python\n${request.globalCodeContext}\n\`\`\`\n\nInclude the minimal imports required to run this cell independently. It is acceptable if imports were used before. Avoid heavy global setup duplication.`;
+			// Extract just the imports instead of sending all code
+			const existingImports = sharedGetExistingImports(
+				request.globalCodeContext
+			);
+			if (existingImports.size > 0) {
+				const importList = Array.from(existingImports).join("\n");
+				context += `\n\n⚠️  NOTE: Previously used imports from conversation context:\n\n\`\`\`python\n${importList}\n\`\`\`\n\nDo not repeat these imports unless absolutely necessary.`;
+			}
 		}
 
 		if (request.previousCode && request.previousCode.trim()) {
@@ -364,9 +383,9 @@ General requirements (concise):
 			}
 		}
 		// Append tool-specific guidance
+		// Spectral flow cytometry will use DatasetManager's implementation details
 		if (isSpectralFlow) {
-			// Spectral flow cytometry + Seurat v5 sketch guidance (R)
-			context += `\n\nTARGET LANGUAGE: R\n\nSeurat v5 sketch guidance (spectral flow):\n- Use library(Seurat) and assume data are CSV/TSV files under data_dir (rows=cells/events, cols=markers).\n- Build a Seurat object from the numeric matrix (ensure features=markers/columns).\n- If compensation/unmixing sidecar exists (spill/unmix CSV), apply it before scaling.\n- Detect whether values look raw vs arcsinh/logicle; only apply arcsinh (cofactor≈5) when clearly raw.\n- Use Seurat v5's sketch-based workflow: compute PCA/Neighbors/UMAP on a representative sketch (e.g., tens of thousands of cells) and map remaining cells to the learned embedding (projection).\n- Cluster cells on the embedding and save labels and UMAP coordinates.\n- Save intermediate and final outputs (e.g., embeddings, cluster labels) under results/.\nCRITICAL:\n- Return ONLY R code; no markdown or prose.\n- Do not rely on external GUIs; write clean, scriptable code.\n- Avoid network downloads; use data_dir only.`;
+			context += `\n\nSpectral flow cytometry detected - use implementation details provided.`;
 		} else {
 			// Scanpy RAG guidance for Python single-cell workflows
 			if (!lean) {
@@ -394,13 +413,11 @@ General requirements (concise):
 			);
 			if (rec && rec.path) {
 				const wd = String(request.workingDir || "");
-				context += `\n\nDATA_DIR RESOLUTION:\n- Analysis working directory: ${wd}\n- Local dataset root resolved to: ${
+				context += `\n\nDATA_DIR RESOLUTION:\n- Analysis working directory: ${wd}\n- Local dataset root: ${
 					rec.path
 				} ${
-					rec.isRelative ? "(relative to working directory)" : "(absolute)"
-				}\nCRITICAL:\n- Set data_dir = Path('${
-					rec.path
-				}') exactly. Do NOT set Path('data') unless you explicitly created a 'data' folder here.\n- All file access must be under data_dir.\n- Do not move or copy raw data; read in-place.\n- Write outputs to results/ and figures/ under the working directory, not in data_dir.`;
+					rec.isRelative ? "(relative)" : "(absolute)"
+				}\n- Use appropriate data loading functions for the detected file formats.`;
 			}
 		} catch (_) {}
 
@@ -494,21 +511,19 @@ General requirements (concise):
 						"spectral_flow_cytometry"
 				);
 
-            if (isSingleCell) {
-                // Enforce the standard Scanpy pipeline (no heuristics); do not remove required imports
-                context += `\n\nSTANDARD SCANPY PIPELINE (single-cell RNA-seq ONLY — no extra heuristics):\n- Imports: import scanpy as sc; import anndata as ad; (plus numpy/pandas/matplotlib as needed)\n- Load: prefer ad.read_h5ad(<file>) when *.h5ad under data_dir; else use sc.read_10x_mtx for 10x directories (matrix.mtx + barcodes.tsv + features.tsv)\n- Persist raw counts: adata.layers['counts'] = adata.X (and optionally adata.raw = adata)\n- QC (no ad hoc checks): sc.pp.calculate_qc_metrics with n_genes_by_counts, total_counts, pct_counts_mt (mt- genes)\n- Apply fixed QC thresholds: MIN_GENES=200, MAX_GENES=6000, MAX_MT_PCT=10; filter with sc.pp.filter_cells / boolean mask\n- Doublets: if 'scrublet' is available, run on raw counts before normalization; annotate obs['doublet'] and remove them; otherwise skip cleanly\n- Normalize: sc.pp.normalize_total(adata)\n- Log: sc.pp.log1p(adata)\n- HVGs: sc.pp.highly_variable_genes(adata, n_top_genes=2000, flavor='seurat')\n- (Optional) regress_out confounders (n_counts, pct_counts_mt, cell cycle) then scale: sc.pp.regress_out; sc.pp.scale(max_value=10)\n- PCA: sc.tl.pca(adata, svd_solver='arpack')\n- Neighbors: sc.pp.neighbors(adata)\n- UMAP: sc.tl.umap(adata) — do not call umap-learn directly\n- Clusters: sc.tl.leiden(adata, key_added='leiden')\n- Markers: sc.tl.rank_genes_groups(adata, 'leiden', method='t-test')\n- Plots: sc.pl.umap(adata, color=['leiden'], save=False)\nSTRICTLY FORBIDDEN IN THIS CELL:\n- Do NOT add heuristic checks for existing normalization/log transforms or QC beyond the fixed thresholds above\n- Do NOT use umap.UMAP() or other UMAP wrappers; use sc.tl.umap only\n- Do NOT replace clustering with custom implementations\n- Do NOT remove required imports\n\n10X DIRECTORY HANDLING:\n- If data_dir contains 'filtered_feature_bc_matrix', read with: sc.read_10x_mtx(data_dir / 'filtered_feature_bc_matrix', var_names='gene_symbols', make_unique=True)\n- If data_dir is itself a 10x matrix folder (matrix.mtx(.gz), features.tsv(.gz), barcodes.tsv(.gz)), call sc.read_10x_mtx(data_dir, var_names='gene_symbols', make_unique=True)\n`;
-			} else {
-				// Global scaling/normalization detection guidance for other numeric datasets
-				context += `\n\nGLOBAL SCALING/TRANSFORM DETECTION (apply broadly to numeric matrices):\n- Before any normalization, detect whether values are already transformed/scaled to avoid double-transforming.\n- Sources of truth: file/column metadata (headers, FCS keywords), sidecar matrices (spill/unmix), and value distributions.\n- Heuristics per feature set (vote across markers/genes):\n  • Standardized-like: mean≈0 and std≈1 for most columns → skip re-standardization.\n  • Log/arcsinh/logicle-like: compressed range (e.g., 95th pct < ~20), negatives allowed in a small fraction → likely already transformed; do not re-apply log/arcsinh.\n  • Raw-like: large non-negative range (e.g., 99th pct ≥ 1e3–1e4), near-zero negatives → treat as raw; normalize then transform.\n- Cytometry: respect prior compensation/unmixing (FCS $SPILLOVER or sidecar CSV); apply before any scaling.\n- Expression matrices: detect units (TPM/CPM/FPKM), existing log transforms, and z-scoring; avoid double transforms.\n- Record decisions (e.g., in adata.uns['scale_status'] or a dict) and reference in later steps.`;
-			}
+			// Check if we have implementation details from DatasetManager plan
+			if (request.implementation) {
+				// Use implementation details from DatasetManager plan
+				context += `\n\nIMPLEMENTATION PLAN FROM DATASET ANALYSIS:
+- ${request.stepDescription}: ${request.implementation}
 
-			if (isFlow) {
-				if (isSpectralFlow) {
-					// For spectral flow, prefer R/Seurat v5 sketch; add a brief steering note
-					context += `\n\nSpectral flow detected in datasets → prefer Seurat v5 (R) sketch-based workflow for scalable neighbors/UMAP and clustering.`;
-				} else {
-					context += `\n\nLIBRARY CONSTRAINTS (flow/cytometry):\n- Use pandas/numpy/matplotlib/seaborn only; avoid flow-specific libs (FlowCytometryTools, fcsparser, FlowKit) unless explicitly installed.\n- If *.fcs files are present, print a clear message to convert to CSV first (no FCS parser guaranteed).\n\nROBUST LOADING/PREPROCESSING (flow/cytometry):\n- Treat folders of CSVs as sample bundles; read per-file with pandas, add a 'sample' column, and concatenate.\n- Detect existing scaling (arcsinh/log/z-score) before transforming; if scale_detection.py is present, import and use it.\n- Only apply arcsinh (cofactor≈5) if data appears raw; otherwise skip scaling.\n- Process large files in batches and write intermediate outputs under results/tmp/.`;
-				}
+Convert this implementation step into executable Python code.`;
+			} else {
+				// No implementation details available - let LLM decide based on data types
+				context += `\n\nANALYSIS GUIDANCE:
+- Use appropriate libraries for the detected data type
+- Follow standard analysis practices for this data type
+- Ensure reproducible results`;
 			}
 		} catch {
 			/* noop */
@@ -539,6 +554,7 @@ General requirements (concise):
 	): Promise<CodeGenerationResult> {
 		this.log.debug("stream: start %s (%s)", request.stepDescription, stepId);
 		const sessionId = this.buildSessionId(request);
+		const useDirectEdit = Boolean(request.isDirectEdit);
 
 		try {
 			// Prepare context and stream request
@@ -601,11 +617,12 @@ General requirements (concise):
 					: request.language || "python";
 
 			// Use lean context after the first heavy seed for this session
-			const heavySeeded = this.isHeavyContextSeeded(sessionId);
-			const enhancedContext = await this.buildEnhancedContextWithDocs(
-				request,
-				heavySeeded
-			);
+			const heavySeeded = useDirectEdit
+				? true
+				: this.isHeavyContextSeeded(sessionId);
+			const enhancedContext = useDirectEdit
+				? request.globalCodeContext || ""
+				: await this.buildEnhancedContextWithDocs(request, heavySeeded);
 
 			const result = await this.backendClient.generateCodeStream(
 				{
@@ -614,6 +631,7 @@ General requirements (concise):
 					context: enhancedContext,
 					model: ConfigManager.getInstance().getDefaultModel(),
 					session_id: sessionId,
+					...(useDirectEdit ? { direct_edit: true } : {}),
 				},
 				chunkCallback,
 				(reasoningDelta: string) => {
@@ -637,7 +655,7 @@ General requirements (concise):
 			);
 
 			// Mark heavy context as seeded after first successful generation
-			if (!heavySeeded) {
+			if (!useDirectEdit && !heavySeeded) {
 				this.markHeavyContextSeeded(sessionId);
 			}
 
@@ -923,7 +941,8 @@ ${datasetLoadingCode}
 		errors: string[],
 		warnings: string[],
 		originalCode: string,
-		fixedCode?: string
+		fixedCode?: string,
+		timings?: CodeValidationTimings
 	): void {
 		EventManager.dispatchEvent("code-validation-error", {
 			stepId,
@@ -931,8 +950,26 @@ ${datasetLoadingCode}
 			warnings,
 			originalCode,
 			fixedCode,
+			timings,
 			timestamp: Date.now(),
 		} as CodeValidationErrorEvent);
+	}
+
+	emitValidationPrecheck(
+		stepId: string,
+		errors: string[],
+		warnings: string[],
+		code: string,
+		timings?: CodeValidationTimings
+	): void {
+		EventManager.dispatchEvent("code-validation-precheck", {
+			stepId,
+			errors,
+			warnings,
+			code,
+			timings,
+			timestamp: Date.now(),
+		});
 	}
 
 	/**
@@ -942,15 +979,18 @@ ${datasetLoadingCode}
 		stepId: string,
 		message?: string,
 		code?: string,
-		warnings?: string[]
+		warnings?: string[],
+		timings?: CodeValidationTimings
 	): void {
-		EventManager.dispatchEvent("code-validation-success", {
+		const detail: CodeValidationSuccessEvent = {
 			stepId,
 			message: message || "No linter errors found",
 			code,
 			warnings: Array.isArray(warnings) ? warnings : [],
+			timings,
 			timestamp: Date.now(),
-		});
+		};
+		EventManager.dispatchEvent("code-validation-success", detail);
 	}
 
 	extractPythonCode(response: string): string | null {

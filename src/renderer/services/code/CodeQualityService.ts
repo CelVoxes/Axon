@@ -2,11 +2,13 @@ import { BackendClient } from "../backend/BackendClient";
 import { CellExecutionService } from "../notebook/CellExecutionService";
 import { CodeGenerationService } from "./CodeGenerationService";
 import { autoFixWithRuffAndLLM } from "../chat/LintAutoFixService";
+import { ruffLinter, RuffDiagnostic } from "../chat/RuffLinter";
 import { normalizePythonCode } from "../../utils/CodeTextUtils";
 import {
 	getExistingImports as sharedGetExistingImports,
 	removeDuplicateImports as sharedRemoveDuplicateImports,
 } from "../../utils/ImportUtils";
+import { CodeValidationTimings } from "../types";
 
 export interface CodeQualityResult {
 	isValid: boolean;
@@ -25,7 +27,9 @@ export interface CodeQualityResult {
 		wasFixed: boolean;
 		originalCode: string;
 		lintedCode: string;
+		timings?: CodeValidationTimings;
 	};
+	timings?: CodeValidationTimings;
 }
 
 export interface CodeQualityPipelineOptions {
@@ -39,6 +43,7 @@ export interface CodeQualityPipelineOptions {
 	stepDescription?: string;
 	globalCodeContext?: string;
 	skipValidationEvents?: boolean; // Skip emitting validation events (for manual emission)
+	allowLLMFallback?: boolean; // Opt-in for slower LLM lint fallback when absolutely necessary
 }
 
 export interface BatchTestResult {
@@ -98,10 +103,37 @@ export class CodeQualityService {
 		options: CodeQualityPipelineOptions = {}
 	): Promise<CodeQualityResult> {
 		const now = () =>
-			typeof performance !== "undefined" && typeof performance.now === "function"
+			typeof performance !== "undefined" &&
+			typeof performance.now === "function"
 				? performance.now()
 				: Date.now();
 		const overallStart = now();
+		let enhancementMs = 0;
+		let lintMs = 0;
+		let executionMs = 0;
+		let lintBreakdown:
+			| {
+					totalMs: number;
+					ruffMs?: number;
+					llmMs?: number;
+					recheckMs?: number;
+			  }
+			| undefined;
+		type PendingValidationEvent =
+			| {
+					type: "success";
+					payload: { message: string; code?: string; warnings?: string[] };
+			  }
+			| {
+					type: "error";
+					payload: {
+						errors: string[];
+						warnings: string[];
+						originalCode: string;
+						lintedCode: string;
+					};
+			  };
+		let pendingValidationEvent: PendingValidationEvent | null = null;
 		console.log(
 			`CodeQualityService: validateAndTest(${stepId}) started (len=${code.length})`
 		);
@@ -115,6 +147,7 @@ export class CodeQualityService {
 			addDirectoryCreation = true, // Add directory creation when needed, but respect global context
 			stepDescription,
 			skipValidationEvents = false, // Skip emitting validation events (for manual emission)
+			allowLLMFallback = false,
 		} = options;
 
 		// Detect package-install or non-analytical utility cells and avoid mutating them
@@ -155,20 +188,44 @@ export class CodeQualityService {
 			result.lintedCode = result.cleanedCode;
 			result.isValid = true;
 
-			// Emit a validation success event so the UI doesn't wait for a timeout
-			try {
-				this.codeGenerationService.emitValidationSuccess(
-					stepId,
-					isInstallCell
-						? `Skipped linting for install cell: ${stepTitle}`
-						: `Skipped linting for data download cell: ${stepTitle}`,
-					result.lintedCode
-				);
-			} catch (_) {}
+			const totalMs = now() - overallStart;
+			const timings: CodeValidationTimings = {
+				totalMs,
+				enhancementMs: 0,
+				lintMs: 0,
+				executionMs: 0,
+				restMs: totalMs,
+			};
+			result.timings = timings;
+
+			if (skipValidationEvents) {
+				result.validationEventData = {
+					isValid: true,
+					errors: [],
+					warnings: [],
+					wasFixed: false,
+					originalCode: result.originalCode,
+					lintedCode: result.lintedCode,
+					timings,
+				};
+			} else {
+				try {
+					this.codeGenerationService.emitValidationSuccess(
+						stepId,
+						isInstallCell
+							? `Skipped linting for install cell: ${stepTitle}`
+							: `Skipped linting for data download cell: ${stepTitle}`,
+						result.lintedCode,
+						[],
+						timings
+					);
+				} catch (_) {}
+			}
+
 			console.log(
-				`CodeQualityService: validateAndTest(${stepId}) finished in ${(
-					now() - overallStart
-				).toFixed(1)}ms (skip lint)`
+				`CodeQualityService: validateAndTest(${stepId}) finished in ${totalMs.toFixed(
+					1
+				)}ms (skip lint)`
 			);
 
 			return result;
@@ -185,17 +242,58 @@ export class CodeQualityService {
 				stepDescription,
 				globalCodeContext: options.globalCodeContext,
 			});
+			enhancementMs = now() - cleanStart;
 			console.log(
-				`CodeQualityService: enhanceCode(${stepId}) took ${(
-					now() - cleanStart
-				).toFixed(1)}ms`
+				`CodeQualityService: enhanceCode(${stepId}) took ${enhancementMs.toFixed(
+					1
+				)}ms`
 			);
 		}
 
 		// Step 2: Code Validation (if not skipped) - Using optimized Ruff+LLM service
 		if (!skipValidation) {
-			this.updateStatus(`Validating code for ${stepTitle}...`);
+			this.updateStatus(`Linting code for ${stepTitle}...`);
 			const lintStart = now();
+			try {
+				const lintOnlyStart = now();
+				const lintOnly = await ruffLinter.lintCode(result.cleanedCode, {
+					enableFixes: false,
+					filename: `${stepTitle.replace(/\s+/g, "_").toLowerCase()}.py`,
+					formatCode: false,
+				});
+				const lintOnlyDuration = now() - lintOnlyStart;
+				const lintOnlyErrors = formatRuffDiagnostics(
+					lintOnly.diagnostics.filter((d) => d.kind === "error")
+				);
+				const lintOnlyWarnings = formatRuffDiagnostics(
+					lintOnly.diagnostics.filter((d) => d.kind === "warning")
+				);
+				if (!skipValidationEvents) {
+					const timingsPre: CodeValidationTimings = {
+						totalMs: lintOnlyDuration,
+						enhancementMs: 0,
+						lintMs: lintOnlyDuration,
+						executionMs: 0,
+						restMs: 0,
+						lintBreakdown: {
+							totalMs: lintOnlyDuration,
+							ruffMs: lintOnlyDuration,
+						},
+					};
+					this.codeGenerationService.emitValidationPrecheck(
+						stepId,
+						lintOnlyErrors,
+						lintOnlyWarnings,
+						result.cleanedCode,
+						timingsPre
+					);
+				}
+			} catch (precheckError) {
+				console.warn(
+					"CodeQualityService: Ruff precheck failed:",
+					precheckError
+				);
+			}
 
 			try {
 				const sessionId = this.codeGenerationService.getSessionIdForPath(
@@ -203,23 +301,44 @@ export class CodeQualityService {
 					(this.cellExecutionService as any)?.getWorkspacePath?.() || undefined
 				);
 				// Fast path: small cells (<= 200 lines) get fixes without formatting
-				const fixResult = await autoFixWithRuffAndLLM(
-					this.backendClient,
-					result.cleanedCode,
-					{
-						filename: `${stepTitle.replace(/\s+/g, "_").toLowerCase()}.py`,
-						stepTitle,
-					},
-					sessionId
-				);
+					const fixResult = await autoFixWithRuffAndLLM(
+						this.backendClient,
+						result.cleanedCode,
+						{
+							filename: `${stepTitle.replace(/\s+/g, "_").toLowerCase()}.py`,
+							stepTitle,
+							enableLLMFallback: allowLLMFallback,
+						},
+						sessionId
+					);
+					if (
+						!fixResult.ruffSucceeded &&
+						fixResult.warnings.some((w) =>
+							w.toLowerCase().includes("lint skipped")
+						)
+					) {
+						this.updateStatus(
+							`Lint skipped for ${stepTitle} (large cell — skipped to keep UI responsive)`
+						);
+					}
+					lintMs = now() - lintStart;
+					lintBreakdown = fixResult.timings
+						? {
+							totalMs: fixResult.timings.totalMs,
+							ruffMs: fixResult.timings.ruffMs,
+							llmMs: fixResult.timings.llmMs,
+							recheckMs: fixResult.timings.recheckMs,
+					  }
+					: undefined;
 				console.log(
-					`CodeQualityService: lint (Ruff/LLM) ${stepId} took ${(
-						now() - lintStart
-					).toFixed(1)}ms`
+					`CodeQualityService: lint (Ruff/LLM) ${stepId} took ${lintMs.toFixed(
+						1
+					)}ms`
 				);
 
 				// Post-process undefined-name errors that are satisfied by prior cells' imports
 				const globalCtx = options.globalCodeContext || "";
+				// If no global context, use minimal aliases for common libraries
 				const aliasToImport = new Map<string, string>([
 					["plt", "import matplotlib.pyplot as plt"],
 					["pd", "import pandas as pd"],
@@ -278,70 +397,64 @@ export class CodeQualityService {
 						`(${result.validationWarnings.length} warnings also found)`
 					);
 
-					// Emit validation error event (will show in chat) - unless skipped
 					if (!skipValidationEvents) {
-						this.codeGenerationService.emitValidationErrors(
-							stepId,
-							result.validationErrors,
-							result.validationWarnings,
-							result.originalCode,
-							result.lintedCode
-						);
-					}
-
-					// Store validation data for manual emission if events are skipped
-					if (skipValidationEvents) {
-						result.validationEventData = {
-							isValid: false,
-							errors: result.validationErrors,
-							warnings: result.validationWarnings,
-							wasFixed: fixResult.wasFixed,
-							originalCode: result.originalCode,
-							lintedCode: result.lintedCode,
+						pendingValidationEvent = {
+							type: "error",
+							payload: {
+								errors: result.validationErrors,
+								warnings: result.validationWarnings,
+								originalCode: result.originalCode,
+								lintedCode: result.lintedCode,
+							},
 						};
 					}
+					result.validationEventData = {
+						isValid: false,
+						errors: result.validationErrors,
+						warnings: result.validationWarnings,
+						wasFixed: fixResult.wasFixed,
+						originalCode: result.originalCode,
+						lintedCode: result.lintedCode,
+					};
 
 					this.updateStatus(
 						`⚠️ Code validation completed with remaining issues for ${stepTitle}`
 					);
 				} else {
-					// Emit validation success event - unless skipped
-					if (!skipValidationEvents) {
-						// Only show success message if there were warnings or fixes applied
-						if (result.validationWarnings.length > 0 || fixResult.wasFixed) {
-							const usedLLMFallback =
-								(fixResult as any).ruffSucceeded === false;
-							const base = usedLLMFallback
-								? `Code validation passed via LLM fallback (Ruff unavailable)`
-								: `Code validation passed${
-										fixResult.wasFixed ? " (fixes applied)" : ""
-								  }`;
-							const msg = `${base}${
-								result.validationWarnings.length > 0
-									? ` with ${result.validationWarnings.length} warning(s)`
-									: ""
-							}`;
-
-							this.codeGenerationService.emitValidationSuccess(
-								stepId,
-								msg,
-								result.lintedCode,
-								result.validationWarnings
-							);
-						}
+					const usedLLMFallback = (fixResult as any).ruffSucceeded === false;
+					let successMessage = "";
+					if (result.validationWarnings.length > 0 || fixResult.wasFixed) {
+						const base = usedLLMFallback
+							? `Code validation passed via LLM fallback (Ruff unavailable)`
+							: `Code validation passed${
+									fixResult.wasFixed ? " (fixes applied)" : ""
+							  }`;
+						successMessage = `${base}${
+							result.validationWarnings.length > 0
+								? ` with ${result.validationWarnings.length} warning(s)`
+								: ""
+						}`;
 					}
 
-					// Store validation data for manual emission if events are skipped
-					if (skipValidationEvents) {
-						result.validationEventData = {
-							isValid: true,
-							errors: result.validationErrors,
-							warnings: result.validationWarnings,
-							wasFixed: fixResult.wasFixed,
-							originalCode: result.originalCode,
-							lintedCode: result.lintedCode,
+					if (!skipValidationEvents) {
+						pendingValidationEvent = {
+							type: "success",
+							payload: {
+								message: successMessage,
+								code: result.lintedCode,
+								warnings: result.validationWarnings,
+							},
 						};
 					}
+
+					result.validationEventData = {
+						isValid: true,
+						errors: result.validationErrors,
+						warnings: result.validationWarnings,
+						wasFixed: fixResult.wasFixed,
+						originalCode: result.originalCode,
+						lintedCode: result.lintedCode,
+					};
 					this.updateStatus(`✅ Code validation passed for ${stepTitle}`);
 				}
 
@@ -349,10 +462,30 @@ export class CodeQualityService {
 					this.updateStatus(`🔧 Code improvements applied for ${stepTitle}`);
 				}
 			} catch (error) {
+				lintMs = now() - lintStart;
 				result.isValid = false;
 				result.validationErrors.push(
 					error instanceof Error ? error.message : "Unknown validation error"
 				);
+				if (!skipValidationEvents) {
+					pendingValidationEvent = {
+						type: "error",
+						payload: {
+							errors: result.validationErrors,
+							warnings: result.validationWarnings,
+							originalCode: result.originalCode,
+							lintedCode: result.lintedCode,
+						},
+					};
+				}
+				result.validationEventData = {
+					isValid: false,
+					errors: result.validationErrors,
+					warnings: result.validationWarnings,
+					wasFixed: false,
+					originalCode: result.originalCode,
+					lintedCode: result.lintedCode,
+				};
 				console.error(`Validation error for ${stepTitle}:`, error);
 			}
 		}
@@ -360,6 +493,7 @@ export class CodeQualityService {
 		// Step 3: Execution Testing (disabled by default for performance)
 		if (!skipExecution) {
 			this.updateStatus(`Testing execution for ${stepTitle}...`);
+			const executionStart = now();
 
 			try {
 				const executionResult = await this.cellExecutionService.executeCell(
@@ -384,13 +518,60 @@ export class CodeQualityService {
 					error instanceof Error ? error.message : "Unknown execution error";
 				this.updateStatus(`⚠️ Error testing code execution for ${stepTitle}`);
 			}
+			executionMs = now() - executionStart;
 		}
 
 		const totalMs = now() - overallStart;
+		const restMs = Math.max(0, totalMs - enhancementMs - lintMs - executionMs);
+		result.timings = {
+			totalMs,
+			enhancementMs,
+			lintMs,
+			executionMs,
+			restMs,
+			lintBreakdown: lintBreakdown
+				? {
+						totalMs: lintBreakdown.totalMs,
+						ruffMs: lintBreakdown.ruffMs,
+						llmMs: lintBreakdown.llmMs,
+						recheckMs: lintBreakdown.recheckMs,
+				  }
+				: undefined,
+		};
+
+		if (result.validationEventData) {
+			result.validationEventData.timings = result.timings;
+		}
+
+		if (!skipValidationEvents && pendingValidationEvent) {
+			try {
+				if (pendingValidationEvent.type === "success") {
+					this.codeGenerationService.emitValidationSuccess(
+						stepId,
+						pendingValidationEvent.payload.message,
+						pendingValidationEvent.payload.code,
+						pendingValidationEvent.payload.warnings,
+						result.timings
+					);
+				} else {
+					this.codeGenerationService.emitValidationErrors(
+						stepId,
+						pendingValidationEvent.payload.errors,
+						pendingValidationEvent.payload.warnings,
+						pendingValidationEvent.payload.originalCode,
+						pendingValidationEvent.payload.lintedCode,
+						result.timings
+					);
+				}
+			} catch (_) {}
+		}
+
 		console.log(
 			`CodeQualityService: validateAndTest(${stepId}) finished in ${totalMs.toFixed(
 				1
-			)}ms`
+			)}ms (enhance=${enhancementMs.toFixed(1)}ms, lint=${lintMs.toFixed(
+				1
+			)}ms, exec=${executionMs.toFixed(1)}ms, rest=${restMs.toFixed(1)}ms)`
 		);
 		return result;
 	}
@@ -921,4 +1102,13 @@ figures_dir.mkdir(exist_ok=True)`;
 
 		return updatedLines.join("\n");
 	}
+}
+function formatRuffDiagnostics(diagnostics: RuffDiagnostic[]): string[] {
+	return diagnostics.map((d) => {
+		const lineInfo =
+			d.endLine && d.endLine !== d.startLine
+				? `${d.startLine}-${d.endLine}`
+				: `${d.startLine}`;
+		return `${d.code}: ${d.message} (line ${lineInfo})`;
+	});
 }

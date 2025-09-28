@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import { BackendClient } from "../../../services/backend/BackendClient";
 import { LocalDatasetEntry } from "../../../services/chat/LocalDatasetRegistry";
 import { DatasetResolutionService } from "../../../services/chat/DatasetResolutionService";
@@ -41,6 +41,8 @@ interface UseChatMessageHandlingProps {
 	analysisDispatch: any;
 }
 
+const INSPECTION_CACHE_TTL_MS = 10_000;
+
 export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 	const {
 		backendClient,
@@ -66,6 +68,35 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 		mergeSelectedDatasets,
 		analysisDispatch,
 	} = props;
+
+	const contextCacheRef = useRef<{ key: string; value: string } | null>(null);
+	const inspectionCacheRef = useRef<
+		Map<string, { context: string; timestamp: number }>
+	>(new Map());
+	const fallbackSessionInstanceRef = useRef(
+		`offline_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+	);
+
+	const buildFallbackSessionId = useCallback(
+		(parts: Array<string | null | undefined>) => {
+			const suffixParts = parts
+				.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+				.map((p) => p.trim().replace(/[:\s]+/g, "_"));
+			const suffix = suffixParts.length ? suffixParts.join(":") : "default";
+			return `session:${fallbackSessionInstanceRef.current}:${suffix}`;
+		},
+		[]
+	);
+
+	const buildSessionIdSafe = useCallback(
+		(...parts: Array<string | null | undefined>) => {
+			if (backendClient) {
+				return backendClient.buildSessionId(...parts);
+			}
+			return buildFallbackSessionId(parts);
+		},
+		[backendClient, buildFallbackSessionId]
+	);
 
 	const validateBackendClient = useCallback(
 		(customErrorMessage?: string): boolean => {
@@ -117,17 +148,26 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
                         filePath: args.filePath,
                         currentWorkspace: workspaceState.currentWorkspace,
                     }) || workspaceState.currentWorkspace || "";
-                const chatId = (analysisState as any).activeChatSessionId || "global";
-                if (wsDir) sessionId = `session:${wsDir}:${chatId}`;
+				const chatId = (analysisState as any).activeChatSessionId || "global";
+				if (wsDir) {
+					sessionId = buildSessionIdSafe(wsDir, chatId);
+				}
             } catch (_) {}
 
             await notebookEditingService.performNotebookEdit({ ...args, sessionId }, {
                 addMessage,
                 analysisDispatch,
             });
-        },
-        [notebookEditingService, addMessage, analysisDispatch, workspaceState.currentWorkspace, analysisState]
-    );
+	},
+	[
+		notebookEditingService,
+		addMessage,
+		analysisDispatch,
+		workspaceState.currentWorkspace,
+		analysisState,
+		buildSessionIdSafe,
+	]
+);
 
 	const buildContextFromMessages = useCallback((messages: any[]): string => {
 		const recent = (messages || []).slice(-10);
@@ -144,6 +184,19 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 			.join("\n\n");
 	}, []);
 
+	const getMemoizedContext = useCallback(() => {
+		const messages = analysisState.messages || [];
+		const lastMessageId = messages[messages.length - 1]?.id || "";
+		const key = `${messages.length}:${lastMessageId}`;
+		const cached = contextCacheRef.current;
+		if (cached && cached.key === key) {
+			return cached.value;
+		}
+		const context = buildContextFromMessages(messages);
+		contextCacheRef.current = { key, value: context };
+		return context;
+	}, [analysisState.messages, buildContextFromMessages]);
+
 	const autoPeekMentionedItems = useCallback(
 		async (userMessage: string) => {
 			const inspectionService = new AutonomousInspectionService(
@@ -158,8 +211,8 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 			// Show what we're about to inspect
 			addMessage("🔍 Auto-inspecting mentioned files/folders...", false);
 			
-			// Add small delay to make inspection visible
-			await new Promise(resolve => setTimeout(resolve, 500));
+			// Brief delay to surface inspection feedback without stalling too long
+			await new Promise((resolve) => setTimeout(resolve, 120));
 
 			// Perform autonomous inspection
 			const results = await inspectionService.inspectMentionedItems(
@@ -181,7 +234,7 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 						);
 					}
 					// Small delay between each inspection result
-					await new Promise(resolve => setTimeout(resolve, 300));
+					await new Promise((resolve) => setTimeout(resolve, 80));
 				}
 			);
 
@@ -190,13 +243,32 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 			if (successCount > 0) {
 				addMessage(`✅ Inspected ${successCount} item(s). Proceeding with analysis...`, false);
 				// Brief pause before proceeding
-				await new Promise(resolve => setTimeout(resolve, 800));
+				await new Promise((resolve) => setTimeout(resolve, 180));
 			}
 
 			// Return context for LLM
 			return inspectionService.buildInspectionContext(results);
 		},
 		[workspaceState.currentWorkspace, addMessage]
+	);
+
+	const getInspectionContext = useCallback(
+		async (userMessage: string) => {
+			const workspaceKey = workspaceState.currentWorkspace || "";
+			const activeFileKey = (workspaceState as any).activeFile || "";
+			const cacheKey = `${workspaceKey}::${activeFileKey}::${userMessage}`;
+			const cached = inspectionCacheRef.current.get(cacheKey);
+			if (cached && Date.now() - cached.timestamp < INSPECTION_CACHE_TTL_MS) {
+				return cached.context;
+			}
+			const context = await autoPeekMentionedItems(userMessage);
+			inspectionCacheRef.current.set(cacheKey, {
+				context,
+				timestamp: Date.now(),
+			});
+			return context;
+		},
+		[autoPeekMentionedItems, workspaceState.currentWorkspace]
 	);
 
 	const handleAskMode = useCallback(
@@ -214,14 +286,17 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 				}
 				
 				// Auto-inspect mentioned items for Ask mode too
-				const inspectionContext = await autoPeekMentionedItems(userMessage);
-				const baseContext = buildContextFromMessages(analysisState.messages);
+				const inspectionContext = await getInspectionContext(userMessage);
+				const baseContext = getMemoizedContext();
 				const enhancedContext = baseContext + inspectionContext;
 				
 				// Use ChatToolAgent for autonomous tool usage in Ask mode
-                const chatId = (analysisState as any).activeChatSessionId || 'global';
-                const sessionId = `session:${workspaceState.currentWorkspace || 'global'}:${chatId}`;
-                const answer = await ChatToolAgent.askWithTools(
+				const chatId = (analysisState as any).activeChatSessionId || "global";
+				const sessionId = buildSessionIdSafe(
+					workspaceState.currentWorkspace || undefined,
+					chatId
+				);
+				const answer = await ChatToolAgent.askWithTools(
                     backendClient!,
                     userMessage,
                     enhancedContext,
@@ -255,12 +330,12 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 			setIsLoading,
 			setIsProcessing,
 			validateBackendClient,
-			buildContextFromMessages,
-			analysisState.messages,
+			getMemoizedContext,
 			workspaceState.currentWorkspace,
 			backendClient,
+			buildSessionIdSafe,
 			resetLoadingState,
-			autoPeekMentionedItems,
+			getInspectionContext,
 		]
 	);
 
@@ -316,16 +391,19 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 			}
 
 			// Auto-peek mentioned files/folders before proceeding
-			const inspectionContext = await autoPeekMentionedItems(userMessage);
+			const inspectionContext = await getInspectionContext(userMessage);
 
 			// Continue with agent mode handling...
 			// (The full agent mode logic would be implemented here)
 			// For now, use tools-enhanced Q&A as fallback with inspection context
-			const baseContext = buildContextFromMessages(analysisState.messages);
+			const baseContext = getMemoizedContext();
 			const enhancedContext = baseContext + inspectionContext;
 			
-			const chatId = (analysisState as any).activeChatSessionId || 'global';
-			const sessionId = `session:${workspaceState.currentWorkspace || 'global'}:${chatId}`;
+			const chatId = (analysisState as any).activeChatSessionId || "global";
+			const sessionId = buildSessionIdSafe(
+				workspaceState.currentWorkspace || undefined,
+				chatId
+			);
 			
 			const answer = await ChatToolAgent.askWithTools(
 				backendClient!,
@@ -361,10 +439,12 @@ export function useChatMessageHandling(props: UseChatMessageHandlingProps) {
 		mergeSelectedDatasets,
 		selectDatasets,
 		addMessage,
-		autoPeekMentionedItems,
+		getInspectionContext,
 		validateBackendClient,
-		buildContextFromMessages,
+		getMemoizedContext,
 		backendClient,
+		buildSessionIdSafe,
+		analysisState.activeChatSessionId,
 		resetLoadingState,
 	]);
 

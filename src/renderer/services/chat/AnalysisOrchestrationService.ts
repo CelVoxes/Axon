@@ -145,12 +145,24 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 
 	async createAnalysisPlan(
 		query: string,
-		datasets: Dataset[] = []
+		datasets: Dataset[] = [],
+		preAnalysis?: {
+			intent?: string;
+			entities?: string[];
+			data_types?: string[];
+			analysis_type?: string | string[];
+			complexity?: string;
+			reasoning_summary?: string;
+		}
 	): Promise<AnalysisPlan> {
 		this.updateStatus("Understanding your question...");
 
 		// Step 1: Analyze the user question
-		const understanding = await this.analyzeUserQuestion(query, datasets);
+		const understanding = await this.analyzeUserQuestion(
+			query,
+			datasets,
+			preAnalysis
+		);
 
 		// Step 2: Find required data
 		this.updateStatus("Identifying required data...");
@@ -179,12 +191,24 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 	async createAnalysisPlanWithData(
 		query: string,
 		datasets: Dataset[],
-		currentWorkspace: string
+		currentWorkspace: string,
+		preAnalysis?: {
+			intent?: string;
+			entities?: string[];
+			data_types?: string[];
+			analysis_type?: string | string[];
+			complexity?: string;
+			reasoning_summary?: string;
+		}
 	): Promise<AnalysisPlan> {
 		this.updateStatus("Understanding your question with provided data...");
 
 		// Step 1: Analyze the user question with existing data context
-		const understanding = await this.analyzeUserQuestion(query, datasets);
+		const understanding = await this.analyzeUserQuestion(
+			query,
+			datasets,
+			preAnalysis
+		);
 
 		// Step 2: Create analysis-specific workspace
 		this.updateStatus("Setting up analysis workspace...");
@@ -229,8 +253,49 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 
 	async analyzeUserQuestion(
 		query: string,
-		datasets: Dataset[] = []
+		datasets: Dataset[] = [],
+		preAnalysis?: {
+			intent?: string;
+			entities?: string[];
+			data_types?: string[];
+			analysis_type?: string | string[];
+			complexity?: string;
+			reasoning_summary?: string;
+		}
 	): Promise<AnalysisUnderstanding> {
+		if (preAnalysis && typeof preAnalysis === "object") {
+			const parsedSteps = this.normalizePlanSteps(preAnalysis.analysis_type);
+			const fallbackSteps = [
+				"Load and explore the data",
+				"Perform statistical analysis",
+				"Create visualizations",
+				"Interpret results",
+			];
+			const requiredSteps =
+				parsedSteps.length > 0 ? parsedSteps : fallbackSteps;
+			const dataTypes = Array.isArray(preAnalysis.data_types)
+				? preAnalysis.data_types.filter((d) => typeof d === "string" && d.trim())
+				: [];
+			const entities = Array.isArray(preAnalysis.entities)
+				? preAnalysis.entities.filter((e) => typeof e === "string" && e.trim())
+				: [];
+			const analysisTypeValue = Array.isArray(preAnalysis.analysis_type)
+				? preAnalysis.analysis_type[0]
+				: preAnalysis.analysis_type;
+
+			return {
+				userQuestion: query,
+				requiredSteps,
+				dataNeeded: dataTypes.length > 0 ? dataTypes : ["Dataset files", "Analysis tools"],
+				expectedOutputs: entities.length > 0 ? entities : ["Analysis results", "Visualizations"],
+				analysisType:
+					typeof analysisTypeValue === "string" && analysisTypeValue.trim()
+						? analysisTypeValue
+						: "exploratory",
+				datasets,
+			};
+		}
+
 		try {
 			const result = await this.backendClient.analyzeQuery(query);
 
@@ -241,7 +306,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				"Create visualizations",
 				"Interpret results",
 			];
-			const requiredSteps = parsedSteps.length > 0 ? parsedSteps : fallbackSteps;
+			const requiredSteps =
+				parsedSteps.length > 0 ? parsedSteps : fallbackSteps;
 
 			const analysisTypeValue = Array.isArray(result.analysis_type)
 				? result.analysis_type[0]
@@ -360,7 +426,8 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 					organism: d.organism,
 					dataType: d.dataType,
 				})),
-				contextInfo: currentContext,
+				// Don't send massive context - let Responses API handle memory
+				contextInfo: "", // Empty to avoid context bloat
 			});
 
 			return {
@@ -468,14 +535,20 @@ IMPORTANT: Do not repeat imports, setup code, or functions that were already gen
 				if (snippets.length === 0) {
 					const cleaned = this.cleanPlanStep(value);
 					if (cleaned) {
-						const truncated = cleaned.length > 600 ? `${cleaned.slice(0, 600).trim()}…` : cleaned;
+						const truncated =
+							cleaned.length > 600
+								? `${cleaned.slice(0, 600).trim()}…`
+								: cleaned;
 						collected.push(truncated);
 					}
 				} else {
 					snippets.forEach((snippet) => {
 						const cleaned = this.cleanPlanStep(snippet);
 						if (cleaned) {
-							const truncated = cleaned.length > 600 ? `${cleaned.slice(0, 600).trim()}…` : cleaned;
+							const truncated =
+								cleaned.length > 600
+									? `${cleaned.slice(0, 600).trim()}…`
+									: cleaned;
 							collected.push(truncated);
 						}
 					});

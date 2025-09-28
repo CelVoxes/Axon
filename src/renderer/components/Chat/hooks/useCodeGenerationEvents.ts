@@ -6,7 +6,10 @@ import {
 	CodeGenerationChunkEvent,
 	CodeGenerationCompletedEvent,
 	CodeGenerationFailedEvent,
+	CodeValidationPrecheckEvent,
 	CodeValidationErrorEvent,
+	CodeValidationSuccessEvent,
+	CodeValidationTimings,
 } from "../../../services/types";
 
 // LCS-based diff that shows minimal additions/removals (bounded for performance)
@@ -34,22 +37,22 @@ function generateFastDiff(
 		// skip unchanged to keep chat concise
 	}
 
-	if (diffLines.length > 0) {
-		const diffBody = diffLines.join("\n");
-		if (diffBody.trim().length > 0) {
-			addMessage(
-				"Code validation made changes:",
-				false,
-				diffBody,
-				"diff",
-				"Validation changes"
-			);
+		if (diffLines.length > 0) {
+			const diffBody = diffLines.join("\n");
+			if (diffBody.trim().length > 0) {
+				addMessage(
+					"Lint auto-fix made changes:",
+					false,
+					diffBody,
+					"diff",
+					"Lint adjustments"
+				);
 		} else {
 			const lengthDiff = nextNormalized.length - prevNormalized.length;
 			const lineDiff =
 				nextNormalized.split("\n").length - prevNormalized.split("\n").length;
 			addMessage(
-				`Code validation adjusted formatting (${
+				`Lint auto-fix adjusted formatting (${
 					lengthDiff > 0 ? "+" : ""
 				}${lengthDiff} chars, ${lineDiff > 0 ? "+" : ""}${lineDiff} lines).`,
 				false
@@ -63,11 +66,69 @@ function generateFastDiff(
 	const lineDiff =
 		nextNormalized.split("\n").length - prevNormalized.split("\n").length;
 	addMessage(
-		`Code validation adjusted formatting (${
+		`Lint auto-fix adjusted formatting (${
 			lengthDiff > 0 ? "+" : ""
 		}${lengthDiff} chars, ${lineDiff > 0 ? "+" : ""}${lineDiff} lines).`,
 		false
 	);
+}
+
+function formatDuration(ms: number): string {
+	if (!Number.isFinite(ms) || ms <= 0) return "0ms";
+	if (ms < 1) return `${ms.toFixed(2)}ms`;
+	if (ms < 1000) return `${ms.toFixed(ms < 10 ? 1 : 0)}ms`;
+	const seconds = ms / 1000;
+	if (seconds < 10) return `${seconds.toFixed(2)}s`;
+	if (seconds < 60) return `${seconds.toFixed(1)}s`;
+	const minutes = seconds / 60;
+	return `${minutes.toFixed(minutes < 10 ? 1 : 0)}m`;
+}
+
+function formatValidationTimings(
+	timings?: CodeValidationTimings | null
+): string | null {
+	if (!timings) return null;
+	const MIN_SEGMENT_MS = 5;
+	const segments: string[] = [];
+
+	const lintBreakdown = () => {
+		const breakdown: string[] = [];
+		const lint = timings.lintBreakdown;
+		if (lint?.ruffMs && lint.ruffMs >= MIN_SEGMENT_MS) {
+			breakdown.push(`ruff ${formatDuration(lint.ruffMs)}`);
+		}
+		if (lint?.llmMs && lint.llmMs >= MIN_SEGMENT_MS) {
+			breakdown.push(`llm ${formatDuration(lint.llmMs)}`);
+		}
+		if (lint?.recheckMs && lint.recheckMs >= MIN_SEGMENT_MS) {
+			breakdown.push(`recheck ${formatDuration(lint.recheckMs)}`);
+		}
+		return breakdown;
+	};
+
+	if (timings.lintMs > 0) {
+		const base = `lint ${formatDuration(timings.lintMs)}`;
+		const breakdown = lintBreakdown();
+		segments.push(
+			breakdown.length ? `${base} (${breakdown.join(", ")})` : base
+		);
+	}
+
+	if (timings.enhancementMs >= MIN_SEGMENT_MS) {
+		segments.push(`enhance ${formatDuration(timings.enhancementMs)}`);
+	}
+
+	if (timings.executionMs >= MIN_SEGMENT_MS) {
+		segments.push(`exec ${formatDuration(timings.executionMs)}`);
+	}
+
+	if (timings.restMs >= MIN_SEGMENT_MS) {
+		segments.push(`rest ${formatDuration(timings.restMs)}`);
+	}
+
+	segments.push(`total ${formatDuration(timings.totalMs)}`);
+
+	return segments.join(" • ");
 }
 
 function myersOps(
@@ -183,6 +244,7 @@ export function useCodeGenerationEvents({
 				lastShownCode?: string;
 				reasoningMessageId?: string;
 				reasoningAccum?: string;
+				validationTimings?: CodeValidationTimings;
 			}
 		>
 	>(new Map());
@@ -195,11 +257,17 @@ export function useCodeGenerationEvents({
 		});
 	}, [analysisDispatch]);
 
-    const handleCodeGenerationStarted = useCallback(
-        (event: Event) => {
-            const customEvent = event as CustomEvent<CodeGenerationStartedEvent>;
-            const { stepId, stepDescription } = customEvent.detail;
-            const suppressCodePlaceholder = Boolean((customEvent.detail as any)?.suppressCodePlaceholder);
+	const handleCodeGenerationStarted = useCallback(
+		(event: Event) => {
+			const customEvent = event as CustomEvent<CodeGenerationStartedEvent>;
+			const { stepId, stepDescription } = customEvent.detail;
+			const suppressCodePlaceholder = Boolean((customEvent.detail as any)?.suppressCodePlaceholder);
+
+			try {
+				console.log(
+					`[Chat] ▶️ Starting code generation for: ${stepDescription || stepId}`
+				);
+			} catch (_) {}
 
 			// Clear any lingering validation banners when a new generation starts
 			setValidationErrors([]);
@@ -308,6 +376,14 @@ export function useCodeGenerationEvents({
 			const { stepId, stepDescription, finalCode, success } =
 				customEvent.detail;
 
+			try {
+				console.log(
+					`[Chat] ✅ Code generation finished for: ${
+						stepDescription || stepId
+					} (len=${(finalCode || "").length}, success=${success})`
+				);
+			} catch (_) {}
+
 			const stream = activeStreams.current.get(stepId);
 			if (stream) {
 				// Close reasoning stream message if present
@@ -372,6 +448,42 @@ export function useCodeGenerationEvents({
 		]
 	);
 
+	const handleValidationPrecheck = useCallback(
+		(event: Event) => {
+			const customEvent = event as CustomEvent<CodeValidationPrecheckEvent>;
+			const { errors = [], warnings = [], timings } = customEvent.detail;
+			const errorCount = Array.isArray(errors) ? errors.length : 0;
+			const warningList = Array.isArray(warnings) ? warnings : [];
+			const warningCount = warningList.length;
+			const timingsLabel = formatValidationTimings(timings);
+			const summaryLines: string[] = [];
+			summaryLines.push("```lint");
+			if (errorCount === 0 && warningCount === 0) {
+				summaryLines.push("PRECHECK: ✅ No lint issues detected");
+			} else {
+				const headerParts: string[] = [];
+				if (errorCount) headerParts.push(`${errorCount} error${errorCount === 1 ? "" : "s"}`);
+				if (warningCount) headerParts.push(`${warningCount} warning${warningCount === 1 ? "" : "s"}`);
+				summaryLines.push(`PRECHECK: ⚠️ ${headerParts.join(" and ")} found`);
+				if (errorCount) {
+					summaryLines.push("Errors:");
+					summaryLines.push(errors.map((e: string) => `- ${e}`).join("\n"));
+				}
+			}
+			if (warningCount) {
+				summaryLines.push("Warnings:");
+				summaryLines.push(warningList.map((w: string) => `- ${w}`).join("\n"));
+			}
+			if (timingsLabel) {
+				summaryLines.push(`Timing: ${timingsLabel}`);
+			}
+			summaryLines.push("(Auto-fix will run next)");
+			summaryLines.push("```");
+			addMessage(summaryLines.join("\n"), false);
+		},
+		[addMessage]
+	);
+
 	const handleCodeGenerationFailed = useCallback(
 		(event: Event) => {
 			const customEvent = event as CustomEvent<CodeGenerationFailedEvent>;
@@ -417,17 +529,31 @@ export function useCodeGenerationEvents({
 	const handleValidationError = useCallback(
 		(event: Event) => {
 			const customEvent = event as CustomEvent<CodeValidationErrorEvent>;
-			const { errors, warnings, originalCode, fixedCode, stepId } =
-				customEvent.detail as any;
+			const {
+				errors = [],
+				warnings = [],
+				originalCode,
+				fixedCode,
+				stepId,
+				timings,
+			} = customEvent.detail;
+
+			const baseErrors = Array.isArray(errors) ? errors : [];
+			const displayErrors = [...baseErrors];
+			const timingsLabel = formatValidationTimings(timings);
+			if (timingsLabel) {
+				displayErrors.push(`Timing — ${timingsLabel}`);
+			}
 
 			// Set validation errors for display (UI will show them)
 			setValidationSuccessMessage("");
-			setValidationErrors(errors);
+			setValidationErrors(displayErrors);
 
 			// Also post a chat message summarizing the errors with optional diff
 			try {
-				const errorCount = errors?.length || 0;
-				const warningCount = warnings?.length || 0;
+				const warningList = Array.isArray(warnings) ? warnings : [];
+				const errorCount = baseErrors.length;
+				const warningCount = warningList.length;
 				// Build collapsible lint block for chat using a custom "lint" fenced block
 				let summary = "";
 				summary += "```lint\n";
@@ -437,13 +563,16 @@ export function useCodeGenerationEvents({
 				summary += "\n";
 				if (errorCount) {
 					summary += "Errors:\n";
-					summary += errors.map((e: string) => `- ${e}`).join("\n");
+					summary += baseErrors.map((e: string) => `- ${e}`).join("\n");
 					summary += "\n";
 				}
 				if (warningCount) {
 					summary += "Warnings:\n";
-					summary += warnings.map((w: string) => `- ${w}`).join("\n");
+					summary += warningList.map((w: string) => `- ${w}`).join("\n");
 					summary += "\n";
+				}
+				if (timingsLabel) {
+					summary += `Timing: ${timingsLabel}\n`;
 				}
 				summary += "```";
 				// Show lint summary and optional LCS diff
@@ -468,14 +597,13 @@ export function useCodeGenerationEvents({
 
 				// Mark streaming message as completed now
 				try {
-					const stream = activeStreams.current.get(
-						customEvent.detail.stepId as any
-					);
-                    if (stream) {
-                        // Clear validation timeout if it exists
-                        if ((stream as any).validationTimeoutId) {
-                            clearTimeout((stream as any).validationTimeoutId);
-                        }
+					const stream = activeStreams.current.get(stepId as any);
+					if (stream) {
+						// Clear validation timeout if it exists
+						if ((stream as any).validationTimeoutId) {
+							clearTimeout((stream as any).validationTimeoutId);
+						}
+						(stream as any).validationTimings = timings;
 
 						analysisDispatch({
 							type: "UPDATE_MESSAGE",
@@ -508,15 +636,42 @@ export function useCodeGenerationEvents({
 
 	const handleValidationSuccess = useCallback(
 		(event: Event) => {
-			const customEvent = event as CustomEvent<{
-				stepId: string;
-				message?: string;
-			}>;
-			const { message, stepId, code } = (customEvent.detail as any) || {};
+			const customEvent = event as CustomEvent<CodeValidationSuccessEvent>;
+			const { stepId, message, code, timings } = customEvent.detail;
 			// Clear any previous errors/warnings when lints pass
 			setValidationErrors([]);
-			setValidationSuccessMessage(message || "No linter errors found");
+			const baseMessage = typeof message === "string" ? message.trim() : "";
+			const timingsLabel = formatValidationTimings(timings);
+			const finalMessage = (() => {
+				if (timingsLabel && baseMessage) return `${baseMessage} — ${timingsLabel}`;
+				if (timingsLabel) return `Timing — ${timingsLabel}`;
+				return baseMessage || "No linter errors found";
+			})();
+			setValidationSuccessMessage(finalMessage.trim());
 			// Skip adding lint success message to reduce chat clutter
+			const warningList = Array.isArray(customEvent.detail.warnings)
+				? customEvent.detail.warnings
+				: [];
+			try {
+				const summaryLines: string[] = [];
+				summaryLines.push("```lint");
+				if (warningList.length > 0) {
+					summaryLines.push(
+						`LINT_SUMMARY: ⚠️ No errors, ${warningList.length} warning(s)`
+					);
+					summaryLines.push("Warnings:");
+					summaryLines.push(
+						warningList.map((w: string) => `- ${w}`).join("\n")
+					);
+				} else {
+					summaryLines.push("LINT_SUMMARY: ✅ No errors or warnings");
+				}
+				if (timingsLabel) {
+					summaryLines.push(`Timing: ${timingsLabel}`);
+				}
+				summaryLines.push("```");
+				addMessage(summaryLines.join("\n"), false);
+			} catch (_) {}
 			// Do not attach validated code to chat (to reduce clutter)
 
 			// Mark streaming message as completed now
@@ -527,6 +682,7 @@ export function useCodeGenerationEvents({
 					if ((stream as any).validationTimeoutId) {
 						clearTimeout((stream as any).validationTimeoutId);
 					}
+					(stream as any).validationTimings = timings;
 
 					// If validated code is provided and differs, show a fast summary
 					if (
@@ -701,6 +857,9 @@ export function useCodeGenerationEvents({
 			handleCodeGenerationFailed: (event: Event) => {
 				if (isMounted) handleCodeGenerationFailed(event);
 			},
+			handleValidationPrecheck: (event: Event) => {
+				if (isMounted) handleValidationPrecheck(event);
+			},
 			handleValidationError: (event: Event) => {
 				if (isMounted) handleValidationError(event);
 			},
@@ -733,6 +892,10 @@ export function useCodeGenerationEvents({
 		EventManager.addEventListener(
 			"code-generation-failed",
 			wrappedHandlers.handleCodeGenerationFailed
+		);
+		EventManager.addEventListener(
+			"code-validation-precheck",
+			wrappedHandlers.handleValidationPrecheck
 		);
 		EventManager.addEventListener(
 			"code-validation-error",
@@ -770,6 +933,10 @@ export function useCodeGenerationEvents({
 				wrappedHandlers.handleCodeGenerationFailed
 			);
 			EventManager.removeEventListener(
+				"code-validation-precheck",
+				wrappedHandlers.handleValidationPrecheck
+			);
+			EventManager.removeEventListener(
 				"code-validation-error",
 				wrappedHandlers.handleValidationError
 			);
@@ -783,6 +950,7 @@ export function useCodeGenerationEvents({
 		handleCodeGenerationChunk,
 		handleCodeGenerationCompleted,
 		handleCodeGenerationFailed,
+		handleValidationPrecheck,
 		handleValidationError,
 		handleValidationSuccess,
 	]);

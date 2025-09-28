@@ -1,17 +1,18 @@
 """Simplified CellxCensus single-cell data search system."""
 
 import asyncio
-import numpy as np
 import json
-from typing import List, Dict, Any, Optional, Union, Sequence, Callable, Awaitable, cast
-from sentence_transformers import SentenceTransformer
 import time
+import textwrap
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
+
 import pandas as pd
 
 try:
     from .config import SearchConfig
 except ImportError:
     from config import SearchConfig
+from .llm_similarity import score_items_with_llm
 
 try:
     import cellxgene_census
@@ -24,14 +25,11 @@ except ImportError:
 
 class CellxCensusSearch:
     """Simplified system for finding single-cell datasets using CellxCensus API with LLM-guided search."""
-    
-    def __init__(self, embedding_model: str = "all-MiniLM-L6-v2"):
+
+    def __init__(self):
         if not CELLXCENSUS_AVAILABLE:
             raise ImportError("cellxgene_census is required. Install with: pip install cellxgene-census")
-        
-        self.model: Optional[SentenceTransformer] = None
-        self.model_name = embedding_model
-        self._lock = asyncio.Lock()
+
         self.census: Any = None
         self.progress_callback: Optional[Callable[[Dict[str, Any]], Union[None, Awaitable[None]]]] = None
         # In-memory caches
@@ -82,20 +80,6 @@ class CellxCensusSearch:
                         raise e
                     continue
     
-    async def _ensure_model_loaded(self):
-        """Ensure the embedding model is loaded."""
-        if self.model is None:
-            async with self._lock:
-                if self.model is None:
-                    loop = asyncio.get_event_loop()
-                    loaded_model = await loop.run_in_executor(
-                        None, 
-                        SentenceTransformer, 
-                        self.model_name
-                    )
-                    self.model = cast(SentenceTransformer, loaded_model)
-    
-    
     async def search_datasets(
         self, 
         query: str, 
@@ -137,7 +121,6 @@ class CellxCensusSearch:
         
         try:
             await self._ensure_census_open()
-            await self._ensure_model_loaded()
             
             await self._send_progress_update({
                 'step': 'census_ready',
@@ -153,7 +136,7 @@ class CellxCensusSearch:
                 await self._send_progress_update({
                     'step': 'similarity',
                     'progress': 80,
-                    'message': 'Calculating semantic similarity...',
+                    'message': 'Scoring datasets with LLM...',
                     'datasetsFound': len(datasets)
                 })
                 
@@ -350,87 +333,62 @@ class CellxCensusSearch:
         else:
             # Default for CellxCensus data
             return "scRNA-seq"
-    
-   
+
+
     async def _calculate_similarity_scores(
-        self, 
-        query: str, 
+        self,
+        query: str,
         datasets: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Calculate semantic similarity scores by comparing merged dataset_title and collection_name."""
+        """Calculate semantic similarity scores using the shared LLM service."""
+
         try:
-            await self._ensure_model_loaded()
-            
-            # Create simple merged text for each dataset
-            dataset_texts = []
-            for dataset in datasets:
-                # Merge dataset_title and collection_name
-                merged_text = f"{dataset.get('dataset_title', '')} {dataset.get('collection_name', '')}".strip()
-                dataset_texts.append(merged_text)
-            
-            # Calculate embeddings
-            loop = asyncio.get_event_loop()
-            model = cast(SentenceTransformer, self.model)
-            
-            query_embedding = await loop.run_in_executor(
-                None, lambda: model.encode([query], convert_to_numpy=True)
-            )
-            dataset_embeddings = await loop.run_in_executor(
-                None, lambda: model.encode(dataset_texts, convert_to_numpy=True)
-            )
-            
-            # Calculate cosine similarities and add exact match bonus
-            query_vec = query_embedding[0]
+            dataset_texts: List[str] = [self._summarize_dataset(d) for d in datasets]
+            indexed_summaries = list(enumerate(dataset_texts))
+
+            llm_scores = await score_items_with_llm(query, indexed_summaries, batch_size=10)
             query_lower = query.lower()
-            
-            for i, dataset in enumerate(datasets):
-                dataset_vec = dataset_embeddings[i]
-                semantic_similarity = float(np.dot(query_vec, dataset_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(dataset_vec)))
-                
-                # Add exact and partial match bonus
-                dataset_text = dataset_texts[i].lower()
+
+            for idx, dataset in enumerate(datasets):
+                semantic_similarity = llm_scores.get(idx, 0.35)
+                semantic_similarity = max(0.0, min(1.0, semantic_similarity))
+
+                dataset_text = dataset_texts[idx].lower()
                 exact_match_bonus = 0.0
-                
-                # Check for exact phrase match
-                if query_lower in dataset_text:
+
+                if query_lower and query_lower in dataset_text:
                     exact_match_bonus += 0.3
-                
-                # Check for partial/fuzzy matches
-                query_words = query_lower.split()
+
+                query_words = [w for w in query_lower.split() if w]
                 for query_word in query_words:
-                    # Exact word match
                     if query_word in dataset_text:
                         exact_match_bonus += 0.15
-                    else:
-                        # Partial word matching (substring)
-                        for dataset_word in dataset_text.split():
-                            if len(query_word) >= 3:  # Only for words 3+ chars
-                                # Check if query word is contained in dataset word
-                                if query_word in dataset_word:
-                                    exact_match_bonus += 0.08
-                                    break
-                                # Check if dataset word is contained in query word
-                                elif dataset_word in query_word and len(dataset_word) >= 3:
-                                    exact_match_bonus += 0.08
-                                    break
-                
-                # Bonus for datasets containing acronyms or abbreviations
+                        continue
+                    for dataset_word in dataset_text.split():
+                        if len(query_word) < 3:
+                            continue
+                        if query_word in dataset_word:
+                            exact_match_bonus += 0.08
+                            break
+                        if dataset_word in query_word and len(dataset_word) >= 3:
+                            exact_match_bonus += 0.08
+                            break
+
                 query_upper = query.upper()
-                if query_upper in dataset_text.upper():
-                    exact_match_bonus += 0.25
-                
-                # Combine semantic similarity with exact match bonus
-                final_similarity = min(1.0, semantic_similarity + exact_match_bonus)
+                if query_upper and query_upper in dataset_text.upper():
+                    exact_match_bonus += 0.2
+
+                final_similarity = min(1.0, max(0.0, semantic_similarity + exact_match_bonus))
                 dataset['similarity_score'] = final_similarity
-            
+
             return datasets
-            
+
         except Exception as e:
             print(f"❌ Error calculating similarity: {e}")
             for dataset in datasets:
                 dataset['similarity_score'] = 0.0
             return datasets
-    
+
     async def close_census(self):
         """Close the census connection."""
         if self.census:
@@ -439,6 +397,37 @@ class CellxCensusSearch:
                 self.census = None
             except Exception as e:
                 print(f"Warning: Error closing census: {e}")
+
+    def _summarize_dataset(self, dataset: Dict[str, Any]) -> str:
+        """Build a concise textual summary for LLM scoring."""
+        parts: List[str] = []
+        title = dataset.get('dataset_title') or dataset.get('title') or dataset.get('collection_name')
+        if title:
+            parts.append(f"Title: {title}")
+        disease = dataset.get('disease') or dataset.get('disease_name')
+        if disease:
+            if isinstance(disease, (list, tuple)):
+                disease_str = ", ".join(str(d) for d in disease if d)
+            else:
+                disease_str = str(disease)
+            if disease_str:
+                parts.append(f"Disease: {disease_str}")
+        organism = dataset.get('organism') or dataset.get('donor_species')
+        if organism:
+            parts.append(f"Organism: {organism}")
+        technology = dataset.get('technology') or dataset.get('technology_name')
+        if technology:
+            parts.append(f"Technology: {technology}")
+        summary = (
+            dataset.get('description')
+            or dataset.get('collection_description')
+            or dataset.get('summary')
+            or dataset.get('dataset_description')
+        )
+        if summary:
+            parts.append(f"Summary: {summary}")
+        text = " | ".join(parts) if parts else "No description available."
+        return textwrap.shorten(" ".join(text.split()), width=500, placeholder="…")
 
 
 class SimpleCellxCensusClient:

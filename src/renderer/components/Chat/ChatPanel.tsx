@@ -157,12 +157,11 @@ const ReasoningBlock: React.FC<{ message: Message }> = ({ message }) => {
 const ChecklistPanel: React.FC<{
 	summary: ChecklistSummary | null;
 	autoExpandToken: number;
-}> = React.memo(({ summary, autoExpandToken }) => {
+	isProcessing: boolean;
+}> = React.memo(({ summary, autoExpandToken, isProcessing }) => {
 	const [expanded, setExpanded] = useState(false);
 	const isComplete =
-		summary !== null &&
-			summary.total > 0 &&
-			summary.completed >= summary.total;
+		summary !== null && summary.total > 0 && summary.completed >= summary.total;
 
 	useEffect(() => {
 		if (!summary) {
@@ -174,10 +173,11 @@ const ChecklistPanel: React.FC<{
 	}, [summary, isComplete]);
 
 	useEffect(() => {
-		if (summary && autoExpandToken > 0 && !isComplete) {
+		// Don't auto-expand during code generation (isProcessing = true)
+		if (summary && autoExpandToken > 0 && !isComplete && !isProcessing) {
 			setExpanded(true);
 		}
-	}, [autoExpandToken, summary, isComplete]);
+	}, [autoExpandToken, summary, isComplete, isProcessing]);
 
 	if (!summary) return null;
 
@@ -303,6 +303,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 
 	// rAF-batched streaming updates for smoother UI with throttling and proper cleanup
 	const checklistHashRef = useRef<string>("");
+	const checklistUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+		null
+	);
 
 	const rafStateRef = useRef<{
 		pending: Record<string, string>;
@@ -426,7 +429,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						normalized.length - currentMessage.code.length
 					);
 					if (lengthDiff < 50 && content.length > 100) {
-					return;
+						return;
 					}
 				}
 			}
@@ -447,20 +450,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [activeLocalIndex, setActiveLocalIndex] = useState<number>(-1);
 	const [activeWorkspaceIndex, setActiveWorkspaceIndex] = useState<number>(-1);
 	const [activeCellIndex, setActiveCellIndex] = useState<number>(-1);
-const checklistHydratedRef = useRef(false);
-const checklistSummaryRef = useRef<ChecklistSummary | null>(null);
+	const checklistHydratedRef = useRef(false);
+	const checklistSummaryRef = useRef<ChecklistSummary | null>(null);
 
-const resetChecklistState = useCallback(() => {
-	checklistHydratedRef.current = false;
-	checklistSummaryRef.current = null;
-}, []);
+	const resetChecklistState = useCallback(() => {
+		checklistHydratedRef.current = false;
+		checklistSummaryRef.current = null;
+	}, []);
 
-const [checklistAutoExpandToken, setChecklistAutoExpandToken] = useState(0);
-const { addMessage, scrollToBottomImmediate } = useChatInteractions({
+	const [checklistAutoExpandToken, setChecklistAutoExpandToken] = useState(0);
+	const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 		analysisDispatch,
 		chatContainerRef,
 		chatAutoScrollRef,
-	recentMessages,
+		recentMessages,
 		setRecentMessages,
 		setCurrentSuggestions,
 	});
@@ -493,51 +496,53 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 			const safeLines = detailLines.length
 				? detailLines
 				: ["• Step details unavailable"];
-		let completedDone = 0;
-		let total = safeLines.length;
-		let skipped = 0;
-		let next: string | null = null;
+			let completedDone = 0;
+			let total = safeLines.length;
+			let skipped = 0;
+			let next: string | null = null;
 
-		const fractionMatch = summaryLabel.match(/(\d+)\s*\/\s*(\d+)/);
-		if (fractionMatch) {
-			completedDone = parseInt(fractionMatch[1], 10);
-			total = parseInt(fractionMatch[2], 10);
-		}
-		const skippedMatch = summaryLabel.match(/(\d+)\s+skipped/i);
-		if (skippedMatch) {
-			skipped = parseInt(skippedMatch[1], 10);
-		} else {
-			skipped = safeLines.filter((line) => line.startsWith("↷")).length;
-		}
-		const completedLinesCount = safeLines.filter((line) => line.startsWith("✓")).length;
-		const doneFromLines = completedLinesCount + skipped;
-		if (!Number.isFinite(completedDone) || completedDone <= 0) {
-			completedDone = doneFromLines;
-		}
-		const nextMatch = summaryLabel.match(/Next:\s*(.+)$/i);
-		if (nextMatch) {
-			next = nextMatch[1].trim();
-		}
+			const fractionMatch = summaryLabel.match(/(\d+)\s*\/\s*(\d+)/);
+			if (fractionMatch) {
+				completedDone = parseInt(fractionMatch[1], 10);
+				total = parseInt(fractionMatch[2], 10);
+			}
+			const skippedMatch = summaryLabel.match(/(\d+)\s+skipped/i);
+			if (skippedMatch) {
+				skipped = parseInt(skippedMatch[1], 10);
+			} else {
+				skipped = safeLines.filter((line) => line.startsWith("↷")).length;
+			}
+			const completedLinesCount = safeLines.filter((line) =>
+				line.startsWith("✓")
+			).length;
+			const doneFromLines = completedLinesCount + skipped;
+			if (!Number.isFinite(completedDone) || completedDone <= 0) {
+				completedDone = doneFromLines;
+			}
+			const nextMatch = summaryLabel.match(/Next:\s*(.+)$/i);
+			if (nextMatch) {
+				next = nextMatch[1].trim();
+			}
 
-		if (!Number.isFinite(total) || total <= 0) {
-			total = detailLines.length;
-		}
-		if (!Number.isFinite(completedDone) || completedDone < 0) {
-			completedDone = 0;
-		}
-		if (!Number.isFinite(skipped) || skipped < 0) {
-			skipped = 0;
-		}
-		const doneCount = Math.min(completedDone, total);
+			if (!Number.isFinite(total) || total <= 0) {
+				total = detailLines.length;
+			}
+			if (!Number.isFinite(completedDone) || completedDone < 0) {
+				completedDone = 0;
+			}
+			if (!Number.isFinite(skipped) || skipped < 0) {
+				skipped = 0;
+			}
+			const doneCount = Math.min(completedDone, total);
 
-		return {
-			summary: summaryLabel,
-			lines: safeLines,
-			completed: doneCount,
-			total,
-			skipped,
-			next,
-		};
+			return {
+				summary: summaryLabel,
+				lines: safeLines,
+				completed: doneCount,
+				total,
+				skipped,
+				next,
+			};
 		},
 		[]
 	);
@@ -644,6 +649,22 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 	const [backendClient, setBackendClient] = useState<BackendClient | null>(
 		null
 	);
+	const fallbackSessionInstanceRef = useRef(
+		`offline_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+	);
+	const buildSessionIdSafe = useCallback(
+		(...parts: Array<string | null | undefined>) => {
+			if (backendClient) {
+				return backendClient.buildSessionId(...parts);
+			}
+			const suffixParts = parts
+				.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+				.map((p) => p.trim().replace(/[:\s]+/g, "_"));
+			const suffix = suffixParts.length ? suffixParts.join(":") : "default";
+			return `session:${fallbackSessionInstanceRef.current}:${suffix}`;
+		},
+		[backendClient]
+	);
 	useEffect(() => {
 		// Get the correct backend URL from main process
 		const initBackendClient = async () => {
@@ -724,9 +745,9 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 			const msg = messages[idx];
 			if (!msg || msg.isUser) continue;
 			const content = typeof msg.content === "string" ? msg.content : "";
-		const parsed = parseChecklistMessage(content);
-		if (!parsed) continue;
-		setChecklistSummary(parsed);
+			const parsed = parseChecklistMessage(content);
+			if (!parsed) continue;
+			setChecklistSummary(parsed);
 			checklistHydratedRef.current = true;
 			setChecklistAutoExpandToken((token) => token + 1);
 			break;
@@ -743,6 +764,103 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 	// Code generation event handling moved to useCodeGenerationEvents hook
 
 	useEffect(() => {
+		const processChecklistUpdate = (detail: {
+			steps?: Array<{ description: string; status: string; note?: string }>;
+			completed?: number;
+			total?: number;
+			skipped?: number;
+		}) => {
+			const steps = Array.isArray(detail.steps) ? detail.steps : [];
+			if (steps.length === 0) {
+				checklistHashRef.current = "";
+				const prev = checklistSummaryRef.current;
+				const prevLines = prev?.lines?.length
+					? prev.lines
+					: ["✓ All tasks cleared"];
+				const fallbackSkipped =
+					prev?.skipped ??
+					prevLines.filter((line) => line.startsWith("↷")).length;
+				const baseCompletedLines = prevLines.filter((line) =>
+					line.startsWith("✓")
+				).length;
+				const fallbackTotal = prev?.total ?? prevLines.length;
+				const done = Math.min(
+					prev?.completed ?? baseCompletedLines + fallbackSkipped,
+					fallbackTotal
+				);
+				const summaryParts: string[] = [`${done}/${fallbackTotal} done`];
+				if (fallbackSkipped) {
+					summaryParts.push(`${fallbackSkipped} skipped`);
+				}
+				summaryParts.push("Complete");
+				const finalSummary = `Checklist • ${summaryParts.join(" • ")}`;
+				const finalState: ChecklistSummary = {
+					summary: finalSummary,
+					lines: prevLines,
+					completed: done,
+					total: fallbackTotal,
+					skipped: fallbackSkipped,
+					next: null,
+				};
+				checklistHydratedRef.current = true;
+				setChecklistSummary(finalState);
+				return;
+			}
+			const hash = JSON.stringify(steps);
+			if (hash === checklistHashRef.current) return;
+			checklistHashRef.current = hash;
+
+			const formattedLines = steps.map((step, idx) => {
+				const marker =
+					step.status === "completed"
+						? "✓"
+						: step.status === "skipped"
+						? "↷"
+						: "•";
+				const note = step.note?.trim() ? ` — ${step.note.trim()}` : "";
+				return `${marker} ${idx + 1}. ${step.description}${note}`;
+			});
+
+			const completedCountRaw =
+				typeof detail.completed === "number"
+					? detail.completed
+					: steps.filter((s) => s.status === "completed").length;
+			const skippedCount =
+				typeof detail.skipped === "number"
+					? detail.skipped
+					: steps.filter((s) => s.status === "skipped").length;
+			const totalCount =
+				typeof detail.total === "number" ? detail.total : steps.length;
+			const nextPending = steps.find((s) => s.status === "pending") || null;
+			const doneCount = Math.min(completedCountRaw + skippedCount, totalCount);
+			const summaryParts: string[] = [`${doneCount}/${totalCount} done`];
+			if (skippedCount) {
+				summaryParts.push(`${skippedCount} skipped`);
+			}
+			if (nextPending) {
+				summaryParts.push(`Next: ${nextPending.description}`);
+			} else if (doneCount === totalCount && totalCount > 0) {
+				summaryParts.push("Complete");
+			}
+			const summaryLabel = `Checklist • ${summaryParts.join(" • ")}`;
+			setChecklistSummary({
+				summary: summaryLabel,
+				lines: formattedLines,
+				completed: doneCount,
+				total: totalCount,
+				skipped: skippedCount,
+				next: nextPending ? nextPending.description : null,
+			});
+			if (!checklistHydratedRef.current) {
+				checklistHydratedRef.current = true;
+				setChecklistAutoExpandToken((token) => token + 1);
+			}
+
+			const messageStatus: "pending" | "completed" = nextPending
+				? "pending"
+				: "completed";
+		};
+
 		const cleanup = EventManager.createManagedListener(
 			"analysis-checklist-updated",
 			(event) => {
@@ -752,98 +870,25 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 					total?: number;
 					skipped?: number;
 				};
-				const steps = Array.isArray(detail.steps) ? detail.steps : [];
-				if (steps.length === 0) {
-					checklistHashRef.current = "";
-					const prev = checklistSummaryRef.current;
-					const prevLines = prev?.lines?.length
-						? prev.lines
-						: ["✓ All tasks cleared"];
-					const fallbackSkipped =
-						prev?.skipped ?? prevLines.filter((line) => line.startsWith("↷")).length;
-					const baseCompletedLines = prevLines.filter((line) => line.startsWith("✓")).length;
-					const fallbackTotal = prev?.total ?? prevLines.length;
-					const done = Math.min(
-						(prev?.completed ?? baseCompletedLines + fallbackSkipped),
-						fallbackTotal
-					);
-					const summaryParts: string[] = [`${done}/${fallbackTotal} done`];
-					if (fallbackSkipped) {
-						summaryParts.push(`${fallbackSkipped} skipped`);
-					}
-					summaryParts.push("Complete");
-					const finalSummary = `Checklist • ${summaryParts.join(" • ")}`;
-					const finalState: ChecklistSummary = {
-						summary: finalSummary,
-						lines: prevLines,
-						completed: done,
-						total: fallbackTotal,
-						skipped: fallbackSkipped,
-						next: null,
-					};
-					checklistHydratedRef.current = true;
-					setChecklistSummary(finalState);
-					return;
+
+				if (checklistUpdateTimerRef.current) {
+					clearTimeout(checklistUpdateTimerRef.current);
 				}
-				const hash = JSON.stringify(steps);
-				if (hash === checklistHashRef.current) return;
-				checklistHashRef.current = hash;
 
-				const formattedLines = steps.map((step, idx) => {
-					const marker =
-						step.status === "completed"
-							? "✓"
-							: step.status === "skipped"
-							? "↷"
-							: "•";
-					const note = step.note?.trim() ? ` — ${step.note.trim()}` : "";
-					return `${marker} ${idx + 1}. ${step.description}${note}`;
-				});
-
-		const completedCountRaw =
-			typeof detail.completed === "number"
-				? detail.completed
-				: steps.filter((s) => s.status === "completed").length;
-		const skippedCount =
-			typeof detail.skipped === "number"
-				? detail.skipped
-				: steps.filter((s) => s.status === "skipped").length;
-		const totalCount =
-			typeof detail.total === "number" ? detail.total : steps.length;
-		const nextPending = steps.find((s) => s.status === "pending") || null;
-		const doneCount = Math.min(
-			completedCountRaw + skippedCount,
-			totalCount
+				checklistUpdateTimerRef.current = setTimeout(() => {
+					checklistUpdateTimerRef.current = null;
+					processChecklistUpdate(detail);
+				}, 120);
+			}
 		);
-		const summaryParts: string[] = [`${doneCount}/${totalCount} done`];
-				if (skippedCount) {
-					summaryParts.push(`${skippedCount} skipped`);
-				}
-		if (nextPending) {
-			summaryParts.push(`Next: ${nextPending.description}`);
-		} else if (doneCount === totalCount && totalCount > 0) {
-			summaryParts.push("Complete");
-		}
-		const summaryLabel = `Checklist • ${summaryParts.join(" • ")}`;
-		setChecklistSummary({
-			summary: summaryLabel,
-			lines: formattedLines,
-			completed: doneCount,
-			total: totalCount,
-			skipped: skippedCount,
-			next: nextPending ? nextPending.description : null,
-		});
-				if (!checklistHydratedRef.current) {
-					checklistHydratedRef.current = true;
-					setChecklistAutoExpandToken((token) => token + 1);
-				}
 
-				const messageStatus: "pending" | "completed" = nextPending
-					? "pending"
-					: "completed";
-				}
-		);
-		return cleanup;
+		return () => {
+			cleanup();
+			if (checklistUpdateTimerRef.current) {
+				clearTimeout(checklistUpdateTimerRef.current);
+				checklistUpdateTimerRef.current = null;
+			}
+		};
 	}, [setChecklistSummary]);
 
 	// Auto-scroll to bottom when new messages are added (only if near bottom)
@@ -921,7 +966,9 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 					workspaceState.currentWorkspace ||
 					"";
 				const chatId = (analysisState as any).activeChatSessionId || "global";
-				if (wsDir) sessionId = `session:${wsDir}:${chatId}`;
+				if (wsDir && backendClient) {
+					sessionId = backendClient.buildSessionId(wsDir, chatId);
+				}
 			} catch (_) {}
 
 			await notebookEditingService.performNotebookEdit(
@@ -962,7 +1009,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 			let isMounted = true;
 			try {
 				if (!validateBackendClient()) {
-				return;
+					return;
 				}
 				// Build lightweight context from recent messages
 				const recent = (analysisState.messages || []).slice(-10);
@@ -1018,7 +1065,10 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 				let accumulated = "";
 				const chatId = (analysisState as any).activeChatSessionId || "global";
 				const wsDir = workspaceState.currentWorkspace || "";
-				const sessionId = `session:${wsDir}:${chatId}`;
+				const sessionId = backendClient!.buildSessionId(
+					wsDir || undefined,
+					chatId
+				);
 				await backendClient!.askQuestionStream(
 					{ question: userMessage, context, sessionId },
 					(evt: any) => {
@@ -1026,7 +1076,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 						try {
 							if (evt?.type === "status") {
 								setProgressMessage("Thinking...");
-							return;
+								return;
 							}
 							if (evt?.type === "summary" && typeof evt.text === "string") {
 								// Append a compact reasoning summary message
@@ -1043,7 +1093,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 										status: "completed" as any,
 									},
 								});
-							return;
+								return;
 							}
 							if (evt?.type === "answer" && typeof evt.delta === "string") {
 								if (accumulated.length === 0) {
@@ -1061,7 +1111,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 										},
 									},
 								});
-							return;
+								return;
 							}
 
 							if (evt?.type === "done") {
@@ -1298,7 +1348,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 						"Backend not ready to edit code. Please try again in a moment.",
 						false
 					);
-				return;
+					return;
 				}
 
 				const lang = (cellMentionContext.language || "python").toLowerCase();
@@ -1369,7 +1419,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 						"Backend not ready to edit code. Please try again in a moment.",
 						false
 					);
-				return;
+					return;
 				}
 
 				// Build LLM prompt to transform only the selected snippet
@@ -1458,9 +1508,10 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 				}) ||
 				workspaceState.currentWorkspace ||
 				"";
-			const intentSessionId = `session:${wsDirForIntent}:${
+			const intentSessionId = backendClient!.buildSessionId(
+				wsDirForIntent || undefined,
 				(analysisState as any).activeChatSessionId || "global"
-			}`;
+			);
 			const intentResult = await backendClient!.classifyIntent(
 				userMessage,
 				intentSessionId
@@ -1499,40 +1550,94 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 				analysis_type?: string | string[];
 				complexity?: string;
 			} | null = null;
-			if (!addCellRequested) {
+			if (!addCellRequested && intentResult.intent !== "START_ANALYSIS") {
+				const analysisReasoningStepId = `analysis-insight-${Date.now()}`;
+				const insightReasoning: string[] = [];
+				let streamedAnalysis: any = null;
+				let streamedSummary: string | null = null;
 				try {
-					analysisContext = await backendClient!.analyzeQuery(
-						userMessage as any
+					streamedAnalysis = await backendClient!.analyzeQueryStream(
+						userMessage as any,
+						{
+							onStatus: (status) => {
+								if (status === "thinking") {
+									setProgressMessage("Analyzing question...");
+								}
+							},
+							onReasoning: (delta) => {
+								const text = String(delta || "")
+									.replace(/\r/g, "")
+									.trim();
+								if (!text) return;
+								insightReasoning.push(text);
+								EventManager.dispatchEvent("code-generation-reasoning", {
+									stepId: analysisReasoningStepId,
+									delta: text,
+								});
+							},
+							onAnalysis: (analysis) => {
+								streamedAnalysis = analysis;
+							},
+						}
 					);
-					if (analysisContext) {
-						const parts: string[] = [];
-						if (analysisContext.intent)
-							parts.push(`\nIntent: ${analysisContext.intent}`);
-						if (
-							Array.isArray(analysisContext.entities) &&
-							analysisContext.entities.length
-						)
-							parts.push(`\nEntities: ${analysisContext.entities.join(", ")}`);
-						if (
-							Array.isArray(analysisContext.data_types) &&
-							analysisContext.data_types.length
-						)
-							parts.push(
-								`\nData types: ${analysisContext.data_types.join(", ")}`
-							);
-						const analysisTypeDisplay = Array.isArray(
-							analysisContext.analysis_type
-						)
-							? analysisContext.analysis_type.join(" → ")
-							: analysisContext.analysis_type;
-						if (analysisTypeDisplay)
-							parts.push(`\nAnalysis: ${analysisTypeDisplay}`);
-						if (analysisContext.complexity)
-							parts.push(`\nComplexity: ${analysisContext.complexity}`);
-						if (parts.length)
-							addMessage(`**Analysis**\n${parts.join("\n")}`, false);
+					analysisContext = streamedAnalysis;
+					const summaryCandidate =
+						typeof streamedAnalysis?.reasoning_summary === "string" &&
+						streamedAnalysis.reasoning_summary.trim().length > 0
+							? streamedAnalysis.reasoning_summary.trim()
+							: insightReasoning.join("\n");
+					if (summaryCandidate) {
+						streamedSummary = summaryCandidate;
+						EventManager.dispatchEvent("code-generation-summary", {
+							stepId: analysisReasoningStepId,
+							summary: summaryCandidate,
+						});
 					}
-				} catch (_) {}
+				} catch (streamError) {
+					console.warn(
+						"ChatPanel: analyzeQueryStream failed, falling back:",
+						streamError
+					);
+					try {
+						analysisContext = await backendClient!.analyzeQuery(
+							userMessage as any
+						);
+					} catch (_) {
+						analysisContext = streamedAnalysis;
+					}
+				}
+
+				if (analysisContext) {
+					const parts: string[] = [];
+					if (analysisContext.intent)
+						parts.push(`\nIntent: ${analysisContext.intent}`);
+					if (
+						Array.isArray(analysisContext.entities) &&
+						analysisContext.entities.length
+					)
+						parts.push(`\nEntities: ${analysisContext.entities.join(", ")}`);
+					if (
+						Array.isArray(analysisContext.data_types) &&
+						analysisContext.data_types.length
+					)
+						parts.push(
+							`\nData types: ${analysisContext.data_types.join(", ")}`
+						);
+					const analysisTypeDisplay = Array.isArray(
+						analysisContext.analysis_type
+					)
+						? analysisContext.analysis_type.join(" → ")
+						: analysisContext.analysis_type;
+					if (analysisTypeDisplay)
+						parts.push(`\nAnalysis: ${analysisTypeDisplay}`);
+					if (analysisContext.complexity)
+						parts.push(`\nComplexity: ${analysisContext.complexity}`);
+					if (parts.length)
+						addMessage(`**Analysis**\n${parts.join("\n")}`, false);
+				}
+				if (streamedSummary) {
+					setProgressMessage("");
+				}
 			}
 
 			// Handle dataset search based on backend intent
@@ -1546,7 +1651,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 
 				// Check if backendClient is available
 				if (!validateBackendClient()) {
-				return;
+					return;
 				}
 
 				console.log("🔍 Starting search with query:", userMessage);
@@ -1610,7 +1715,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 								throw new Error("Backend not ready");
 							const chatId =
 								(analysisState as any).activeChatSessionId || "global";
-							const sessionId = `session:${wsDir}:${chatId}`;
+							const sessionId = backendClient.buildSessionId(wsDir, chatId);
 							const nbCodeService = new NotebookCodeGenerationService(
 								backendClient,
 								wsDir,
@@ -1667,7 +1772,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 						// Release chat UI after background operation completes
 						resetLoadingState();
 					});
-				return;
+					return;
 				} else {
 					console.log("❌ No notebook open but ADD_CELL intent detected");
 					// No active notebook but intent is ADD_CELL - inform user
@@ -1676,7 +1781,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 							"You can create a new notebook or open an existing one from the file explorer.",
 						false
 					);
-				return;
+					return;
 				}
 			}
 			// Handle START_ANALYSIS intent - start/trigger analysis pipeline on existing data (after ADD_CELL)
@@ -1701,7 +1806,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 						"To start analysis, please first search for and select datasets. Use a search query like 'find alzheimer data' to discover relevant datasets.",
 						false
 					);
-				return;
+					return;
 				}
 			}
 			// Handle ADD_CELL intent for active notebooks (prioritize over dataset-based analysis)
@@ -1762,7 +1867,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 								throw new Error("Backend not ready");
 							const chatId =
 								(analysisState as any).activeChatSessionId || "global";
-							const sessionId = `session:${wsDir}:${chatId}`;
+							const sessionId = backendClient.buildSessionId(wsDir, chatId);
 							const nbCodeService = new NotebookCodeGenerationService(
 								backendClient,
 								wsDir,
@@ -1819,7 +1924,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 						// Release chat UI after background operation completes
 						resetLoadingState();
 					});
-				return;
+					return;
 				} else {
 					console.log("❌ No notebook open but ADD_CELL intent detected");
 					// No active notebook but intent is ADD_CELL - inform user
@@ -1828,7 +1933,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 							"You can create a new notebook or open an existing one from the file explorer.",
 						false
 					);
-				return;
+					return;
 				}
 			}
 			// Check for previously selected datasets AFTER ADD_CELL handling to avoid misrouting add-cell requests
@@ -1857,7 +1962,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 				try {
 					// Validate backend before proceeding
 					if (!validateBackendClient()) {
-					return;
+						return;
 					}
 
 					// Import and use ChatToolAgent for autonomous tool usage
@@ -1882,9 +1987,10 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 						.join("\n\n");
 
 					const chatId = (analysisState as any).activeChatSessionId || "global";
-					const sessionId = `session:${
-						workspaceState.currentWorkspace || "global"
-					}:${chatId}`;
+					const sessionId = backendClient!.buildSessionId(
+						workspaceState.currentWorkspace || undefined,
+						chatId
+					);
 					const answer = await ChatToolAgent.askWithTools(
 						backendClient!,
 						userMessage,
@@ -2072,9 +2178,6 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 			}
 
 			try {
-				setIsLoading(true);
-				setProgressMessage("Starting analysis process...");
-
 				// Reset agent instance for new analysis
 				setAgentInstance(null);
 
@@ -2108,21 +2211,23 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 						"No workspace is currently open. Please open a workspace first.",
 						false
 					);
-				return;
+					return;
 				}
 				const workspaceDir = workspaceState.currentWorkspace;
+				const chatId = (analysisState as any).activeChatSessionId || "global";
+				const sessionId = backendClient!.buildSessionId(workspaceDir, chatId);
 
 				// Check if backendClient is available
 				if (!validateBackendClient()) {
-				return;
+					return;
 				}
 
 				// Reset checklist state for new analysis run
-					checklistHashRef.current = "";
-					resetChecklistState();
-					setChecklistSummary(null);
-				const placeholderSummary = "Checklist • Preparing steps...";
-				const placeholderLines = ["• Generating analysis plan..."];
+				checklistHashRef.current = "";
+				resetChecklistState();
+				setChecklistSummary(null);
+				let placeholderSummary = "Checklist • Preparing steps...";
+				let placeholderLines = ["• Generating analysis plan..."];
 				setChecklistSummary({
 					summary: placeholderSummary,
 					lines: placeholderLines,
@@ -2133,9 +2238,218 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 				});
 				setChecklistAutoExpandToken((token) => token + 1);
 
+				const datasetContextLines = datasets.map((d, idx) => {
+					const label = d.title || d.id || `Dataset ${idx + 1}`;
+					const origin = (d as any).source ? ` [${(d as any).source}]` : "";
+					const dataType = (d as any).dataType || (d as any).data_type;
+					const format = (d as any).fileFormat || (d as any).file_format;
+					const extras: string[] = [];
+					if (dataType) extras.push(String(dataType));
+					if (format) extras.push(String(format));
+					return `- ${label}${origin}${
+						extras.length ? ` (${extras.join(", ")})` : ""
+					}`;
+				});
+				const planGuidance: string[] = [];
+				datasets.forEach((d) => {
+					const dataType = ((d as any).dataType || (d as any).data_type || "")
+						.toString()
+						.toLowerCase();
+					if (dataType.includes("single_cell")) {
+						planGuidance.push(
+							"For single-cell RNA-seq, prefer Python with Scanpy workflows: load 10x/AnnData, perform QC (n_genes, percent_mito), normalize/log1p, identify highly variable genes, run PCA/UMAP/Leiden clustering, and report marker genes."
+						);
+					}
+					if (
+						dataType.includes("spectral_flow") ||
+						dataType.includes("flow_cyt")
+					) {
+						planGuidance.push(
+							"For flow cytometry datasets, recommend preprocessing (compensation/unmixing), transformation (arcsinh), dimensionality reduction (UMAP/t-SNE), clustering (FlowSOM/Phenograph), and marker-based annotation."
+						);
+					}
+					if (
+						dataType.includes("bulk_rna") ||
+						dataType.includes("expression")
+					) {
+						planGuidance.push(
+							"For bulk RNA-seq, outline QC, normalization (e.g., DESeq2/edgeR), differential expression, pathway enrichment, and key plots (MA, volcano, heatmap)."
+						);
+					}
+				});
+				const enrichedPrompt = [
+					analysisRequest.trim(),
+					"",
+					"DATASET CONTEXT:",
+					...datasetContextLines,
+					...(planGuidance.length
+						? [
+								"",
+								"PLANNING GUIDANCE (follow these domain best practices):",
+								...planGuidance,
+						  ]
+						: []),
+				]
+					.filter(Boolean)
+					.join("\n");
+
+				const streamedSteps: string[] = [];
+				const planReasoningLines: string[] = [];
+				let analysisContext: any = null;
+				let planStepDescriptions: string[] = [];
+				let finalPlan: any = null;
+				const planReasoningStepId = `analysis-plan-${Date.now()}`;
+
+				const updateChecklistFromSteps = () => {
+					if (streamedSteps.length === 0) return;
+					placeholderSummary = `Checklist • ${
+						streamedSteps.length
+					} planned step${
+						streamedSteps.length === 1 ? "" : "s"
+					} (awaiting execution)`;
+					placeholderLines = streamedSteps.map(
+						(step: string, idx: number) => `• ${idx + 1}. ${step}`
+					);
+					setChecklistSummary({
+						summary: placeholderSummary,
+						lines: placeholderLines,
+						completed: 0,
+						total: streamedSteps.length,
+						skipped: 0,
+						next: streamedSteps[0] || null,
+					});
+				};
+
+				try {
+					finalPlan = await backendClient!.generateRoadmap(
+						{
+							userQuestion: enrichedPrompt,
+							sessionId,
+							datasetIds: datasets.map((d) => d.id),
+							analysisType: "analysis",
+						},
+						{
+							onStatus: (status) => {
+								if (status === "thinking") {
+									setProgressMessage("Planning analysis steps...");
+								}
+							},
+							onReasoning: (delta) => {
+								const text = String(delta || "")
+									.replace(/\r/g, "")
+									.trim();
+								if (!text) return;
+								planReasoningLines.push(text);
+								EventManager.dispatchEvent("code-generation-reasoning", {
+									stepId: planReasoningStepId,
+									delta: text,
+								});
+							},
+							onPlanStep: (step, index) => {
+								const cleaned = String(step || "").trim();
+								if (!cleaned) return;
+								if (!streamedSteps.includes(cleaned)) {
+									streamedSteps.push(cleaned);
+									updateChecklistFromSteps();
+								}
+							},
+							onPlan: (plan) => {
+								analysisContext = plan?.analysis_metadata || null;
+								if (Array.isArray(plan?.next_steps)) {
+									planStepDescriptions = plan.next_steps
+										.map((step: any) => String(step || "").trim())
+										.filter((step: string) => step.length > 0);
+									if (
+										planStepDescriptions.length &&
+										streamedSteps.length === 0
+									) {
+										planStepDescriptions.forEach((s) => streamedSteps.push(s));
+										updateChecklistFromSteps();
+									}
+								}
+							},
+							onError: (message) => {
+								console.warn("generateRoadmap stream warning:", message);
+							},
+						}
+					);
+				} catch (planError) {
+					console.warn("ChatPanel: Plan streaming failed:", planError);
+					finalPlan = finalPlan || {
+						next_steps: streamedSteps,
+						reasoning_summary: planReasoningLines.join("\n"),
+					};
+				}
+
+				if (
+					!Array.isArray(planStepDescriptions) ||
+					planStepDescriptions.length === 0
+				) {
+					planStepDescriptions = (
+						Array.isArray(finalPlan?.next_steps)
+							? finalPlan.next_steps
+							: streamedSteps
+					)
+						.map((step: any) => String(step || "").trim())
+						.filter((step: string) => step.length > 0);
+					if (planStepDescriptions.length && streamedSteps.length === 0) {
+						planStepDescriptions.forEach((s) => streamedSteps.push(s));
+						updateChecklistFromSteps();
+					}
+				}
+
+				const finalReasoningSummary =
+					typeof finalPlan?.reasoning_summary === "string" &&
+					finalPlan.reasoning_summary.trim().length > 0
+						? finalPlan.reasoning_summary.trim()
+						: planReasoningLines.join("\n");
+
+				if (finalReasoningSummary) {
+					EventManager.dispatchEvent("code-generation-summary", {
+						stepId: planReasoningStepId,
+						summary: finalReasoningSummary,
+					});
+					analysisContext = {
+						...(analysisContext || {}),
+						reasoning_summary: finalReasoningSummary,
+					};
+				}
+
+				if (planStepDescriptions.length > 0) {
+					placeholderSummary = `Checklist • ${
+						planStepDescriptions.length
+					} planned step${
+						planStepDescriptions.length === 1 ? "" : "s"
+					} (awaiting execution)`;
+					placeholderLines = planStepDescriptions.map(
+						(step: string, idx: number) => `• ${idx + 1}. ${step}`
+					);
+					setChecklistSummary({
+						summary: placeholderSummary,
+						lines: placeholderLines,
+						completed: 0,
+						total: planStepDescriptions.length,
+						skipped: 0,
+						next: planStepDescriptions[0] || null,
+					});
+					const planMessageLines: string[] = ["```plan", "Steps:"];
+					planMessageLines.push(
+						planStepDescriptions
+							.map((step: string, idx: number) => `  ${idx + 1}. ${step}`)
+							.join("\n")
+					);
+					planMessageLines.push("```");
+					addMessage(planMessageLines.join("\n"), false);
+					addMessage(
+						"➡️ Review the plan above. I'll start executing it now – pause me if you need adjustments.",
+						false
+					);
+				}
+
+				setIsLoading(true);
+				setProgressMessage("Starting analysis process...");
+
 				// Create AutonomousAgent instance (kernel name will be set after workspace is created)
-				const chatId = (analysisState as any).activeChatSessionId || "global";
-				const sessionId = `session:${workspaceDir}:${chatId}`;
 				const agent = new AutonomousAgent(
 					backendClient!,
 					workspaceDir,
@@ -2143,6 +2457,11 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 					undefined,
 					sessionId
 				);
+				if (planStepDescriptions.length > 0) {
+					agent.setPlanOverride(planStepDescriptions);
+				} else {
+					agent.setPlanOverride(null);
+				}
 				agent.setStatusCallback((status) => {
 					// Guard against stale "... cell added" messages overwriting a fresh "Generating:" status
 					const prev = progressMsgRef.current || "";
@@ -2178,7 +2497,8 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 				setProgressMessage("Generating analysis steps...");
 				const analysisResult = await agent.executeAnalysisRequestWithData(
 					analysisRequest, // Use the user's specific analysis request
-					datasets
+					datasets,
+					analysisContext || undefined
 				);
 				console.log(
 					"Analysis result generated with",
@@ -2256,7 +2576,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 					addMessage("Failed to create notebook", false);
 					setProgressMessage("");
 					setIsProcessing(false);
-				return;
+					return;
 				}
 
 				console.log("Initial notebook created:", notebookPath);
@@ -2618,13 +2938,13 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 							ws && p && p.startsWith(ws) ? p.slice(ws.length + 1) : p;
 						if (!activeFile || !activeFile.endsWith(".ipynb")) {
 							setCellMentionItems([]);
-						return;
+							return;
 						}
 
 						// Check cache first to avoid re-reading the same file
 						if (cellItemsCache.current?.activeFile === activeFile) {
 							setCellMentionItems(cellItemsCache.current.items);
-						return;
+							return;
 						}
 
 						const fileContent = await window.electronAPI.readFile(activeFile);
@@ -2695,7 +3015,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 						if (!workspaceState.currentWorkspace) {
 							setWorkspaceMentionItems([]);
 							setCellMentionItems([]);
-						return;
+							return;
 						}
 						const wsRoot = workspaceState.currentWorkspace;
 						const token = match[1] || "";
@@ -2969,6 +3289,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 				<ChecklistPanel
 					summary={checklistSummary}
 					autoExpandToken={checklistAutoExpandToken}
+					isProcessing={isProcessing}
 				/>
 
 				{/* Show success when there are no errors and a message exists */}
@@ -3355,7 +3676,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 																s.id ===
 																(analysisState as any).activeChatSessionId
 															)
-															return;
+																return;
 															analysisDispatch({
 																type: "SET_ACTIVE_CHAT_SESSION",
 																payload: s.id,
@@ -3491,7 +3812,7 @@ const { addMessage, scrollToBottomImmediate } = useChatInteractions({
 			{(() => {
 				const chatId = (analysisState as any).activeChatSessionId || "global";
 				const wsDir = workspaceState.currentWorkspace || "";
-				const sessionId = `session:${wsDir}:${chatId}`;
+				const sessionId = buildSessionIdSafe(wsDir || undefined, chatId);
 				return (
 					<Composer
 						ref={composerRef}

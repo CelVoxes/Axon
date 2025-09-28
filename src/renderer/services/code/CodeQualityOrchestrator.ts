@@ -7,6 +7,7 @@ import {
 	ICodeQualityValidator,
 	IBackendClient,
 	CodeValidationResult,
+	CodeValidationTimings,
 } from "../types";
 
 export class CodeQualityOrchestrator implements ICodeQualityValidator {
@@ -25,6 +26,7 @@ export class CodeQualityOrchestrator implements ICodeQualityValidator {
 			cleanedCode: string;
 			validationErrors: string[];
 			validationWarnings: string[];
+			timings?: CodeValidationTimings;
 		}>;
 	};
 
@@ -90,6 +92,7 @@ export class CodeQualityOrchestrator implements ICodeQualityValidator {
 					improvements: [],
 					retryCount: 0,
 					success: res.isValid,
+					timings: res.timings,
 				};
 			} catch (e) {
 				console.error(
@@ -106,6 +109,7 @@ export class CodeQualityOrchestrator implements ICodeQualityValidator {
 					improvements: [],
 					retryCount: 0,
 					success: false,
+					timings: undefined,
 				};
 			}
 		}
@@ -121,6 +125,7 @@ export class CodeQualityOrchestrator implements ICodeQualityValidator {
 			improvements: [],
 			retryCount: 0,
 			success: true,
+			timings: undefined,
 		};
 	}
 
