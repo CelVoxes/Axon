@@ -62,50 +62,57 @@ class OpenAIProvider(LLMProvider):
     def _prepare_kwargs(self, kwargs: dict) -> dict:
         """Prepare kwargs for OpenAI API, handling model-specific parameter differences."""
         prepared_kwargs = kwargs.copy()
-        
+
         # Handle gpt-5-mini restrictions
         if self._is_gpt5_mini():
             # Remove unsupported parameters for gpt-5-mini
             prepared_kwargs.pop("max_tokens", None)
             prepared_kwargs.pop("temperature", None)  # Only supports temperature=1 (default)
             # Note: max_completion_tokens would be used but current client doesn't support it
-            
+
+        # Remove reasoning parameters for models that don't support them
+        ml = (self.model or "").lower()
+        if not (("gpt-5" in ml) or ("o3" in ml)):
+            prepared_kwargs.pop("reasoning", None)
+
         return prepared_kwargs
     
     def _prepare_responses_kwargs(self, kwargs: dict) -> dict:
         """Prepare kwargs specifically for Responses API, which has different parameter support."""
         prepared_kwargs = kwargs.copy()
-        
+
         # The Responses API doesn't support max_tokens parameter
         prepared_kwargs.pop("max_tokens", None)
-        
+
         # Filter out other parameters that Responses API might not support
         prepared_kwargs.pop("messages", None)  # Already handled separately
+
+        # Remove reasoning parameters for models that don't support them
+        ml = (self.model or "").lower()
+        if not (("gpt-5" in ml) or ("o3" in ml)):
+            prepared_kwargs.pop("reasoning", None)
+
         # Inject default service_tier if configured and not overridden
         if not prepared_kwargs.get("service_tier") and getattr(self, "service_tier", ""):
             tier = self.service_tier
             if tier == "flex":
                 # Only set flex when model supports it
-                ml = (self.model or "").lower()
                 if ("gpt-5" in ml) or ("o3" in ml) or ("o4-mini" in ml):
                     prepared_kwargs["service_tier"] = tier
             else:
                 prepared_kwargs["service_tier"] = tier
+
         # Encourage models with reasoning capability to emit lightweight reasoning deltas.
         # Do NOT inject unsupported 'include' values. Only set a gentle default for reasoning effort/summary.
-        try:
-            ml = (self.model or "").lower()
-            if ("gpt-5" in ml) or ("o3" in ml):
-                if not prepared_kwargs.get("reasoning"):
-                    prepared_kwargs["reasoning"] = {"effort": "medium", "summary": "detailed"}
-                else:
-                    if isinstance(prepared_kwargs["reasoning"], dict):
-                        prepared_kwargs["reasoning"].setdefault("effort", "medium")
-                        prepared_kwargs["reasoning"].setdefault("summary", "detailed")
-        except Exception:
-            pass
-        # Do not inject include by default for other models.
-        
+        # Only add reasoning parameters if the model supports them (after filtering out unsupported ones above)
+        if ("gpt-5" in ml) or ("o3" in ml):
+            if not prepared_kwargs.get("reasoning"):
+                prepared_kwargs["reasoning"] = {"effort": "medium", "summary": "detailed"}
+            else:
+                if isinstance(prepared_kwargs["reasoning"], dict):
+                    prepared_kwargs["reasoning"].setdefault("effort", "medium")
+                    prepared_kwargs["reasoning"].setdefault("summary", "detailed")
+
         return prepared_kwargs
     
     def _is_gpt5_mini(self) -> bool:
