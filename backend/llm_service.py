@@ -954,6 +954,12 @@ class LLMService:
         except Exception:
             return message
 
+    async def generate(self, messages: Sequence[Message], **kwargs) -> str:
+        """Generate response from messages using the configured provider."""
+        if not self.provider:
+            raise RuntimeError("No LLM provider configured")
+        return await self.provider.generate(messages, **kwargs)
+
     async def ask(self, question: str, context: str = "", session_id: Optional[str] = None, model: Optional[str] = None, **kwargs) -> str:
         """General Q&A. Uses provider if available, otherwise a simple fallback."""
         system_prompt = (
@@ -2778,12 +2784,18 @@ Return only the search terms, separated by commas."""
         }
 
 
-# Global LLM service instance
-llm_service = None
+# Global LLM service instances keyed by configuration
+_llm_services: Dict[str, LLMService] = {}
 
 def get_llm_service(provider: str = "openai", **kwargs) -> LLMService:
-    """Get or create the LLM service instance."""
-    global llm_service
-    if llm_service is None:
-        llm_service = LLMService(provider=provider, **kwargs)
-    return llm_service 
+    """Get or create the LLM service instance for the given configuration."""
+    # Create a key from provider and sorted kwargs
+    key_parts = [provider]
+    for k in sorted(kwargs.keys()):
+        key_parts.append(f"{k}={kwargs[k]}")
+    key = "|".join(key_parts)
+
+    if key not in _llm_services:
+        _llm_services[key] = LLMService(provider=provider, **kwargs)
+
+    return _llm_services[key] 

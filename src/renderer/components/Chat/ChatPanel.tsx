@@ -658,7 +658,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				return backendClient.buildSessionId(...parts);
 			}
 			const suffixParts = parts
-				.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+				.filter(
+					(p): p is string => typeof p === "string" && p.trim().length > 0
+				)
 				.map((p) => p.trim().replace(/[:\s]+/g, "_"));
 			const suffix = suffixParts.length ? suffixParts.join(":") : "default";
 			return `session:${fallbackSessionInstanceRef.current}:${suffix}`;
