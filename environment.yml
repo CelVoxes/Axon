@@ -260,9 +260,8 @@ dependencies:
       - pydantic-settings==2.10.1
       - regex==2025.7.34
       - safetensors==0.6.2
-      - sentence-transformers==5.1.0
+      # sentence-transformer stack removed after switching to TF-IDF search
       - sympy==1.14.0
       - tokenizers==0.21.4
-      - torch==2.8.0
-      - transformers==4.55.0
+      # torch/transformers removed; no longer required by search pipeline
 prefix: /Users/onur-lumc/mambaforge/envs/axon

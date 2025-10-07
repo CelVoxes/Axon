@@ -127,9 +127,10 @@ export async function autoFixWithRuffAndLLM(
 	}
 
 	// Extract issues and warnings from Ruff results
-	const issues = formatDiagnostics(
-		initial.diagnostics.filter((d) => d.kind === "error")
+	const errorDiagnostics = initial.diagnostics.filter(
+		(d) => d.kind === "error"
 	);
+	const issues = formatDiagnostics(errorDiagnostics);
 	const warnings = formatDiagnostics(
 		initial.diagnostics.filter((d) => d.kind === "warning")
 	);

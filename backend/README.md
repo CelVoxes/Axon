@@ -1,53 +1,48 @@
-# Minimal GEO Semantic Search
+# CellxCensus TF-IDF Search
 
-A simplified system for finding similar GEO datasets using semantic search. This is the minimal version that focuses only on GEO dataset discovery without the complexity of RAG or AI code generation.
+A lightweight search stack for discovering CellxCensus single-cell datasets. The service builds a TF-IDF index over dataset summaries, retrieves the most relevant records, and optionally blends in small keyword heuristics. No PyTorch or transformer models are required.
 
-## 🎯 Purpose
+## 🎯 What You Get
 
-Find the most similar GEO datasets to a user query using semantic search with embeddings.
+- **Fast retrieval** of CellxCensus metadata using scikit-learn's TF-IDF
+- **Async FastAPI** backend (`backend.api`) with streaming support
+- **CLI utilities** for ad-hoc searches (`python -m backend.cli ...`)
+- **Optional LLM helpers** (query rewriting, intent detection) for product integration
 
 ## 🚀 Quick Start
 
-### Installation
+### Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Command Line Usage
+### Command line search
 
 ```bash
-# Search for datasets
-python -m backend.cli search "breast cancer gene expression" --limit 5
+# Top 10 datasets for a query
+python -m backend.cli search "lung cancer t cell" --limit 10
 
-# Search by gene
-python -m backend.cli gene TP53 --organism "Homo sapiens" --limit 5
-
-# Search by disease
-python -m backend.cli disease "breast cancer" --limit 5
-
-# Start API server
+# Run the API locally
 python -m backend.cli serve --port 8000
 ```
 
-### API Usage
+### Python usage
 
 ```python
 import asyncio
-from backend.geo_search import SimpleGEOClient
+from backend.cellxcensus_search import SimpleCellxCensusClient
 
 async def main():
-    client = SimpleGEOClient()
-
-    # Search for datasets
-    datasets = await client.find_similar_datasets(
-        query="breast cancer gene expression",
+    client = SimpleCellxCensusClient()
+    results = await client.find_similar_datasets(
+        query="lung cancer t cell",
         limit=5,
-        organism="Homo sapiens"
+        organism="Homo sapiens",
     )
-
-    for dataset in datasets:
-        print(f"{dataset['id']}: {dataset['title']} (Score: {dataset['similarity_score']:.3f})")
+    for ds in results:
+        print(ds["id"], ds["title"], ds["similarity_score"])
+    await client.cleanup()
 
 asyncio.run(main())
 ```
@@ -58,78 +53,46 @@ asyncio.run(main())
 # Start server
 python -m backend.cli serve
 
-# Search datasets
+# JSON search request
 curl -X POST "http://localhost:8000/search" \
   -H "Content-Type: application/json" \
-  -d '{"query": "breast cancer gene expression", "limit": 5}'
+  -d '{"query": "lung cancer t cell", "limit": 5}'
 
-# Search by gene
-curl "http://localhost:8000/search/gene/TP53?organism=Homo%20sapiens&limit=5"
-
-# Search by disease
-curl "http://localhost:8000/search/disease/breast%20cancer?limit=5"
+# Server-sent events progress stream
+curl -N -X POST "http://localhost:8000/search/stream" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "lung cancer t cell", "limit": 5}'
 ```
 
-## 📁 Files
+## 📁 Key Files
 
-- `simple_geo_search.py` - Core semantic search functionality
-- `api.py` - FastAPI application
-- `cli.py` - Command line interface
-- `requirements.txt` - Minimal dependencies
+- `api.py` – FastAPI application and endpoints
+- `cellxcensus_search.py` – TF-IDF search implementation
+- `cli.py` – Command line interface
+- `llm_service.py` – Optional LLM utilities (query rewrites, intent, etc.)
 
-## 🔧 How It Works
+## 🔍 How It Works
 
-1. **Search GEO**: Uses NCBI E-utilities to find candidate datasets
-2. **Create Embeddings**: Converts query and dataset descriptions to vectors
-3. **Calculate Similarity**: Uses cosine similarity to rank datasets
-4. **Return Results**: Returns top similar datasets with scores
+1. **Metadata loading** – CellxCensus metadata is cached in memory/pandas.
+2. **TF-IDF index** – Summaries are vectorised (1–2 grams, sublinear TF) and cached.
+3. **Candidate selection** – Top results by cosine similarity are retrieved.
+4. **Keyword boosts** – Simple heuristics reward exact or partial term matches.
+5. **Response** – Results include similarity score, metadata, and provenance.
 
-## 📊 Example Output
+## ✅ Example Output
 
 ```
-🔍 Searching for: 'breast cancer gene expression'
-📊 Found 15 candidate datasets
-✅ Returning top 5 most similar datasets
+🔍 Searching CellxCensus for 'lung cancer t cell'
 
-1. GSE12345 - Breast Cancer Gene Expression Analysis
+1. Dataset XYZ123 - High-resolution single-cell atlas of lung cancer T cells
    Organism: Homo sapiens
-   Samples: 120
-   Similarity: 0.892
-   URL: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE12345
-
-2. GSE67890 - Transcriptional Profiling of Breast Cancer Subtypes
-   Organism: Homo sapiens
-   Samples: 85
-   Similarity: 0.845
-   URL: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE67890
+   Cells/Samples: 154,321
+   Platform: 10x Chromium scRNA-seq
+   Similarity: 0.812
 ```
 
-## 🎯 Key Features
+## 🛠 Tips
 
-- **Semantic Search**: Understands meaning, not just keywords
-- **GEO Integration**: Direct access to GEO database
-- **Similarity Scoring**: Ranked results with similarity scores
-- **Multiple Interfaces**: CLI, API, and Python client
-- **Minimal Dependencies**: Only essential packages
-
-## 🔍 Search Methods
-
-- **General Search**: Find datasets by description
-- **Gene Search**: Find datasets related to specific genes
-- **Disease Search**: Find datasets related to specific diseases
-- **Organism Filtering**: Filter by organism (e.g., "Homo sapiens")
-
-## 📈 Performance
-
-- **Fast**: Direct GEO API access with minimal processing
-- **Accurate**: Semantic similarity using state-of-the-art embeddings
-- **Scalable**: Async processing for multiple requests
-- **Reliable**: Error handling and rate limiting
-
-## 🚀 Next Steps
-
-This minimal system can be extended with:
-
-- More advanced filtering options
-- Caching for improved performance
-- Integration with analysis workflows
+- Results are cached in-memory; rerunning the same query is instantaneous.
+- Set `CELLXCENSUS_AVAILABLE=0` (or uninstall the package) to surface the runtime error path quickly.
+- The backend retains LLM endpoints, but dataset ranking no longer depends on them.

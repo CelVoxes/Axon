@@ -25,6 +25,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
 import hljs from "highlight.js";
+import { resolveHighlightLanguage } from "../../utils/highlight";
 import { typography } from "../../styles/design-system";
 import { SHORTCUTS } from "../../utils/Constants";
 import rehypeSanitize from "rehype-sanitize";
@@ -1362,13 +1363,28 @@ const OutputRenderer: React.FC<{
 			// Reset to plain text first to avoid nested markup and HLJS warnings
 			el.textContent =
 				parsed.type === "json" ? JSON.stringify(parsed.data, null, 2) : output;
+			const rawLanguage =
+				parsed.type === "json"
+					? "json"
+					: language === "r"
+					? "r"
+					: "python";
+			const { language: highlightLanguage, didFallback } = resolveHighlightLanguage(
+				rawLanguage
+			);
+			el.className = `hljs language-${highlightLanguage}`;
 			el.removeAttribute("data-highlighted");
+			if (didFallback && rawLanguage) {
+				el.setAttribute("data-language-fallback", rawLanguage);
+			} else {
+				el.removeAttribute("data-language-fallback");
+			}
 			hljs.highlightElement(el);
 		} catch (e) {
 			// eslint-disable-next-line no-console
 			console.error("Highlight.js error:", e);
 		}
-	}, [showRaw, output, parsed]);
+	}, [showRaw, output, parsed, language]);
 
 	return (
 		<OutputContainer>

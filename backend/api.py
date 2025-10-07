@@ -1,4 +1,4 @@
-"""Minimal FastAPI application for GEO semantic search."""
+"""FastAPI application for CellxCensus TF-IDF search."""
 
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,8 +24,6 @@ if env_path.exists():
 else:
     print(f"No .env file found at {env_path}")
 
-from .geo_search import SimpleGEOClient
-from .broad_search import SimpleBroadClient
 from .cellxcensus_search import SimpleCellxCensusClient
 from .llm_service import get_llm_service
 
@@ -115,8 +113,8 @@ def _create_backend_jwt(user: dict) -> Optional[str]:
     return None
 
 app = FastAPI(
-    title="Multi-Source Single Cell Data Search API",
-    description="Comprehensive API for finding similar datasets using semantic search across GEO, Broad Institute Single Cell Portal, and CellxCensus",
+    title="CellxCensus Search API",
+    description="API for finding CellxCensus datasets using TF-IDF semantic search with optional LLM-assisted query expansion",
     version="1.1.0"
 )
 
@@ -150,23 +148,7 @@ app.add_middleware(
 )
 
 # Initialize the simple clients lazily
-geo_client = None
-broad_client = None
 cellxcensus_client = None
-
-def get_geo_client():
-    """Get or create the GEO client."""
-    global geo_client
-    if geo_client is None:
-        geo_client = SimpleGEOClient()
-    return geo_client
-
-def get_broad_client():
-    """Get or create the Broad client."""
-    global broad_client
-    if broad_client is None:
-        broad_client = SimpleBroadClient()
-    return broad_client
 
 def get_cellxcensus_client():
     """Get or create the CellxCensus client."""
@@ -190,7 +172,7 @@ class DatasetResponse(BaseModel):
     sample_count: str
     platform: str
     similarity_score: float
-    source: str = "GEO"
+    source: str = "CellxCensus"
 
 
 class LLMSearchRequest(BaseModel):
@@ -335,13 +317,12 @@ class GoogleAuthResponse(BaseModel):
 async def root():
     """Root endpoint."""
     return {
-        "message": "Multi-Source Single Cell Data Search API",
+        "message": "CellxCensus Search API",
         "version": "1.1.0",
-        "data_sources": ["GEO", "Broad Single Cell Portal", "CellxCensus"],
+        "data_sources": ["CellxCensus"],
         "endpoints": {
-            "geo_search": "/search",
-            "geo_search_stream": "/search/stream",
-            "broad_search": "/broad/search",
+            "search": "/search",
+            "search_stream": "/search/stream",
             "cellxcensus_search": "/cellxcensus/search",
             "cellxcensus_search_stream": "/cellxcensus/search/stream",
             "llm_search": "/search/llm",
@@ -355,7 +336,7 @@ async def root():
             "intent": "/llm/intent",
             "plan": "/llm/plan",
             "plan_stream": "/llm/plan/stream",
-        }
+        },
     }
 
 
@@ -439,34 +420,29 @@ async def auth_google(request: GoogleAuthRequest):
 
 @app.post("/search", response_model=List[DatasetResponse])
 async def search_datasets(request: SearchRequest, user=Depends(get_current_user)):
-    """Find GEO datasets most similar to the query.
-    
-    Args:
-        request: Search parameters
-        
-    Returns:
-        List of similar datasets with similarity scores
-    """
+    """Find CellxCensus datasets most similar to the query."""
     try:
-        client = get_geo_client()
+        client = get_cellxcensus_client()
         datasets = await client.find_similar_datasets(
             query=request.query,
             limit=request.limit,
             organism=request.organism
         )
-        
-        # Convert to response format
-        results = []
+
+        results: List[DatasetResponse] = []
         for dataset in datasets:
-            results.append(DatasetResponse(
-                id=dataset.get("id", ""),
-                title=dataset.get("title", ""),
-                description=dataset.get("description", ""),
-                organism=dataset.get("organism", "Unknown"),
-                sample_count=dataset.get("sample_count", "0"),
-                platform=dataset.get("platform", "Unknown"),
-                similarity_score=dataset.get("similarity_score", 0.0)
-            ))
+            results.append(
+                DatasetResponse(
+                    id=str(dataset.get("id", "")),
+                    title=str(dataset.get("title", "")),
+                    description=str(dataset.get("description", "")),
+                    organism=str(dataset.get("organism", "Unknown")),
+                    sample_count=str(dataset.get("sample_count", "0")),
+                    platform=str(dataset.get("platform", "Unknown")),
+                    similarity_score=float(dataset.get("similarity_score", 0.0) or 0.0),
+                    source=str(dataset.get("source", "CellxCensus")),
+                )
+            )
         
         # Optionally persist a minimal "message" record for audit
         try:
@@ -497,7 +473,7 @@ async def search_datasets(request: SearchRequest, user=Depends(get_current_user)
 
 @app.post("/search/stream")
 async def search_datasets_stream(request: SearchRequest):
-    """Find GEO datasets with real-time progress updates using Server-Sent Events.
+    """Find CellxCensus datasets with real-time progress updates using Server-Sent Events.
     
     Args:
         request: Search parameters
@@ -507,7 +483,7 @@ async def search_datasets_stream(request: SearchRequest):
     """
     async def generate():
         try:
-            client = get_geo_client()
+            client = get_cellxcensus_client()
             
             # Create a queue for real-time progress updates
             progress_queue = asyncio.Queue()
@@ -552,15 +528,18 @@ async def search_datasets_stream(request: SearchRequest):
             # Send final results
             results = []
             for dataset in datasets:
-                results.append({
-                    "id": dataset.get("id", ""),
-                    "title": dataset.get("title", ""),
-                    "description": dataset.get("description", ""),
-                    "organism": dataset.get("organism", "Unknown"),
-                    "sample_count": dataset.get("sample_count", "0"),
-                    "platform": dataset.get("platform", "Unknown"),
-                    "similarity_score": dataset.get("similarity_score", 0.0)
-                })
+                results.append(
+                    {
+                        "id": str(dataset.get("id", "")),
+                        "title": str(dataset.get("title", "")),
+                        "description": str(dataset.get("description", "")),
+                        "organism": str(dataset.get("organism", "Unknown")),
+                        "sample_count": str(dataset.get("sample_count", "0")),
+                        "platform": str(dataset.get("platform", "Unknown")),
+                        "similarity_score": float(dataset.get("similarity_score", 0.0) or 0.0),
+                        "source": str(dataset.get("source", "CellxCensus")),
+                    }
+                )
             
             yield f"data: {json.dumps({'type': 'results', 'datasets': results})}\n\n"
             
@@ -1367,401 +1346,6 @@ async def classify_intent(request: IntentRequest):
     except Exception as e:
         # On any error, be conservative
         return IntentResponse(intent="ADD_CELL", confidence=0.6, reason=f"Fallback due to error: {e}")
-
-
-@app.get("/search/gene/{gene}")
-async def search_by_gene(
-    gene: str,
-    organism: Optional[str] = None,
-    limit: int = SearchConfig.get_search_limit()
-):
-    """Find GEO datasets related to a specific gene.
-    
-    Args:
-        gene: Gene name or symbol
-        organism: Organism filter
-        limit: Maximum results
-        
-    Returns:
-        Gene-related datasets
-    """
-    try:
-        client = get_geo_client()
-        datasets = await client.search_by_gene(
-            gene=gene,
-            organism=organism,
-            limit=limit
-        )
-        
-        return {
-            "gene": gene,
-            "organism": organism,
-            "datasets": datasets,
-            "count": len(datasets)
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Gene search failed: {str(e)}")
-
-
-@app.get("/search/disease/{disease}")
-async def search_by_disease(
-    disease: str,
-    limit: int = SearchConfig.get_search_limit()
-):
-    """Find GEO datasets related to a specific disease.
-    
-    Args:
-        disease: Disease name
-        limit: Maximum results
-        
-    Returns:
-        Disease-related datasets
-    """
-    try:
-        client = get_geo_client()
-        datasets = await client.search_by_disease(
-            disease=disease,
-            limit=limit
-        )
-        
-        return {
-            "disease": disease,
-            "datasets": datasets,
-            "count": len(datasets)
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Disease search failed: {str(e)}")
-
-
-# Broad Single Cell Portal endpoints
-@app.post("/broad/search", response_model=List[DatasetResponse])
-async def search_broad_studies(request: SearchRequest):
-    """Search for single-cell studies in Broad Institute Single Cell Portal.
-    
-    Args:
-        request: Search request with query and parameters
-        
-    Returns:
-        List of matching studies
-    """
-    try:
-        client = get_broad_client()
-        studies = await client.find_similar_studies(
-            query=request.query,
-            limit=request.limit,
-            organism=request.organism
-        )
-        
-        # Convert to DatasetResponse format
-        datasets = []
-        for study in studies:
-            datasets.append(DatasetResponse(
-                id=study.get('id', ''),
-                title=study.get('title', ''),
-                description=study.get('description', ''),
-                organism=study.get('organism', ''),
-                sample_count=study.get('sample_count', ''),
-                platform=study.get('platform', ''),
-                similarity_score=study.get('similarity_score', 0.0),
-                source='Broad Single Cell Portal'
-            ))
-        
-        return datasets
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Broad search failed: {str(e)}")
-
-
-@app.get("/broad/search/disease/{disease}")
-async def search_broad_by_disease(
-    disease: str,
-    limit: int = SearchConfig.get_search_limit()
-):
-    """Find Broad single-cell studies related to a specific disease.
-    
-    Args:
-        disease: Disease name
-        limit: Maximum results
-        
-    Returns:
-        Disease-related studies
-    """
-    try:
-        client = get_broad_client()
-        studies = await client.search_by_disease(
-            disease=disease,
-            limit=limit
-        )
-        
-        return {
-            "disease": disease,
-            "studies": studies,
-            "count": len(studies)
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Broad disease search failed: {str(e)}")
-
-
-@app.get("/broad/search/organism/{organism}")
-async def search_broad_by_organism(
-    organism: str,
-    limit: int = SearchConfig.get_search_limit()
-):
-    """Find Broad single-cell studies for a specific organism.
-    
-    Args:
-        organism: Organism name
-        limit: Maximum results
-        
-    Returns:
-        Organism-related studies
-    """
-    try:
-        client = get_broad_client()
-        studies = await client.search_by_organism(
-            organism=organism,
-            limit=limit
-        )
-        
-        return {
-            "organism": organism,
-            "studies": studies,
-            "count": len(studies)
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Broad organism search failed: {str(e)}")
-
-
-@app.get("/broad/search/tissue/{tissue}")
-async def search_broad_by_tissue(
-    tissue: str,
-    limit: int = SearchConfig.get_search_limit()
-):
-    """Find Broad single-cell studies for a specific tissue type.
-    
-    Args:
-        tissue: Tissue name
-        limit: Maximum results
-        
-    Returns:
-        Tissue-related studies
-    """
-    try:
-        client = get_broad_client()
-        studies = await client.search_by_tissue(
-            tissue=tissue,
-            limit=limit
-        )
-        
-        return {
-            "tissue": tissue,
-            "studies": studies,
-            "count": len(studies)
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Broad tissue search failed: {str(e)}")
-
-
-@app.get("/broad/search/technology/{technology}")
-async def search_broad_by_technology(
-    technology: str,
-    limit: int = SearchConfig.get_search_limit()
-):
-    """Find Broad single-cell studies using a specific technology.
-    
-    Args:
-        technology: Technology name
-        limit: Maximum results
-        
-    Returns:
-        Technology-related studies
-    """
-    try:
-        client = get_broad_client()
-        studies = await client.search_by_technology(
-            technology=technology,
-            limit=limit
-        )
-        
-        return {
-            "technology": technology,
-            "studies": studies,
-            "count": len(studies)
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Broad technology search failed: {str(e)}")
-
-
-@app.get("/broad/facets")
-async def get_broad_facets():
-    """Get available search facets for Broad Single Cell Portal.
-    
-    Returns:
-        Available facets and their options
-    """
-    try:
-        client = get_broad_client()
-        facets = await client.get_available_facets()
-        return facets
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get Broad facets: {str(e)}")
-
-
-@app.get("/broad/tos/check")
-async def check_broad_tos_acceptance():
-    """Check if user has accepted current Terra Terms of Service.
-    
-    Returns:
-        TOS acceptance status
-    """
-    try:
-        client = get_broad_client()
-        accepted = await client.check_terra_tos_acceptance()
-        
-        return {
-            "tos_accepted": accepted,
-            "message": "User has accepted Terra Terms of Service" if accepted else "User needs to accept Terra Terms of Service",
-            "tos_url": "https://singlecell.broadinstitute.org/single_cell/terms"
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to check TOS acceptance: {str(e)}")
-
-
-# Download endpoints
-@app.get("/broad/studies/{study_accession}/files")
-async def get_broad_study_files(study_accession: str):
-    """Get list of files available for a Broad study."""
-    try:
-        client = get_broad_client()
-        files = await client.get_study_files(study_accession)
-        
-        return {
-            "study_accession": study_accession,
-            "files": files,
-            "count": len(files)
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get study files: {str(e)}")
-
-
-@app.post("/broad/studies/{study_accession}/download")
-async def download_broad_study_file(
-    study_accession: str,
-    file_id: str,
-    output_path: str
-):
-    """Download a specific file from a Broad study."""
-    try:
-        client = get_broad_client()
-        success = await client.download_study_file(
-            study_accession=study_accession,
-            file_id=file_id,
-            output_path=output_path
-        )
-        
-        if success:
-            return {
-                "status": "success",
-                "message": f"File {file_id} downloaded to {output_path}",
-                "study_accession": study_accession,
-                "file_id": file_id,
-                "output_path": output_path
-            }
-        else:
-            raise HTTPException(status_code=500, detail="Download failed")
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
-
-
-@app.get("/broad/studies/{study_accession}/manifest")
-async def get_broad_study_manifest(study_accession: str):
-    """Get study manifest for a Broad study."""
-    try:
-        client = get_broad_client()
-        manifest = await client.get_study_manifest(study_accession)
-        
-        if manifest:
-            return {
-                "study_accession": study_accession,
-                "manifest": manifest
-            }
-        else:
-            raise HTTPException(status_code=404, detail="Manifest not found")
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get manifest: {str(e)}")
-
-
-@app.post("/broad/bulk-download/auth")
-async def create_broad_bulk_download_auth(study_accessions: List[str]):
-    """Create one-time auth code for bulk downloads."""
-    try:
-        client = get_broad_client()
-        auth_code = await client.create_bulk_download_auth(study_accessions)
-        
-        if auth_code:
-            return {
-                "status": "success",
-                "auth_code": auth_code,
-                "study_accessions": study_accessions
-            }
-        else:
-            raise HTTPException(status_code=500, detail="Failed to create auth code")
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create auth code: {str(e)}")
-
-
-@app.get("/broad/bulk-download/summary/{auth_code}")
-async def get_broad_bulk_download_summary(auth_code: str):
-    """Get summary information for bulk download."""
-    try:
-        client = get_broad_client()
-        summary = await client.get_bulk_download_summary(auth_code)
-        
-        if summary:
-            return {
-                "auth_code": auth_code,
-                "summary": summary
-            }
-        else:
-            raise HTTPException(status_code=404, detail="Summary not found")
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get summary: {str(e)}")
-
-
-@app.post("/broad/bulk-download/curl-config")
-async def generate_broad_curl_config(auth_code: str, output_path: str):
-    """Generate curl command file for bulk download."""
-    try:
-        client = get_broad_client()
-        success = await client.generate_curl_config(auth_code, output_path)
-        
-        if success:
-            return {
-                "status": "success",
-                "message": f"Curl config generated at {output_path}",
-                "auth_code": auth_code,
-                "output_path": output_path
-            }
-        else:
-            raise HTTPException(status_code=500, detail="Failed to generate curl config")
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate curl config: {str(e)}")
-
-
 # CellxCensus endpoints
 @app.post("/cellxcensus/search", response_model=List[DatasetResponse])
 async def search_cellxcensus_datasets(request: SearchRequest):
@@ -1781,19 +1365,20 @@ async def search_cellxcensus_datasets(request: SearchRequest):
             organism=request.organism
         )
         
-        # Convert to DatasetResponse format. Preserve actual source (may be GEO if we fell back)
-        results = []
+        results: List[DatasetResponse] = []
         for dataset in datasets:
-            results.append(DatasetResponse(
-                id=dataset.get('id', ''),
-                title=dataset.get('title', ''),
-                description=dataset.get('description', ''),
-                organism=dataset.get('organism', ''),
-                sample_count=str(dataset.get('sample_count', '0')),
-                platform=dataset.get('platform', ''),
-                similarity_score=dataset.get('similarity_score', 0.0),
-                source=dataset.get('source', 'CellxCensus')
-            ))
+            results.append(
+                DatasetResponse(
+                    id=str(dataset.get('id', '')),
+                    title=str(dataset.get('title', '')),
+                    description=str(dataset.get('description', '')),
+                    organism=str(dataset.get('organism', '')),
+                    sample_count=str(dataset.get('sample_count', '0')),
+                    platform=str(dataset.get('platform', '')),
+                    similarity_score=float(dataset.get('similarity_score', 0.0) or 0.0),
+                    source=str(dataset.get('source', 'CellxCensus')),
+                )
+            )
         
         return results
         
@@ -1851,17 +1436,19 @@ async def search_cellxcensus_datasets_stream(request: SearchRequest):
             # Send final results
             results = []
             for dataset in datasets:
-                results.append({
-                    "id": dataset.get("id", ""),
-                    "title": dataset.get("title", ""),
-                    "description": dataset.get("description", ""),
-                    "organism": dataset.get("organism", "Unknown"),
-                    "sample_count": dataset.get("sample_count", "0"),
-                    "platform": dataset.get("platform", "Unknown"),
-                    "similarity_score": dataset.get("similarity_score", 0.0),
-                    "source": dataset.get("source", "CellxCensus"),
-                    "url": dataset.get("url", "")
-                })
+                results.append(
+                    {
+                        "id": str(dataset.get("id", "")),
+                        "title": str(dataset.get("title", "")),
+                        "description": str(dataset.get("description", "")),
+                        "organism": str(dataset.get("organism", "Unknown")),
+                        "sample_count": str(dataset.get("sample_count", "0")),
+                        "platform": str(dataset.get("platform", "Unknown")),
+                        "similarity_score": float(dataset.get("similarity_score", 0.0) or 0.0),
+                        "source": str(dataset.get("source", "CellxCensus")),
+                        "url": str(dataset.get("url", "")),
+                    }
+                )
             
             yield f"data: {json.dumps({'type': 'results', 'datasets': results})}\n\n"
             
@@ -1985,7 +1572,7 @@ async def health_check():
     
     return {
         "status": "healthy", 
-        "service": "GEO and Broad Single Cell Semantic Search",
+        "service": "CellxCensus Semantic Search",
         "llm_service": llm_status,
         "openai_key_configured": openai_key_set,
         "anthropic_key_configured": anthropic_key_set,
@@ -1995,7 +1582,7 @@ async def health_check():
 
 def run_server(host: str = "0.0.0.0", port: int = 8000):
     """Run the minimal API server."""
-    print(f"🚀 Starting Minimal GEO Semantic Search API on {host}:{port}")
+    print(f"🚀 Starting CellxCensus Search API on {host}:{port}")
     print(f"📖 API Documentation: http://{host}:{port}/docs")
     
     uvicorn.run(

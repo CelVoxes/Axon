@@ -1,4 +1,5 @@
 import init, { Workspace, Diagnostic } from "@astral-sh/ruff-wasm-web";
+import { isIndentationDiagnostic } from "./IndentationUtils";
 
 export interface RuffDiagnostic {
 	kind: "error" | "warning";
@@ -26,6 +27,7 @@ export class RuffLinter {
 	private initialized = false;
 	private initPromise: Promise<void> | null = null;
 	private workspace: Workspace | null = null;
+	private readonly indentWidth = 4;
 
 	constructor() {
 		// Start initialization immediately when instance is created
@@ -115,11 +117,10 @@ export class RuffLinter {
 		try {
 			// Run Ruff check on the code - returns Diagnostic[]
 			const ruffDiagnostics: Diagnostic[] = this.workspace.check(code);
+			let currentRuffDiagnostics = ruffDiagnostics;
 
 			// Convert Ruff diagnostics to our format
-			const diagnostics = this.parseRuffOutput(ruffDiagnostics);
-			const isValid =
-				diagnostics.filter((d) => d.kind === "error").length === 0;
+			let diagnostics = this.parseRuffOutput(currentRuffDiagnostics);
 
 			let formattedCode: string | undefined;
 			let fixedCode: string | undefined;
@@ -129,40 +130,107 @@ export class RuffLinter {
 				try {
 					formattedCode = this.workspace.format(code);
 				} catch (formatError) {
-					// If formatting fails due to syntax issues, mark as invalid
 					if (
 						formatError instanceof Error &&
-						formatError.message.includes("Expected an indented block")
+						/expected an indented block/i.test(formatError.message)
 					) {
-						return {
-							isValid: false,
-							diagnostics: [
-								{
-									kind: "error",
-									code: "E999",
-									message: `Syntax error: ${formatError.message}`,
-									startLine: 1,
-									startColumn: 1,
-									endLine: 1,
-									endColumn: 1,
-									fixable: false,
-								},
-							],
-							formattedCode: undefined,
-							fixedCode: undefined,
-						};
+						// Keep Ruff diagnostics for accurate locations; formatter couldn't recover
+						console.warn(
+							"Ruff formatter could not fix indentation issues, continuing with lint diagnostics."
+						);
+					} else if (
+						formatError instanceof Error &&
+						/line \d+/i.test(formatError.message)
+					) {
+						// Capture formatter error details only when Ruff had no diagnostics
+						if (!diagnostics.length) {
+							const match = formatError.message.match(/line (\d+)(?:, column (\d+))?/i);
+							const line = match ? parseInt(match[1], 10) : 1;
+							const column =
+								match && match[2] ? parseInt(match[2], 10) : 1;
+							diagnostics.push({
+								kind: "error",
+								code: "E999",
+								message: `Syntax error: ${formatError.message}`,
+								startLine: line,
+								startColumn: column,
+								endLine: line,
+								endColumn: column,
+								fixable: false,
+							});
+						}
+					} else {
+						console.error("Ruff formatting failed:", formatError);
+						if (!diagnostics.length) {
+							diagnostics.push({
+								kind: "error",
+								code: "E999",
+								message: `Syntax error: ${
+									formatError instanceof Error
+										? formatError.message
+										: "Unknown formatting error"
+								}`,
+								startLine: 1,
+								startColumn: 1,
+								endLine: 1,
+								endColumn: 1,
+								fixable: false,
+							});
+						}
+					}
 					}
 				}
-			}
+
+				let isValid =
+					diagnostics.filter((d) => d.kind === "error").length === 0;
 
 			// Apply fixes if available and requested
 			const fixableDiagnostics = diagnostics.filter((d) => d.fixable);
 			if (enableFixes && fixableDiagnostics.length > 0) {
 				try {
-					fixedCode = this.applyRuffFixes(code, ruffDiagnostics);
+					fixedCode = this.applyRuffFixes(code, currentRuffDiagnostics);
 				} catch (fixError) {
 					// Fallback to formatted code
 					fixedCode = formattedCode;
+				}
+			}
+
+			let bestCandidate = fixedCode || formattedCode || code;
+
+			if (enableFixes && diagnostics.some(isIndentationDiagnostic)) {
+				const indentationFixed = this.tryFixIndentationIssues(
+					bestCandidate,
+					diagnostics
+				);
+				if (indentationFixed && indentationFixed !== bestCandidate) {
+					try {
+						const indentationDiagnosticsRaw =
+							this.workspace.check(indentationFixed);
+						const indentationDiagnostics = this.parseRuffOutput(
+							indentationDiagnosticsRaw
+						);
+						const indentationFixable = indentationDiagnostics.filter(
+							(d) => d.fixable
+						);
+						let indentationFixedCode = indentationFixed;
+						if (indentationFixable.length > 0) {
+							indentationFixedCode = this.applyRuffFixes(
+								indentationFixed,
+								indentationDiagnosticsRaw
+							);
+						}
+						diagnostics = indentationDiagnostics;
+						currentRuffDiagnostics = indentationDiagnosticsRaw;
+						bestCandidate = indentationFixedCode;
+						fixedCode = indentationFixedCode;
+						isValid =
+							diagnostics.filter((d) => d.kind === "error").length === 0;
+					} catch (indentationError) {
+						console.warn(
+							"Indentation heuristic fix failed:",
+							indentationError
+						);
+					}
 				}
 			}
 
@@ -226,6 +294,115 @@ export class RuffLinter {
 		}
 
 		return result;
+	}
+
+	private tryFixIndentationIssues(
+		code: string,
+		diagnostics: RuffDiagnostic[]
+	): string | null {
+		const indentationDiagnostics = diagnostics.filter(isIndentationDiagnostic);
+		if (indentationDiagnostics.length === 0) {
+			return null;
+		}
+
+		const lines = code.split("\n");
+		let changed = false;
+
+		for (const diagnostic of indentationDiagnostics) {
+			const message = (diagnostic.message || "").toLowerCase();
+
+			if (message.includes("expected an indented block")) {
+				changed = this.fixExpectedIndentBlock(lines, diagnostic) || changed;
+				continue;
+			}
+
+			if (
+				message.includes("unexpected indent") ||
+				message.includes("unexpected indentation")
+			) {
+				changed = this.fixUnexpectedIndent(lines, diagnostic) || changed;
+			}
+		}
+
+		return changed ? lines.join("\n") : null;
+	}
+
+	private fixExpectedIndentBlock(
+		lines: string[],
+		diagnostic: RuffDiagnostic
+	): boolean {
+		const targetLineIndex = this.findFirstContentLine(lines, diagnostic.startLine - 1);
+		if (targetLineIndex === -1) {
+			return false;
+		}
+
+		const baseLineIndex = Math.max(
+			0,
+			Math.min(lines.length - 1, diagnostic.startLine - 1)
+		);
+		const baseIndent = this.getIndentation(lines[baseLineIndex]);
+		const indentUnit = " ".repeat(this.indentWidth);
+		const trimmed = lines[targetLineIndex].trimStart();
+		const currentIndent = this.getIndentation(lines[targetLineIndex]);
+
+		if (currentIndent.length > baseIndent.length) {
+			return false;
+		}
+
+		const replacement = baseIndent + indentUnit + trimmed;
+		if (lines[targetLineIndex] === replacement) {
+			return false;
+		}
+
+		lines[targetLineIndex] = replacement;
+		return true;
+	}
+
+	private fixUnexpectedIndent(
+		lines: string[],
+		diagnostic: RuffDiagnostic
+	): boolean {
+		const targetIndex = diagnostic.startLine - 1;
+		if (targetIndex < 0 || targetIndex >= lines.length) {
+			return false;
+		}
+
+		const trimmed = lines[targetIndex].trimStart();
+		const expectedIndent = this.findPreviousIndent(lines, targetIndex);
+		const replacement = expectedIndent + trimmed;
+
+		if (lines[targetIndex] === replacement) {
+			return false;
+		}
+
+		lines[targetIndex] = replacement;
+		return true;
+	}
+
+	private findFirstContentLine(lines: string[], startIndex: number): number {
+		for (let i = Math.max(0, startIndex + 1); i < lines.length; i++) {
+			if (lines[i].trim().length === 0) {
+				continue;
+			}
+			return i;
+		}
+		return -1;
+	}
+
+	private findPreviousIndent(lines: string[], index: number): string {
+		for (let i = index - 1; i >= 0; i--) {
+			const trimmed = lines[i].trim();
+			if (trimmed.length === 0) {
+				continue;
+			}
+			return this.getIndentation(lines[i]);
+		}
+		return "";
+	}
+
+	private getIndentation(line: string): string {
+		const match = line.match(/^\s*/);
+		return match ? match[0] : "";
 	}
 
 	/**

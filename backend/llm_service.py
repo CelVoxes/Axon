@@ -58,6 +58,8 @@ class OpenAIProvider(LLMProvider):
         cfg_tier = SearchConfig.get_openai_service_tier()
         self.service_tier = (service_tier or cfg_tier or "").strip()
         self.last_reasoning_summary: Optional[str] = None
+        # Map logical session ids to OpenAI Responses session metadata
+        self._responses_sessions: Dict[str, Dict[str, str]] = {}
     
     def _prepare_kwargs(self, kwargs: dict) -> dict:
         """Prepare kwargs for OpenAI API, handling model-specific parameter differences."""
@@ -86,6 +88,7 @@ class OpenAIProvider(LLMProvider):
 
         # Filter out other parameters that Responses API might not support
         prepared_kwargs.pop("messages", None)  # Already handled separately
+        prepared_kwargs.pop("session_id", None)
 
         # Remove reasoning parameters for models that don't support them
         ml = (self.model or "").lower()
@@ -114,6 +117,86 @@ class OpenAIProvider(LLMProvider):
                     prepared_kwargs["reasoning"].setdefault("summary", "detailed")
 
         return prepared_kwargs
+
+    async def _ensure_responses_session(
+        self,
+        session_key: Optional[str],
+        model: str,
+        system_prompt: str,
+    ) -> Optional[str]:
+        """Ensure a Responses API session exists for the given logical session id."""
+
+        if not session_key:
+            return None
+
+        try:
+            normalized_key = str(session_key).strip()
+        except Exception:
+            normalized_key = None
+
+        if not normalized_key:
+            return None
+
+        responses_api = getattr(self.client, "responses", None)
+        if responses_api is None:
+            return None
+
+        sessions_api = getattr(responses_api, "sessions", None)
+        if sessions_api is None or not hasattr(sessions_api, "create"):
+            return None
+
+        normalized_prompt = (system_prompt or "").strip()
+        instructions_hash = ""
+        if normalized_prompt:
+            try:
+                instructions_hash = hashlib.sha256(normalized_prompt.encode("utf-8")).hexdigest()
+            except Exception:
+                instructions_hash = normalized_prompt[:128]
+
+        cached = self._responses_sessions.get(normalized_key)
+        if cached:
+            cached_id = cached.get("id")
+            cached_model = cached.get("model")
+            cached_hash = cached.get("instructions_hash")
+            if cached_id and cached_model == model and cached_hash == instructions_hash:
+                return cached_id
+            # Model or instructions changed – drop cached entry so we can recreate the session
+            self._responses_sessions.pop(normalized_key, None)
+
+        try:
+            create_kwargs = {"model": model}
+            if normalized_prompt:
+                create_kwargs["instructions"] = normalized_prompt
+            session_obj = await sessions_api.create(**create_kwargs)
+        except TypeError:
+            # Some SDK builds may not accept the instructions parameter; retry without it.
+            try:
+                session_obj = await sessions_api.create(model=model)
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+        session_id = getattr(session_obj, "id", None)
+        if session_id is None and isinstance(session_obj, dict):
+            session_id = session_obj.get("id")
+
+        if not session_id:
+            return None
+
+        if len(self._responses_sessions) >= 64:
+            try:
+                self._responses_sessions.pop(next(iter(self._responses_sessions)))
+            except Exception:
+                self._responses_sessions.clear()
+
+        self._responses_sessions[normalized_key] = {
+            "id": session_id,
+            "model": model,
+            "instructions_hash": instructions_hash,
+        }
+
+        return session_id
     
     def _is_gpt5_mini(self) -> bool:
         """Check if the model is gpt-5-mini."""
@@ -127,17 +210,43 @@ class OpenAIProvider(LLMProvider):
         model_override = prepared_kwargs.pop("model", None)
         chosen_model = model_override or self.model
 
+        raw_session_key = prepared_kwargs.pop("session_id", None)
+        if isinstance(raw_session_key, str):
+            session_key = raw_session_key.strip() or None
+        elif raw_session_key is not None:
+            session_key = str(raw_session_key).strip() or None
+        else:
+            session_key = None
+
+        system_prompt = ""
+        if messages:
+            first_msg = messages[0]
+            if isinstance(first_msg, dict) and first_msg.get("role") == "system":
+                try:
+                    system_prompt = str(first_msg.get("content", ""))
+                except Exception:
+                    system_prompt = ""
+
         # Try Responses API first
         try:
             responses_api = getattr(self.client, "responses", None)
             if responses_api is not None and hasattr(responses_api, "create"):
                 # The Responses API can accept message-style input
                 responses_kwargs = self._prepare_responses_kwargs(prepared_kwargs)
+                session_identifier = None
+                if session_key:
+                    session_identifier = await self._ensure_responses_session(
+                        session_key,
+                        chosen_model,
+                        system_prompt,
+                    )
 
                 async def _do_request(override_tier: Optional[str] = None):
                     kwargs_local = dict(responses_kwargs)
                     if override_tier:
                         kwargs_local["service_tier"] = override_tier
+                    if session_identifier:
+                        kwargs_local.setdefault("session", session_identifier)
                     return await responses_api.create(
                         model=chosen_model,
                         input=list(messages),
@@ -237,10 +346,34 @@ class OpenAIProvider(LLMProvider):
         model_override = prepared_kwargs.pop("model", None)
         chosen_model = model_override or self.model
 
+        raw_session_key = prepared_kwargs.pop("session_id", None)
+        if isinstance(raw_session_key, str):
+            session_key = raw_session_key.strip() or None
+        elif raw_session_key is not None:
+            session_key = str(raw_session_key).strip() or None
+        else:
+            session_key = None
+
+        system_prompt = ""
+        if messages:
+            first_msg = messages[0]
+            if isinstance(first_msg, dict) and first_msg.get("role") == "system":
+                try:
+                    system_prompt = str(first_msg.get("content", ""))
+                except Exception:
+                    system_prompt = ""
+
         # Try Responses streaming first
         try:
             responses_api = getattr(self.client, "responses", None)
             if responses_api is not None:
+                session_identifier = None
+                if session_key:
+                    session_identifier = await self._ensure_responses_session(
+                        session_key,
+                        chosen_model,
+                        system_prompt,
+                    )
                 # Prefer the streaming helper if available
                 if hasattr(responses_api, "stream"):
                     try:
@@ -250,6 +383,8 @@ class OpenAIProvider(LLMProvider):
                             kwargs_local = dict(responses_kwargs)
                             if override_tier:
                                 kwargs_local["service_tier"] = override_tier
+                            if session_identifier:
+                                kwargs_local.setdefault("session", session_identifier)
                             return responses_api.stream(
                                 model=chosen_model,
                                 input=list(messages),
@@ -414,6 +549,8 @@ class OpenAIProvider(LLMProvider):
                         kwargs_local = dict(responses_kwargs)
                         if override_tier:
                             kwargs_local["service_tier"] = override_tier
+                        if session_identifier:
+                            kwargs_local.setdefault("session", session_identifier)
                         return await responses_api.create(
                             model=chosen_model,
                             input=list(messages),
@@ -1062,6 +1199,7 @@ class LLMService:
                 temperature=0.2,
                 store=True,
                 model=resolved_model,
+                session_id=session_id,
             ):
                 if chunk:
                     total += chunk
@@ -1221,6 +1359,7 @@ Code:
                 temperature=0.1,
                 store=True,
                 model=resolved_model,
+                session_id=session_id,
             )
             if session_id:
                 self._update_session_usage(session_id)
@@ -1362,6 +1501,7 @@ Generate the code now:
                     temperature=0.1,
                     store=True,
                     model=resolved_model,
+                    session_id=session_id,
                     **({"reasoning": reasoning} if reasoning else {}),
                 ):
                     if chunk:
@@ -1375,7 +1515,7 @@ Generate the code now:
                 async for chunk in self.provider.generate_stream([
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
-                ], max_tokens=3000, temperature=0.1, store=True, model=resolved_model, **({"reasoning": reasoning} if reasoning else {})):
+                ], max_tokens=3000, temperature=0.1, store=True, model=resolved_model, session_id=session_id, **({"reasoning": reasoning} if reasoning else {})):
                     yield chunk
                 if include_context:
                     self._record_context_hash(session_id, context)
@@ -1922,6 +2062,7 @@ JSON response:"""
                     temperature=0.1,
                     store=True,
                     model=resolved_model,
+                    session_id=session_id,
                 ):
                     events = await handle_chunk(chunk)
                     for evt in events:
@@ -2406,6 +2547,7 @@ Make the steps specific, actionable, and appropriate for the current context and
                     temperature=0.1,
                     store=True,
                     model=resolved_model,
+                    session_id=session_id,
                 ):
                     events = await handle_chunk(chunk)
                     for evt in events:

@@ -6,14 +6,22 @@ import time
 import textwrap
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
+import numpy as np
 import pandas as pd
+
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import linear_kernel
+    TFIDF_AVAILABLE = True
+except ImportError:
+    TFIDF_AVAILABLE = False
+    TfidfVectorizer = None
+    linear_kernel = None
 
 try:
     from .config import SearchConfig
 except ImportError:
     from config import SearchConfig
-from .llm_similarity import score_items_with_llm
-
 try:
     import cellxgene_census
     import anndata as ad
@@ -133,17 +141,57 @@ class CellxCensusSearch:
             datasets = await self._search_datasets_core(query, limit, organism)
             
             if datasets:
+                tfidf_index = await self._ensure_tfidf_index(datasets, organism)
+                candidate_summaries: Optional[List[str]] = None
+
+                if tfidf_index:
+                    candidate_limit = self._tfidf_candidate_limit(limit, len(datasets))
+                    candidate_indices, candidate_scores = self._select_tfidf_candidates(
+                        query,
+                        tfidf_index,
+                        candidate_limit,
+                    )
+
+                    summaries = tfidf_index['summaries']
+                    candidates: List[Dict[str, Any]] = []
+                    candidate_summaries = []
+                    for position, dataset_index in enumerate(candidate_indices):
+                        source_dataset = datasets[dataset_index]
+                        dataset_copy = dict(source_dataset)
+                        tfidf_score = float(candidate_scores[position]) if position < len(candidate_scores) else 0.0
+                        dataset_copy['tfidf_score'] = tfidf_score
+                        dataset_copy['similarity_score'] = tfidf_score
+                        dataset_copy['tfidf_rank'] = position + 1
+                        candidates.append(dataset_copy)
+                        candidate_summaries.append(summaries[dataset_index])
+
+                    if not candidates:
+                        candidates = [dict(dataset) for dataset in datasets]
+                        candidate_summaries = summaries[:len(candidates)]
+                        for dataset in candidates:
+                            dataset.setdefault('tfidf_score', 0.0)
+                            dataset.setdefault('tfidf_rank', 0)
+                else:
+                    candidates = [dict(dataset) for dataset in datasets]
+                    candidate_summaries = [self._summarize_dataset(dataset) for dataset in candidates]
+                    for dataset in candidates:
+                        dataset.setdefault('tfidf_score', 0.0)
+                        dataset.setdefault('tfidf_rank', 0)
+
                 await self._send_progress_update({
                     'step': 'similarity',
                     'progress': 80,
-                    'message': 'Scoring datasets with LLM...',
-                    'datasetsFound': len(datasets)
+                    'message': f'Scoring top {len(candidates)} datasets with TF-IDF...',
+                    'datasetsFound': len(candidates)
                 })
-                
-                # Calculate similarity scores using original query
-                enhanced_datasets = await self._calculate_similarity_scores(query, datasets)
+
+                enhanced_datasets = self._score_candidates_with_tfidf(
+                    query,
+                    candidates,
+                    candidate_summaries,
+                )
                 enhanced_datasets.sort(key=lambda x: x.get('similarity_score', 0), reverse=True)
-                
+
                 await self._send_progress_update({
                     'step': 'complete',
                     'progress': 100,
@@ -301,7 +349,142 @@ class CellxCensusSearch:
 
         print(f"✅ Converted {len(datasets)} datasets with extracted keywords")
         return datasets
-    
+
+    def _tfidf_cache_key(self, organism: Optional[str]) -> str:
+        """Build the TF-IDF cache key for the current organism filter."""
+        organism_key = (organism or "all").strip().lower()
+        return f"tfidf::{organism_key}"
+
+    async def _ensure_tfidf_index(
+        self,
+        datasets: List[Dict[str, Any]],
+        organism: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """Ensure a TF-IDF index exists for the dataset summaries."""
+        if not TFIDF_AVAILABLE or not datasets:
+            return None
+
+        cache_key = self._tfidf_cache_key(organism)
+        now = time.time()
+        ttl = SearchConfig.get_cache_metadata_ttl_seconds()
+        cached = self._metadata_cache.get(cache_key)
+
+        if cached and (now - cached.get('ts', 0) < ttl) and cached.get('size') == len(datasets):
+            return cached['value']
+
+        # Build textual summaries once to reuse for both TF-IDF and LLM re-ranking.
+        summaries = [self._summarize_dataset(dataset) for dataset in datasets]
+
+        loop = asyncio.get_event_loop()
+
+        def _build_index():
+            vectorizer = TfidfVectorizer(
+                ngram_range=(1, 2),
+                sublinear_tf=True,
+                lowercase=True,
+                stop_words="english",
+                dtype=np.float32,
+                max_df=0.95,
+            )
+            matrix = vectorizer.fit_transform(summaries)
+            try:
+                matrix = matrix.astype(np.float32)
+            except Exception:
+                pass
+            return {
+                'vectorizer': vectorizer,
+                'matrix': matrix,
+                'summaries': summaries,
+            }
+
+        index = await loop.run_in_executor(None, _build_index)
+        self._metadata_cache[cache_key] = {
+            'ts': now,
+            'value': index,
+            'size': len(datasets),
+        }
+        return index
+
+    def _tfidf_candidate_limit(self, limit: int, dataset_count: int) -> int:
+        """Decide how many TF-IDF candidates to forward to the LLM."""
+        if dataset_count <= limit:
+            return dataset_count
+        base = max(limit * 3, limit + 15, 30)
+        return min(dataset_count, base)
+
+    def _select_tfidf_candidates(
+        self,
+        query: str,
+        index: Dict[str, Any],
+        candidate_count: int
+    ) -> tuple[List[int], np.ndarray]:
+        """Select top TF-IDF candidates for the query."""
+        if candidate_count <= 0:
+            return [], np.array([], dtype=np.float32)
+
+        vectorizer = index['vectorizer']
+        matrix = index['matrix']
+        if matrix.shape[0] == 0:
+            return [], np.array([], dtype=np.float32)
+
+        query_vec = vectorizer.transform([query])
+        similarities = linear_kernel(query_vec, matrix).ravel().astype(np.float32, copy=False)
+
+        candidate_count = min(candidate_count, similarities.size)
+        if candidate_count >= similarities.size:
+            ordered = np.argsort(similarities)[::-1]
+        else:
+            top_idx = np.argpartition(similarities, -candidate_count)[-candidate_count:]
+            ordered = top_idx[np.argsort(similarities[top_idx])[::-1]]
+
+        return ordered.tolist(), similarities[ordered]
+
+    def _score_candidates_with_tfidf(
+        self,
+        query: str,
+        datasets: List[Dict[str, Any]],
+        summaries: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Score candidates using TF-IDF similarity plus lightweight keyword bonuses."""
+
+        if summaries is None or len(summaries) != len(datasets):
+            summaries = [self._summarize_dataset(dataset) for dataset in datasets]
+
+        query_lower = (query or "").lower()
+        query_upper = query_lower.upper()
+        query_tokens = [token for token in query_lower.split() if token]
+
+        for idx, dataset in enumerate(datasets):
+            base_score = float(dataset.get('tfidf_score', 0.0) or 0.0)
+            summary_text = summaries[idx]
+            summary_lower = summary_text.lower()
+            bonus = 0.0
+
+            if query_lower and query_lower in summary_lower:
+                bonus += 0.3
+
+            for token in query_tokens:
+                if token in summary_lower:
+                    bonus += 0.15
+                    continue
+                for word in summary_lower.split():
+                    if len(token) < 3:
+                        continue
+                    if token in word:
+                        bonus += 0.08
+                        break
+                    if word in token and len(word) >= 3:
+                        bonus += 0.08
+                        break
+
+            if query_upper and query_upper in summary_text.upper():
+                bonus += 0.2
+
+            final_score = min(1.0, max(0.0, base_score + bonus))
+            dataset['similarity_score'] = final_score
+
+        return datasets
+
     def _infer_platform_from_metadata(self, citation: str, collection_name: str, dataset_title: str) -> str:
         """Infer the sequencing platform from metadata text."""
         # Combine all text for analysis
@@ -333,62 +516,6 @@ class CellxCensusSearch:
         else:
             # Default for CellxCensus data
             return "scRNA-seq"
-
-
-    async def _calculate_similarity_scores(
-        self,
-        query: str,
-        datasets: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """Calculate semantic similarity scores using the shared LLM service."""
-
-        try:
-            dataset_texts: List[str] = [self._summarize_dataset(d) for d in datasets]
-            indexed_summaries = list(enumerate(dataset_texts))
-
-            llm_scores = await score_items_with_llm(query, indexed_summaries, batch_size=10)
-            query_lower = query.lower()
-
-            for idx, dataset in enumerate(datasets):
-                semantic_similarity = llm_scores.get(idx, 0.35)
-                semantic_similarity = max(0.0, min(1.0, semantic_similarity))
-
-                dataset_text = dataset_texts[idx].lower()
-                exact_match_bonus = 0.0
-
-                if query_lower and query_lower in dataset_text:
-                    exact_match_bonus += 0.3
-
-                query_words = [w for w in query_lower.split() if w]
-                for query_word in query_words:
-                    if query_word in dataset_text:
-                        exact_match_bonus += 0.15
-                        continue
-                    for dataset_word in dataset_text.split():
-                        if len(query_word) < 3:
-                            continue
-                        if query_word in dataset_word:
-                            exact_match_bonus += 0.08
-                            break
-                        if dataset_word in query_word and len(dataset_word) >= 3:
-                            exact_match_bonus += 0.08
-                            break
-
-                query_upper = query.upper()
-                if query_upper and query_upper in dataset_text.upper():
-                    exact_match_bonus += 0.2
-
-                final_similarity = min(1.0, max(0.0, semantic_similarity + exact_match_bonus))
-                dataset['similarity_score'] = final_similarity
-
-            return datasets
-
-        except Exception as e:
-            print(f"❌ Error calculating similarity: {e}")
-            for dataset in datasets:
-                dataset['similarity_score'] = 0.0
-            return datasets
-
     async def close_census(self):
         """Close the census connection."""
         if self.census:
@@ -434,13 +561,12 @@ class SimpleCellxCensusClient:
     """Simple client interface for CellxCensus operations."""
     
     def __init__(self):
-        # Initialize CellxCensus search if available; otherwise, fall back to GEO at call time
+        # Initialize CellxCensus search if available; otherwise, surface the init error.
         try:
             self.search_client = CellxCensusSearch()
             self._init_error: Optional[Exception] = None
         except Exception as e:
-            # Defer to GEO fallback when CellxCensus is not available or fails to init
-            print(f"⚠️ CellxCensus unavailable, will fall back to GEO search when called: {e}")
+            print(f"⚠️ CellxCensus unavailable: {e}")
             self.search_client = None
             self._init_error = e
         self._progress_callback: Optional[Callable[[Dict[str, Any]], Union[None, Awaitable[None]]]] = None
@@ -459,21 +585,11 @@ class SimpleCellxCensusClient:
     ) -> List[Dict[str, Any]]:
         """Find similar datasets using intelligent search."""
         limit = SearchConfig.get_search_limit(limit)
-        # If CellxCensus search client is not available, gracefully fall back to GEO
         if not self.search_client:
-            try:
-                try:
-                    from .geo_search import SimpleGEOClient  # type: ignore
-                except ImportError:
-                    from geo_search import SimpleGEOClient  # type: ignore
-                geo_client = SimpleGEOClient()
-                if self._progress_callback:
-                    geo_client.set_progress_callback(self._progress_callback)
-                return await geo_client.find_similar_datasets(query, limit, organism)
-            except Exception as fallback_error:
-                print(f"❌ GEO fallback failed: {fallback_error}")
-                return []
-        # Normal CellxCensus path
+            raise RuntimeError(
+                "CellxCensus search client failed to initialize"
+                + (f": {self._init_error}" if self._init_error else "")
+            )
         try:
             return await self.search_client.search_datasets(query, limit, organism)
         finally:
