@@ -13,6 +13,12 @@ import { deduplicateDatasets } from "../../utils/SearchUtils";
 
 const log = Logger.createLogger("backendClient");
 
+export interface SessionMetadata {
+	fullId: string;
+	instanceId: string;
+	scope: string[];
+}
+
 export class BackendClient implements IBackendClient {
 	private baseUrl: string;
 	private onProgress?: (progress: SearchProgress) => void;
@@ -133,6 +139,34 @@ export class BackendClient implements IBackendClient {
 		const withoutSalt = trimmed.replace(/^run_[^:]+:/, "");
 		const suffix = withoutSalt.trim().length > 0 ? withoutSalt : "default";
 		return `session:${this.sessionInstanceId}:${suffix}`;
+	}
+
+	getSessionMetadata(
+		sessionId?: string | null,
+		...fallbackParts: Array<string | undefined | null>
+	): SessionMetadata | null {
+		const scoped = this.scopeSessionId(sessionId, ...fallbackParts);
+		if (!scoped) {
+			return null;
+		}
+		const segments = scoped.split(":");
+		let instanceId = this.sessionInstanceId;
+		let scopeStartIndex = 0;
+		if (segments[0] === "session") {
+			instanceId = segments[1] && segments[1].trim().length
+				? segments[1]
+				: this.sessionInstanceId;
+			scopeStartIndex = 2;
+		}
+		const scope = segments
+			.slice(scopeStartIndex)
+			.map((segment) => segment.trim())
+			.filter((segment) => segment.length > 0);
+		return {
+			fullId: scoped,
+			instanceId,
+			scope,
+		};
 	}
 
 	private buildSessionSuffix(

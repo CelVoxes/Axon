@@ -197,6 +197,34 @@ class OpenAIProvider(LLMProvider):
         }
 
         return session_id
+
+    def _build_session_scoped_input(
+        self,
+        messages: Sequence[Message],
+        session_identifier: Optional[str],
+    ) -> List[Message]:
+        """Trim repeated context when Responses sessions already retain memory."""
+        if not session_identifier:
+            return list(messages)
+        try:
+            trimmed: List[Message] = []
+            for message in reversed(messages):
+                role = str(message.get("role", "")).lower()
+                trimmed.insert(
+                    0,
+                    cast(
+                        Message,
+                        dict(message),
+                    ),
+                )
+                if role == "user":
+                    break
+            trimmed = [m for m in trimmed if str(m.get("role", "")).lower() != "system"]
+            if trimmed:
+                return trimmed
+        except Exception:
+            pass
+        return list(messages)
     
     def _is_gpt5_mini(self) -> bool:
         """Check if the model is gpt-5-mini."""
@@ -247,9 +275,10 @@ class OpenAIProvider(LLMProvider):
                         kwargs_local["service_tier"] = override_tier
                     if session_identifier:
                         kwargs_local.setdefault("session", session_identifier)
+                    input_messages = self._build_session_scoped_input(messages, session_identifier)
                     return await responses_api.create(
                         model=chosen_model,
-                        input=list(messages),
+                        input=list(input_messages),
                         **kwargs_local
                     )
 
@@ -385,9 +414,10 @@ class OpenAIProvider(LLMProvider):
                                 kwargs_local["service_tier"] = override_tier
                             if session_identifier:
                                 kwargs_local.setdefault("session", session_identifier)
+                            input_messages = self._build_session_scoped_input(messages, session_identifier)
                             return responses_api.stream(
                                 model=chosen_model,
-                                input=list(messages),
+                                input=list(input_messages),
                                 **kwargs_local
                             )
 
@@ -551,9 +581,10 @@ class OpenAIProvider(LLMProvider):
                             kwargs_local["service_tier"] = override_tier
                         if session_identifier:
                             kwargs_local.setdefault("session", session_identifier)
+                        input_messages = self._build_session_scoped_input(messages, session_identifier)
                         return await responses_api.create(
                             model=chosen_model,
-                            input=list(messages),
+                            input=list(input_messages),
                             stream=True,
                             **kwargs_local
                         )
