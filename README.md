@@ -82,4 +82,4 @@ The platform now includes intelligent auto-execution capabilities:
 
 ## License
 
-Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+This project is distributed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International license. See `LICENSE` for the full legal code, including the non-commercial and share-alike requirements. Please note that this license is not OSI-approved; contact the maintainers if you need a commercial license.
