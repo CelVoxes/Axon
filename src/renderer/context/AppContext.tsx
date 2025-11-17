@@ -453,6 +453,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 		[state.chatCollapsed, state.showChatPanel, state.showSidebar]
 	);
 
+	// Bridge workspace/chat state to window for modules that are not inside React context
+	useEffect(() => {
+		if (typeof window === "undefined") return;
+		try {
+			(window as any).__axonWorkspace = state.currentWorkspace || null;
+			(window as any).currentWorkspace = state.currentWorkspace || null;
+		} catch (_) {
+			// ignore
+		}
+	}, [state.currentWorkspace]);
+
+	useEffect(() => {
+		if (typeof window === "undefined") return;
+		try {
+			const existing =
+				typeof (window as any).__axonAnalysisState === "object" &&
+				(window as any).__axonAnalysisState !== null
+					? (window as any).__axonAnalysisState
+					: {};
+			existing.activeChatSessionId =
+				analysisSlice.activeChatSessionId || null;
+			(window as any).__axonAnalysisState = existing;
+		} catch (_) {
+			// ignore
+		}
+	}, [analysisSlice.activeChatSessionId]);
+
 	// Note: We intentionally do not auto-open the last workspace on boot.
 
 	// Load chat sessions, active session, and open files on workspace change (with legacy migration)

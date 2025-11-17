@@ -251,39 +251,11 @@ export class CodeGenerationService implements ICodeGenerator {
 		}
 	}
 
-	private buildEnhancedContext(request: CodeGenerationRequest): string {
-		// Provide rich, actionable dataset context (IDs, titles, organisms, sources, URLs, formats)
-		const datasetInfo = request.datasets
-			.map((d) => {
-				const url = (d as any).url || "";
-				const source = (d as any).source || "Unknown";
-				const localPath = (d as any).localPath || "";
-				const isLocal = !!localPath;
-				const format = url
-					? url.toLowerCase().endsWith(".h5ad")
-						? "h5ad"
-						: url.toLowerCase().endsWith(".csv")
-						? "csv"
-						: url.toLowerCase().endsWith(".tsv")
-						? "tsv"
-						: url.toLowerCase().endsWith(".txt")
-						? "txt"
-						: "unknown"
-					: (d as any).fileFormat || (isLocal ? "local" : "unknown");
-				const sampleCount = (d as any).sample_count;
-				const sampleStr =
-					sampleCount !== undefined && sampleCount !== null
-						? `, samples/cells: ${sampleCount}`
-						: "";
-				return `- id: ${d.id}
-  title: ${d.title || "Unknown"}
-  organism: ${d.organism || "Unknown"}
-  source: ${source}
-  url: ${url || "(none provided)"}
-  localPath: ${localPath || "(none)"}
-  format: ${format}${sampleStr}`;
-			})
-			.join("\n\n");
+	private buildEnhancedContext(
+		request: CodeGenerationRequest,
+		options?: { lean?: boolean }
+	): string {
+		const lean = options?.lean ?? false;
 
 		// Get existing imports from global context (or empty if not provided)
 		const existingImports = sharedGetExistingImports(
@@ -292,19 +264,22 @@ export class CodeGenerationService implements ICodeGenerator {
 		const existingImportsList = Array.from(existingImports).join("\n");
 
 		// Build data access context for the analysis step
-		const dataAccessContext = this.buildDataAccessContext(request.datasets);
+		const dataAccessContext = this.buildDataAccessContext(request.datasets || []);
 
 		let context = `Original question: ${request.originalQuestion}
 Working directory: ${request.workingDir}
 Step index: ${request.stepIndex}
 
 Available datasets (use ONLY these, do NOT invent links):
-${datasetInfo}
+${this.formatDatasetInfo(request.datasets || [], lean)}
 
-DATA ACCESS CONTEXT - IMPORTANT (concise):
-${dataAccessContext}
+DATA ACCESS CONTEXT:
+${lean ? "Constraints unchanged; continue using the previously established data_dir/loading pattern." : dataAccessContext}
 
-Dataset handling constraints:
+${
+	lean
+		? "General constraints remain the same (data_dir only, save to results/ and figures/, minimal prints, no re-downloading)."
+		: `Dataset handling constraints:
 - Data files should already exist from previous loading steps
 - Use data_dir consistently; do not re-download
 - If a needed file is missing, raise FileNotFoundError with a short message (do not add broad try/except)
@@ -314,12 +289,17 @@ General requirements (concise):
 - Limit prints to at most 1–2 lines
 - Save outputs to results/ and figures/
 - Avoid boilerplate and unnecessary wrappers
-- Follow Python best practices`;
+- Follow Python best practices`
+}`;
 
 		// Will optionally add global scaling guidance later for non single-cell tasks
 
 		// Runtime budget guidance to prevent timeouts on large datasets
-		context += `\n\nRUNTIME AND CHUNKING (prevent timeouts on large data):\n- Keep each cell under ~60–90 seconds of runtime; if work exceeds this, split into additional cells.\n- Process large folders/files in CHUNKS/BATCHES (e.g., per-file loops with intermediate CSV/parquet outputs under results/tmp/).\n- For CSV bundles: sample first to profile; then batch-process files (e.g., 2–4 at a time), writing partial outputs and a manifest to resume.\n- For UMAP: fit on a subset (50k–200k), then transform the rest in batches; persist embeddings to disk.\n- Always save intermediate artifacts (results/) so subsequent cells resume instead of redoing heavy work.`;
+		if (lean) {
+			context += `\n\nRUNTIME: stay <~60–90s per cell, process large files in chunks, and persist results/ artifacts for resuming.`;
+		} else {
+			context += `\n\nRUNTIME AND CHUNKING (prevent timeouts on large data):\n- Keep each cell under ~60–90 seconds of runtime; if work exceeds this, split into additional cells.\n- Process large folders/files in CHUNKS/BATCHES (e.g., per-file loops with intermediate CSV/parquet outputs under results/tmp/).\n- For CSV bundles: sample first to profile; then batch-process files (e.g., 2–4 at a time), writing partial outputs and a manifest to resume.\n- For UMAP: fit on a subset (50k–200k), then transform the rest in batches; persist embeddings to disk.\n- Always save intermediate artifacts (results/) so subsequent cells resume instead of redoing heavy work.`;
+		}
 
 		// Don't add massive global code context - let Responses API handle memory
 		// Only add minimal import context if available
@@ -348,7 +328,7 @@ General requirements (concise):
 		request: CodeGenerationRequest,
 		lean: boolean = false
 	): Promise<string> {
-		let context = this.buildEnhancedContext(request);
+		let context = this.buildEnhancedContext(request, { lean });
 
 		// Detect spectral flow cytometry datasets
 		const isSpectralFlow =
@@ -512,15 +492,16 @@ General requirements (concise):
 				);
 
 			// Check if we have implementation details from DatasetManager plan
-			if (request.implementation) {
-				// Use implementation details from DatasetManager plan
-				context += `\n\nIMPLEMENTATION PLAN FROM DATASET ANALYSIS:
-- ${request.stepDescription}: ${request.implementation}
-
-Convert this implementation step into executable Python code.`;
-			} else {
-				// No implementation details available - let LLM decide based on data types
-				context += `\n\nANALYSIS GUIDANCE:
+		if (request.implementation) {
+			const implNotes = this.summarizeImplementationNotes(
+				request.implementation
+			);
+			if (implNotes) {
+				context += `\n\nIMPLEMENTATION NOTES:\n${implNotes}`;
+			}
+		} else {
+			// No implementation details available - let LLM decide based on data types
+			context += `\n\nANALYSIS GUIDANCE:
 - Use appropriate libraries for the detected data type
 - Follow standard analysis practices for this data type
 - Ensure reproducible results`;
@@ -907,6 +888,89 @@ ${datasetLoadingCode}
 		}
 
 		return lines.join("\n");
+	}
+
+	private formatDatasetInfo(
+		datasets: Dataset[] = [],
+		lean: boolean
+	): string {
+		if (!datasets.length) {
+			return "- (no datasets provided)";
+		}
+		if (!lean) {
+			return datasets
+				.map((d) => {
+					const url = (d as any).url || "";
+					const source = (d as any).source || "Unknown";
+					const localPath = (d as any).localPath || "";
+					const isLocal = !!localPath;
+					const format = url
+						? url.toLowerCase().endsWith(".h5ad")
+							? "h5ad"
+							: url.toLowerCase().endsWith(".csv")
+							? "csv"
+							: url.toLowerCase().endsWith(".tsv")
+							? "tsv"
+							: url.toLowerCase().endsWith(".txt")
+							? "txt"
+							: "unknown"
+						: (d as any).fileFormat || (isLocal ? "local" : "unknown");
+					const sampleCount = (d as any).sample_count;
+					const sampleStr =
+						sampleCount !== undefined && sampleCount !== null
+							? `, samples/cells: ${sampleCount}`
+							: "";
+					return `- id: ${d.id}
+  title: ${d.title || "Unknown"}
+  organism: ${d.organism || "Unknown"}
+  source: ${source}
+  url: ${url || "(none provided)"}
+  localPath: ${localPath || "(none)"}
+  format: ${format}${sampleStr}`;
+				})
+				.join("\n\n");
+		}
+		return datasets
+			.map((d) => {
+				const label = d.title || d.id;
+				const path = (d as any).localPath || (d as any).url || "";
+				return `- ${d.id}: ${label}${path ? ` @ ${path}` : ""}`;
+			})
+			.join("\n");
+	}
+
+	private summarizeImplementationNotes(
+		implementation?: string,
+		maxLines = 6
+	): string | null {
+		if (!implementation) return null;
+		const lines = implementation
+			.split(/\r?\n/)
+			.map((line) => line.trim())
+			.filter(Boolean);
+		if (!lines.length) return null;
+		const keepPrefixes = [
+			"You are implementing",
+			"Assume previous steps",
+			"This is the first step",
+			"This is the final step",
+			"Do NOT implement later steps",
+			"Focus on achieving",
+			"Keep this cell",
+		];
+		const filtered = lines.filter((line) => {
+			if (/^Plan overview/i.test(line)) return false;
+			if (/^\d+\.\s+/.test(line)) return false;
+			if (/^Convert this implementation step/i.test(line)) return false;
+			if (/^Implement only this plan step/i.test(line)) return false;
+			return (
+				keepPrefixes.some((prefix) => line.startsWith(prefix)) ||
+				line.startsWith("- ")
+			);
+		});
+
+		const selected = (filtered.length ? filtered : lines).slice(0, maxLines);
+		return selected.length ? selected.join("\n") : null;
 	}
 
 	/**

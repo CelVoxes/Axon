@@ -3,6 +3,10 @@ import { Dataset, DataTypeAnalysis } from "../types";
 import { FilesystemAdapter } from "../../utils/fs/FilesystemAdapter";
 import { DefaultFilesystemAdapter } from "../../utils/fs/DefaultFilesystemAdapter";
 import { BackendClient } from "../backend/BackendClient";
+import {
+	getActiveChatSessionId,
+	getWorkspaceScope,
+} from "../../utils/SessionScope";
 
 export interface FileAnalysis {
 	dataType: string;
@@ -677,13 +681,11 @@ export class DatasetManager {
 	): Promise<DataTypeAnalysis> {
 		// Create session key for caching
 		const sessionId = (() => {
-			try {
-				const ws = (window as any)?.electronAPI?.getCurrentWorkspace?.();
-				const chatRaw = (window as any)?.analysisState?.activeChatSessionId;
-				const session = this.buildSessionId(ws, chatRaw);
-				if (session) return session;
-			} catch (_) {}
-			return "default";
+			const workspace = getWorkspaceScope();
+			const chatRaw = getActiveChatSessionId();
+			const session = this.buildSessionId(workspace, chatRaw);
+			if (session) return session;
+			return `session:${this.fallbackSessionInstanceId}:${chatRaw || "global"}`;
 		})();
 
 		// Create cache key based on dataset IDs and workspace
@@ -1771,8 +1773,8 @@ export class DatasetManager {
 
 			// Create minimal context for LLM
 			const scopedSessionId = this.buildSessionId(
-				(window as any)?.electronAPI?.getCurrentWorkspace?.(),
-				(window as any)?.analysisState?.activeChatSessionId
+				getWorkspaceScope(),
+				getActiveChatSessionId()
 			);
 			const minimalContext = {
 				userQuestion,
@@ -1851,8 +1853,8 @@ export class DatasetManager {
 	): any {
 		// Get session ID for Responses API memory
 		const sessionId = this.buildSessionId(
-			(window as any)?.electronAPI?.getCurrentWorkspace?.(),
-			(window as any)?.analysisState?.activeChatSessionId
+			getWorkspaceScope(),
+			getActiveChatSessionId()
 		);
 
 		return {

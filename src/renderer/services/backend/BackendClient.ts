@@ -6,6 +6,10 @@ import { readNdjsonStream, readDataStream } from "../../utils/StreamUtils";
 import { Logger } from "../../utils/Logger";
 import { GEODataset } from "../../types/DatasetTypes";
 import { deduplicateDatasets } from "../../utils/SearchUtils";
+import {
+	getActiveChatSessionId,
+	getWorkspaceScope,
+} from "../../utils/SessionScope";
 
 // GEODataset now sourced from shared types
 
@@ -187,24 +191,12 @@ export class BackendClient implements IBackendClient {
 	}
 
 	private resolveChatSessionId(raw?: string | null): string | undefined {
-		let workspace: string | undefined;
-		let chatId: string | undefined;
-		try {
-			const ws = (window as any)?.electronAPI?.getCurrentWorkspace?.();
-			if (typeof ws === "string" && ws.trim()) {
-				workspace = ws.trim();
-			}
-		} catch (_) {}
-		try {
-			const activeChat = (window as any)?.analysisState?.activeChatSessionId;
-			if (typeof activeChat === "string" && activeChat.trim()) {
-				chatId = activeChat.trim();
-			}
-		} catch (_) {}
+		const workspace = getWorkspaceScope();
+		const chatId = getActiveChatSessionId();
 		if (workspace) {
 			return this.scopeSessionId(raw, workspace, chatId || "global");
 		}
-		return this.scopeSessionId(raw);
+		return this.scopeSessionId(raw, chatId || "global");
 	}
 
 	async getLLMConfig(): Promise<{

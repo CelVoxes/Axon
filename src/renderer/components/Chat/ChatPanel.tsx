@@ -452,10 +452,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 	const [activeCellIndex, setActiveCellIndex] = useState<number>(-1);
 	const checklistHydratedRef = useRef(false);
 	const checklistSummaryRef = useRef<ChecklistSummary | null>(null);
+	const checklistClearTimerRef = useRef<NodeJS.Timeout | null>(null);
 
 	const resetChecklistState = useCallback(() => {
 		checklistHydratedRef.current = false;
 		checklistSummaryRef.current = null;
+		if (checklistClearTimerRef.current) {
+			clearTimeout(checklistClearTimerRef.current);
+			checklistClearTimerRef.current = null;
+		}
 	}, []);
 
 	const [checklistAutoExpandToken, setChecklistAutoExpandToken] = useState(0);
@@ -468,9 +473,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		setCurrentSuggestions,
 	});
 
+useEffect(() => {
+	checklistSummaryRef.current = checklistSummary;
+}, [checklistSummary]);
+
 	useEffect(() => {
-		checklistSummaryRef.current = checklistSummary;
-	}, [checklistSummary]);
+		return () => {
+			if (checklistClearTimerRef.current) {
+				clearTimeout(checklistClearTimerRef.current);
+				checklistClearTimerRef.current = null;
+			}
+		};
+	}, []);
 
 	const parseChecklistMessage = useCallback(
 		(content: string | undefined | null) => {
@@ -774,6 +788,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 		}) => {
 			const steps = Array.isArray(detail.steps) ? detail.steps : [];
 			if (steps.length === 0) {
+				if (checklistClearTimerRef.current) {
+					clearTimeout(checklistClearTimerRef.current);
+					checklistClearTimerRef.current = null;
+				}
 				checklistHashRef.current = "";
 				const prev = checklistSummaryRef.current;
 				const prevLines = prev?.lines?.length
@@ -806,6 +824,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				};
 				checklistHydratedRef.current = true;
 				setChecklistSummary(finalState);
+				checklistClearTimerRef.current = setTimeout(() => {
+					checklistClearTimerRef.current = null;
+					setChecklistSummary(null);
+				}, 4500);
 				return;
 			}
 			const hash = JSON.stringify(steps);
@@ -853,6 +875,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 				skipped: skippedCount,
 				next: nextPending ? nextPending.description : null,
 			});
+			if (doneCount === totalCount && totalCount > 0) {
+				if (checklistClearTimerRef.current) {
+					clearTimeout(checklistClearTimerRef.current);
+				}
+				checklistClearTimerRef.current = setTimeout(() => {
+					checklistClearTimerRef.current = null;
+					setChecklistSummary(null);
+				}, 6000);
+			} else if (checklistClearTimerRef.current) {
+				clearTimeout(checklistClearTimerRef.current);
+				checklistClearTimerRef.current = null;
+			}
 			if (!checklistHydratedRef.current) {
 				checklistHydratedRef.current = true;
 				setChecklistAutoExpandToken((token) => token + 1);
@@ -2434,16 +2468,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ className }) => {
 						skipped: 0,
 						next: planStepDescriptions[0] || null,
 					});
-					const planMessageLines: string[] = ["```plan", "Steps:"];
-					planMessageLines.push(
-						planStepDescriptions
-							.map((step: string, idx: number) => `  ${idx + 1}. ${step}`)
-							.join("\n")
-					);
-					planMessageLines.push("```");
-					addMessage(planMessageLines.join("\n"), false);
 					addMessage(
-						"➡️ Review the plan above. I'll start executing it now – pause me if you need adjustments.",
+						`✅ Generated a plan with ${planStepDescriptions.length} step${
+							planStepDescriptions.length === 1 ? "" : "s"
+						}. The checklist will update live as each step runs.`,
 						false
 					);
 				}

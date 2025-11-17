@@ -60,6 +60,7 @@ class OpenAIProvider(LLMProvider):
         self.last_reasoning_summary: Optional[str] = None
         # Map logical session ids to OpenAI Responses session metadata
         self._responses_sessions: Dict[str, Dict[str, str]] = {}
+        self.supports_responses = True
     
     def _prepare_kwargs(self, kwargs: dict) -> dict:
         """Prepare kwargs for OpenAI API, handling model-specific parameter differences."""
@@ -711,6 +712,7 @@ class AnthropicProvider(LLMProvider):
             import anthropic
             self.client = anthropic.AsyncAnthropic(api_key=api_key)
             self.model = model
+            self.supports_responses = False
         except ImportError:
             raise ImportError("anthropic package not installed. Run: pip install anthropic")
     
@@ -874,11 +876,20 @@ class LLMService:
         except Exception:
             pass
 
+    def _provider_supports_responses(self) -> bool:
+        try:
+            provider = getattr(self, "provider", None)
+            return bool(getattr(provider, "supports_responses", False))
+        except Exception:
+            return False
+
     def _build_minimal_messages(
         self,
         session_id: Optional[str],
         system_prompt: str,
         user_content: str,
+        *,
+        include_history: bool = True,
     ) -> List[Message]:
         """
         Build a minimal input message list for the provider to reduce prompt bloat.
@@ -887,7 +898,7 @@ class LLMService:
         """
         system_message = cast(Message, {"role": "system", "content": system_prompt})
 
-        if not session_id:
+        if not session_id or not include_history:
             return [system_message, cast(Message, {"role": "user", "content": user_content})]
 
         history = self.sessions.get(session_id)
@@ -917,6 +928,20 @@ class LLMService:
             reconstructed.append(cast(Message, {"role": "user", "content": user_content}))
 
         return reconstructed
+
+    def _prepare_provider_messages(
+        self,
+        session_id: Optional[str],
+        system_prompt: str,
+        user_content: str,
+    ) -> List[Message]:
+        include_history = not (session_id and self._provider_supports_responses())
+        return self._build_minimal_messages(
+            session_id,
+            system_prompt,
+            user_content,
+            include_history=include_history,
+        )
 
     def _resolve_session_limit_tokens(self, session_id: Optional[str]) -> int:
         """Return the per-session context-token limit based on the session's active model.
@@ -1162,7 +1187,9 @@ class LLMService:
             resolved_model = self._resolve_model(session_id, model)
             if session_msgs is not None:
                 self._append_and_prune(session_id, "user", user_content)
-                minimal_msgs = self._build_minimal_messages(session_id, system_prompt, user_content)
+                minimal_msgs = self._prepare_provider_messages(
+                    session_id, system_prompt, user_content
+                )
                 response = await self.provider.generate(
                     minimal_msgs,
                     max_tokens=3000,  # Increased for detailed summaries (was 800)
@@ -1223,7 +1250,9 @@ class LLMService:
             total = ""
             if session_id:
                 self._append_and_prune(session_id, "user", user_content)
-            minimal_msgs = self._build_minimal_messages(session_id, system_prompt, user_content)
+            minimal_msgs = self._prepare_provider_messages(
+                session_id, system_prompt, user_content
+            )
             async for chunk in self.provider.generate_stream(
                 minimal_msgs,
                 max_tokens=3000,  # Increased for detailed summaries (was 900)
@@ -1258,7 +1287,9 @@ class LLMService:
             prompt = self._build_search_prompt(user_query, attempt, is_first_attempt)
             system = "You are a biomedical search expert specializing in finding relevant datasets in biological databases."
             if session_id:
-                minimal_msgs = self._build_minimal_messages(session_id, system, prompt)
+                minimal_msgs = self._prepare_provider_messages(
+                    session_id, system, prompt
+                )
                 response = await self.provider.generate(
                     minimal_msgs,
                     max_tokens=200,
@@ -1308,7 +1339,11 @@ Simplified query:"""
             
             # Add timeout protection
             if session_id:
-                minimal_msgs = self._build_minimal_messages(session_id, "You are a biomedical research assistant that simplifies complex queries for dataset search. Always prioritize disease/condition names and technical terms. Return only the simplified query, no formatting or explanations.", prompt)
+                minimal_msgs = self._prepare_provider_messages(
+                    session_id,
+                    "You are a biomedical research assistant that simplifies complex queries for dataset search. Always prioritize disease/condition names and technical terms. Return only the simplified query, no formatting or explanations.",
+                    prompt,
+                )
                 response = await asyncio.wait_for(
                     self.provider.generate(
                         minimal_msgs,
@@ -1381,9 +1416,11 @@ Code:
             system_prompt = f"You are an expert programmer. Generate only {lang} code, no explanations."
             self._get_or_init_session(session_id, system_prompt)
             resolved_model = self._resolve_model(session_id, model)
-            minimal_msgs = self._build_minimal_messages(session_id, system_prompt, prompt)
             if session_id:
                 self._append_and_prune(session_id, "user", prompt)
+            minimal_msgs = self._prepare_provider_messages(
+                session_id, system_prompt, prompt
+            )
             response = await self.provider.generate(
                 minimal_msgs,
                 max_tokens=2000,
@@ -1523,7 +1560,7 @@ Generate the code now:
             total = ""
             if session_msgs is not None:
                 self._append_and_prune(session_id, "user", prompt)
-                minimal_msgs = self._build_minimal_messages(
+                minimal_msgs = self._prepare_provider_messages(
                     session_id, system_prompt, prompt
                 )
                 async for chunk in self.provider.generate_stream(
@@ -1888,7 +1925,11 @@ Return a JSON object with:
 JSON response:"""
 
             if session_id:
-                minimal_msgs = self._build_minimal_messages(session_id, "You are a tool calling expert that generates precise tool invocation instructions.", prompt)
+                minimal_msgs = self._prepare_provider_messages(
+                    session_id,
+                    "You are a tool calling expert that generates precise tool invocation instructions.",
+                    prompt,
+                )
                 response = await self.provider.generate(
                     minimal_msgs,
                     max_tokens=300,
@@ -1945,7 +1986,9 @@ JSON response:"""
             system = "You are a biomedical query analyzer that extracts structured information from research questions."
             if session_id:
                 # Chain to session without polluting stored history
-                minimal_msgs = self._build_minimal_messages(session_id, system, prompt)
+                minimal_msgs = self._prepare_provider_messages(
+                    session_id, system, prompt
+                )
                 response = await self.provider.generate(
                     minimal_msgs,
                     max_tokens=300,
@@ -2086,7 +2129,9 @@ JSON response:"""
                 user_content = user_prompt
                 if session_id:
                     self._append_and_prune(session_id, "user", user_content)
-                minimal_msgs = self._build_minimal_messages(session_id, system, user_content)
+                minimal_msgs = self._prepare_provider_messages(
+                    session_id, system, user_content
+                )
                 async for chunk in self.provider.generate_stream(
                     minimal_msgs,
                     max_tokens=max_tokens,
@@ -2326,7 +2371,9 @@ Make the steps specific, actionable, and appropriate for the current context and
         try:
             system = "You are an expert AI assistant that can plan and execute various tasks. Create specific, actionable plans based on the given context."
             if session_id:
-                minimal_msgs = self._build_minimal_messages(session_id, system, prompt)
+                minimal_msgs = self._prepare_provider_messages(
+                    session_id, system, prompt
+                )
                 response = await self.provider.generate(
                     minimal_msgs,
                     max_tokens=1000,
@@ -2571,7 +2618,9 @@ Make the steps specific, actionable, and appropriate for the current context and
                 user_content = user_prompt
                 if session_id:
                     self._append_and_prune(session_id, "user", user_content)
-                minimal_msgs = self._build_minimal_messages(session_id, system, user_content)
+                minimal_msgs = self._prepare_provider_messages(
+                    session_id, system, user_content
+                )
                 async for chunk in self.provider.generate_stream(
                     minimal_msgs,
                     max_tokens=max_tokens,
@@ -2718,7 +2767,9 @@ Make suggestions specific, actionable, and tailored to the user's question and d
         try:
             system = "You are an expert bioinformatics assistant that provides specific, actionable analysis suggestions based on data types and research questions."
             if session_id:
-                minimal_msgs = self._build_minimal_messages(session_id, system, prompt)
+                minimal_msgs = self._prepare_provider_messages(
+                    session_id, system, prompt
+                )
                 response = await self.provider.generate(
                     minimal_msgs,
                     max_tokens=1500,
