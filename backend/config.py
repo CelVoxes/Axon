@@ -29,7 +29,7 @@ DEFAULT_ORGANISM = "Homo sapiens"
 # LLM Configuration
 DEFAULT_LLM_MODEL = "gpt-5.1-codex-mini"  # Uses Chain-of-Thought reasoning internally
 _DEFAULT_AVAILABLE_LLM_MODELS = [
-    "gpt-5.1-codex-mini"
+    "gpt-5.1-codex-mini",
     "gpt-5-mini",
     "gpt-4.1",
     "gpt-4.1-mini",
