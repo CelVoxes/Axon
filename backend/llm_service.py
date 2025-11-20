@@ -86,6 +86,8 @@ class OpenAIProvider(LLMProvider):
 
         # The Responses API doesn't support max_tokens parameter
         prepared_kwargs.pop("max_tokens", None)
+        # Responses API rejects sampling controls such as temperature
+        prepared_kwargs.pop("temperature", None)
 
         # Filter out other parameters that Responses API might not support
         prepared_kwargs.pop("messages", None)  # Already handled separately

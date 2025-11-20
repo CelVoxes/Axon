@@ -27,8 +27,9 @@ MAX_SEARCH_ATTEMPTS = 2
 DEFAULT_ORGANISM = "Homo sapiens"
 
 # LLM Configuration
-DEFAULT_LLM_MODEL = "gpt-5-mini"  # Uses Chain-of-Thought reasoning internally
+DEFAULT_LLM_MODEL = "gpt-5.1-codex-mini"  # Uses Chain-of-Thought reasoning internally
 _DEFAULT_AVAILABLE_LLM_MODELS = [
+    "gpt-5.1-codex-mini"
     "gpt-5-mini",
     "gpt-4.1",
     "gpt-4.1-mini",
@@ -109,6 +110,7 @@ class SearchConfig:
     _MODEL_CONTEXT_TOKEN_DEFAULT = int(os.getenv("AXON_DEFAULT_CONTEXT_TOKENS", "128000"))
     _MODEL_CONTEXT_TOKENS = {
         # Allow env overrides per model; fall back to default when unset
+        
         "gpt-5-mini": int(os.getenv("AXON_CTX_GPT5_MINI", str("272000"))),
         "gpt-4o": int(os.getenv("AXON_CTX_GPT4O", "128000")),
         "gpt-4o-mini": int(os.getenv("AXON_CTX_GPT4O_MINI", "128000")),
